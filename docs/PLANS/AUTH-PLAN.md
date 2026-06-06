@@ -1,8 +1,11 @@
 # Hivemind — Warm HTTP Daemon + Per-Device Token Auth
 
-**Status:** DRAFT — design **verified against the codebase + the MCP Streamable-HTTP spec**
-(see §13 Verification status). One gate remains before READY: the live-client transport
-spike (`AUTH-SPIKE-MCP-HTTP-PLAN.md`). No code written.
+**Status:** IMPLEMENTED (pending live-client spike) — chunks 1–6 (§7) are landed on branch
+`auth-http-daemon`, TDD-first and RULE-2 mutation-verified, full ex-embedder suite green. The
+design was **verified against the codebase + the MCP Streamable-HTTP spec** (see §13). The
+**one remaining gate before READY** is the live-client transport spike
+(`AUTH-SPIKE-MCP-HTTP-PLAN.md`): spec-compliance ≠ client-leniency, so a real Claude Code
+round-trip must be observed, not assumed.
 **Date:** 2026-06-06
 **Scope:** Add an always-on **warm HTTP daemon** (PID 1 serves HTTP instead of stdio) and
 **per-device bearer-token authentication**, so a small team's fleets of agents can
@@ -374,6 +377,16 @@ token). Spec-compliance ≠ client-leniency; this must be observed, not assumed.
 
 ---
 
-**Next action on approval:** run the §13 spike (`AUTH-SPIKE-MCP-HTTP-PLAN.md`); on green,
-implement chunk 1 (§7) — the `mcp_server`/`tool_defs` identity seam — and confirm the full
-existing test suite stays green before proceeding.
+**Implementation note (landed):** chunks 1–6 (§7) are complete on branch `auth-http-daemon`,
+each test-first + RULE-2 mutation-verified + committed. Three reconciliations vs. this draft,
+surfaced and approved before coding: (a) `compose.yaml` drops `stdin_open`/`tty` entirely (an
+HTTP service does not attach to stdin) — `test_compose.py` updated to assert the host-loopback
+port map instead; (b) `HIVE_HTTP_PORT` is resolved fail-fast (malformed/out-of-range →
+EX_CONFIG) so the boot path never raises; (c) the §4 endpoint contract is factored into
+`http_server._build_handler` so it is unit-testable on a real loopback `127.0.0.1:0` server
+(`run_http` stays the thin blocking bind+serve wrapper). `ServerIdentity` is imported from
+`hive.app.mcp_server` (its actual home).
+
+**Next action:** run the §13 spike (`AUTH-SPIKE-MCP-HTTP-PLAN.md`) — a real Claude Code against
+the running daemon (`initialize` → `initialized` 202 → `tools/list` → `tools/call`, and a 401
+on a bad token). On green, flip this doc to **READY**.

@@ -55,12 +55,21 @@ def test_compose_exists():
 
 
 def test_long_lived_warm_server_not_run_rm():
-    # transport decision (M12 must-fix): a long-lived service the harness ATTACHES to,
-    # restarted by docker — NOT `docker compose run --rm` which re-warms the embedder per
-    # connection and defeats the no-network/cost model.
+    # transport decision: a long-lived warm daemon serving MCP over HTTP on a host-LOOPBACK
+    # port, restarted by docker — NOT `docker compose run --rm` (which re-warms the embedder
+    # per connection and defeats the no-network/cost model). The evidence is the loopback port
+    # map + restart policy; the stdio-attach `stdin_open` belonged to the superseded transport.
     assert "restart: unless-stopped" in _text()
-    assert "stdin_open: true" in _text()
+    assert "127.0.0.1:8765:8765" in _text()        # host-loopback HTTP mapping (AUTH-PLAN §5/§11)
     assert "run --rm" not in _text()
+
+
+def test_http_port_is_loopback_only():
+    # the daemon is reachable on host-loopback ONLY — never bound to a routable host interface.
+    # A bare "8765:8765" (all-interfaces publish) is the regression this guards against.
+    txt = _text()
+    assert "127.0.0.1:8765:8765" in txt
+    assert not re.search(r'(?m)^\s*-\s*"?8765:8765"?\s*$', txt)   # no all-interfaces publish
 
 
 def test_hive_up_uses_up_not_run_rm():

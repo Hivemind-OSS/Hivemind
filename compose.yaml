@@ -19,9 +19,14 @@ services:
       TRANSFORMERS_OFFLINE: "1"
     volumes:
       - hive-data:/data
-    # stdio-into-container: the harness attaches to the long-lived service's stdin/stdout.
-    stdin_open: true
-    tty: false
+    # The warm daemon (PID 1) serves MCP over HTTP. The host mapping is LOOPBACK-ONLY: the
+    # daemon binds 0.0.0.0 INSIDE the container (so the Docker port map can reach it), but the
+    # host side is 127.0.0.1 only — never exposed beyond host-loopback (NOT "exposed to the
+    # network"). Remote use goes through an SSH tunnel or a reverse proxy (AUTH-PLAN §11); the
+    # per-device bearer token is the identity + revocation regardless. No stdin_open/tty — an
+    # HTTP service does not attach to stdin (the superseded stdio transport needed it).
+    ports:
+      - "127.0.0.1:8765:8765"
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "python", "-m", "hive.tools.healthcheck"]
