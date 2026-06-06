@@ -30,6 +30,7 @@ from __future__ import annotations
 import logging
 import os
 import sys
+import threading
 from typing import Any, Callable, Mapping, Optional, Protocol
 
 from hive.app.config import Config
@@ -45,6 +46,7 @@ EX_CONFIG = 78
 _DEFAULT_DB_PATH = "/data/shared.db"
 _DEFAULT_AGENT_ID = "default-agent"
 _DEFAULT_LOG_LEVEL = logging.INFO
+_DEFAULT_HTTP_PORT = 8765
 
 
 def _configure_logging(level: int) -> None:
@@ -86,8 +88,12 @@ class Boot(Protocol):
     P1.14's `build_container`; tests inject a fake. Each method is a boot CHECKPOINT.
 
     `store` is exposed so the entrypoint can stamp the readiness markers itself (keeping
-    the marker policy in the testable state machine, not buried in the assembler)."""
+    the marker policy in the testable state machine, not buried in the assembler).
+    `token_store` is the HTTP daemon's per-device verify seam (`.verify(token) -> label|None`);
+    widening this Protocol requires the REAL adapter (Container) to carry it too, not just the
+    fake — see test_build_container_is_boot_conformant."""
     store: Any
+    token_store: Any
 
     def migrate(self) -> None: ...
     def build_index(self) -> None: ...
@@ -111,9 +117,43 @@ def _default_build_boot(cfg: Config, *, tenant_id: str, agent_id: str) -> Boot:
     return build_container(cfg, tenant_id=tenant_id, agent_id=agent_id)  # pragma: no cover
 
 
-def _serve_stdio(server: Any) -> None:                  # pragma: no cover — real stdio serve
-    from hive.app.mcp_server import run_stdio            # noqa: PLC0415 — lazy
-    run_stdio(server, sys.stdin, sys.stdout)
+def _make_http_serve(boot: Boot, port: int, *,
+                     run_http: Optional[Callable[..., None]] = None) -> Callable[[Any], None]:
+    """The DEFAULT serve step (replacing stdio): a warm HTTP daemon that authenticates every
+    connecting device by its bearer token. The transport depends on a `verify` CALLABLE
+    (`boot.token_store.verify`) — never the concrete SQLite class — so no adapter detail leaks
+    into the transport. One `threading.Lock` serializes all handler execution (the shared conn
+    + embedder are not thread-safe). `run_http` is injectable ONLY so this default path is
+    unit-testable: every existing entrypoint test injects `serve`, so this path is otherwise
+    uncovered. The real `run_http` is lazy-imported (torch-free) so module import stays light."""
+    if run_http is None:
+        from hive.app.http_server import run_http as run_http_impl  # noqa: PLC0415 — lazy, torch-free
+        run_http = run_http_impl
+    lock = threading.Lock()
+
+    def serve(server: Any) -> None:
+        run_http(server, host="0.0.0.0", port=port,
+                 verify=boot.token_store.verify, lock=lock)
+    return serve
+
+
+def _resolve_port(env: Mapping[str, str]) -> Optional[int]:
+    """Resolve the HTTP listen port: `$HIVE_HTTP_PORT` or the 8765 default. Returns None on a
+    malformed / out-of-range value (the caller maps that to EX_CONFIG) — a bad port must FAIL
+    FAST with an exit code, never raise out of the boot path (stdout is the protocol channel).
+    NEVER echoes the env value. // O(1)."""
+    raw = (env.get("HIVE_HTTP_PORT") or "").strip()
+    if not raw:
+        return _DEFAULT_HTTP_PORT
+    try:
+        port = int(raw)
+    except ValueError:
+        _log.error("entrypoint.invalid_http_port var=HIVE_HTTP_PORT code=%d", EX_CONFIG)
+        return None
+    if not 0 < port < 65536:
+        _log.error("entrypoint.http_port_out_of_range var=HIVE_HTTP_PORT code=%d", EX_CONFIG)
+        return None
+    return port
 
 
 def _resolve_env(env: Mapping[str, str]) -> Optional[tuple[str, str, str]]:
@@ -173,7 +213,6 @@ def main(argv: Optional[list[str]] = None, *, env: Optional[Mapping[str, str]] =
     stdout (the JSON-RPC channel) stays clean. // O(1) control flow."""
     env = os.environ if env is None else env
     build_boot = build_boot or _default_build_boot
-    serve = serve or _serve_stdio
     pid = os.getpid() if pid is None else pid
 
     # Structured JSON → stderr at a safe default BEFORE config loads, so even the missing-env
@@ -185,6 +224,9 @@ def main(argv: Optional[list[str]] = None, *, env: Optional[Mapping[str, str]] =
     if resolved is None:                                # ← removing this guard is RULE-2 mut #2
         return EX_CONFIG
     tenant_id, db_path, agent_id = resolved
+    port = _resolve_port(env)                           # malformed HIVE_HTTP_PORT → fail fast
+    if port is None:
+        return EX_CONFIG
     try:
         cfg = Config.load(db_path=db_path, env=env, runtime={"tenant_id": tenant_id})
     except Exception as exc:                            # noqa: BLE001 — bad config is EX_CONFIG
@@ -198,6 +240,10 @@ def main(argv: Optional[list[str]] = None, *, env: Optional[Mapping[str, str]] =
     except Exception as exc:                            # noqa: BLE001 — assembler failure
         _log.error("entrypoint.assemble_failed kind=%s code=%d", type(exc).__name__, EX_SOFTWARE)
         return EX_SOFTWARE
+
+    # Default the serve step to the warm HTTP daemon (needs boot.token_store.verify, so it is
+    # built only after assembly). An injected `serve` (every unit test) takes precedence.
+    serve = serve or _make_http_serve(boot, port)
 
     # Invalidate any STALE ready marker from a prior boot BEFORE migrate — a restarted
     # container (persistent volume + reused PID 1) must start red until THIS boot warms.

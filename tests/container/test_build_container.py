@@ -39,10 +39,22 @@ def _content(resp) -> dict:
 # ── Boot conformance + Phase-1 policy ─────────────────────────────────────────
 def test_build_container_is_boot_conformant():
     c = _build()
-    for attr in ("store", "migrate", "build_index", "warm_embedder", "make_server"):
+    # token_store added to the Boot surface (the HTTP daemon's verify seam) — the REAL adapter
+    # (Container) must carry it, not only the entrypoint fake (the protocol-widening trap).
+    for attr in ("store", "token_store", "migrate", "build_index", "warm_embedder", "make_server"):
         assert hasattr(c, attr)
     assert callable(c.migrate) and callable(c.build_index)
     assert callable(c.warm_embedder) and callable(c.make_server)
+
+
+def test_token_store_wired_create_verify_end_to_end():
+    """build_container wires a usable SqliteTokenStore on the shared conn (the daemon's verify
+    seam): create→verify round-trips and revoke→reject, with no extra wiring re-derived."""
+    c = _build()
+    tok = c.token_store.create("alice-laptop")
+    assert c.token_store.verify(tok) == "alice-laptop"
+    assert c.token_store.revoke("alice-laptop") is True
+    assert c.token_store.verify(tok) is None
 
 
 def test_phase1_surfacer_is_inert():

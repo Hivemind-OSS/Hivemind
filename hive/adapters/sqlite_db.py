@@ -13,8 +13,12 @@ from contextlib import contextmanager
 from typing import Iterator
 
 
-def connect(path: str = ":memory:") -> sqlite3.Connection:
-    conn = sqlite3.connect(path, isolation_level=None)
+def connect(path: str = ":memory:", *, check_same_thread: bool = True) -> sqlite3.Connection:
+    # check_same_thread=False lets the warm HTTP daemon share ONE conn across handler threads
+    # (thread-safety is then the caller's global lock, not sqlite's per-thread guard). The
+    # default True keeps single-threaded callers guarded; the param is keyword-only so every
+    # existing positional caller is unchanged.
+    conn = sqlite3.connect(path, isolation_level=None, check_same_thread=check_same_thread)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA journal_mode=WAL")
     conn.execute("PRAGMA busy_timeout=5000")

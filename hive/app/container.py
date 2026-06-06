@@ -27,6 +27,7 @@ import logging
 import random
 from typing import Any, Optional
 
+from hive.adapters.auth_store_sqlite import SqliteTokenStore
 from hive.adapters.clock_system import SystemClock
 from hive.adapters.scanner_regex import DefaultSecretScanner
 from hive.adapters.sqlite_db import connect
@@ -69,7 +70,7 @@ class Container:
     (write→approve→recall, re-embed) without re-deriving the wiring."""
 
     def __init__(
-        self, *, cfg: Config, conn, index, store, utility_store, embedder, scanner,
+        self, *, cfg: Config, conn, index, store, utility_store, token_store, embedder, scanner,
         clock, gate, surfacer, recall,
         admission, install_planner, identity: ServerIdentity, started_ts: int,
     ) -> None:
@@ -78,6 +79,7 @@ class Container:
         self.index = index
         self.store = store                  # Boot.store — the entrypoint stamps markers here
         self.utility_store = utility_store
+        self.token_store = token_store      # Boot.token_store — the HTTP daemon's verify seam
         self.embedder = embedder
         self.scanner = scanner
         self.clock = clock
@@ -179,12 +181,15 @@ def build_container(cfg: Config, *, tenant_id: str, agent_id: str,
 
     // construction is torch-cheap: the heavy SentenceTransformer load + PCA fit are
     deferred to ``warm_embedder``; here we only open the DB, apply schema, and wire."""
-    conn = connect(cfg.db_path)
+    conn = connect(cfg.db_path, check_same_thread=False)   # shared across HTTP handler threads (lock-serialized)
     index = registry.build_index(cfg)
     # ORDER: utility store first (creates the `utility` table) so the episode store's
     # guardrail-2 fail-fast (isolation_frac > 0 requires that table) is satisfied.
     utility_store = SqliteUtilityStore(conn)
     store = SqliteEpisodeStore(conn, index=index, isolation_frac=cfg.utility.isolation_frac)
+    # Auth token store: owns its own `access_tokens` table; independent of the utility/episode
+    # ORDER constraint above (no cross-table dependency), so it can be built anywhere after conn.
+    token_store = SqliteTokenStore(conn)
     scanner = DefaultSecretScanner()
     clock = clock or SystemClock()
 
@@ -216,6 +221,7 @@ def build_container(cfg: Config, *, tenant_id: str, agent_id: str,
               tenant_id, cfg.db_path, cfg.geometry.d, cfg.index.backend, cfg.embedding.provider)
     return Container(
         cfg=cfg, conn=conn, index=index, store=store, utility_store=utility_store,
+        token_store=token_store,
         embedder=embedder, scanner=scanner, clock=clock, gate=gate, surfacer=surfacer,
         recall=recall, admission=admission, install_planner=install_planner,
         identity=identity, started_ts=int(clock.now()))

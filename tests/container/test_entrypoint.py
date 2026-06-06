@@ -30,6 +30,13 @@ class _MetaStore:
         return self.meta.get(key)
 
 
+class _TokenStore:
+    """Boot.token_store stub — the HTTP daemon's verify seam. Present so the fake conforms to
+    the widened Boot Protocol; the injected-serve paths never call it."""
+    def verify(self, token):
+        return None
+
+
 class _RecordingBoot:
     """Records the order of boot calls; `fail_on` makes one step raise; `embedder`
     controls the warm result (loaded True/False)."""
@@ -38,6 +45,7 @@ class _RecordingBoot:
         self._embedder = embedder if embedder is not None else _Embedder(loaded=True)
         self._fail_on = set(fail_on or ())
         self.store = store if store is not None else _MetaStore()
+        self.token_store = _TokenStore()
         self.server = object()
 
     def migrate(self) -> None:
@@ -215,3 +223,63 @@ def test_embedder_not_resident_exits_69():
     rc = E.main(env=_OK_ENV, build_boot=_boot_factory(boot), serve=_serve_recorder(calls))
     assert rc == E.EX_UNAVAILABLE
     assert "serve" not in calls
+
+
+# ── default HTTP serve path + port resolution (the §6 path injected-serve never exercises) ──
+def test_make_http_serve_wires_run_http_with_port_and_verify():
+    """_make_http_serve builds the default serve from the injectable run_http, the resolved
+    port, and the token store's verify CALLABLE (no SQLite class leaks into the transport).
+    Mutating verify=boot.token_store.verify makes this red."""
+    captured: dict = {}
+
+    def fake_run_http(server, *, host, port, verify, lock):
+        captured.update(server=server, host=host, port=port, verify=verify, lock=lock)
+
+    boot = _RecordingBoot([])
+    serve = E._make_http_serve(boot, 9999, run_http=fake_run_http)
+    sentinel = object()
+    serve(sentinel)
+    assert captured["server"] is sentinel
+    assert captured["host"] == "0.0.0.0"
+    assert captured["port"] == 9999
+    assert captured["verify"] == boot.token_store.verify   # the verify SEAM, not the class
+    assert captured["lock"] is not None
+
+
+def test_main_default_serve_is_http_with_default_port(monkeypatch):
+    """When `serve` is NOT injected, main() builds the HTTP daemon via _make_http_serve with
+    the resolved default port (8765) AND calls it — the boot completes, THEN serves."""
+    captured: dict = {}
+
+    def fake_make_http_serve(boot, port, **kw):
+        captured["port"] = port
+        return lambda s: captured.update(served=True)
+
+    monkeypatch.setattr(E, "_make_http_serve", fake_make_http_serve)
+    calls: list = []
+    rc = E.main(env=_OK_ENV, build_boot=_boot_factory(_RecordingBoot(calls)))   # serve NOT injected
+    assert rc == E.EX_OK
+    assert captured["port"] == 8765 and captured["served"] is True
+    assert calls == ["migrate", "build_index", "warm", "make_server"]           # full boot, then HTTP serve
+
+
+def test_main_default_serve_uses_env_http_port(monkeypatch):
+    captured: dict = {}
+    monkeypatch.setattr(E, "_make_http_serve",
+                        lambda boot, port, **kw: (captured.update(port=port), lambda s: None)[1])
+    rc = E.main(env={"HIVE_TENANT_ID": "acme", "HIVE_HTTP_PORT": "9000"},
+                build_boot=_boot_factory(_RecordingBoot([])))
+    assert rc == E.EX_OK
+    assert captured["port"] == 9000
+
+
+@pytest.mark.parametrize("bad", ["not-a-port", "0", "70000", "-1"])
+def test_invalid_http_port_exits_config(bad):
+    # a malformed/out-of-range HIVE_HTTP_PORT FAILS FAST (EX_CONFIG) before assembly —
+    # never raises out of the boot path. Resolved before build_boot ⇒ never assembled/served.
+    calls: list = []
+    env = {"HIVE_TENANT_ID": "acme", "HIVE_HTTP_PORT": bad}
+    rc = E.main(env=env, build_boot=_boot_factory(_RecordingBoot(calls)),
+                serve=_serve_recorder(calls))
+    assert rc == E.EX_CONFIG
+    assert calls == []
