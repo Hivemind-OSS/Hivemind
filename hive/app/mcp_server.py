@@ -206,7 +206,7 @@ class HiveMCPServer:
         self.started_ts = int(started_ts)
         self.db_path = db_path
         self.trailer_key = trailer_key
-        self._tool_handlers: dict[str, Callable[[dict], dict]] = {
+        self._tool_handlers: dict[str, Callable[[dict, ServerIdentity], dict]] = {
             "hive_write": self._handle_write,
             "hive_recall": self._handle_recall,
             "hive_fetch": self._handle_fetch,
@@ -215,7 +215,12 @@ class HiveMCPServer:
         }
 
     # ── protocol dispatch (PORT) ──────────────────────────────────────────────
-    def handle(self, req: MCPRequest) -> MCPResponse:
+    def handle(self, req: MCPRequest, *, identity: Optional[ServerIdentity] = None) -> MCPResponse:
+        # Per-request identity (the HTTP daemon's verified caller); ``None`` ⇒ the process
+        # ``ServerIdentity`` (the stdio path + every existing test pass ``req`` only, so they
+        # are byte-for-byte unchanged). The transport resolves WHO calls; attribution stays
+        # in the handlers (§9-D1).
+        ident = identity or self.identity
         if req.method == "initialize":
             return MCPResponse(id=req.id, result={
                 "protocolVersion": MCP_VERSION,
@@ -224,7 +229,7 @@ class HiveMCPServer:
         if req.method == "tools/list":
             return MCPResponse(id=req.id, result={"tools": TOOL_DEFINITIONS})
         if req.method == "tools/call":
-            return self._tools_call(req)
+            return self._tools_call(req, ident)
         if req.method == "ping":
             return MCPResponse(id=req.id, result={})
         return MCPResponse(id=req.id, error=_err(-32601, f"method not found: {req.method}"))
@@ -238,22 +243,22 @@ class HiveMCPServer:
         return MCPResponse(id=req_id, result={
             "content": [{"type": "text", "text": message}], "isError": True})
 
-    def _tools_call(self, req: MCPRequest) -> MCPResponse:
+    def _tools_call(self, req: MCPRequest, identity: ServerIdentity) -> MCPResponse:
         name = req.params.get("name")
         args = req.params.get("arguments", {}) or {}
         handler = self._tool_handlers.get(name)
         if handler is None:                                  # unknown tool → JSON-RPC error
             _log.warning("mcp.unknown_tool", extra={"event": "mcp.unknown_tool",
-                         "tool": name, "agent_id": self.identity.agent_id})
+                         "tool": name, "agent_id": identity.agent_id})
             return MCPResponse(id=req.id, error=_err(-32602, f"unknown tool: {name}"))
         # ── BELT 1: schema validation BEFORE any port is touched (RULE-2 mut #1) ──
         verr = _validate_args(name, args)
         if verr is not None:
             _log.info("mcp.schema_reject", extra={"event": "mcp.schema_reject",
-                      "tool": name, "reason": verr, "agent_id": self.identity.agent_id})
+                      "tool": name, "reason": verr, "agent_id": identity.agent_id})
             return self._tool_error(req.id, f"invalid arguments: {verr}")
         try:
-            content = handler(args)
+            content = handler(args, identity)        # per-request identity → the handler
             self._note_hook_seen(name)               # V4: best-effort, never fails the call
             return self._tool_result(req.id, content, is_error=False)
         except SecretRefused:
@@ -262,18 +267,22 @@ class HiveMCPServer:
             raise
         except Exception as e:                               # loop survives; stack → log, NOT agent
             _log.error("mcp.tool_raised", extra={"event": "mcp.tool_raised",
-                       "tool": name, "agent_id": self.identity.agent_id,
+                       "tool": name, "agent_id": identity.agent_id,
                        "error_type": type(e).__name__}, exc_info=True)
             return self._tool_error(req.id, f"error: {type(e).__name__}: {e}")
 
-    # ── tool handlers (args read permissively; _validate_args is the only guard) ──
-    def _handle_write(self, args: dict) -> dict:
+    # ── tool handlers: (args, identity); args read permissively, _validate_args is the only
+    #    required-field guard. ``identity`` is the per-request caller resolved by the transport
+    #    (HTTP daemon) or the process default (stdio) — attribution lives HERE (§9-D1). ──
+    def _handle_write(self, args: dict, identity: ServerIdentity) -> dict:
         text = args.get("text")
         approved_by = args.get("approved_by") or ""   # required by the schema belt
         source = args.get("source") or ""
         tags = args.get("tags") or []
         tags_str = ",".join(str(t) for t in tags) if isinstance(tags, list) else str(tags)
-        proposed_by = args.get("proposed_by") or self.identity.agent_id
+        # proposed_by is ALWAYS the authenticated caller — INV-2: no client field to assert it
+        # (``proposed_by`` is gone from the write schema). RULE-2 mut: read self.identity here.
+        proposed_by = identity.agent_id
         try:
             res = self.admission.write(text, approved_by=approved_by,
                                        proposed_by=proposed_by, source=source,
@@ -291,12 +300,12 @@ class HiveMCPServer:
             out["redacted_preview"] = _preview(res.scan.redacted_text)
         return out
 
-    def _handle_recall(self, args: dict) -> dict:
+    def _handle_recall(self, args: dict, identity: ServerIdentity) -> dict:
         query = args.get("query") or ""
         ctx = AgentContext(repo_remote=args.get("repo_remote") or "",
                            language=args.get("language") or "",
                            workflow=args.get("workflow") or "general")
-        result = self.recall.recall(query, agent_id=self.identity.agent_id, agent_ctx=ctx)
+        result = self.recall.recall(query, agent_id=identity.agent_id, agent_ctx=ctx)
         # ── BELT 2: approved-only re-filter, independent of the index (RULE-2 mut #2) ──
         hits: list[dict] = []
         for h in result.hits:
@@ -319,12 +328,12 @@ class HiveMCPServer:
             env["note"] = _abstain_note(result.state)
         return env
 
-    def _handle_fetch(self, args: dict) -> dict:
+    def _handle_fetch(self, args: dict, identity: ServerIdentity) -> dict:
         h = args.get("content_hash") or ""
         text = self.store.fetch(h)                           # clean miss → None, never raises
         return {"found": text is not None, "text": text}
 
-    def _handle_init(self, args: dict) -> dict:
+    def _handle_init(self, args: dict, identity: ServerIdentity) -> dict:
         repo_path = args.get("repo_path") or ""
         harness = args.get("harness") or "generic"
         rules_file = args.get("rules_file")
@@ -348,7 +357,7 @@ class HiveMCPServer:
                 # whole bundle in one round-trip. NOT written by the server (no repo FS).
                 "provenance_banner": provenance_banner(plan.harness, plan.recipe.resolved_tier)}
 
-    def _handle_health(self, args: dict) -> dict:
+    def _handle_health(self, args: dict, identity: ServerIdentity) -> dict:
         repo_path = args.get("repo_path")
         try:
             n_episodes, n_pending = self.store.counts()      # probe: store + (below) embedder
