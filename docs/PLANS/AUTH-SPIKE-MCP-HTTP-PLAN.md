@@ -1,6 +1,8 @@
 # Hivemind — Spike: MCP-over-HTTP live-client verification
 
-**Status:** DRAFT — verification spike (no production code; throwaway harness)
+**Status:** EXECUTED — **PASS (2026-06-06)**. A real Claude Code client (v2.1.167) round-tripped
+the §4 transport; both §1 criteria met. Result + evidence recorded in `AUTH-PLAN.md` §13;
+harness deleted. No §4 fallback branch was needed.
 **Date:** 2026-06-06
 **Resolves:** the single open gate in `AUTH-PLAN.md` §13 — does a **real Claude Code client**
 round-trip against the minimal `POST → application/json` (no SSE) server defined in

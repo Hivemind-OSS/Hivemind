@@ -1,11 +1,12 @@
 # Hivemind — Warm HTTP Daemon + Per-Device Token Auth
 
-**Status:** IMPLEMENTED (pending live-client spike) — chunks 1–6 (§7) are landed on branch
-`auth-http-daemon`, TDD-first and RULE-2 mutation-verified, full ex-embedder suite green. The
-design was **verified against the codebase + the MCP Streamable-HTTP spec** (see §13). The
-**one remaining gate before READY** is the live-client transport spike
-(`AUTH-SPIKE-MCP-HTTP-PLAN.md`): spec-compliance ≠ client-leniency, so a real Claude Code
-round-trip must be observed, not assumed.
+**Status:** READY — chunks 1–6 (§7) are landed on branch `auth-http-daemon`, TDD-first and
+RULE-2 mutation-verified, full ex-embedder suite green. The design was **verified against the
+codebase + the MCP Streamable-HTTP spec** (see §13). The **last gate — the live-client
+transport spike** (`AUTH-SPIKE-MCP-HTTP-PLAN.md`) — **PASSED on 2026-06-06**: a real Claude
+Code client round-tripped the §4 transport (`initialize`→`initialized` 202→`tools/list`→
+`tools/call`, result surfaced) and cleanly rejected a bad token (401, no hang), confirming
+client-leniency by observation rather than assumption.
 **Date:** 2026-06-06
 **Scope:** Add an always-on **warm HTTP daemon** (PID 1 serves HTTP instead of stdio) and
 **per-device bearer-token authentication**, so a small team's fleets of agents can
@@ -367,13 +368,26 @@ Closed during planning (RULE-1: assumptions → confirmed facts), with evidence:
 | Test harness tolerates a real loopback HTTP server | grep tests for sockets | **Yes.** `tests/container/test_container_live.py` already drives real Docker/sockets; an in-process `127.0.0.1:0` server is well within tolerance. |
 | Embedder under the global lock from worker threads | reasoned | **OK** — the lock serializes to one caller at a time; the model is loaded once at boot and only invoked under the lock (not benchmarked; throughput ceiling is the embed rate, per §12). |
 | **MCP Streamable-HTTP server obligations** | read the official spec | **Approach confirmed + 3 obligations surfaced.** POST→single `application/json` response is explicitly allowed (no SSE); `Mcp-Session-Id` is `MAY` (optional). Added to §4/§11: **GET→405**, **notification→202**, **`Origin` MUST-validate**. |
+| **Live-client transport (the READY gate)** | real Claude Code `claude -p` vs. a §4-exact throwaway stdlib harness | **PASS (2026-06-06).** Full lifecycle observed (`initialize`→200, `initialized`→**202**, `tools/list`→200, `tools/call`→200), result `echo: ping` surfaced; wrong token → `401`, clean client error, **no hang**. The client `GET`s for the optional SSE stream, accepts **405**, and proceeds on plain `application/json` — no SSE, no `Mcp-Session-Id` needed. See the gate-closed note below. |
 
-**Remaining gate (the only thing between this and READY):** the **live-client spike** — prove
-a real Claude Code round-trips against a minimal stdlib server implementing exactly the §4
-contract (`initialize` → `initialized` 202 → `tools/list` → `tools/call`, and a 401 on a bad
-token). Spec-compliance ≠ client-leniency; this must be observed, not assumed. Plan:
-**`docs/PLANS/AUTH-SPIKE-MCP-HTTP-PLAN.md`**. When that spike passes, flip this doc to
-**READY**.
+**Gate CLOSED — live-client spike PASSED (2026-06-06).** A real Claude Code client (v2.1.167,
+`claude -p` + `--mcp-config --strict-mcp-config`, model `haiku`) round-tripped a throwaway
+stdlib harness (`/tmp/hive-spike/spike_mcp_http.py`) implementing the §4 contract verbatim with
+canned responses. Evidence:
+- **Pre-flight (deterministic):** an 11/11 self-test of the §4 shapes
+  (200 `application/json` / 202 / 401 / 403 / 405); a RULE-2 mutation (auth guard → no-op)
+  flipped *only* the two 401 checks red, proving the negative path has teeth.
+- **PASS-1 (valid token):** server handshake log =
+  `initialize→200` · `notifications/initialized→202` · `GET→405` · `tools/list→200` ·
+  `tools/call→200`; the client surfaced the tool result `echo: ping` verbatim. The `GET→405`
+  line proves the client *probes* for the optional server→client SSE stream and **proceeds on
+  plain `application/json` when refused** — neither SSE nor `Mcp-Session-Id` is required.
+- **PASS-2 (wrong token):** a single `POST (auth) → 401` (no retry loop); the client reported
+  a clean "tool not available" failure and exited 0 in ~6 s — **no hang/timeout loop**.
+
+Spec-compliance is now confirmed by observed client-leniency. **None** of §4's fallback
+branches (SSE-wrap, `Mcp-Session-Id`, auth-retry) is needed. The harness was deleted on
+completion (the spike changed no production file). **This doc is READY.**
 
 ---
 
@@ -387,6 +401,9 @@ EX_CONFIG) so the boot path never raises; (c) the §4 endpoint contract is facto
 (`run_http` stays the thin blocking bind+serve wrapper). `ServerIdentity` is imported from
 `hive.app.mcp_server` (its actual home).
 
-**Next action:** run the §13 spike (`AUTH-SPIKE-MCP-HTTP-PLAN.md`) — a real Claude Code against
-the running daemon (`initialize` → `initialized` 202 → `tools/list` → `tools/call`, and a 401
-on a bad token). On green, flip this doc to **READY**.
+**Next action:** the §13 spike is **GREEN** (2026-06-06) and this doc is **READY**. Chunks 1–6
+are merged on `master` (the "branch `auth-http-daemon`" notes above are historical), so the
+warm HTTP + per-device-auth daemon is ready to deploy. Remaining follow-up: spot-check one
+non-Claude-Code MCP client (Cursor / Codex / etc.) against the live daemon per the §5 scope
+note — they are MCP-spec clients served by the same endpoint, but client-leniency was only
+*observed* for Claude Code.
