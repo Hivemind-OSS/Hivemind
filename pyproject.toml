@@ -1,0 +1,24 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "hive"
+version = "0.0.1"
+description = "Hivemind v-min — single-tenant episodic recall store for an agent fleet (MCP server, hive_* tools)"
+requires-python = ">=3.11"
+dependencies = [
+    "numpy>=1.24",
+]
+
+[project.optional-dependencies]
+# Real embedder adapter (Phase 1); the pure domain + slice need none of these.
+embed = ["sentence-transformers>=2.2"]
+dev = ["pytest>=7"]
+
+[tool.setuptools.packages.find]
+include = ["hive*", "tests*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"

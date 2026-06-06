@@ -1,0 +1,74 @@
+# Keep the build context minimal AND secret-free: only pyproject.toml + hive/ become
+# layers (the Dockerfile COPYs exactly those). Everything below is excluded so a stray
+# credential, the git history, a local venv, or the test/doc trees can NEVER be baked into
+# an image layer — the §9 "no secret in any layer" floor made structural, not hoped-for.
+# Enforced by tests/container/test_dockerignore_no_secret.py.
+
+# version control + CI
+.git
+.git/**
+.github
+.gitignore
+
+# python build/runtime cruft
+__pycache__/
+**/__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/
+.venv/
+venv/
+env/
+.mypy_cache/
+.pytest_cache/
+.ruff_cache/
+
+# the test + docs + benchmark trees are NOT runtime artifacts
+tests/
+docs/
+benchmarks/
+hive/research/
+
+# secrets / local env — never in the context, never in a layer. Each pattern has a
+# top-level form AND a **/ form: a bare `*.key` / `.env` matches only the context ROOT, so
+# without the recursive sibling a credential nested in hive/ (COPY hive/ ./hive/) would slip
+# into a layer. Depth-agnostic is the whole point of the §9 floor.
+.env
+.env.*
+*.pem
+*.key
+*.p12
+*.pfx
+id_rsa*
+*.crt
+secrets/
+.secrets/
+*.secret
+**/.env
+**/.env.*
+**/*.pem
+**/*.key
+**/*.p12
+**/*.pfx
+**/id_rsa*
+**/*.crt
+**/secrets/
+**/.secrets/
+**/*.secret
+
+# operator/runtime state that must come from the named volume, not a layer
+data/
+*.db
+*.db-wal
+*.db-shm
+**/*.db
+**/*.db-wal
+**/*.db-shm
+
+# editor / OS noise
+.DS_Store
+.idea/
+.vscode/
+*.swp
