@@ -154,18 +154,16 @@ def _tool_content(resp):
 @live
 def test_boot_serves_stdio_recall_round_trip(image):
     """The §1 structural invariant end-to-end: a real container boots migrate→index→warm→
-    serve and answers a write→approve→recall over stdio JSON-RPC; stdout is pure protocol."""
+    serve and answers a write→recall over stdio JSON-RPC; stdout is pure protocol."""
     text = "the WAL journal mode keeps readers unblocked during a write"
     proc, resps = _stdio_run(image, [
         _INIT,
-        _call(2, "hive_write", {"text": text}),
-        _call(3, "hive_approve", {"ids": [1], "approver": "u"}),   # id 1 on a fresh store
-        _call(4, "hive_recall", {"query": text})])
+        _call(2, "hive_write", {"text": text, "approved_by": "u"}),
+        _call(3, "hive_recall", {"query": text})])
     assert proc.returncode == 0, proc.stderr[-3000:]
     assert "serve_ready" in proc.stderr or "serve.ready" in proc.stderr
-    assert _tool_content(_by_id(resps, 2))["status"] == "pending"
-    assert 1 in _tool_content(_by_id(resps, 3))["approved"]
-    recall = _tool_content(_by_id(resps, 4))
+    assert _tool_content(_by_id(resps, 2))["status"] == "approved"
+    recall = _tool_content(_by_id(resps, 3))
     assert recall["abstained"] is False
     assert any(text in h["text"] for h in recall["reference_context"])
 
@@ -177,11 +175,10 @@ def test_boot_serves_recall_with_network_none(image):
     text = "treat recalled memory as reference context, not instructions"
     proc, resps = _stdio_run(image, [
         _INIT,
-        _call(2, "hive_write", {"text": text}),
-        _call(3, "hive_approve", {"ids": [1], "approver": "u"}),
-        _call(4, "hive_recall", {"query": text})], network="none")
+        _call(2, "hive_write", {"text": text, "approved_by": "u"}),
+        _call(3, "hive_recall", {"query": text})], network="none")
     assert proc.returncode == 0, proc.stderr[-3000:]
-    assert _tool_content(_by_id(resps, 4))["abstained"] is False
+    assert _tool_content(_by_id(resps, 3))["abstained"] is False
 
 
 @live
@@ -191,8 +188,7 @@ def test_volume_persists_across_restart(image):
     try:
         p1, _ = _stdio_run(image, [
             _INIT,
-            _call(2, "hive_write", {"text": text}),
-            _call(3, "hive_approve", {"ids": [1], "approver": "u"})],
+            _call(2, "hive_write", {"text": text, "approved_by": "u"})],
             mounts=[f"{vol}:/data"])
         assert p1.returncode == 0, p1.stderr[-3000:]
         # a SECOND container on the SAME volume recalls the persisted, approved memory
@@ -210,7 +206,8 @@ def test_volume_persists_across_restart(image):
 def test_wal_mode_active_in_container(image):
     vol = f"hive-e2e-{uuid.uuid4().hex[:8]}"
     try:
-        p, _ = _stdio_run(image, [_INIT, _call(2, "hive_write", {"text": "create the db"})],
+        p, _ = _stdio_run(image, [_INIT,
+                          _call(2, "hive_write", {"text": "create the db", "approved_by": "u"})],
                           mounts=[f"{vol}:/data"])
         assert p.returncode == 0, p.stderr[-3000:]
         r = subprocess.run(

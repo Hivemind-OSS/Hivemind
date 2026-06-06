@@ -1,9 +1,10 @@
 """M11 — the `hive_health` snapshot: cheap, poll-safe, and NEVER-raising.
 
-`health(cfg, store, embedder, producer)` fails SOFT to `ok=False` on ANY probe failure
-(store / embedder / producer) so a container HEALTHCHECK can never itself crash. Includes
-`embedder_loaded` (present + boolean; False until the model is resident — a container is not
-healthy before the model is in RAM) and `index_authoritative` (the §4.3 property).
+`health(cfg, store, embedder)` fails SOFT to `ok=False` on ANY probe failure (store /
+embedder) so a container HEALTHCHECK can never itself crash. Includes `embedder_loaded`
+(present + boolean; False until the model is resident — a container is not healthy before
+the model is in RAM) and `index_authoritative` (the §4.3 property). The producer-tick /
+watch-repos fields were removed with the producer subsystem.
 """
 from __future__ import annotations
 
@@ -29,8 +30,6 @@ class HealthSnapshot:
     index_authoritative: bool
     episodes_approved: int
     episodes_pending: int
-    producer_watch_repos: int
-    last_producer_tick_ts: Optional[int]
     error: Optional[str] = None
     # M07 additive link surfacing. ``linked`` is None UNTIL a repo_path is probed; in
     # that state as_dict() OMITS both keys so the no-repo_path payload is byte-identical
@@ -46,7 +45,7 @@ class HealthSnapshot:
         return d
 
 
-def health(cfg: "Config", store: Any, embedder: Any, producer: Any, *,
+def health(cfg: "Config", store: Any, embedder: Any, *,
            repo_path: Optional[str] = None,
            link_status: Optional[Callable[[str], tuple[bool, Optional[dict]]]] = None,
            ) -> HealthSnapshot:
@@ -61,14 +60,12 @@ def health(cfg: "Config", store: Any, embedder: Any, producer: Any, *,
     tenant_id = _safe(lambda: cfg.runtime.tenant_id, "default")
     index_authoritative = _safe(
         lambda: cfg.index.backend in _AUTHORITATIVE_BACKENDS, False)
-    watch_repos = _safe(lambda: len(tuple(cfg.producer.watch_repos)), 0)
 
     error: Optional[str] = None
     try:
         embedder_loaded = bool(getattr(embedder, "loaded", False))
         w_version = int(getattr(embedder, "w_version", 0))
         approved, pending = store.counts()
-        last_tick = _parse_tick(store.meta_get("last_producer_tick_ts"))
         ok = True
     except Exception as exc:                       # noqa: BLE001 — health NEVER raises
         # type name only; a probe error message could in principle echo a path/value
@@ -77,11 +74,7 @@ def health(cfg: "Config", store: Any, embedder: Any, producer: Any, *,
         embedder_loaded = False
         w_version = 0
         approved = pending = 0
-        last_tick = None
         ok = False
-
-    if watch_repos == 0:
-        _log.warning("health.producer_idle: no watch_repos (loop starved, not broken)")
 
     linked: Optional[bool] = None
     link: Optional[dict] = None
@@ -105,24 +98,10 @@ def health(cfg: "Config", store: Any, embedder: Any, producer: Any, *,
         index_authoritative=bool(index_authoritative),
         episodes_approved=int(approved),
         episodes_pending=int(pending),
-        producer_watch_repos=int(watch_repos),
-        last_producer_tick_ts=last_tick,
         error=error,
         linked=linked,
         link=link,
     )
-
-
-def _parse_tick(raw: Any) -> Optional[int]:
-    """A malformed meta tick is a benign format issue, NOT a DB outage — never let it flip
-    the whole snapshot to ok=False; degrade to None instead."""
-    if raw is None:
-        return None
-    try:
-        return int(raw)
-    except (TypeError, ValueError):
-        _log.warning("health.bad_tick value_type=%s ignored", type(raw).__name__)
-        return None
 
 
 def _safe(fn, default):

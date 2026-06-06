@@ -1,12 +1,13 @@
 """P1.5 — M04 RecallPipeline: the never-hallucinate enforcement point.
 
 Full functional coverage against fakes only (hash-speed, no SQLite/network):
-happy path, every §6 failure mode (embedder raise / index raise / empty / ledger
-raise / non-authoritative), every §2 invariant (abstain⟹empty, abstain-no-resurrect
-STRUCTURAL, EMPTY vs ABSTAIN distinct, entropy∈[0,1], unique trace, exposure
-exactly-once-on-CONFIDENT / never-otherwise, top_n size-only, approved-only honest
-half), the D1 per-hit recall_margin value, the A2 family spy + cross-family
-isolation, and the swap-seam (a 2nd index adapter ⟹ identical result).
+happy path, every §6 failure mode (embedder raise / index raise / empty /
+non-authoritative), every §2 invariant (abstain⟹empty, abstain-no-resurrect
+STRUCTURAL, EMPTY vs ABSTAIN distinct, entropy∈[0,1], unique trace, top_n
+size-only, approved-only honest half), the D1 per-hit recall_margin value (a pure
+unit pin), the A2 family spy + cross-family isolation, and the swap-seam (a 2nd index
+adapter ⟹ identical result). The move-#6 exposure ledger was removed with the
+producer, so recall no longer records what it surfaced — those tests are gone.
 """
 from __future__ import annotations
 
@@ -22,7 +23,7 @@ from hive.domain.recall import (
 )
 from hive.domain.surfacer import UtilitySurfacer
 from tests.fakes._fakes import (
-    FakeEpisodeReader, FakeExposureLedger, FakeIndex, FakeUtilityStore,
+    FakeEpisodeReader, FakeIndex, FakeUtilityStore,
 )
 
 D = 16
@@ -105,12 +106,7 @@ class _SpyUtil(FakeUtilityStore):
         return super().utility_map(family_scope, confident_only=confident_only)
 
 
-class _BoomLedger:
-    def record_exposure(self, trace_id, rows, ts):
-        raise RuntimeError("ledger boom")
-
-
-def _pipe(*, index, reader, query_vec, ledger=None, util=None, surfacer=None,
+def _pipe(*, index, reader, query_vec, util=None, surfacer=None,
           recall_top_n=10, h=0.5, beta=16.0, embedder=None):
     return RecallPipeline(
         embedder=embedder or _StubProvider(query_vec),
@@ -119,15 +115,13 @@ def _pipe(*, index, reader, query_vec, ledger=None, util=None, surfacer=None,
         surfacer=surfacer or UtilitySurfacer(
             enabled=False, epsilon_explore=0.1, f_min=0.5, f_max=1.5,
             rng=random.Random(0)),
-        ledger=ledger if ledger is not None else FakeExposureLedger(),
         reader=reader,
         utility_store=util or FakeUtilityStore(),
         recall_top_n=recall_top_n,
-        now=lambda: 1000,
     )
 
 
-def _confident_setup(top_n=10, ledger=None, util=None, surfacer=None):
+def _confident_setup(top_n=10, util=None, surfacer=None):
     """gold(cos1) + two weak distractors ⟹ peaked ⟹ CONFIDENT."""
     index, reader = FakeIndex(), FakeEpisodeReader()
     for eid, vec, text in ((1, _e(0), "the gold memory"),
@@ -135,7 +129,7 @@ def _confident_setup(top_n=10, ledger=None, util=None, surfacer=None):
                            (3, _cos_vec(0.05), "distractor b")):
         index.add(eid, vec)
         reader.add(eid, text, weight=1.0)
-    return _pipe(index=index, reader=reader, query_vec=_e(0), ledger=ledger,
+    return _pipe(index=index, reader=reader, query_vec=_e(0),
                  util=util, surfacer=surfacer, recall_top_n=top_n)
 
 
@@ -184,24 +178,22 @@ def test_abstain_returns_empty_hits():
 
 
 def test_abstain_no_resurrect():
-    # ★ suppress ⟹ hits empty AND record_exposure NEVER called (no fallback rescue)
-    led = FakeExposureLedger()
+    # ★ suppress ⟹ hits empty: the suppress branch returns before resolve, and a
+    # non-CONFIDENT RecallResult carrying hits is structurally unconstructable — no
+    # fallback path can repopulate a refused query.
     index, reader = FakeIndex(), FakeEpisodeReader()
     for eid in (1, 2, 3, 4):
         index.add(eid, _cos_vec(0.0))
         reader.add(eid, f"t{eid}")
-    r = _pipe(index=index, reader=reader, query_vec=_e(0), ledger=led).recall(
+    r = _pipe(index=index, reader=reader, query_vec=_e(0)).recall(
         "q", agent_id="A", agent_ctx=CTX)
     assert r.state == ABSTAIN and r.hits == ()
-    assert led.calls == []   # nothing injected ⇒ nothing credited
 
 
 def test_empty_index_is_empty_no_data():
-    led = FakeExposureLedger()
-    r = _pipe(index=FakeIndex(), reader=FakeEpisodeReader(), query_vec=_e(0),
-              ledger=led).recall("q", agent_id="A", agent_ctx=CTX)
+    r = _pipe(index=FakeIndex(), reader=FakeEpisodeReader(), query_vec=_e(0)).recall(
+        "q", agent_id="A", agent_ctx=CTX)
     assert r.state == EMPTY_NO_DATA and r.hits == () and r.entropy_norm == 0.0
-    assert led.calls == []
 
 
 def test_empty_and_abstain_are_distinct_states():
@@ -218,13 +210,11 @@ def test_recall_has_no_index_mutation_verb():
 
 
 def test_authoritative_index_required():
-    led = FakeExposureLedger()
     idx = _NonAuthIndex()
     idx.add(1, _e(0))
-    r = _pipe(index=idx, reader=FakeEpisodeReader(), query_vec=_e(0),
-              ledger=led).recall("q", agent_id="A", agent_ctx=CTX)
+    r = _pipe(index=idx, reader=FakeEpisodeReader(), query_vec=_e(0)).recall(
+        "q", agent_id="A", agent_ctx=CTX)
     assert r.state == EMPTY_NO_DATA and r.hits == ()   # never silently flips to ANN
-    assert led.calls == []
 
 
 # ── trace id ──────────────────────────────────────────────────────────────────
@@ -241,39 +231,6 @@ def test_trace_id_emitted_and_unique():
         "q", agent_id="A", agent_ctx=CTX).trace_id
 
 
-# ── exposure: exactly-once on CONFIDENT, with the exact D1 margins ────────────
-def test_exposure_ledger_written_with_margin():
-    led = FakeExposureLedger()
-    p = _confident_setup(ledger=led)
-    r = p.recall("q", agent_id="A", agent_ctx=CTX)
-    assert r.state == CONFIDENT
-    assert len(led.calls) == 1
-    trace, rows, ts = led.calls[0]
-    assert trace == r.trace_id and ts == 1000
-    # the exact per-hit margins = softmax-mass gaps over the FULL candidate set
-    sims = [1.0, 0.1, 0.05]   # gold, distractor a, distractor b (search order)
-    want = _recall_margins(_softmax_mass_from_sims(sims, 16.0))
-    assert [eid for eid, _ in rows] == [1, 2, 3]
-    assert [m for _, m in rows] == pytest.approx(want)
-    # rows[0] margin == the gate's top_margin (D1 i=0 case)
-    assert rows[0][1] == pytest.approx(r.top_margin)
-
-
-def test_exposure_not_written_on_abstain():
-    led = FakeExposureLedger()
-    index, reader = FakeIndex(), FakeEpisodeReader()
-    for eid in (1, 2, 3, 4):
-        index.add(eid, _cos_vec(0.0)); reader.add(eid, f"t{eid}")
-    _pipe(index=index, reader=reader, query_vec=_e(0), ledger=led).recall(
-        "q", agent_id="A", agent_ctx=CTX)
-    assert led.calls == []   # the move-#6 capture gate (mutation target)
-
-
-def test_ledger_failure_never_breaks_recall():
-    r = _confident_setup(ledger=_BoomLedger()).recall("q", agent_id="A", agent_ctx=CTX)
-    assert r.state == CONFIDENT and r.hits   # telemetry must not endanger the hot path
-
-
 # ── top_n is hits-length only, never the abstain decision ─────────────────────
 def test_recall_top_n_size_only():
     r1 = _confident_setup(top_n=1).recall("q", agent_id="A", agent_ctx=CTX)
@@ -285,22 +242,19 @@ def test_recall_top_n_size_only():
 
 # ── fail-closed on every internal raise ───────────────────────────────────────
 def test_embedder_failure_is_empty_no_data():
-    led = FakeExposureLedger()
     idx, rdr = FakeIndex(), FakeEpisodeReader()
     idx.add(1, _e(0)); rdr.add(1, "gold")
-    r = _pipe(index=idx, reader=rdr, query_vec=_e(0), ledger=led,
+    r = _pipe(index=idx, reader=rdr, query_vec=_e(0),
               embedder=_RaisingProvider(_e(0))).recall("q", agent_id="A", agent_ctx=CTX)
     assert r.state == EMPTY_NO_DATA and r.hits == ()   # never raises into the caller
-    assert led.calls == []
 
 
 def test_index_search_raise_is_empty_no_data():
-    led = FakeExposureLedger()
     idx = _RaisingSearchIndex()
     idx.add(1, _e(0))
-    r = _pipe(index=idx, reader=FakeEpisodeReader(), query_vec=_e(0),
-              ledger=led).recall("q", agent_id="A", agent_ctx=CTX)
-    assert r.state == EMPTY_NO_DATA and led.calls == []
+    r = _pipe(index=idx, reader=FakeEpisodeReader(), query_vec=_e(0)).recall(
+        "q", agent_id="A", agent_ctx=CTX)
+    assert r.state == EMPTY_NO_DATA
 
 
 # ── swap seam: a second RecallIndex adapter ⟹ identical (non-trace) result ────
@@ -374,37 +328,31 @@ def test_single_candidate_passes_to_confident_with_that_hit():
 def test_malformed_search_result_is_empty_no_data():
     # #D: a contract-violating adapter (NULL cosine / wrong arity) must fail-closed,
     # not raise into the caller. The sims float-coercion must be inside the fail-closed try.
-    led = FakeExposureLedger()
-
     class _BadSimIndex(FakeIndex):
         def search(self, query, k):
             return [(1, None)]   # NULL distance from a misbehaving pgvector/Qdrant adapter
 
     idx = _BadSimIndex()
     idx.add(1, _e(0))
-    r = _pipe(index=idx, reader=FakeEpisodeReader(), query_vec=_e(0), ledger=led).recall(
+    r = _pipe(index=idx, reader=FakeEpisodeReader(), query_vec=_e(0)).recall(
         "q", agent_id="A", agent_ctx=CTX)
-    assert r.state == EMPTY_NO_DATA and led.calls == []
+    assert r.state == EMPTY_NO_DATA
 
 
 def test_raising_surfacer_is_empty_no_data():
     # #C: a raising surfacer (a Phase-2 collaborator) must degrade to EMPTY, not raise.
-    led = FakeExposureLedger()
-
     class _BoomSurfacer:
         def order(self, scored, utility_map, *, family_scope):
             raise RuntimeError("surfacer boom")
 
-    r = _confident_setup(ledger=led, surfacer=_BoomSurfacer()).recall(
+    r = _confident_setup(surfacer=_BoomSurfacer()).recall(
         "q", agent_id="A", agent_ctx=CTX)
-    assert r.state == EMPTY_NO_DATA and r.hits == () and led.calls == []
+    assert r.state == EMPTY_NO_DATA and r.hits == ()
 
 
 def test_nan_sim_index_never_confident():
     # #A end-to-end: an adapter emitting a NaN cosine must NOT yield CONFIDENT, and no
     # RecallHit carrying sim=NaN may surface (the gate fail-closes on the undecidable set).
-    led = FakeExposureLedger()
-
     class _NaNIndex(FakeIndex):
         def search(self, query, k):
             return [(1, 1.0), (2, float("nan"))]
@@ -414,29 +362,10 @@ def test_nan_sim_index_never_confident():
     idx.add(2, _e(1))
     reader = FakeEpisodeReader()
     reader.add(1, "real gold"); reader.add(2, "corrupted")   # resolvable ⇒ would surface but for the gate
-    r = _pipe(index=idx, reader=reader, query_vec=_e(0), ledger=led).recall(
+    r = _pipe(index=idx, reader=reader, query_vec=_e(0)).recall(
         "q", agent_id="A", agent_ctx=CTX)
-    assert r.state != CONFIDENT and led.calls == []
+    assert r.state != CONFIDENT
     assert all(h.sim == h.sim for h in r.hits)   # no NaN sim surfaced (NaN != NaN)
-
-
-def test_last_returned_hit_margin_is_own_mass_under_truncation():
-    # #B (HIGH): D1 — the LAST RETURNED hit's "next" mass is 0 ⇒ its margin is its OWN
-    # mass, even when recall_top_n truncates the candidate set. The gap-to-the-next-
-    # (non-returned)-candidate is the credit-split corruption this pins.
-    index, reader = FakeIndex(), FakeEpisodeReader()
-    for eid, c, t in ((1, 0.9, "g"), (2, 0.3, "d1"), (3, 0.1, "d2")):
-        index.add(eid, _cos_vec(c)); reader.add(eid, t)
-    led = FakeExposureLedger()
-    r = _pipe(index=index, reader=reader, query_vec=_e(0), ledger=led,
-              recall_top_n=2, beta=8.0).recall("q", agent_id="A", agent_ctx=CTX)
-    assert r.state == CONFIDENT and len(r.hits) == 2
-    rows = led.calls[0][1]
-    masses = _softmax_mass_from_sims([0.9, 0.3, 0.1], 8.0)
-    assert [eid for eid, _ in rows] == [1, 2]
-    assert rows[0][1] == pytest.approx(masses[0] - masses[1])   # first: gap to next
-    assert rows[1][1] == pytest.approx(masses[1])               # LAST returned: OWN mass (D1)
-    assert rows[0][1] == pytest.approx(r.top_margin)            # i=0 == gate top_margin
 
 
 def test_confident_result_must_carry_hits():
@@ -448,9 +377,8 @@ def test_confident_result_must_carry_hits():
 
 
 def test_gate_passes_but_all_resolve_away_is_empty_no_data():
-    led = FakeExposureLedger()
     idx = FakeIndex()
     idx.add(7, _e(0))                       # gate will pass (single peaked candidate)
-    r = _pipe(index=idx, reader=FakeEpisodeReader(), query_vec=_e(0),
-              ledger=led).recall("q", agent_id="A", agent_ctx=CTX)
-    assert r.state == EMPTY_NO_DATA and r.hits == () and led.calls == []  # fail-closed
+    r = _pipe(index=idx, reader=FakeEpisodeReader(), query_vec=_e(0)).recall(
+        "q", agent_id="A", agent_ctx=CTX)
+    assert r.state == EMPTY_NO_DATA and r.hits == ()  # fail-closed

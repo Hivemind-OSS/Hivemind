@@ -15,7 +15,7 @@ from typing import (
 import numpy as np  # permitted in domain (not in the forbidden I/O set)
 
 from hive.domain.models import (
-    CommitFact, Episode, RecallWindow, SettledExposure, SourcePoll, UtilityPosterior,
+    Episode, SettledExposure, UtilityPosterior,
 )
 
 
@@ -54,16 +54,6 @@ class MutableVectorIndex(VectorIndex, Protocol):
 
 
 @runtime_checkable
-class ExposureLedger(Protocol):
-    """Recall-side capture: which approved episodes a confident recall injected,
-    with each hit's recall_margin (the credit-split weight)."""
-    def record_exposure(
-        self, trace_id: str, rows: Sequence[tuple[int, float]], ts: int
-    ) -> None: ...
-    def exposed_for(self, trace_id: str) -> list[tuple[int, float]]: ...
-
-
-@runtime_checkable
 class EpisodeReader(Protocol):
     """Narrow read seam the RecallPipeline uses to resolve a search hit (eid, sim)
     to its full candidate — the ``weight`` (surfacer base multiplier) and ``text``
@@ -74,26 +64,12 @@ class EpisodeReader(Protocol):
 
 @runtime_checkable
 class EpisodeStore(Protocol):
-    """The durable single-writer store. Phase-0 slice scope = the ledger group
-    (exposure + task_outcomes + meta watermark), all in ONE WAL DB [A7]. Episode
-    CRUD / admission are added in Phase 1."""
+    """The durable single-writer store. The trace↔outcome state-machine methods
+    (exposure + task_outcomes) were removed with the producer; the dormant tables
+    survive but nothing drives them. The slice contract is now the transaction lane
+    + the meta kv; episode CRUD / admission live on the concrete adapter (Phase 1)."""
     def transaction(self): ...                              # contextmanager: the single-writer tick lane
-    # exposure (also satisfies ExposureLedger)
-    def record_exposure(
-        self, trace_id: str, rows: Sequence[tuple[int, float]], ts: int
-    ) -> None: ...
-    def exposed_for(self, trace_id: str) -> list[tuple[int, float]]: ...
-    def set_task_ref(self, trace_id: str, task_ref: str) -> None: ...
-    def recall_window(self, min_ts: int): ...               # → RecallWindow of un-linked recent traces
-    # task_outcomes state machine
-    def link_task(self, row: "OutcomeRowLike") -> None: ...
-    def due_settlements(self, now: int) -> list[str]: ...    # task_refs ripe to settle
-    def get_outcome(self, task_ref: str, trace_id: str) -> Optional["OutcomeRowLike"]: ...
-    def outcomes_for_task(self, task_ref: str) -> list["OutcomeRowLike"]: ...
-    def all_live_outcomes(self) -> list["OutcomeRowLike"]: ...
-    def settle(self, task_ref: str, trace_id: str, reward: float) -> None: ...
-    def clawback(self, task_ref: str, trace_id: str, reward: float) -> None: ...
-    # meta watermark kv
+    # meta kv (watermark / link records / readiness markers)
     def meta_get(self, key: str) -> Optional[str]: ...
     def meta_set(self, key: str, value: str) -> None: ...
 
@@ -120,13 +96,6 @@ class UtilityStore(Protocol):
 
 
 @runtime_checkable
-class OutcomeSource(Protocol):
-    """Yields normalized GitFacts. The default is in-process git; a sidecar/webhook
-    adapter implements the same port [D6]. All git I/O is sealed here."""
-    def poll(self) -> SourcePoll: ...
-
-
-@runtime_checkable
 class SecretScanner(Protocol):
     """Deterministic credential scan run BEFORE staging (refuse/redact) [§9]."""
     def scan(self, text: str) -> "ScanVerdictLike": ...
@@ -140,13 +109,13 @@ class InstallPlanner(Protocol):
     M06 depends only on this port; the concrete InstallPlanner adapter is M07 [B10]."""
     def plan(self, repo_path: str, harness: str,
              rules_file: "Optional[str]" = None) -> "InstallPlanLike": ...
-    def confirm(self, repo_path: str, confirm_hash: bytes) -> dict: ...
+    def confirm(self, repo_path: str, confirm_hash: bytes,
+                harness: str = "generic") -> dict: ...
 
 
 # ── structural type aliases (forward refs to carriers defined in sibling modules)
 # These are typing-only names; the concrete classes live in models.py /
 # attribution.py. Using strings keeps ports.py free of import cycles.
-OutcomeRowLike = "hive.domain.models.OutcomeRow"
 CreditDeltaLike = "hive.domain.attribution.CreditDelta"
 ScanVerdictLike = "hive.domain.secret_scan.ScanVerdict"
 InstallPlanLike = "hive.domain.models.InstallPlan"

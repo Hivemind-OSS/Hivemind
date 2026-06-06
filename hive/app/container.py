@@ -3,11 +3,11 @@ behind the Phase-0/Phase-1 validated ports into ONE ``Container`` the M12 entryp
 as a ``Boot``.
 
 This is the single swap-point switch (hexagonal): the registry selects the embedder /
-index / producer adapters by config key; this root constructs the rest and threads the
-runtime deps. It owns the assembly ORDER (the one wiring fact tests can't get from the
-adapters) and the Phase-1 policy: **utility is OBSERVED-NOT-APPLIED** —
-``surfacer.enabled=False`` (byte-identical recall passthrough). Posteriors accrue from the
-producer's verifiable clawback-settled stream; ranking does NOT move until a Phase-2 KEEP.
+index adapters by config key; this root constructs the rest and threads the runtime deps.
+It owns the assembly ORDER (the one wiring fact tests can't get from the adapters) and the
+Phase-1 policy: **utility is OBSERVED-NOT-APPLIED** — ``surfacer.enabled=False``
+(byte-identical recall passthrough). The credit-producer that fed the posteriors was
+removed; the utility/exposure tables remain DORMANT (observed, never applied to ranking).
 
 The ``Boot`` contract (consumed by ``hive.tools.entrypoint``):
     store               — the durable store (the entrypoint stamps readiness markers on it)
@@ -38,10 +38,6 @@ from hive.app.health import health
 from hive.app.mcp_server import HiveMCPServer, ServerIdentity
 from hive.app.onboard import InstallPlanner
 from hive.domain.admission import AdmissionService
-from hive.domain.attribution import Attributor
-from hive.domain.join import OutcomeJoiner
-from hive.domain.models import SourcePoll
-from hive.domain.produce import OutcomeProducer
 from hive.domain.recall import RecallPipeline
 from hive.domain.surfacer import UtilitySurfacer
 
@@ -49,18 +45,10 @@ _log = logging.getLogger("hive.container")
 
 _MEMORY_DB = ":memory:"
 
-# The §11 settlement schedule + reward magnitudes. These are pure credit POLICY (not part
-# of M11's ProducerConfig surface in v-min); pinned here as documented defaults — the one
-# place they enter the wiring, single-sourced so the query/credit families stay comparable.
-_SETTLE_DAYS = 7
-_PROVISIONAL_REWARD = 1.0
-_CLAWBACK_REWARD = -1.0
-
-# Deterministic RNG seeds: the surfacer ε-explore and the joiner association-jitter are
-# seeded from fixed constants so a container build is reproducible (a test can assert a
-# stable recall order; the Phase-1 surfacer is inert anyway).
+# Deterministic RNG seed: the surfacer ε-explore is seeded from a fixed constant so a
+# container build is reproducible (a test can assert a stable recall order; the Phase-1
+# surfacer is inert anyway).
 _SURFACER_SEED = 1
-_JOINER_SEED = 2
 
 # Persisted PCA geometry (so a restart reuses the SAME basis ⇒ byte-stable recall). Stored
 # in the episode store's meta kv under the strict-prefix discipline.
@@ -75,26 +63,14 @@ _REQUIRED_TABLES = frozenset({
 })
 
 
-class _EmptySource:
-    """The ``OutcomeSource`` for the no-``watch_repos`` idle state: polls OK with zero
-    commits, so the producer tick is a clean no-op (the loop is idle, not broken — the
-    health probe already WARNs that crediting is starved without watched repos)."""
-
-    def __init__(self, repo_remote: str = "") -> None:
-        self._repo_remote = str(repo_remote)
-
-    def poll(self) -> SourcePoll:
-        return SourcePoll(repo_remote=self._repo_remote, ok=True)
-
-
 class Container:
     """The assembled, wired system. Implements the ``Boot`` protocol the entrypoint drives;
     also exposes every domain object so acceptance/e2e tests drive the true end-to-end path
-    (write→approve→recall, producer tick, re-embed) without re-deriving the wiring."""
+    (write→approve→recall, re-embed) without re-deriving the wiring."""
 
     def __init__(
         self, *, cfg: Config, conn, index, store, utility_store, embedder, scanner,
-        clock, gate, surfacer, attributor, joiner, source, producer, recall,
+        clock, gate, surfacer, recall,
         admission, install_planner, identity: ServerIdentity, started_ts: int,
     ) -> None:
         self.cfg = cfg
@@ -107,10 +83,6 @@ class Container:
         self.clock = clock
         self.gate = gate
         self.surfacer = surfacer
-        self.attributor = attributor
-        self.joiner = joiner
-        self.source = source
-        self.producer = producer
         self.recall = recall
         self.admission = admission
         self.install_planner = install_planner
@@ -169,7 +141,7 @@ class Container:
 
     # ── convenience surfaces (health probe + clean shutdown) ──────────────────────
     def health(self, *, repo_path: Optional[str] = None):
-        return health(self.cfg, self.store, self.embedder, self.producer,
+        return health(self.cfg, self.store, self.embedder,
                       repo_path=repo_path,
                       link_status=getattr(self.install_planner, "link_status", None))
 
@@ -198,22 +170,11 @@ def _load_head_bytes(store, cfg: Config) -> Optional[bytes]:
         return None
 
 
-def _build_source(cfg: Config):
-    """The real ``OutcomeSource``: a GitCliSource over the first watched repo (multi-repo
-    fan-out is a later registry concern), or an idle ``_EmptySource`` when none are watched."""
-    repos = tuple(cfg.producer.watch_repos)
-    if not repos:
-        return _EmptySource()
-    from hive.adapters.git_source import GitCliSource  # noqa: PLC0415 — subprocess adapter, lazy
-    return GitCliSource(repos[0], stamp_trailer=cfg.producer.stamp_trailer,
-                        bugfix_pattern=cfg.producer.bugfix_pattern)
-
-
 def build_container(cfg: Config, *, tenant_id: str, agent_id: str,
-                    embedder: Any = None, source: Any = None, clock: Any = None) -> Container:
-    """Assemble the full system for ``cfg``. ``embedder`` / ``source`` / ``clock`` are
-    injection seams (the entrypoint passes none ⇒ real adapters; tests inject doubles /
-    fakes / a deterministic clock). Returns a ``Container`` ready for the boot sequence
+                    embedder: Any = None, clock: Any = None) -> Container:
+    """Assemble the full system for ``cfg``. ``embedder`` / ``clock`` are injection seams
+    (the entrypoint passes none ⇒ real adapters; tests inject doubles / a deterministic
+    clock). Returns a ``Container`` ready for the boot sequence
     ``migrate → build_index → warm_embedder → make_server``.
 
     // construction is torch-cheap: the heavy SentenceTransformer load + PCA fit are
@@ -243,24 +204,12 @@ def build_container(cfg: Config, *, tenant_id: str, agent_id: str,
         f_min=cfg.utility.f_min, f_max=cfg.utility.f_max, rng=random.Random(_SURFACER_SEED))
     recall = RecallPipeline(
         embedder=embedder, index=index, gate=gate, surfacer=surfacer,
-        ledger=store, reader=store, utility_store=utility_store,
-        recall_top_n=cfg.recall.recall_top_n, now=clock.now)
+        reader=store, utility_store=utility_store,
+        recall_top_n=cfg.recall.recall_top_n)
     admission = AdmissionService(store, scanner, embedder, now=clock.now)
 
-    attributor = Attributor()
-    joiner = OutcomeJoiner(
-        assoc_window_s=cfg.producer.assoc_window_s, settle_days=_SETTLE_DAYS,
-        provisional_reward=_PROVISIONAL_REWARD, clawback_reward=_CLAWBACK_REWARD,
-        require_stamp=cfg.producer.require_stamp, assoc_epsilon=cfg.producer.assoc_epsilon,
-        rng=random.Random(_JOINER_SEED))
-    source = source or _build_source(cfg)
-    producer = OutcomeProducer(
-        source=source, joiner=joiner, attributor=attributor, store=store,
-        utility_store=utility_store, clock=clock, source_agent=agent_id)
-
     install_planner = InstallPlanner(
-        store, stamp_trailer=cfg.producer.stamp_trailer,
-        watch_repos=cfg.producer.watch_repos, block_version=1)
+        store, stamp_trailer=cfg.producer.stamp_trailer, block_version=1)
     identity = ServerIdentity(tenant_id=tenant_id, agent_id=agent_id)
 
     _log.info("container.assembled tenant_id=%s db_path=%s d=%d backend=%s provider=%s",
@@ -268,6 +217,5 @@ def build_container(cfg: Config, *, tenant_id: str, agent_id: str,
     return Container(
         cfg=cfg, conn=conn, index=index, store=store, utility_store=utility_store,
         embedder=embedder, scanner=scanner, clock=clock, gate=gate, surfacer=surfacer,
-        attributor=attributor, joiner=joiner, source=source, producer=producer,
         recall=recall, admission=admission, install_planner=install_planner,
         identity=identity, started_ts=int(clock.now()))

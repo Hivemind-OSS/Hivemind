@@ -13,7 +13,7 @@ import json
 import pytest
 
 from hive.app.config import Config
-from hive.app.container import Container, _EmptySource, build_container
+from hive.app.container import Container, build_container
 from hive.app.mcp_server import HiveMCPServer, MCPRequest
 from tests.fakes._fakes import FakeWarmProvider
 
@@ -96,8 +96,8 @@ def test_migrate_raises_on_missing_table(tmp_path):
 def test_build_index_warms_from_approved_only():
     c = _build()
     c.warm_embedder()
-    res = c.admission.write("a durable memory about cache eviction", proposed_by="a1")
-    c.admission.approve([res.pending_id], "user")
+    c.admission.write("a durable memory about cache eviction",
+                      proposed_by="a1", approved_by="user")    # lands approved in one call
     c.index.rebuild_from_store([])                              # clear the warm cache
     assert c.index.size() == 0
     c.build_index()                                            # rebuild from the store
@@ -105,16 +105,14 @@ def test_build_index_warms_from_approved_only():
 
 
 # ── make_server end-to-end (the wiring round-trip) ────────────────────────────
-def test_make_server_round_trips_write_approve_recall():
+def test_make_server_round_trips_write_recall():
     c = _build()
     c.warm_embedder()
     server = c.make_server()
     assert isinstance(server, HiveMCPServer)
     text = "the WAL transaction runs under one BEGIN IMMEDIATE"
-    w = _content(_call(server, "hive_write", {"text": text}))
-    assert w["status"] == "pending"
-    c.build_index()
-    _call(server, "hive_approve", {"ids": [w["id"]], "approver": "user"})
+    w = _content(_call(server, "hive_write", {"text": text, "approved_by": "user"}))
+    assert w["status"] == "approved"                              # client-gated, one call
     c.build_index()
     r = _content(_call(server, "hive_recall", {"query": text}))   # identical text ⇒ confident hit
     assert r["abstained"] is False
@@ -129,14 +127,6 @@ def test_isolation_frac_on_builds_clean_utility_table_first():
     c = build_container(_cfg(utility={"isolation_frac": 0.5}),
                         tenant_id="t1", agent_id="a1", embedder=FakeWarmProvider(d=256))
     assert c.store._isolation_frac == 0.5
-
-
-# ── idle producer source when no repos watched ────────────────────────────────
-def test_empty_source_when_no_watch_repos():
-    c = _build()
-    assert isinstance(c.source, _EmptySource)
-    poll = c.source.poll()
-    assert poll.ok is True and poll.commits == ()
 
 
 def test_d_mismatch_fails_fast():

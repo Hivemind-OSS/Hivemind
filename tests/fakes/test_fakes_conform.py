@@ -2,11 +2,11 @@
 from __future__ import annotations
 
 from hive.domain.ports import (
-    Clock, EmbeddingProvider, EpisodeStore, ExposureLedger, MutableVectorIndex,
-    OutcomeSource, SecretScanner, UtilityStore, VectorIndex,
+    Clock, EmbeddingProvider, EpisodeStore, MutableVectorIndex,
+    SecretScanner, UtilityStore, VectorIndex,
 )
 from tests.fakes import (
-    FakeClock, FakeExposureLedger, FakeIndex, FakeOutcomeSource, FakeProvider,
+    FakeClock, FakeIndex, FakeProvider,
     FakeScanner, FakeStore, FakeUtilityStore,
 )
 
@@ -17,8 +17,5 @@ def test_fakes_satisfy_protocols() -> None:
     assert isinstance(FakeIndex(), VectorIndex)
     assert isinstance(FakeIndex(), MutableVectorIndex)
     assert isinstance(FakeStore(), EpisodeStore)
-    assert isinstance(FakeStore(), ExposureLedger)
-    assert isinstance(FakeExposureLedger(), ExposureLedger)
     assert isinstance(FakeUtilityStore(), UtilityStore)
-    assert isinstance(FakeOutcomeSource(), OutcomeSource)
     assert isinstance(FakeScanner(), SecretScanner)

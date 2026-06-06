@@ -80,8 +80,18 @@ def test_apply_credit_transactional(store):
 # closes the port-vs-impl gap the M08 audit flagged — SqliteUtilityStore must be a
 # COMPLETE UtilityStore, not just FakeUtilityStore.
 from hive.adapters.store_sqlite import SqliteEpisodeStore          # noqa: E402
-from hive.domain.models import OutcomeRow, SettledExposure          # noqa: E402
+from hive.domain.models import SettledExposure                     # noqa: E402
 from hive.domain.ports import UtilityStore                          # noqa: E402
+
+# The producer-side ledger WRITE methods (record_exposure / link_task) were removed with the
+# producer; the exposure / task_outcomes tables remain as DORMANT schema. These tests pin the
+# KEPT read path (SqliteUtilityStore.settled_exposures_since — which the readiness
+# PredictionBiasMonitor consumes) by seeding those tables DIRECTLY via SQL.
+_EXPOSURE_SQL = ("INSERT OR REPLACE INTO exposure(trace_id, episode_id, recall_margin, "
+                 "task_ref, injected_ts) VALUES(?,?,?,NULL,?)")
+_OUTCOME_SQL = ("INSERT INTO task_outcomes(task_ref, trace_id, family_scope, repo, "
+                "files_touched, introduced_lines, state, reward, merge_ts, settle_at) "
+                "VALUES(?,?,?,?,?,?,?,?,?,?)")
 
 
 def _wired():
@@ -91,12 +101,13 @@ def _wired():
 
 
 def _settle(ledger, *, task_ref, trace_id, family, state, settle_at, exposed):
-    """Stage an exposure for the trace and a settled task_outcome for it."""
-    ledger.record_exposure(trace_id, [(eid, 0.5) for eid in exposed], ts=settle_at - 1)
-    ledger.link_task(OutcomeRow(
-        task_ref=task_ref, trace_id=trace_id, family_scope=family,
-        state=state, reward=(1.0 if state == "settled_pos" else -1.0),
-        merge_ts=settle_at - 1, settle_at=settle_at))
+    """Seed an exposure + a settled task_outcome for the trace DIRECTLY via SQL (the removed
+    producer used to do this through record_exposure / link_task)."""
+    for eid in exposed:
+        ledger.conn.execute(_EXPOSURE_SQL, (trace_id, int(eid), 0.5, settle_at - 1))
+    ledger.conn.execute(_OUTCOME_SQL, (
+        task_ref, trace_id, family, "", "", "", state,
+        (1.0 if state == "settled_pos" else -1.0), settle_at - 1, settle_at))
 
 
 def test_sqlite_utility_store_conforms_to_port():
@@ -152,9 +163,8 @@ def test_settled_exposures_excludes_provisional():
     _settle(ledger, task_ref="k1", trace_id="t1", family=FAM,
             state="clawed_back", settle_at=1000, exposed=(1,))
     # a provisional (un-settled) outcome must NOT appear — reality hasn't landed yet.
-    ledger.record_exposure("t2", [(2, 0.5)], ts=999)
-    ledger.link_task(OutcomeRow(task_ref="k2", trace_id="t2", family_scope=FAM,
-                                state="provisional", reward=0.2, merge_ts=999, settle_at=1000))
+    ledger.conn.execute(_EXPOSURE_SQL, ("t2", 2, 0.5, 999))
+    ledger.conn.execute(_OUTCOME_SQL, ("k2", "t2", FAM, "", "", "", "provisional", 0.2, 999, 1000))
     rows = util.settled_exposures_since(FAM, 0)
     assert {r.exposed[0] for r in rows} == {1}
 

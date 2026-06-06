@@ -26,23 +26,19 @@ class _Embedder:
         self.w_version = 1
 
 
-class _Producer:
-    pass
-
-
 def _cfg():
     return Config.load(toml_path=None)
 
 
 def test_health_snapshot_has_embedder_loaded_key():
-    snap = health(_cfg(), _Store(), _Embedder(loaded=True), _Producer()).as_dict()
+    snap = health(_cfg(), _Store(), _Embedder(loaded=True)).as_dict()
     assert "embedder_loaded" in snap
     assert isinstance(snap["embedder_loaded"], bool)
 
 
 def test_embedder_loaded_tracks_resident_state():
-    hot = health(_cfg(), _Store(), _Embedder(loaded=True), _Producer()).as_dict()
-    cold = health(_cfg(), _Store(), _Embedder(loaded=False), _Producer()).as_dict()
+    hot = health(_cfg(), _Store(), _Embedder(loaded=True)).as_dict()
+    cold = health(_cfg(), _Store(), _Embedder(loaded=False)).as_dict()
     assert hot["embedder_loaded"] is True
     assert cold["embedder_loaded"] is False
 
@@ -56,6 +52,6 @@ def test_embedder_loaded_present_even_on_failed_probe():
         def meta_get(self, key):
             return None
 
-    snap = health(_cfg(), _Boom(), _Embedder(loaded=True), _Producer()).as_dict()
+    snap = health(_cfg(), _Boom(), _Embedder(loaded=True)).as_dict()
     assert snap["ok"] is False
     assert snap["embedder_loaded"] is False and isinstance(snap["embedder_loaded"], bool)

@@ -116,26 +116,12 @@ class RecallConfig:
 
 @dataclass(frozen=True)
 class ProducerConfig:
-    provider: str = "git_inproc"
-    assoc_epsilon: float = 0.1            # NOT guardrail-1's ε — MAY be 0 [A4]
-    watch_repos: tuple[str, ...] = ()
-    poll_interval_s: int = 60
-    assoc_window_s: int = 1800
+    """Vestigial after the producer strip: only ``stamp_trailer`` survives — the git
+    trailer key the (deferred) credit Walk would key on, and the single source for the
+    onboarding rules block's ``<TRAILER_KEY>``. The watch_repos / assoc / poll / provider
+    fields went with the producer subsystem. An empty trailer is rejected downstream
+    (onboard.render_rules_block / RulesBlock), where it would actually cause harm."""
     stamp_trailer: str = "Hive-Trace"
-    bugfix_pattern: str = r"^(fix|bug|hotfix|patch):"
-    require_stamp: bool = False
-    # NB: there is deliberately NO `epsilon_explore` field here [A4].
-
-    def __post_init__(self) -> None:
-        from hive.app.registry import PRODUCER_PROVIDERS   # lazy
-        if self.provider not in PRODUCER_PROVIDERS:
-            raise ValueError(
-                f"producer.provider {self.provider!r} unknown; "
-                f"valid={sorted(PRODUCER_PROVIDERS)}")
-        if self.assoc_epsilon < 0.0:
-            raise ValueError(f"producer.assoc_epsilon must be >= 0 (got {self.assoc_epsilon})")
-        if self.poll_interval_s <= 0:
-            raise ValueError(f"producer.poll_interval_s must be > 0 (got {self.poll_interval_s})")
 
 
 @dataclass(frozen=True)
@@ -390,7 +376,6 @@ RELOAD_TIER: dict[str, str] = {
     # C — safe only across a process restart
     "embedding.provider": "C",
     "index.backend": "C",
-    "producer.provider": "C",
     "runtime.db_path": "C",
     "runtime.tenant_id": "C",
     # B — hot-swappable live
@@ -399,12 +384,7 @@ RELOAD_TIER: dict[str, str] = {
     "recall.softmax_beta": "B",
     "utility.f_min": "B",
     "utility.f_max": "B",
-    "producer.assoc_epsilon": "B",
-    "producer.poll_interval_s": "B",
-    "producer.assoc_window_s": "B",
     "producer.stamp_trailer": "B",
-    "producer.bugfix_pattern": "B",
-    "producer.require_stamp": "B",
     # A — applied on next run (no restart, no migration)
     "recall.recall_top_n": "A",
     "utility.isolation_frac": "A",            # tier A per build-plan §638
@@ -412,7 +392,6 @@ RELOAD_TIER: dict[str, str] = {
     "utility.prediction_bias_threshold": "A",
     "retention.backup_keep": "A",
     "retention.backup_dir": "A",
-    "producer.watch_repos": "A",
     "obs.log_level": "A",
     "obs.log_max_bytes": "A",
     "obs.log_backup_count": "A",

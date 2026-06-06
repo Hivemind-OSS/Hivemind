@@ -35,11 +35,8 @@ def test_defaults_match_spec_geometry():
 def test_recall_epsilon_validated_positive():
     with pytest.raises(ValueError, match=r"recall\.epsilon_explore"):
         Config.load(recall={"epsilon_explore": 0.0})
-    # producer.assoc_epsilon may legitimately be 0 (it is NOT guardrail-1's ε)
-    cfg = Config.load(producer={"assoc_epsilon": 0.0})
-    assert cfg.producer.assoc_epsilon == 0.0
-    # the misplaced field is GONE from the producer group
-    assert hasattr(cfg.producer, "epsilon_explore") is False
+    # ε lives ONLY on recall — the slimmed producer group never had epsilon_explore ([A4])
+    assert hasattr(Config.load().producer, "epsilon_explore") is False
 
 
 def test_recall_epsilon_negative_rejected():
@@ -100,12 +97,10 @@ def test_env_beats_toml_no_override(tmp_path):
     assert cfg.recall.recall_top_n == 12   # env (layer 3) beats toml (layer 2)
 
 
-def test_provider_field_routes_by_group(tmp_path):
-    # `provider` is the ONE field name that exists in TWO groups (embedding AND producer) post
-    # sparse-geometry-drop — a group-blind env matcher would mis-route it. Pin the routing.
-    env = {"HIVE_PRODUCER__PROVIDER": "git_inproc", "HIVE_EMBEDDING__PROVIDER": "local_st"}
-    cfg = Config.load(db_path=":memory:", env=env)
-    assert cfg.producer.provider == "git_inproc"
+def test_provider_field_routes_to_embedding_group(tmp_path):
+    # `provider` now lives only in the embedding group (producer.provider went with the
+    # producer strip); pin that the group-scoped env matcher routes it there, not elsewhere.
+    cfg = Config.load(db_path=":memory:", env={"HIVE_EMBEDDING__PROVIDER": "local_st"})
     assert cfg.embedding.provider == "local_st"
 
 

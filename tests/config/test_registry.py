@@ -45,16 +45,6 @@ def test_build_embedder_unknown_provider_fails_fast():
         registry.EMBEDDING_PROVIDERS[cfg.embedding.provider] = saved
 
 
-def test_build_producer_unknown_provider_fails_fast():
-    cfg = Config.load(db_path=":memory:")
-    saved = registry.PRODUCER_PROVIDERS.pop(cfg.producer.provider)
-    try:
-        with pytest.raises(ValueError, match=r"valid|provider"):
-            registry.build_producer(cfg)
-    finally:
-        registry.PRODUCER_PROVIDERS[cfg.producer.provider] = saved
-
-
 # ── the SWAP MANDATE proof: a new adapter, zero core change ───────────────────
 class _LoopbackEmbedder:
     """A second TextEmbedder registered at runtime — proves a swap needs only

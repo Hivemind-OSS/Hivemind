@@ -1,13 +1,16 @@
 """§6.1 #1/#2/#3/#5b acceptance — the read path end-to-end on the REAL bge stack:
-recall@5 floor, honest-abstention AUROC, abstain-no-resurrect, pending-never-recallable,
+recall@5 floor, honest-abstention AUROC, abstain-no-resurrect, secret-refused-never-written,
 and reference-context framing. Wired through the real build_container; FakeOutcomeSource
 is not needed here (no producer)."""
 from __future__ import annotations
 
 import json
 
+import pytest
+
 from hive.app.mcp_server import MCPRequest
-from hive.domain.models import CONFIDENT, AgentContext
+from hive.domain.errors import SecretRefused
+from hive.domain.models import CONFIDENT, AgentContext, content_hash
 from hive.research.metrics_ir import abstention_auroc, recall_at_k
 from tests.acceptance.conftest import (
     CORPUS, HIT_QUERIES, MISS_QUERIES, build_acc, seed_corpus,
@@ -64,15 +67,20 @@ def test_acceptance_abstain_no_resurrect_end_to_end(embedder_v1):
         assert ids == []                              # no hit can be resurrected past the gate
 
 
-# ── §6.1 #5b — a pending (un-approved) memory is NEVER recallable ─────────────
-def test_acceptance_pending_never_recallable(embedder_v1):
+# ── §6.1 #5b — a refused (secret) write reaches no row and is NEVER recallable ─
+def test_acceptance_secret_write_refused_and_never_recallable(embedder_v1):
     c = build_acc(embedder_v1)
-    secret_topic = "the moonshot quarterly revenue projection is forty two million dollars"
-    res = c.admission.write(secret_topic, proposed_by="acc")     # staged pending, NOT approved
+    # a real credential — the deterministic scan must REFUSE it on the direct (queue-less)
+    # write path; nothing is staged, so even its exact text can never be surfaced.
+    secret_topic = ("rotate the leaked key AKIAIOSFODNN7EXAMPLE noted in the moonshot "
+                    "quarterly revenue review")
+    with pytest.raises(SecretRefused):
+        c.admission.write(secret_topic, proposed_by="acc", approved_by="acc")
     c.build_index()
     ids, r = _topk_ids(c, secret_topic, 5)            # query its EXACT text
-    assert res.pending_id not in ids
-    assert r.state != CONFIDENT or all(h != res.pending_id for h in ids)
+    assert ids == []                                  # nothing written ⇒ nothing recallable
+    assert r.state != CONFIDENT
+    assert c.store.fetch(content_hash(secret_topic)) is None      # no blob either
 
 
 # ── §6.1 #5c — recalled text is reference_context, never instructions ─────────

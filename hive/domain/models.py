@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import hashlib
 import math
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Optional
 
 import numpy as np
@@ -99,95 +99,10 @@ class RecallResult:
             raise ValueError("entropy_norm must be in [0,1]")
 
 
-# ── producer-side carriers (§11 trace↔outcome join) ──────────────────────────
-
-@dataclass(frozen=True, slots=True)
-class WindowTrace:
-    """One recent confident recall in the association window (id + when)."""
-    trace_id: str
-    ts: int
-
-
-@dataclass(frozen=True, slots=True)
-class RecallWindow:
-    """The per-agent set of recall traces issued since the last stamped commit."""
-    items: tuple[WindowTrace, ...] = ()
-
-
-@dataclass(frozen=True, slots=True)
-class CommitFact:
-    """A normalized git fact yielded by an OutcomeSource. The producer never
-    touches git directly; all I/O is sealed behind the OutcomeSource port [D6].
-
-    ``kind`` ∈ {"commit","merge","revert","bugfix"}. ``touched_blame`` is the set
-    of original-introduced line numbers this commit modifies (pre-attached by the
-    source via git-blame) — the blame-overlap signal for delayed clawback.
-    """
-    sha: str
-    ts: int
-    kind: str = "commit"
-    message: str = ""
-    repo_remote: str = ""                   # the watched repo's remote (source pre-attaches it)
-    files_touched: tuple[str, ...] = ()
-    introduced_lines: frozenset[int] = field(default_factory=frozenset)  # lines THIS commit added
-    touched_blame: frozenset[int] = field(default_factory=frozenset)     # original lines a bugfix modifies
-    reverts: Optional[str] = None          # the SHA this commit reverts, if kind == "revert"
-    trailer_traces: tuple[str, ...] = ()   # Hive-Trace: <T1> <T2> … override set
-
-
-@dataclass(frozen=True, slots=True)
-class SourcePoll:
-    """The result of OutcomeSource.poll() for one watched repo."""
-    repo_remote: str
-    language: str = ""
-    commits: tuple[CommitFact, ...] = ()
-    ok: bool = True
-    error: Optional[str] = None
-
-
-@dataclass(frozen=True, slots=True)
-class OutcomeRow:
-    """A row of the task_outcomes state machine (provisional → settled_pos|clawed_back)."""
-    task_ref: str
-    trace_id: str
-    family_scope: str
-    state: str                              # provisional | settled_pos | clawed_back
-    reward: float
-    merge_ts: int
-    settle_at: int
-    introduced_lines: frozenset[int] = field(default_factory=frozenset)
-    files_touched: tuple[str, ...] = ()
-    repo: str = ""
-
-
-@dataclass(frozen=True, slots=True)
-class JoinerEmit:
-    """A settled/clawed reward the joiner emits; drained into credit deltas."""
-    task_ref: str
-    trace_id: str
-    family_scope: str
-    reward_sign: int                        # +1 settle, −1 clawback
-    magnitude: float
-    ts: int
-    source_agent: str = ""
-
-
-@dataclass(frozen=True, slots=True)
-class SettledOutcome:
-    """The attributor's input. ``reward_sign`` MUST be ±1 — a CI-green ~0 event is
-    structurally unconstructable as credit (verifiable-credit-only made structural)."""
-    family_scope: str
-    reward_sign: int
-    magnitude: float
-    source_agent: str = ""
-
-    def __post_init__(self) -> None:
-        if self.reward_sign not in (-1, 1):
-            raise ValueError(
-                f"reward_sign must be ±1 (verifiable-credit-only); got {self.reward_sign!r}")
-        if self.magnitude < 0:
-            raise ValueError(f"magnitude must be ≥0; got {self.magnitude!r}")
-
+# ── dormant credit carrier ───────────────────────────────────────────────────
+# The producer that fed these (associate→settle→clawback→drain) was removed; only
+# SettledExposure survives — the unit the utility store + PredictionBiasMonitor read
+# back (observed-not-applied in Phase 1). Nothing constructs it at runtime now.
 
 @dataclass(frozen=True, slots=True)
 class SettledExposure:
@@ -206,20 +121,6 @@ class SettledExposure:
         if self.reward_sign not in (-1, 1):
             raise ValueError(
                 f"reward_sign must be ±1 (verifiable-credit-only); got {self.reward_sign!r}")
-
-
-@dataclass(frozen=True, slots=True)
-class ProducerTick:
-    """Typed audit record of one OutcomeProducer.step() — also the §12 Phase-2
-    readiness signal. step() NEVER raises; per-repo/policy failures land in errors."""
-    associated: int = 0
-    settled: int = 0
-    clawed_back: int = 0
-    drained: int = 0
-    stamp_hits: int = 0
-    window_assoc: int = 0
-    errors: int = 0
-    poll_commits: int = 0
 
 
 # ── episode (the recall substrate) ───────────────────────────────────────────
@@ -306,21 +207,112 @@ class RulesBlock:
             raise ValueError("block_hash does not bind rendered_text")
 
 
+# ── runtime-agnostic delivery (§4): capability tiers + hook manifest/profile/recipe ──
+# Tier 0 = MCP tools (universal); Tier 1 = rules-file contract (default); Tier 2 = native
+# hooks (claude-code). A new IDE is a new HarnessProfile ROW, never a code change.
+TIER_MCP, TIER_RULES, TIER_HOOKS = 0, 1, 2
+
+
+@dataclass(frozen=True, slots=True)
+class HookSpec:
+    """One abstract, harness-INDEPENDENT behavioral hook the system wants installed (the
+    'what'). ``event`` ∈ {task-start, turn-end, commit}; ``action`` ∈ {recall, capture};
+    ``directive`` is the NL instruction projected onto each host."""
+    event: str
+    action: str
+    directive: str
+
+
+@dataclass(frozen=True, slots=True)
+class HookManifest:
+    """The VERSIONED, harness-independent set of behavioral hooks (§4). Projected onto a
+    concrete host by HarnessRecipe; the ``generic`` profile returns it verbatim (as JSON)
+    + an NL playbook so an un-profiled agent can self-apply it. ``manifest_version`` is the
+    single source both the link record and the hive_health onboarding hint report."""
+    manifest_version: int
+    hooks: tuple[HookSpec, ...]
+
+    def __post_init__(self) -> None:
+        if not self.hooks:
+            raise ValueError("HookManifest must declare at least one hook")
+
+
+@dataclass(frozen=True, slots=True)
+class HarnessProfile:
+    """One DATA row per IDE (§4) — a new host is a new row, not code. ``max_tier`` caps
+    materialization: a host with no hook mechanism can NEVER be handed OS hook files.
+    Non-Claude ``mcp_config_target`` paths are best-effort (verify at build time)."""
+    harness: str
+    rules_file_candidates: tuple[str, ...]
+    mcp_config_target: str
+    hook_mechanism: Optional[str]               # None ⇒ no native hooks ⇒ max_tier ≤ 1
+    max_tier: int
+
+    def __post_init__(self) -> None:
+        # max_tier==2 iff a hook mechanism exists — keeps the row from claiming hooks it
+        # can't deliver (or hiding hooks it can). The HarnessRecipe invariant leans on this.
+        if (self.max_tier >= TIER_HOOKS) != bool(self.hook_mechanism):
+            raise ValueError(
+                "HarnessProfile invariant: max_tier>=2 iff a hook_mechanism is set "
+                f"(harness={self.harness!r}, max_tier={self.max_tier}, "
+                f"hook_mechanism={self.hook_mechanism!r})")
+
+
+@dataclass(frozen=True, slots=True)
+class HookFile:
+    """A concrete file the agent materializes at Tier-2 (path relative to the repo root,
+    its content, and the mechanism that consumes it). Written in chunk 6 (verify gate)."""
+    path: str
+    content: str
+    mechanism: str
+
+
+@dataclass(frozen=True, slots=True)
+class HarnessRecipe:
+    """A HookManifest PROJECTED onto one harness at its resolved tier. INVARIANT (the §7
+    mutation pin, enforced at construction so a violation is UNCONSTRUCTABLE): a Tier-≤1
+    host emits ZERO ``hook_files`` (no OS hooks below Tier 2) and a Tier-2 host emits ≥1.
+    ``rules_addendum`` is the Tier-≥1 capture directive; ``playbook`` is the NL self-apply
+    fallback (always present — the ``generic`` deliverable alongside the manifest JSON)."""
+    harness: str
+    resolved_tier: int
+    manifest_version: int
+    rules_addendum: str
+    playbook: str
+    hook_files: tuple[HookFile, ...] = ()
+
+    def __post_init__(self) -> None:
+        if self.resolved_tier < TIER_HOOKS and self.hook_files:
+            raise ValueError(
+                "no OS hooks below Tier 2: a Tier-≤1 harness must emit zero hook_files "
+                f"(harness={self.harness!r}, resolved_tier={self.resolved_tier})")
+        if self.resolved_tier >= TIER_HOOKS and not self.hook_files:
+            raise ValueError(
+                f"a Tier-2 recipe must materialize at least one hook file (harness={self.harness!r})")
+
+
 @dataclass(frozen=True, slots=True)
 class InstallPlan:
-    """The typed result of hive_init phase-1 (zero writes). ``expected_confirm_hash``
-    is the phase-2 confirmation key; ``watch_warning`` is non-blocking (a repo not yet
-    in producer.watch_repos still links). Frozen so the plan cannot drift between
-    render and confirm."""
+    """The typed result of hive_init phase-1 (zero writes). ``expected_confirm_hash`` is
+    the phase-2 confirmation key; ``manifest``/``recipe`` carry the §4 hook manifest and
+    its per-harness projection. Frozen so the plan cannot drift between render and confirm."""
     rules_file: str
     harness: str
     rules_block: RulesBlock
     expected_confirm_hash: bytes            # == rules_block.block_hash
-    watch_warning: Optional[str] = None
+    manifest: HookManifest
+    recipe: HarnessRecipe
 
     def __post_init__(self) -> None:
         if self.expected_confirm_hash != self.rules_block.block_hash:
             raise ValueError("expected_confirm_hash must equal rules_block.block_hash")
+        if self.recipe.harness != self.harness:
+            raise ValueError(
+                f"recipe.harness ({self.recipe.harness!r}) must match plan.harness ({self.harness!r})")
+        if self.recipe.manifest_version != self.manifest.manifest_version:
+            raise ValueError(
+                "recipe must project the plan's manifest version "
+                f"({self.recipe.manifest_version} != {self.manifest.manifest_version})")
 
 
 # ── utility posterior (Beta-Bernoulli) ───────────────────────────────────────

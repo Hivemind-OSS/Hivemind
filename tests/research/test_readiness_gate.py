@@ -13,7 +13,6 @@ from __future__ import annotations
 from hive.adapters.sqlite_db import connect
 from hive.adapters.utility_store_sqlite import SqliteUtilityStore
 from hive.domain.attribution import CreditDelta
-from hive.domain.models import ProducerTick
 from hive.research.keystone import KeystoneSpec, run_keystone_eval
 from hive.research.readiness import (
     PROD_M_MEMORIES_MIN, PROD_N_SETTLED_MIN, ReadinessReport, aggregate_settled,
@@ -34,8 +33,10 @@ def _credit(store: SqliteUtilityStore, eid: int, *, family: str = _FAMILY,
                                     d_wins=dw, d_losses=dl)])
 
 
-def _ticks(*settled_counts: int) -> list[ProducerTick]:
-    return [ProducerTick(settled=s) for s in settled_counts]
+def _ticks(*settled_counts: int) -> list[int]:
+    """Per-tick settled counts. The producer that emitted ProducerTick objects is gone;
+    readiness_probe / aggregate_settled now take the raw int counts directly."""
+    return list(settled_counts)
 
 
 def _spec_from(report: ReadinessReport, **arm_overrides) -> KeystoneSpec:

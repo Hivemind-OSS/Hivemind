@@ -35,15 +35,9 @@ class _FakeEmbedder:
         raise NotImplementedError
 
 
-class _FakeProducer:
-    def step(self, now):  # pragma: no cover
-        raise NotImplementedError
-
-
 _PRE_M07_KEYS = {
     "ok", "db_path", "tenant_id", "embedder_loaded", "w_version", "index_authoritative",
-    "episodes_approved", "episodes_pending", "producer_watch_repos",
-    "last_producer_tick_ts", "error",
+    "episodes_approved", "episodes_pending", "error",
 }
 
 
@@ -52,7 +46,7 @@ def _cfg():
 
 
 def test_health_unlinked_byte_identical():
-    snap = health(_cfg(), _FakeStore(), _FakeEmbedder(), _FakeProducer())  # no repo_path
+    snap = health(_cfg(), _FakeStore(), _FakeEmbedder())  # no repo_path
     d = snap.as_dict()
     assert "linked" not in d and "link" not in d
     assert set(d.keys()) == _PRE_M07_KEYS                # byte-identical pre-M07 payload
@@ -62,7 +56,7 @@ def test_health_reports_link():
     def link_status(repo_path):
         return True, {"block_version": 1, "block_hash": "abc123", "trailer_key": "Hive-Trace"}
 
-    snap = health(_cfg(), _FakeStore(), _FakeEmbedder(), _FakeProducer(),
+    snap = health(_cfg(), _FakeStore(), _FakeEmbedder(),
                   repo_path="/r", link_status=link_status)
     d = snap.as_dict()
     assert d["linked"] is True
@@ -70,13 +64,13 @@ def test_health_reports_link():
 
 
 def test_health_repo_path_no_probe_is_unlinked():
-    snap = health(_cfg(), _FakeStore(), _FakeEmbedder(), _FakeProducer(), repo_path="/r")
+    snap = health(_cfg(), _FakeStore(), _FakeEmbedder(), repo_path="/r")
     d = snap.as_dict()
     assert d["linked"] is False and d["link"] is None    # present (probed) but unlinked
 
 
 def test_health_unlinked_repo_probe_false():
-    snap = health(_cfg(), _FakeStore(), _FakeEmbedder(), _FakeProducer(),
+    snap = health(_cfg(), _FakeStore(), _FakeEmbedder(),
                   repo_path="/r", link_status=lambda rp: (False, None))
     d = snap.as_dict()
     assert d["linked"] is False and d["link"] is None
@@ -87,7 +81,7 @@ def test_health_link_probe_failure_is_soft():
     def boom(repo_path):
         raise RuntimeError("planner exploded")
 
-    snap = health(_cfg(), _FakeStore(), _FakeEmbedder(), _FakeProducer(),
+    snap = health(_cfg(), _FakeStore(), _FakeEmbedder(),
                   repo_path="/r", link_status=boom)
     assert snap.ok is True
     d = snap.as_dict()
@@ -96,7 +90,7 @@ def test_health_link_probe_failure_is_soft():
 
 def test_health_failsoft_no_repo_omits_link_keys():
     # core probe fails (ok=False) and no repo_path ⇒ still byte-identical (no link keys)
-    snap = health(_cfg(), _FakeStore(raises=True), _FakeEmbedder(), _FakeProducer())
+    snap = health(_cfg(), _FakeStore(raises=True), _FakeEmbedder())
     d = snap.as_dict()
     assert snap.ok is False
     assert "linked" not in d and "link" not in d

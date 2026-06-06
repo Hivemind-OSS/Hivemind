@@ -17,7 +17,7 @@ def test_acceptance_secret_refused(embedder_v1):
     c = build_acc(embedder_v1)
     server = c.make_server()
     resp = server.handle(MCPRequest(1, "tools/call",
-            {"name": "hive_write", "arguments": {"text": _PLANTED}}))
+            {"name": "hive_write", "arguments": {"text": _PLANTED, "approved_by": "acc"}}))
     env = json.loads(resp.result["content"][0]["text"])
 
     assert env["status"] == "refused"
@@ -38,9 +38,10 @@ def test_acceptance_secret_never_in_any_row_after_mixed_writes(embedder_v1):
     """A clean write lands; a secret write is refused — and a scan of every persisted row
     + blob contains no secret substring (the §6.1#5a floor is structural, not hoped-for)."""
     c = build_acc(embedder_v1)
-    c.admission.write("a perfectly clean durable insight about caching", proposed_by="acc")
+    c.admission.write("a perfectly clean durable insight about caching",
+                      proposed_by="acc", approved_by="acc")
     try:
-        c.admission.write(_PLANTED, proposed_by="acc")
+        c.admission.write(_PLANTED, proposed_by="acc", approved_by="acc")
     except Exception:
         pass                                            # refuse raises SecretRefused — expected
     rows = c.conn.execute("SELECT text FROM episodes").fetchall()
@@ -60,7 +61,7 @@ def test_acceptance_secret_never_in_logs(embedder_v1, caplog):
     try:
         with caplog.at_level(logging.DEBUG, logger="hive"):
             try:
-                c.admission.write(_PLANTED, proposed_by="acc")
+                c.admission.write(_PLANTED, proposed_by="acc", approved_by="acc")
             except Exception:
                 pass                                # SecretRefused — expected
     finally:

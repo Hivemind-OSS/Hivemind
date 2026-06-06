@@ -88,29 +88,6 @@ def build_index(cfg: "Config"):
     return idx
 
 
-# ── outcome-producer seam (C10) ───────────────────────────────────────────────
-def _build_git_inproc(cfg: "Config", **deps: Any):
-    from hive.domain.produce import OutcomeProducer
-    return OutcomeProducer(**deps)
-
-
-PRODUCER_PROVIDERS: dict[str, Callable[..., Any]] = {
-    "git_inproc": _build_git_inproc,
-}
-
-
-def build_producer(cfg: "Config", **deps: Any):
-    """Construct the configured producer; fail fast on an unknown seam string. The runtime
-    deps (source/joiner/attributor/store/utility_store/clock) are passed through by the
-    composition root (wired in a later chunk); the registry only selects + fails fast."""
-    name = cfg.producer.provider
-    ctor = PRODUCER_PROVIDERS.get(name)
-    if ctor is None:
-        raise ValueError(
-            f"unknown producer provider {name!r}; valid={sorted(PRODUCER_PROVIDERS)}")
-    return ctor(cfg, **deps)
-
-
 # ── the abstention gate (floor-by-identity) ───────────────────────────────────
 def build_gate(cfg: "Config") -> NormalizedEntropyGate:
     """THE single located owner of the never-hallucinate floor wiring. The frozen

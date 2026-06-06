@@ -1,10 +1,10 @@
-"""SqliteEpisodeStore — Phase-0 ledger group [A7]: exposure + task_outcomes + the
-meta watermark, all in ONE WAL DB. ``transaction()`` is the producer tick's single
-BEGIN IMMEDIATE lane; the utility store shares this connection so its credit writes
-commit/rollback atomically with the settlement. The telemetry sink is collapsed
-into this DB — there is no separate telemetry.db [A7].
+"""SqliteEpisodeStore — the durable episode store + meta watermark in ONE WAL DB.
+``transaction()`` is the single BEGIN IMMEDIATE lane; the utility store shares this
+connection so its credit writes commit/rollback atomically.
 
-Episode-CRUD / admission methods are added in Phase 1.
+The Phase-0 trace↔outcome state machine (exposure + task_outcomes) was removed with
+the producer; the two tables survive as DORMANT schema (kept for forward-compat, never
+written) but their accessor methods are gone. Episode-CRUD / admission is below.
 """
 from __future__ import annotations
 
@@ -18,9 +18,7 @@ import numpy as np
 
 from hive.adapters.sqlite_db import tx
 from hive.domain.errors import SqliteBusyExhausted
-from hive.domain.models import (
-    Episode, OutcomeRow, RecallWindow, WindowTrace, content_hash,
-)
+from hive.domain.models import Episode, content_hash
 
 _log = logging.getLogger("hive.store")
 
@@ -214,93 +212,6 @@ class SqliteEpisodeStore:
             elif r["status"] == "pending":
                 pending = int(r["c"])
         return approved, pending
-
-    # ── exposure ──────────────────────────────────────────────────────────────
-    def record_exposure(self, trace_id: str, rows: Sequence[tuple[int, float]], ts: int) -> None:
-        self.conn.executemany(
-            "INSERT OR REPLACE INTO exposure(trace_id, episode_id, recall_margin, task_ref, injected_ts) "
-            "VALUES(?,?,?,NULL,?)",
-            [(trace_id, int(e), float(m), ts) for e, m in rows])
-
-    def exposed_for(self, trace_id: str) -> list[tuple[int, float]]:
-        return [(r["episode_id"], r["recall_margin"]) for r in self.conn.execute(
-            "SELECT episode_id, recall_margin FROM exposure WHERE trace_id=? ORDER BY episode_id",
-            (trace_id,))]
-
-    def set_task_ref(self, trace_id: str, task_ref: str) -> None:
-        self.conn.execute("UPDATE exposure SET task_ref=? WHERE trace_id=?", (task_ref, trace_id))
-
-    def task_ref_of(self, trace_id: str) -> Optional[str]:
-        r = self.conn.execute(
-            "SELECT task_ref FROM exposure WHERE trace_id=? LIMIT 1", (trace_id,)).fetchone()
-        return r["task_ref"] if r else None
-
-    def recall_window(self, min_ts: int) -> RecallWindow:
-        """Un-linked recent recall traces (task_ref IS NULL, injected_ts >= min_ts)
-        — the window the producer associates commits against."""
-        rows = self.conn.execute(
-            "SELECT DISTINCT trace_id, MIN(injected_ts) AS ts FROM exposure "
-            "WHERE task_ref IS NULL AND injected_ts>=? GROUP BY trace_id", (min_ts,))
-        return RecallWindow(items=tuple(WindowTrace(r["trace_id"], r["ts"]) for r in rows))
-
-    # ── task_outcomes state machine ───────────────────────────────────────────
-    def link_task(self, row: OutcomeRow) -> None:
-        self.conn.execute(
-            "INSERT INTO task_outcomes(task_ref, trace_id, family_scope, repo, files_touched, "
-            "introduced_lines, state, reward, merge_ts, settle_at) VALUES(?,?,?,?,?,?,?,?,?,?) "
-            "ON CONFLICT(task_ref, trace_id) DO UPDATE SET "
-            "  family_scope=excluded.family_scope, state=excluded.state, reward=excluded.reward, "
-            "  settle_at=excluded.settle_at, introduced_lines=excluded.introduced_lines",
-            (row.task_ref, row.trace_id, row.family_scope, row.repo,
-             ",".join(row.files_touched), ",".join(map(str, sorted(row.introduced_lines))),
-             row.state, row.reward, row.merge_ts, row.settle_at))
-
-    def get_outcome(self, task_ref: str, trace_id: str) -> Optional[OutcomeRow]:
-        r = self.conn.execute(
-            "SELECT * FROM task_outcomes WHERE task_ref=? AND trace_id=?",
-            (task_ref, trace_id)).fetchone()
-        if r is None:
-            return None
-        lines = frozenset(int(x) for x in r["introduced_lines"].split(",") if x)
-        files = tuple(f for f in r["files_touched"].split(",") if f)
-        return OutcomeRow(task_ref=r["task_ref"], trace_id=r["trace_id"],
-                          family_scope=r["family_scope"], state=r["state"], reward=r["reward"],
-                          merge_ts=r["merge_ts"], settle_at=r["settle_at"],
-                          introduced_lines=lines, files_touched=files, repo=r["repo"] or "")
-
-    def due_settlements(self, now: int) -> list[str]:
-        return [r["task_ref"] for r in self.conn.execute(
-            "SELECT DISTINCT task_ref FROM task_outcomes WHERE state='provisional' AND settle_at<=? "
-            "ORDER BY task_ref", (now,))]
-
-    def outcomes_for_task(self, task_ref: str) -> list[OutcomeRow]:
-        out = []
-        for r in self.conn.execute("SELECT trace_id FROM task_outcomes WHERE task_ref=?", (task_ref,)):
-            row = self.get_outcome(task_ref, r["trace_id"])
-            if row:
-                out.append(row)
-        return out
-
-    def all_live_outcomes(self) -> list[OutcomeRow]:
-        out = []
-        for r in self.conn.execute(
-            "SELECT task_ref, trace_id FROM task_outcomes WHERE state IN ('provisional','settled_pos')"):
-            row = self.get_outcome(r["task_ref"], r["trace_id"])
-            if row:
-                out.append(row)
-        return out
-
-    def settle(self, task_ref: str, trace_id: str, reward: float) -> None:
-        self.conn.execute(
-            "UPDATE task_outcomes SET state='settled_pos', reward=? "
-            "WHERE task_ref=? AND trace_id=? AND state='provisional'",
-            (reward, task_ref, trace_id))
-
-    def clawback(self, task_ref: str, trace_id: str, reward: float) -> None:
-        self.conn.execute(
-            "UPDATE task_outcomes SET state='clawed_back', reward=? "
-            "WHERE task_ref=? AND trace_id=? AND state IN ('provisional','settled_pos')",
-            (reward, task_ref, trace_id))
 
     # ── meta watermark kv ─────────────────────────────────────────────────────
     def meta_get(self, key: str) -> Optional[str]:

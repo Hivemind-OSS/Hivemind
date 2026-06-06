@@ -1,9 +1,7 @@
 """Conforming in-memory fakes for the pure-domain suite."""
 from tests.fakes._fakes import (
     FakeClock,
-    FakeExposureLedger,
     FakeIndex,
-    FakeOutcomeSource,
     FakeProvider,
     FakeScanner,
     FakeStore,
@@ -11,6 +9,6 @@ from tests.fakes._fakes import (
 )
 
 __all__ = [
-    "FakeClock", "FakeExposureLedger", "FakeIndex", "FakeOutcomeSource",
-    "FakeProvider", "FakeScanner", "FakeStore", "FakeUtilityStore",
+    "FakeClock", "FakeIndex", "FakeProvider", "FakeScanner",
+    "FakeStore", "FakeUtilityStore",
 ]

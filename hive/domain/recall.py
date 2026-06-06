@@ -3,10 +3,10 @@ enforcement point.
 
 `RecallPipeline.recall(query, *, agent_id, agent_ctx) -> RecallResult` hides the
 whole encode → dense-cosine search → normalized-entropy abstain → utility-surface
-→ trace + exposure-ledger flow behind one narrow surface. It owns NO I/O: it
-composes injected ports (`EmbeddingProvider`, `VectorIndex`, `ExposureLedger`,
-`EpisodeReader`, `UtilityStore`) and two pure stage objects
-(`NormalizedEntropyGate`, `UtilitySurfacer`).
+flow behind one narrow surface. It owns NO I/O: it composes injected ports
+(`EmbeddingProvider`, `VectorIndex`, `EpisodeReader`, `UtilityStore`) and two pure
+stage objects (`NormalizedEntropyGate`, `UtilitySurfacer`). The move-#6 exposure
+ledger was removed with the producer — recall no longer records who it surfaced.
 
 PURE: stdlib `math` + `uuid` only. The purity gate (tests/test_purity.py) forbids
 sqlite3 | torch | subprocess | os | git | time here — so the whole read path is
@@ -22,13 +22,13 @@ from __future__ import annotations
 import logging
 import math
 import uuid
-from typing import Callable, Optional, Sequence
+from typing import Optional, Sequence
 
 from hive.domain.models import (
     CONFIDENT, AgentContext, Episode, RecallHit, RecallResult, Scored,
 )
 from hive.domain.ports import (
-    EmbeddingProvider, EpisodeReader, ExposureLedger, UtilityStore, VectorIndex,
+    EmbeddingProvider, EpisodeReader, UtilityStore, VectorIndex,
 )
 from hive.domain.surfacer import UtilitySurfacer
 
@@ -160,18 +160,16 @@ class RecallPipeline:
     def __init__(
         self, *, embedder: EmbeddingProvider, index: VectorIndex,
         gate: NormalizedEntropyGate, surfacer: UtilitySurfacer,
-        ledger: ExposureLedger, reader: EpisodeReader, utility_store: UtilityStore,
-        recall_top_n: int, now: Callable[[], int],
+        reader: EpisodeReader, utility_store: UtilityStore,
+        recall_top_n: int,
     ) -> None:
         self.embedder = embedder
         self.index = index
         self.gate = gate
         self.surfacer = surfacer
-        self.ledger = ledger
         self.reader = reader
         self.utility_store = utility_store
         self.recall_top_n = int(recall_top_n)
-        self.now = now
 
     def recall(self, query: str, *, agent_id: str,
                agent_ctx: AgentContext) -> RecallResult:
@@ -207,7 +205,7 @@ class RecallPipeline:
             return RecallResult.abstain(trace_id, entropy_norm, top_margin)
 
         # ── CONFIDENT path ────────────────────────────────────────────────────
-        # The whole surface step (resolve → margins → surface → exposure) fails
+        # The whole surface step (resolve → margins → surface) fails
         # closed to EMPTY_NO_DATA on ANY internal raise — no collaborator may throw
         # into the caller (AUDIT #C/#D). The masses are the SAME ones the gate
         # computed (shared helper); per-hit margins are taken over the RETURNED hit
@@ -244,19 +242,10 @@ class RecallPipeline:
             ordered = self.surfacer.order(scored, utility_map, family_scope=fam)
             hits = tuple(RecallHit(s.episode_id, by_eid[s.episode_id][1], s.sim)
                          for s in ordered)
-            rows = [(s.episode_id, by_eid[s.episode_id][0]) for s in ordered]
         except Exception as exc:                       # noqa: BLE001 — fail closed
             _log.error("recall surface failure (agent_id=%s): %r → EMPTY_NO_DATA",
                        agent_id, exc)
             return RecallResult.empty(trace_id)
-
-        # move-#6 exposure capture — fire-and-forget: a ledger failure logs WARN and
-        # the recall result is STILL returned (telemetry never endangers the hot path).
-        try:
-            self.ledger.record_exposure(trace_id, rows, self.now())
-        except Exception as exc:                       # noqa: BLE001
-            _log.warning("ledger.record_exposure dropped (trace=%s, n_rows=%d): %r "
-                         "— recall preserved", trace_id, len(rows), exc)
 
         _log.debug("CONFIDENT trace=%s n_hits=%d top_sim=%.4f",
                    trace_id, len(hits), hits[0].sim)

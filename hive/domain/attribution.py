@@ -1,18 +1,17 @@
-"""Attributor — pure credit policy [A3]. Splits a settled/clawed reward across the
-co-injected memories by recall_margin (co-occurrence discount), excludes the
-held-out isolation slice [A5], and emits CreditDelta posterior updates. It NEVER
-writes episode.weight (the reference's forbidden path is deleted) — credit lands
-only on the separate, versioned utility posterior.
+"""CreditDelta + PredictionBiasMonitor — the dormant utility-credit carrier and the
+§12 readiness instrument (guardrail-3, A6).
 
-Also home to PredictionBiasMonitor (guardrail-3 / §12 readiness instrument, A6).
+The credit-PRODUCER (the ``Attributor`` that split verifiable git outcomes into
+``CreditDelta`` posterior updates) was removed with the producer subsystem.
+``CreditDelta`` and ``PredictionBiasMonitor`` remain because the utility store still
+consumes the former (``apply_credit``) and the readiness apparatus still drives the
+latter — both observed-not-applied in Phase 1 (nothing feeds them at runtime now).
 """
 from __future__ import annotations
 
 import math
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, AbstractSet, Mapping, Sequence
-
-from hive.domain.models import SettledOutcome
+from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:                       # type-only: keeps the domain free of the port at runtime
     from hive.domain.ports import Clock, UtilityStore
@@ -27,43 +26,13 @@ class CreditDelta:
     source_agent: str = ""
 
 
-class Attributor:
-    """Pure: no SQL/git/clock."""
-
-    def split(
-        self,
-        outcome: SettledOutcome,
-        exposed: Sequence[tuple[int, float]],   # (episode_id, recall_margin)
-        isolation: AbstractSet[int],
-    ) -> list[CreditDelta]:
-        """O(n). share_i = magnitude · margin_i / Σmargins (all-zero ⇒ uniform 1/n).
-        sign +1 ⇒ d_wins=share, d_losses=0 ; −1 ⇒ swapped. Isolation ids excluded.
-        POST: Σ(d_wins+d_losses) == magnitude (rel-tol 1e-9) over the credited set."""
-        credited = [(int(eid), float(m)) for eid, m in exposed if int(eid) not in isolation]
-        n = len(credited)
-        if n == 0:
-            return []
-        total = math.fsum(max(m, 0.0) for _, m in credited)
-        out: list[CreditDelta] = []
-        for eid, margin in credited:
-            share = (outcome.magnitude * max(margin, 0.0) / total) if total > 0 else (outcome.magnitude / n)
-            d_wins = share if outcome.reward_sign == 1 else 0.0
-            d_losses = share if outcome.reward_sign == -1 else 0.0
-            out.append(CreditDelta(
-                episode_id=eid, family_scope=outcome.family_scope,
-                d_wins=d_wins, d_losses=d_losses, source_agent=outcome.source_agent,
-            ))
-        return out
-
-
 class PredictionBiasMonitor:
     """Guardrail-3 / §12 Phase-2 readiness instrument [A6]. PURE (clock injected, no
     SQL/git). Measures the mean signed gap between what the ranker PREDICTED (the Beta
     posterior mean it would rank by) and what REALITY DELIVERED (the settled reward)
     over the window. Positive ⇒ the ranker over-predicts utility relative to reality
-    ("stale, the codebase moved underneath it"); the producer tick logs WARN when
-    |divergence| > utility.prediction_bias_threshold. Observed-not-applied in Phase 1
-    — it instruments readiness, it never moves ranking."""
+    ("stale, the codebase moved underneath it"). Observed-not-applied in Phase 1 — it
+    instruments readiness, it never moves ranking."""
 
     __slots__ = ("_store", "_clock")
 

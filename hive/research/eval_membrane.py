@@ -148,8 +148,8 @@ class _EvalService:
             f_min=f_min, f_max=f_max, rng=random.Random(0))
         self.pipeline = RecallPipeline(
             embedder=embedder, index=self.index, gate=gate, surfacer=surfacer,
-            ledger=self.store, reader=self.store, utility_store=self.util,
-            recall_top_n=int(recall_top_n), now=lambda: 0)
+            reader=self.store, utility_store=self.util,
+            recall_top_n=int(recall_top_n))
         self._ts = 0
 
     def write(self, text: str, *, weight: float = 1.0) -> int:

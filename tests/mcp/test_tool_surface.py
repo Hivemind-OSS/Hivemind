@@ -1,6 +1,7 @@
-"""M06 protocol surface: exactly-8 tools, the dropped-7 absent, JSON-RPC error
-semantics, the schema-enforcement belt (malformed call never reaches a port — ★),
-and loop-survival on a raising handler (stack never returned to the agent)."""
+"""M06 protocol surface: exactly-5 tools, the dropped verbs absent (the AgentCortex-7
+AND the removed approval queue hive_pending/approve/reject), JSON-RPC error semantics,
+the schema-enforcement belt (malformed call never reaches a port — ★), and loop-survival
+on a raising handler (stack never returned to the agent)."""
 from __future__ import annotations
 
 import io
@@ -15,21 +16,21 @@ from hive.domain.secret_scan import scan as _scan
 from tests.fakes._fakes import FakeIndex
 from tests.mcp._helpers import build_real_server, content, is_error, tool_call
 
-_EIGHT = {"hive_write", "hive_recall", "hive_fetch", "hive_pending",
-          "hive_approve", "hive_reject", "hive_init", "hive_health"}
-_DROPPED = {"hive_consolidate", "hive_schemas", "hive_recall_cold",
+_FIVE = {"hive_write", "hive_recall", "hive_fetch", "hive_init", "hive_health"}
+_DROPPED = {"hive_pending", "hive_approve", "hive_reject",
+            "hive_consolidate", "hive_schemas", "hive_recall_cold",
             "hive_restore_cold", "hive_reconsolidate", "hive_audit", "hive_outcome"}
 
 
-def test_tool_list_is_exactly_8():
+def test_tool_list_is_exactly_5():
     server, _ = build_real_server()
     resp = server.handle(MCPRequest(1, "tools/list", {}))
     names = {t["name"] for t in resp.result["tools"]}
-    assert names == _EIGHT
-    assert len(resp.result["tools"]) == 8
+    assert names == _FIVE
+    assert len(resp.result["tools"]) == 5
     assert names.isdisjoint(_DROPPED)
     # the static table and the live reply are the same source
-    assert {t["name"] for t in TOOL_DEFINITIONS} == _EIGHT
+    assert {t["name"] for t in TOOL_DEFINITIONS} == _FIVE
 
 
 def test_initialize_and_ping():
@@ -56,23 +57,11 @@ def test_unknown_tool_is_jsonrpc_error():
 # ── ★ schema belt: a malformed call returns isError WITHOUT touching a port ──────
 class _CountingAdmission:
     def __init__(self):
-        self.write_calls = self.approve_calls = self.list_calls = self.reject_calls = 0
+        self.write_calls = 0
 
     def write(self, *a, **k):
         self.write_calls += 1
-        return WriteResult("pending", 1, "deadbeef", _scan("ok"))
-
-    def approve(self, ids, approver, **k):
-        self.approve_calls += 1
-        return [], []
-
-    def list_pending(self, since=0):
-        self.list_calls += 1
-        return []
-
-    def reject(self, ids, **k):
-        self.reject_calls += 1
-        return [], []
+        return WriteResult("approved", 1, "deadbeef", _scan("ok"))
 
 
 def _server_with(admission):
@@ -85,13 +74,13 @@ def test_malformed_call_rejected_before_port_touched():
     adm = _CountingAdmission()
     server = _server_with(adm)
     # hive_write with NO `text` (required) ⇒ isError, admission.write never called.
-    r1 = tool_call(server, "hive_write", {})
+    r1 = tool_call(server, "hive_write", {"approved_by": "u"})
     assert is_error(r1)
     assert adm.write_calls == 0
-    # hive_approve with NO `approver` (required) ⇒ isError, admission.approve never called.
-    r2 = tool_call(server, "hive_approve", {"ids": [1, 2]})
+    # hive_write with NO `approved_by` (required) ⇒ isError, admission.write never called.
+    r2 = tool_call(server, "hive_write", {"text": "an insight"})
     assert is_error(r2)
-    assert adm.approve_calls == 0
+    assert adm.write_calls == 0
 
 
 def test_bad_enum_rejected_by_schema():

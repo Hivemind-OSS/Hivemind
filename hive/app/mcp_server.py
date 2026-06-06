@@ -1,10 +1,12 @@
 """HiveMCPServer — the single MCP/JSON-RPC trust boundary (M06 / C7).
 
-A thin driving adapter (hexagonal): it maps eight ``hive_*`` JSON-RPC verbs onto the
+A thin driving adapter (hexagonal): it maps five ``hive_*`` JSON-RPC verbs onto the
 already-built domain ports and owns NO data. PORT+EXTEND of the AgentCortex
 ``serving/mcp_server.py`` stdio loop — KEEP the MCPRequest/MCPResponse/_err envelopes,
 the dispatch table, ``tools/list = TOOL_DEFINITIONS``, and the
-``{content:[{type:text,text:json}], isError}`` framing.
+``{content:[{type:text,text:json}], isError}`` framing. The server-side approval queue
+(hive_pending/approve/reject) was removed — capture is client-gated: a clean hive_write
+is scanned, then stored APPROVED in one call, attributed to the caller's ``approved_by``.
 
 Two load-bearing belts live HERE (in addition to the store-query suspenders):
   1. **Schema enforcement** — ``_validate_args`` runs over TOOL_DEFINITIONS BEFORE any
@@ -19,22 +21,26 @@ recall envelope carries ``trace_id`` on hit AND abstain (the §11 move-#6 join k
 The stdio loop never crashes on a tool exception — the stack is logged (stderr/file),
 never returned to the agent; stdout carries only JSON-RPC.
 
-NOT pure: this is the ``hive/app`` adapter layer (json/os/sys permitted). The process
-entrypoint (argparse + real-adapter wiring) is deferred to the container chunk (P1.13);
-this module is the surface + handlers + loop, wired from injected ports.
+NOT pure: this is the ``hive/app`` adapter layer (json/os/sys permitted). The module is
+the surface + handlers + loop (wired from injected ports) PLUS the per-session process
+entrypoint ``main()`` at the bottom — ``python -m hive.app.mcp_server``, the Tier-0
+transport an IDE execs inside the warm container. It reuses ``build_container`` but is
+marker-INERT: it NEVER touches the PID-1 boot readiness markers the container healthcheck
+reads (that policy stays in ``hive.tools.entrypoint``, the long-lived ENTRYPOINT).
 """
 from __future__ import annotations
 
 import json
 import logging
 import os
+import sys
 from dataclasses import dataclass
-from typing import Any, Callable, Optional
+from typing import Any, Callable, Mapping, Optional
 
+from hive.app.onboard import onboarding_hint, provenance_banner
 from hive.app.tool_defs import TOOL_DEFINITIONS
 from hive.domain.errors import SecretRefused
 from hive.domain.models import CONFIDENT, AgentContext
-from hive.domain.secret_scan import _REDACTION
 
 _log = logging.getLogger("hive.app.mcp_server")
 
@@ -45,6 +51,13 @@ SERVER_VERSION = "1.0.0"
 _PREVIEW_LEN = 160
 # inputSchema by tool name — the single source for the pre-dispatch validation belt.
 _SCHEMA_BY_NAME: dict[str, dict] = {t["name"]: t["inputSchema"] for t in TOOL_DEFINITIONS}
+
+# §7 V4 substrate: the capture verb(s) whose server-arrival is stamped as
+# meta[hook:last_seen:<tool>], so hive_health.hooks_seen lets the onboarding agent confirm a
+# Tier-2 OS hook actually reached the server. ONLY hive_write (capture) is stamped — recall/
+# health/init/fetch stay pure reads (no write-amplification on the read path).
+_HOOK_SEEN_PREFIX = "hook:last_seen:"
+_HOOK_SEEN_TOOLS: frozenset = frozenset({"hive_write"})
 
 
 # ── JSON-RPC envelopes (PORT) ────────────────────────────────────────────────
@@ -151,6 +164,24 @@ def _scan_report(verdict) -> dict:
             "n_findings": len(verdict.findings)}
 
 
+def _manifest_report(m) -> dict:
+    """Serialize the abstract HookManifest (the harness-independent 'manifest JSON' the
+    generic profile self-applies). Explicit — _json_default would str() the dataclass."""
+    return {"manifest_version": m.manifest_version,
+            "hooks": [{"event": h.event, "action": h.action, "directive": h.directive}
+                      for h in m.hooks]}
+
+
+def _recipe_report(r) -> dict:
+    """Serialize the per-harness HarnessRecipe: resolved tier, the Tier-≥1 rules addendum,
+    the NL playbook, and (Tier-2 only) the hook files the agent materializes."""
+    return {"harness": r.harness, "resolved_tier": r.resolved_tier,
+            "manifest_version": r.manifest_version, "rules_addendum": r.rules_addendum,
+            "playbook": r.playbook,
+            "hook_files": [{"path": f.path, "content": f.content, "mechanism": f.mechanism}
+                           for f in r.hook_files]}
+
+
 def _abstain_note(state: str) -> str:
     """A neutral, non-instruction note for an empty/abstained recall."""
     if state == "EMPTY_NO_DATA":
@@ -165,7 +196,7 @@ class HiveMCPServer:
                  identity: ServerIdentity, now: Callable[[], int],
                  started_ts: int = 0, db_path: str = "",
                  trailer_key: str = "Hive-Trace") -> None:
-        self.admission = admission          # AdmissionService: write/list_pending/approve/reject
+        self.admission = admission          # AdmissionService: write (client-gated, direct-approved)
         self.recall = recall                # RecallPipeline: recall(query,*,agent_id,agent_ctx)
         self.store = store                  # EpisodeStore: get_episode (belt) / fetch / counts
         self.embedder = embedder            # EmbeddingProvider: health probes (d, w_version, name)
@@ -179,9 +210,6 @@ class HiveMCPServer:
             "hive_write": self._handle_write,
             "hive_recall": self._handle_recall,
             "hive_fetch": self._handle_fetch,
-            "hive_pending": self._handle_pending,
-            "hive_approve": self._handle_approve,
-            "hive_reject": self._handle_reject,
             "hive_init": self._handle_init,
             "hive_health": self._handle_health,
         }
@@ -226,6 +254,7 @@ class HiveMCPServer:
             return self._tool_error(req.id, f"invalid arguments: {verr}")
         try:
             content = handler(args)
+            self._note_hook_seen(name)               # V4: best-effort, never fails the call
             return self._tool_result(req.id, content, is_error=False)
         except SecretRefused:
             # only hive_write raises this and it returns its own refused envelope;
@@ -240,20 +269,24 @@ class HiveMCPServer:
     # ── tool handlers (args read permissively; _validate_args is the only guard) ──
     def _handle_write(self, args: dict) -> dict:
         text = args.get("text")
+        approved_by = args.get("approved_by") or ""   # required by the schema belt
         source = args.get("source") or ""
         tags = args.get("tags") or []
         tags_str = ",".join(str(t) for t in tags) if isinstance(tags, list) else str(tags)
         proposed_by = args.get("proposed_by") or self.identity.agent_id
         try:
-            res = self.admission.write(text, source=source, proposed_by=proposed_by,
+            res = self.admission.write(text, approved_by=approved_by,
+                                       proposed_by=proposed_by, source=source,
                                        tags=tags_str)
         except SecretRefused as e:
-            # REFUSE: nothing staged (0 rows). Envelope carries rule NAMES, never bytes.
+            # REFUSE: nothing written (0 rows). Envelope carries rule NAMES, never bytes.
             return {"status": "refused", "reason": str(e),
                     "scan": {"action": "refuse", "rules": e.rules,
                              "n_findings": e.n_findings}}
-        out: dict = {"status": res.status, "id": res.pending_id,
-                     "content_hash": res.content_hash, "scan": _scan_report(res.scan)}
+        # CLEAN/REDACT both land APPROVED + recallable in one call (client-gated).
+        out: dict = {"status": res.status, "id": res.episode_id,
+                     "content_hash": res.content_hash, "scan": _scan_report(res.scan),
+                     "approved_by": approved_by}
         if res.status == "redacted" and res.scan.redacted_text is not None:
             out["redacted_preview"] = _preview(res.scan.redacted_text)
         return out
@@ -291,37 +324,13 @@ class HiveMCPServer:
         text = self.store.fetch(h)                           # clean miss → None, never raises
         return {"found": text is not None, "text": text}
 
-    def _handle_pending(self, args: dict) -> dict:
-        since = int(args.get("since") or 0)
-        pend: list[dict] = []
-        for r in self.admission.list_pending(since=since):
-            # REDACT provenance is not a DB column in v-min; the stored text is
-            # clean-by-construction — report REDACT iff the mask marker is present.
-            verdict = "REDACT" if _REDACTION in (r.text or "") else "PASS"
-            pend.append({"id": r.id, "text_preview": _preview(r.text),
-                         "proposed_by": r.proposed_by, "ts": r.ts,
-                         "scan_verdict": verdict})
-        return {"pending": pend, "count": len(pend)}
-
-    def _handle_approve(self, args: dict) -> dict:
-        ids = [int(i) for i in (args.get("ids") or [])]
-        approver = args.get("approver") or ""
-        approved, skipped = self.admission.approve(ids, approver)
-        return {"approved": approved, "skipped": skipped, "approver": approver}
-
-    def _handle_reject(self, args: dict) -> dict:
-        ids = [int(i) for i in (args.get("ids") or [])]
-        keep = bool(args.get("keep_rejected") or False)
-        rejected, skipped = self.admission.reject(ids, keep_rejected=keep)
-        return {"rejected": rejected, "skipped": skipped}
-
     def _handle_init(self, args: dict) -> dict:
         repo_path = args.get("repo_path") or ""
         harness = args.get("harness") or "generic"
         rules_file = args.get("rules_file")
         confirm_hash = args.get("confirm_hash")
         if confirm_hash:                                     # phase 2: hash-verified link
-            res = self.install_planner.confirm(repo_path, bytes.fromhex(confirm_hash))
+            res = self.install_planner.confirm(repo_path, bytes.fromhex(confirm_hash), harness)
             out = {"phase": 2}
             out.update(res)
             return out
@@ -332,7 +341,12 @@ class HiveMCPServer:
                 "trailer_key": block.trailer_key,           # == producer.stamp_trailer (single source)
                 "block_version": block.block_version,
                 "expected_confirm_hash": plan.expected_confirm_hash.hex(),
-                "watch_warning": plan.watch_warning}
+                "manifest": _manifest_report(plan.manifest),
+                "recipe": _recipe_report(plan.recipe),
+                # §5.3.2: the completion marker the agent stamps LAST (after the verify
+                # gate), OUTSIDE the hashed block — surfaced here so phase-1 hands over the
+                # whole bundle in one round-trip. NOT written by the server (no repo FS).
+                "provenance_banner": provenance_banner(plan.harness, plan.recipe.resolved_tier)}
 
     def _handle_health(self, args: dict) -> dict:
         repo_path = args.get("repo_path")
@@ -350,10 +364,15 @@ class HiveMCPServer:
                 "index_authoritative": bool(self.recall.index.is_authoritative()),
                 "uptime_s": max(0, int(self.now()) - self.started_ts),
                 "trailer_key": self.trailer_key}
+            snap["hooks_seen"] = self._hooks_seen()          # §7 V4: last-seen tick per capture verb
             if repo_path is not None:
                 linked, link = self._link_status(repo_path)
                 snap["linked"] = linked
                 snap["link"] = link
+                if not linked:                       # §5.2 first-touch: hand the agent its next step
+                    snap["onboarding"] = onboarding_hint()
+                else:                                # §5.3.3 re-touch: the bootstrap short-circuit
+                    snap["setup"] = {"complete": True, "next": None}
             return snap
         except Exception as e:                               # fail-closed subset ONLY
             _log.error("mcp.health_probe_fail", extra={"event": "mcp.health_probe_fail",
@@ -381,6 +400,37 @@ class HiveMCPServer:
             return bool(linked), link
         except Exception:
             return False, None
+
+    # ── V4 hook-seen substrate (§7) ────────────────────────────────────────────
+    def _note_hook_seen(self, tool: str) -> None:
+        """Stamp meta[hook:last_seen:<tool>] for a capture verb after it is served, so the
+        agent can confirm a Tier-2 OS hook reached the server. Best-effort and fully self-
+        contained: a stamp failure is logged and SWALLOWED — it must never convert a
+        successful capture into a tool error. // O(1)."""
+        if tool not in _HOOK_SEEN_TOOLS:
+            return
+        try:
+            self.store.meta_set(f"{_HOOK_SEEN_PREFIX}{tool}", str(int(self.now())))
+        except Exception:                                    # telemetry must never break a capture
+            _log.warning("mcp.hook_seen_stamp_failed", extra={"event": "mcp.hook_seen_stamp_failed",
+                         "tool": tool}, exc_info=True)
+
+    def _hooks_seen(self) -> dict:
+        """The read side: last-seen tick per capture verb (a verb absent ⇒ never seen). A
+        pure read; a meta failure degrades to ``{}`` rather than failing health. // O(1)."""
+        out: dict[str, int] = {}
+        for tool in _HOOK_SEEN_TOOLS:
+            try:
+                raw = self.store.meta_get(f"{_HOOK_SEEN_PREFIX}{tool}")
+            except Exception:
+                continue
+            if raw is None:
+                continue
+            try:
+                out[tool] = int(raw)
+            except (TypeError, ValueError):                  # a non-int blob ⇒ skip, never raise
+                continue
+        return out
 
 
 # ── stdio loop (PORT verbatim; stderr-clean so stdout JSON-RPC is unpolluted) ──
@@ -426,3 +476,164 @@ def run_stdio(server: HiveMCPServer, in_stream, out_stream) -> None:
             resp = MCPResponse(id=req.id, error=_err(-32603, f"internal error: {type(e).__name__}"))
         out_stream.write(resp.to_json() + "\n")
         out_stream.flush()
+
+
+# ── per-session process entrypoint (P0 — the Tier-0 connect transport) ─────────
+# ``python -m hive.app.mcp_server`` is a PER-SESSION MCP server an IDE's ``.mcp.json`` execs
+# INSIDE the already-warm container, e.g.:
+#     docker compose -f compose.yaml exec -T hive-server \
+#         python -m hive.app.mcp_server --db /data/shared.db --tenant "$HIVE_TENANT_ID"
+# It reuses ``build_container``'s assembly against the shared ``/data/shared.db`` (migration is
+# idempotent); then — because NO memory is shared with PID 1 — it builds its OWN in-RAM index
+# from the store and warms its OWN embedder once (a per-session cost, then warm) before serving
+# ``run_stdio`` on its own stdin/stdout. N IDE windows ⇒ N light processes sharing the one WAL.
+#
+# It deliberately does NOT replicate the container ENTRYPOINT's readiness-marker policy
+# (``hive.tools.entrypoint._invalidate_ready`` / ``_mark_ready``): ``boot:serve_pid`` /
+# ``boot:serve_starttime`` / ``boot:embedder_loaded`` identify PID 1 for the container
+# HEALTHCHECK, and a per-session exec'd process (NOT PID 1, reusing the persistent volume)
+# writing OR clearing them would corrupt the liveness identity the healthcheck reads. This
+# entry is marker-INERT — it neither stamps nor invalidates them; liveness stays PID 1's alone.
+
+# sysexits.h boot contract — MIRRORS ``hive.tools.entrypoint`` (an exit code cannot lie like a
+# log line can; an orchestrator gates on it). Redefined locally rather than imported so the
+# ``hive.app`` surface does not depend up the stack on the ``hive.tools`` boot adapter.
+EX_OK = 0
+EX_UNAVAILABLE = 69
+EX_SOFTWARE = 70
+EX_CONFIG = 78
+
+_DEFAULT_DB_PATH = "/data/shared.db"
+_DEFAULT_AGENT_ID = "default-agent"
+
+
+def _configure_logging(level: int = logging.INFO) -> None:
+    """Bind the structured-JSON-to-stderr handler onto the ``hive`` logger (stdout is the
+    JSON-RPC channel). Idempotent; a logging-setup failure NEVER aborts the boot. // O(1)."""
+    try:
+        from hive.app.observability import configure_json_logging  # noqa: PLC0415 — lazy
+        configure_json_logging(level=int(level), stream=True)
+    except Exception as exc:                       # noqa: BLE001 — logging setup never aborts boot
+        _log.warning("mcp_server.log_config_failed kind=%s", type(exc).__name__)
+
+
+def _resolve_identity(tenant: Optional[str], db: Optional[str], agent: Optional[str],
+                      env: Mapping[str, str]) -> Optional[tuple[str, str, str]]:
+    """Resolve ``(tenant_id, db_path, agent_id)`` — CLI arg takes precedence, then env, then a
+    safe default for db/agent. ``tenant_id`` is the one HARD-required value (the single-tenant
+    boundary, mirroring ``entrypoint._resolve_env``); returns None iff it is absent in BOTH the
+    arg and env (the caller maps that to EX_CONFIG). NEVER echoes an env *value* (secret-safe).
+    // O(1)."""
+    tenant_id = (tenant or env.get("HIVE_TENANT_ID") or "").strip()
+    if not tenant_id:
+        _log.error("mcp_server.missing_required arg/var=tenant (pass --tenant or HIVE_TENANT_ID) "
+                   "code=%d", EX_CONFIG)
+        return None
+    db_path = (db or env.get("HIVE_STORE__DB_PATH") or "").strip() or _DEFAULT_DB_PATH
+    agent_id = (agent or env.get("HIVE_AGENT_ID") or "").strip() or _DEFAULT_AGENT_ID
+    return tenant_id, db_path, agent_id
+
+
+def main(argv: Optional[list[str]] = None, *, env: Optional[Mapping[str, str]] = None,
+         build_container_fn: Optional[Callable[..., Any]] = None,
+         serve: Optional[Callable[[Any], None]] = None) -> int:
+    """Boot a PER-SESSION ``HiveMCPServer`` and serve it on stdio; return a sysexits exit code.
+
+    Boot order MIRRORS the container entrypoint MINUS the readiness markers:
+        config → build_container → migrate → build_index → warm_embedder → make_server → serve
+
+    ``build_container_fn`` (default ``hive.app.container.build_container``, imported LAZILY to
+    dodge the ``container → mcp_server`` import cycle) and ``serve`` (default ``run_stdio`` on
+    the real std streams) are injection seams so the order, the fail-fast exit codes, and the
+    marker-INERT policy are unit-testable with no torch and no real stdio. Never raises out of
+    the boot path — every failure is logged and converted to an exit code so stdout (the
+    JSON-RPC channel) stays clean. // O(1) control flow."""
+    import argparse                              # stdlib; lazy keeps the module-import surface light
+
+    env = os.environ if env is None else env
+    parser = argparse.ArgumentParser(
+        prog="hive.app.mcp_server",
+        description="Per-session Hive MCP server (stdio), exec'd inside the warm container.")
+    parser.add_argument("--db", default=None,
+                        help="shared SQLite store path (default: $HIVE_STORE__DB_PATH or /data/shared.db)")
+    parser.add_argument("--tenant", default=None,
+                        help="tenant id — REQUIRED (default: $HIVE_TENANT_ID)")
+    parser.add_argument("--agent", default=None,
+                        help="agent id, stamped as proposed_by (default: $HIVE_AGENT_ID or default-agent)")
+    args = parser.parse_args(argv)
+
+    _configure_logging()                          # JSON→stderr before anything can fail
+
+    # ── config.loaded (EX_CONFIG on missing-tenant OR validation failure) ──
+    resolved = _resolve_identity(args.tenant, args.db, args.agent, env)
+    if resolved is None:                          # ← removing this guard is the missing-tenant mutation
+        return EX_CONFIG
+    tenant_id, db_path, agent_id = resolved
+
+    # Lazy imports: ``container`` imports THIS module (HiveMCPServer/ServerIdentity), so a
+    # module-level ``from hive.app.container import build_container`` would be a circular import.
+    try:
+        from hive.app.config import Config        # noqa: PLC0415 — lazy
+    except Exception as exc:                       # noqa: BLE001
+        _log.error("mcp_server.config_import_failed kind=%s code=%d", type(exc).__name__, EX_SOFTWARE)
+        return EX_SOFTWARE
+    try:
+        cfg = Config.load(db_path=db_path, env=env, runtime={"tenant_id": tenant_id})
+    except Exception as exc:                       # noqa: BLE001 — bad config is EX_CONFIG
+        _log.error("mcp_server.config_invalid kind=%s code=%d", type(exc).__name__, EX_CONFIG)
+        return EX_CONFIG
+    _configure_logging(int(getattr(cfg.obs, "log_level", logging.INFO)))  # operator level now live
+    _log.info("mcp_server.config_loaded tenant_id=%s db_path=%s", tenant_id, db_path)
+
+    if build_container_fn is None:
+        try:
+            from hive.app.container import build_container  # noqa: PLC0415 — lazy (breaks the cycle)
+        except Exception as exc:                   # noqa: BLE001
+            _log.error("mcp_server.container_import_failed kind=%s code=%d",
+                       type(exc).__name__, EX_SOFTWARE)
+            return EX_SOFTWARE
+        build_container_fn = build_container
+    try:
+        container = build_container_fn(cfg, tenant_id=tenant_id, agent_id=agent_id)
+    except Exception as exc:                       # noqa: BLE001 — assembler failure
+        _log.error("mcp_server.assemble_failed kind=%s code=%d", type(exc).__name__, EX_SOFTWARE)
+        return EX_SOFTWARE
+
+    # ── boot the per-session server. NO _invalidate_ready / _mark_ready around this sequence —
+    #    see the banner above. The boot readiness markers belong to PID 1 (the ENTRYPOINT). ──
+    try:
+        container.migrate()                        # idempotent verify vs the already-migrated shared DB
+    except Exception as exc:                       # noqa: BLE001
+        _log.error("mcp_server.migrate_failed kind=%s code=%d", type(exc).__name__, EX_SOFTWARE)
+        return EX_SOFTWARE
+    try:
+        container.build_index()                    # THIS process's own in-RAM index, from approved rows
+    except Exception as exc:                       # noqa: BLE001
+        _log.error("mcp_server.index_failed kind=%s code=%d", type(exc).__name__, EX_SOFTWARE)
+        return EX_SOFTWARE
+    try:
+        embedder = container.warm_embedder()       # THIS process's own embedder, warmed once
+    except Exception as exc:                       # noqa: BLE001 — dead embedder
+        _log.error("mcp_server.embedder_warm_failed kind=%s code=%d",
+                   type(exc).__name__, EX_UNAVAILABLE)
+        return EX_UNAVAILABLE
+    if not bool(getattr(embedder, "loaded", False)):   # healthy ≡ resident — a cold embedder cannot serve
+        _log.error("mcp_server.embedder_not_resident code=%d", EX_UNAVAILABLE)
+        return EX_UNAVAILABLE
+    try:
+        server = container.make_server()
+    except Exception as exc:                       # noqa: BLE001
+        _log.error("mcp_server.make_server_failed kind=%s code=%d", type(exc).__name__, EX_SOFTWARE)
+        return EX_SOFTWARE
+
+    _log.info("mcp_server.serving tenant_id=%s db_path=%s agent_id=%s (per-session; markers untouched)",
+              tenant_id, db_path, agent_id)
+    if serve is None:
+        def serve(s: Any) -> None:                 # default seam: blocking real-stdio serve
+            run_stdio(s, sys.stdin, sys.stdout)
+    serve(server)
+    return EX_OK
+
+
+if __name__ == "__main__":  # pragma: no cover — module entry (``python -m hive.app.mcp_server``)
+    raise SystemExit(main(sys.argv[1:]))

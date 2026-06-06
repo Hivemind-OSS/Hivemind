@@ -5,18 +5,19 @@ from __future__ import annotations
 
 import hashlib
 from contextlib import contextmanager
-from dataclasses import replace
 from typing import Iterator, Optional, Sequence
 
 import numpy as np
 
 from hive.domain.models import (
     RULES_BLOCK_END, RULES_BLOCK_START,
-    Episode, InstallPlan, OutcomeRow, RecallWindow, RulesBlock, SettledExposure,
-    SourcePoll, UtilityPosterior, WindowTrace, content_hash, rules_block_version_marker,
+    Episode, InstallPlan, RulesBlock, SettledExposure,
+    UtilityPosterior, content_hash, rules_block_version_marker,
 )
 from hive.domain.secret_scan import REFUSE, ScanVerdict
 from hive.domain.secret_scan import scan as _scan
+
+from hive.app.onboard import HOOK_MANIFEST, build_recipe, resolve_profile
 
 
 class FakeClock:
@@ -121,21 +122,6 @@ class FakeIndex:
         return len(self._rows)
 
 
-class FakeExposureLedger:
-    """Recall-side write spy: records (trace_id, [(eid, margin)])."""
-    def __init__(self) -> None:
-        self.calls: list[tuple[str, list[tuple[int, float]], int]] = []
-        self._rows: dict[str, list[tuple[int, float]]] = {}
-
-    def record_exposure(self, trace_id: str, rows: Sequence[tuple[int, float]], ts: int) -> None:
-        rows = [(int(e), float(m)) for e, m in rows]
-        self.calls.append((trace_id, rows, int(ts)))
-        self._rows[trace_id] = rows
-
-    def exposed_for(self, trace_id: str) -> list[tuple[int, float]]:
-        return list(self._rows.get(trace_id, []))
-
-
 def make_episode(episode_id: int, text: str, weight: float = 1.0,
                  *, status: str = "approved") -> Episode:
     """A valid (self-asserting) Episode for resolve-seam tests — content_hash binds
@@ -166,67 +152,15 @@ class FakeEpisodeReader:
 
 
 class FakeStore:
-    """EpisodeStore ledger group, in-memory (one logical DB)."""
+    """EpisodeStore slice (transaction + meta kv), in-memory. The exposure /
+    task_outcomes ledger methods were removed with the producer subsystem."""
     def __init__(self) -> None:
-        self._exposure: dict[str, list[tuple[int, float]]] = {}
-        self._exposure_ts: dict[str, int] = {}
-        self._exposure_taskref: dict[str, Optional[str]] = {}
-        self._outcomes: dict[tuple[str, str], OutcomeRow] = {}
         self._meta: dict[str, str] = {}
 
     @contextmanager
     def transaction(self) -> Iterator[None]:
         yield  # fakes are single-threaded in-memory; no real tx needed
 
-    def recall_window(self, min_ts: int) -> RecallWindow:
-        return RecallWindow(items=tuple(
-            WindowTrace(t, self._exposure_ts.get(t, 0))
-            for t in self._exposure
-            if self._exposure_taskref.get(t) is None and self._exposure_ts.get(t, 0) >= min_ts))
-
-    # exposure
-    def record_exposure(self, trace_id: str, rows: Sequence[tuple[int, float]], ts: int) -> None:
-        self._exposure[trace_id] = [(int(e), float(m)) for e, m in rows]
-        self._exposure_ts[trace_id] = int(ts)
-        self._exposure_taskref.setdefault(trace_id, None)
-
-    def exposed_for(self, trace_id: str) -> list[tuple[int, float]]:
-        return list(self._exposure.get(trace_id, []))
-
-    def set_task_ref(self, trace_id: str, task_ref: str) -> None:
-        self._exposure_taskref[trace_id] = task_ref
-
-    def task_ref_of(self, trace_id: str) -> Optional[str]:
-        return self._exposure_taskref.get(trace_id)
-
-    # task_outcomes
-    def link_task(self, row: OutcomeRow) -> None:
-        self._outcomes[(row.task_ref, row.trace_id)] = row  # PK upsert
-
-    def get_outcome(self, task_ref: str, trace_id: str) -> Optional[OutcomeRow]:
-        return self._outcomes.get((task_ref, trace_id))
-
-    def outcomes_for_task(self, task_ref: str) -> list[OutcomeRow]:
-        return [r for (tr, _), r in self._outcomes.items() if tr == task_ref]
-
-    def all_live_outcomes(self) -> list[OutcomeRow]:
-        return [r for r in self._outcomes.values() if r.state in ("provisional", "settled_pos")]
-
-    def due_settlements(self, now: int) -> list[str]:
-        return sorted({
-            tr for (tr, _), r in self._outcomes.items()
-            if r.state == "provisional" and r.settle_at <= now
-        })
-
-    def settle(self, task_ref: str, trace_id: str, reward: float) -> None:
-        r = self._outcomes[(task_ref, trace_id)]
-        self._outcomes[(task_ref, trace_id)] = replace(r, state="settled_pos", reward=reward)
-
-    def clawback(self, task_ref: str, trace_id: str, reward: float) -> None:
-        r = self._outcomes[(task_ref, trace_id)]
-        self._outcomes[(task_ref, trace_id)] = replace(r, state="clawed_back", reward=reward)
-
-    # meta
     def meta_get(self, key: str) -> Optional[str]:
         return self._meta.get(key)
 
@@ -304,17 +238,6 @@ class FakeUtilityStore:
             p["losses"] = 0.0
 
 
-class FakeOutcomeSource:
-    def __init__(self, poll_result: Optional[SourcePoll] = None, *, raises: bool = False) -> None:
-        self._poll = poll_result or SourcePoll(repo_remote="fake")
-        self._raises = raises
-
-    def poll(self) -> SourcePoll:
-        if self._raises:
-            raise RuntimeError("simulated bad repo")
-        return self._poll
-
-
 class FakeScanner:
     """SecretScanner wrapping the real deterministic scan. ``mode`` selects the
     secret disposition: REFUSE (default, fail-closed) or REDACT (mask-and-stage)."""
@@ -354,9 +277,9 @@ class FakeInstallPlanner:
         self._expected[repo_path] = block.block_hash      # remember what a faithful install hashes to
         return InstallPlan(rules_file=rules_file or "CLAUDE.md", harness=harness,
                            rules_block=block, expected_confirm_hash=block.block_hash,
-                           watch_warning=None)
+                           manifest=HOOK_MANIFEST, recipe=build_recipe(harness))
 
-    def confirm(self, repo_path: str, confirm_hash: bytes) -> dict:
+    def confirm(self, repo_path: str, confirm_hash: bytes, harness: str = "generic") -> dict:
         # LIE-PROOF (mirror the real adapter): link ONLY on an exact hash match; a stale or
         # un-planned hash writes nothing and reports stale_or_wrong_block.
         expected = self._expected.get(repo_path)
@@ -364,7 +287,10 @@ class FakeInstallPlanner:
             return {"linked": False, "error": "stale_or_wrong_block",
                     "expected": expected.hex() if expected is not None else None}
         self.linked[repo_path] = confirm_hash
-        return {"linked": True, "rules_file": "CLAUDE.md", "error": None}
+        profile = resolve_profile(harness)               # mirror the real link record (§6)
+        return {"linked": True, "rules_file": "CLAUDE.md", "error": None,
+                "link": {"manifest_version": HOOK_MANIFEST.manifest_version,
+                         "harness": profile.harness, "tier": profile.max_tier}}
 
     def link_status(self, repo_path: str):
         if repo_path in self.linked:

@@ -8,9 +8,7 @@ from hive.domain.models import (
     ABSTAIN, CONFIDENT, EMPTY_NO_DATA, RecallHit, RecallResult,
 )
 from tests.fakes._fakes import FakeIndex
-from tests.mcp._helpers import (
-    approve, build_real_server, content, tool_call, write_text,
-)
+from tests.mcp._helpers import build_real_server, content, tool_call, write_text
 
 
 class _StubRecall:
@@ -64,8 +62,10 @@ def test_recall_filters_to_approved_only():
     an empty post-belt set is an ABSTAIN, never a confident-empty. Deleting the
     belt guard surfaces the pending row ⇒ this assertion fails (RULE-2 mut #2)."""
     server, _ = build_real_server()
-    w = write_text(server, "staged but NOT approved")      # status=pending
-    eid = w["id"]
+    # a genuine PENDING row via the store substrate (the tool path always approves now);
+    # the belt must still drop a non-approved candidate the stub recall surfaces.
+    eid, _ = server.store.stage(text="staged but NOT approved", weight=1.0,
+                                source="", tags="", proposed_by="x")
     server.recall = _StubRecall(_confident(eid, "staged but NOT approved"))
     env = content(tool_call(server, "hive_recall", {"query": "q"}))
     assert env["reference_context"] == []                  # pending row filtered out
@@ -74,9 +74,8 @@ def test_recall_filters_to_approved_only():
 
 def test_recall_surfaces_approved_hit_through_belt():
     server, _ = build_real_server()
-    w = write_text(server, "an approved memory")
+    w = write_text(server, "an approved memory")           # lands approved in one call
     eid = w["id"]
-    approve(server, [eid])
     server.recall = _StubRecall(_confident(eid, "an approved memory"))
     env = content(tool_call(server, "hive_recall", {"query": "q"}))
     assert len(env["reference_context"]) == 1
@@ -87,8 +86,7 @@ def test_recall_surfaces_approved_hit_through_belt():
 # ── neutral framing + trace key ─────────────────────────────────────────────────
 def test_recall_framed_as_reference_context_not_instructions():
     server, _ = build_real_server()
-    w = write_text(server, "the gold memory about retries")
-    approve(server, [w["id"]])
+    write_text(server, "the gold memory about retries")    # approved on write
     env = content(tool_call(server, "hive_recall", {"query": "the gold memory about retries"}))
     assert "reference_context" in env
     assert "instructions" not in env and "command" not in env
@@ -99,8 +97,7 @@ def test_recall_framed_as_reference_context_not_instructions():
 
 def test_recall_trace_id_present_on_hit_and_abstain():
     server, _ = build_real_server()
-    w = write_text(server, "memory for trace check")
-    approve(server, [w["id"]])
+    write_text(server, "memory for trace check")           # approved on write
     hit_env = content(tool_call(server, "hive_recall", {"query": "memory for trace check"}))
     empty_env = content(tool_call(server, "hive_recall", {"query": "x"}, req_id=2))
     # confident path (use a fresh server so the empty case is genuinely empty)

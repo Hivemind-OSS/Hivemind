@@ -1,6 +1,9 @@
 """TOOL_DEFINITIONS — the static ``tools/list`` schema table for the MCP surface
-(02-CONTRACTS §3). EXACTLY 8 tools; the dropped 7 (consolidate/schemas/recall_cold/
-restore_cold/reconsolidate/audit/outcome) are absent by construction.
+(02-CONTRACTS §3). EXACTLY 5 tools; the server-side approval QUEUE (hive_pending /
+hive_approve / hive_reject) was removed with the move to client-gated capture
+(HOOK-RELOCATION-PLAN v3 — a clean hive_write is approved in one call), and the
+AgentCortex-era 7 (consolidate/schemas/recall_cold/restore_cold/reconsolidate/audit/
+outcome) are absent by construction.
 
 A pure module constant — no runtime state. The same table is the source of truth
 for (a) the ``tools/list`` reply and (b) the pre-dispatch schema-validation belt in
@@ -9,14 +12,16 @@ advertised contract and the enforced contract cannot diverge.
 """
 from __future__ import annotations
 
-# The eight hive_* verbs. Frozen via the module boundary; handlers read args
+# The five hive_* verbs. Frozen via the module boundary; handlers read args
 # permissively (.get) so the ONLY required-field guard is _validate over this table.
 TOOL_DEFINITIONS: list[dict] = [
     {"name": "hive_write",
-     "description": "Propose an insight for capture. Scans for secrets, then STAGES "
-                    "it pending (never auto-approved). Returns the pending id.",
-     "inputSchema": {"type": "object", "required": ["text"],
+     "description": "Capture a human-approved insight. The user approves in native chat; "
+                    "pass the approver as approved_by. The server scans for secrets, then "
+                    "stores it as an APPROVED, recallable memory (no separate approval step).",
+     "inputSchema": {"type": "object", "required": ["text", "approved_by"],
                      "properties": {"text": {"type": "string"},
+                                    "approved_by": {"type": "string"},
                                     "source": {"type": "string"},
                                     "tags": {"type": "array", "items": {"type": "string"}},
                                     "proposed_by": {"type": "string"}}}},
@@ -35,26 +40,11 @@ TOOL_DEFINITIONS: list[dict] = [
                     "{found:false, text:null} (never raises).",
      "inputSchema": {"type": "object", "required": ["content_hash"],
                      "properties": {"content_hash": {"type": "string"}}}},
-    {"name": "hive_pending",
-     "description": "List staged-but-unapproved proposals (status='pending') with "
-                    "ts >= since. Preview truncated; full text via hive_fetch.",
-     "inputSchema": {"type": "object", "required": [],
-                     "properties": {"since": {"type": "integer", "minimum": 0}}}},
-    {"name": "hive_approve",
-     "description": "Flip pending proposals to approved (the ONLY path to recallable) "
-                    "and index them. Non-pending/unknown ids are skipped.",
-     "inputSchema": {"type": "object", "required": ["ids", "approver"],
-                     "properties": {"ids": {"type": "array", "items": {"type": "integer"}},
-                                    "approver": {"type": "string"}}}},
-    {"name": "hive_reject",
-     "description": "Drop pending proposals (deletion-by-default). Approved/unknown "
-                    "ids are skipped. Rejected rows are never recallable.",
-     "inputSchema": {"type": "object", "required": ["ids"],
-                     "properties": {"ids": {"type": "array", "items": {"type": "integer"}},
-                                    "keep_rejected": {"type": "boolean"}}}},
     {"name": "hive_init",
-     "description": "Onboarding handshake: returns the typed InstallPlan teaching the "
-                    "Hive-Trace trailer + approve-in-chat protocol. Phase-2 confirms by hash.",
+     "description": "Onboarding handshake. Phase-1 returns the rules block + the hook "
+                    "manifest and its per-harness recipe (resolved tier, hook files / "
+                    "rules addendum / playbook); phase-2 confirms by hash and records the "
+                    "link with manifest_version + tier.",
      "inputSchema": {"type": "object", "required": ["repo_path", "harness"],
                      "properties": {"repo_path": {"type": "string"},
                                     "harness": {"type": "string",
@@ -69,5 +59,5 @@ TOOL_DEFINITIONS: list[dict] = [
                      "properties": {"repo_path": {"type": "string"}}}},
 ]
 
-# The canonical net-8 name set — the dropped-7 guard reads this.
+# The canonical net-5 name set — the dropped-verb guard reads this.
 TOOL_NAMES: frozenset[str] = frozenset(t["name"] for t in TOOL_DEFINITIONS)

@@ -76,13 +76,13 @@ def embedder_v2(st_model):
     return LocalSTEmbedder(model=st_model, w_version=2, bootstrap_n=448).load()
 
 
-def build_acc(embedder, *, db_path: str = ":memory:", source=None, clock=None,
+def build_acc(embedder, *, db_path: str = ":memory:", clock=None,
               warm: bool = True, **overrides) -> "object":
     """Build + boot a container on a fresh store with the REAL embedder injected. Returns the
     Container; ``migrate → build_index → warm_embedder`` already run when ``warm`` is True."""
     cfg = Config.load(db_path=db_path, toml_path=None, **overrides)
     c = build_container(cfg, tenant_id="acc-tenant", agent_id="acc-agent",
-                        embedder=embedder, source=source, clock=clock)
+                        embedder=embedder, clock=clock)
     if warm:
         # the production boot order (entrypoint.py): migrate → build_index → warm_embedder
         c.migrate()
@@ -92,12 +92,12 @@ def build_acc(embedder, *, db_path: str = ":memory:", source=None, clock=None,
 
 
 def seed_corpus(container, texts=CORPUS) -> list[int]:
-    """Write + approve every text; return the approved episode ids (corpus index → eid).
-    Rebuilds the warm index so the rows are immediately recallable."""
+    """Write every text (client-gated: each lands APPROVED in one call) and return the
+    approved episode ids (corpus index → eid). Rebuilds the warm index so the rows are
+    immediately recallable."""
     eids: list[int] = []
     for t in texts:
-        res = container.admission.write(t, proposed_by="seed")
-        ok, _ = container.admission.approve([res.pending_id], "curator")
-        eids.append(res.pending_id)
+        res = container.admission.write(t, proposed_by="seed", approved_by="curator")
+        eids.append(res.episode_id)
     container.build_index()
     return eids

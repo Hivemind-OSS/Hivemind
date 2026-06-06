@@ -4,7 +4,7 @@ Phase 2 (the §6.6 keystone A/B, P2.1) must NOT run underpowered. Before the
 experiment is allowed to render a keep/kill verdict, two pre-registered floors
 (fixed on the corpus BEFORE the run, docs §8) must both hold:
 
-  * **settled-outcome volume**  ``settled ≥ N_settled``  (ProducerTick.settled
+  * **settled-outcome volume**  ``settled ≥ N_settled``  (settled-outcome counts
     aggregated over the Phase-1 accrual window).
   * **distinct credited memories** ``distinct(episode_id with wins+losses>0) ≥
     M_memories`` in the chosen family (``utility`` rows, isolation-excluded).
@@ -24,8 +24,6 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass
 from typing import Iterable, Protocol
-
-from hive.domain.models import ProducerTick
 
 log = logging.getLogger("hive.research.readiness")
 
@@ -61,10 +59,11 @@ class ReadinessReport:
         return not self.ready
 
 
-def aggregate_settled(ticks: Iterable[ProducerTick]) -> int:
-    """Total clawback-settled outcome volume = Σ ``ProducerTick.settled`` over the
-    Phase-1 accrual window (the §8-named source counter). // O(n) time, O(1) space."""
-    return sum(int(t.settled) for t in ticks)
+def aggregate_settled(settled_counts: Iterable[int]) -> int:
+    """Total clawback-settled outcome volume = Σ settled counts over the Phase-1 accrual
+    window (the §8-named source counter). The producer that emitted these per-tick counts
+    was removed; callers now pass the counts directly. // O(n) time, O(1) space."""
+    return sum(int(c) for c in settled_counts)
 
 
 def count_distinct_credited(util_store: _UtilityConn, family_scope: str) -> int:
@@ -84,7 +83,7 @@ def count_distinct_credited(util_store: _UtilityConn, family_scope: str) -> int:
 
 
 def readiness_probe(
-    ticks: Iterable[ProducerTick],
+    settled_counts: Iterable[int],
     util_store: _UtilityConn,
     *,
     family_scope: str = PROD_FAMILY,
@@ -96,7 +95,7 @@ def readiness_probe(
     enough settled volume on too few memories, or vice-versa, is not powered). The
     decision is logged at the boundary so an operator can see exactly which floor
     blocks. // O(n + R) time."""
-    settled = aggregate_settled(ticks)
+    settled = aggregate_settled(settled_counts)
     distinct = count_distinct_credited(util_store, family_scope)
     settled_ok = settled >= n_settled_min
     memories_ok = distinct >= m_memories_min

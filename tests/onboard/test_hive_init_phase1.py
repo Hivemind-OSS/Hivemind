@@ -1,5 +1,5 @@
-"""P1.12 / M07 — hive_init phase-1: purity (zero writes) + rules-file resolution +
-watch_warning (non-blocking) + the rejected-coupling guard (producer config unchanged).
+"""P1.12 / M07 — hive_init phase-1: purity (zero writes) + rules-file resolution.
+The producer watch_repos / watch_warning coupling was removed with the producer.
 """
 from __future__ import annotations
 
@@ -15,8 +15,8 @@ def _store():
     return SqliteEpisodeStore(connect(":memory:"))
 
 
-def _planner(store=None, *, trailer="Hive-Trace", watch=()):
-    return InstallPlanner(store or _store(), stamp_trailer=trailer, watch_repos=watch)
+def _planner(store=None, *, trailer="Hive-Trace"):
+    return InstallPlanner(store or _store(), stamp_trailer=trailer)
 
 
 def test_planner_conforms_to_port():
@@ -26,7 +26,7 @@ def test_planner_conforms_to_port():
 
 def test_phase1_returns_plan_writes_nothing(tmp_path):
     store = _store()
-    plan = _planner(store, watch=(str(tmp_path),)).plan(str(tmp_path), "claude-code")
+    plan = _planner(store).plan(str(tmp_path), "claude-code")
     assert plan.expected_confirm_hash == plan.rules_block.block_hash
     assert plan.harness == "claude-code"
     # zero writes: no link key persisted by phase-1
@@ -57,23 +57,6 @@ def test_phase1_explicit_rules_file_overrides(tmp_path):
     assert plan.rules_file == ".cursorrules"
 
 
-def test_phase1_emits_watch_warning_unwatched(tmp_path):
-    plan = _planner(watch=("/some/other/repo",)).plan(str(tmp_path), "generic")
-    assert plan.watch_warning is not None
-
-
-def test_phase1_no_warning_when_watched(tmp_path):
-    plan = _planner(watch=(str(tmp_path),)).plan(str(tmp_path), "generic")
-    assert plan.watch_warning is None
-
-
-def test_phase1_producer_config_unchanged(tmp_path):
-    watch = ("/other",)
-    p = _planner(watch=watch)
-    p.plan(str(tmp_path), "generic")
-    assert p._watch == watch                             # never mutates watch_repos (rejected coupling)
-
-
 def test_phase1_not_a_dir_fails_fast(tmp_path):
     with pytest.raises(ValueError):
         _planner().plan(str(tmp_path / "does-not-exist"), "generic")
@@ -82,3 +65,18 @@ def test_phase1_not_a_dir_fails_fast(tmp_path):
 def test_phase1_empty_trailer_fails_fast():
     with pytest.raises(ValueError):
         InstallPlanner(_store(), stamp_trailer="")       # §6 row 3: no silent empty trailer
+
+
+def test_phase1_plan_carries_manifest_and_recipe(tmp_path):
+    plan = _planner().plan(str(tmp_path), "claude-code")
+    assert plan.manifest.manifest_version >= 1 and plan.manifest.hooks
+    assert plan.recipe.harness == "claude-code" and plan.recipe.resolved_tier == 2
+    assert plan.recipe.hook_files                        # Tier-2 host → at least one hook file
+
+
+def test_phase1_rules_file_resolution_is_harness_aware(tmp_path):
+    # only .cursorrules exists; claude-code's candidate is CLAUDE.md, so it ignores the
+    # cursor file and falls back to its own create-target — the profile drives resolution.
+    (tmp_path / ".cursorrules").write_text("x")
+    assert _planner().plan(str(tmp_path), "claude-code").rules_file == "CLAUDE.md"
+    assert _planner().plan(str(tmp_path), "cursor").rules_file == ".cursorrules"

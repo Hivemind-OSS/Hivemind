@@ -1,20 +1,21 @@
-"""P1.4 — M05 AdmissionService: the scan → stage → approve gauntlet on a real
-SQLite store + authoritative index. Owns §6.1 #5a (secret refused/redacted
-pre-stage) and #5b (pending never recallable); proves the secret never reaches a
-row, a blob, or a log line.
+"""P1.4 — M05 AdmissionService: the scan → stage → embed → approve gauntlet on a real
+SQLite store + authoritative index. CLIENT-GATED capture (HOOK-RELOCATION-PLAN v3): the
+server-side pending→approve queue is gone — a clean write lands APPROVED + indexed in one
+call, attributed to the caller's ``approved_by``. Owns §6.1 #5a (secret refused/redacted
+pre-write); proves the secret never reaches a row, a blob, or a log line, and that the
+secret scan is the SOLE always-on gate now that the queue is removed.
 """
 from __future__ import annotations
 
 import logging
 
-import numpy as np
 import pytest
 
 from hive.adapters.index_exhaustive import ExhaustiveCosineIndex
 from hive.adapters.scanner_regex import DefaultSecretScanner
 from hive.adapters.sqlite_db import connect
 from hive.adapters.store_sqlite import SqliteEpisodeStore
-from hive.domain.admission import AdmissionService, StagedEpisode, WriteResult
+from hive.domain.admission import AdmissionService, WriteResult
 from hive.domain.errors import SecretRefused
 from hive.domain.models import content_hash
 from tests.fakes import FakeProvider
@@ -31,128 +32,112 @@ def _svc(mode: str = "refuse"):
     return svc, store
 
 
+def _write(svc, text, *, approved_by: str = "human", proposed_by: str = "a", **kw):
+    return svc.write(text, approved_by=approved_by, proposed_by=proposed_by, **kw)
+
+
 def _count(store, table: str) -> int:
     return store.conn.execute(f"SELECT COUNT(*) AS n FROM {table}").fetchone()["n"]
 
 
-# ── #5a: secret refused before stage — 0 rows, 0 blobs ────────────────────────
-def test_stage_refuses_on_secret():
+# ── #5a: secret refused before anything is written — 0 rows, 0 blobs ──────────
+def test_write_refuses_on_secret():
     svc, store = _svc()
     with pytest.raises(SecretRefused):
-        svc.write(f"my key {SECRET}", weight=1.0, source="mark", proposed_by="a")
-    assert _count(store, "episodes") == 0          # nothing staged
+        _write(svc, f"my key {SECRET}")
+    assert _count(store, "episodes") == 0          # nothing written
     assert _count(store, "blobs") == 0             # no blob written
     assert store.index.size() == 0
     assert store.fetch(content_hash(f"my key {SECRET}")) is None
 
 
-def test_stage_refuses_calls_store_stage_zero_times(monkeypatch):
+def test_refuse_calls_store_stage_zero_times(monkeypatch):
     svc, store = _svc()
     calls = {"n": 0}
     orig = store.stage
     monkeypatch.setattr(store, "stage", lambda **kw: (calls.__setitem__("n", calls["n"] + 1), orig(**kw))[1])
     with pytest.raises(SecretRefused):
-        svc.write(f"AWS {SECRET}", proposed_by="a")
+        _write(svc, f"AWS {SECRET}")
     assert calls["n"] == 0                          # scan fires BEFORE any stage
 
 
-# ── stage happy path + dedup ──────────────────────────────────────────────────
-def test_stage_creates_pending_not_approved():
+# ── clean write lands APPROVED + indexed + recallable in one call ─────────────
+def test_write_lands_approved_with_value_and_indexes():
     svc, store = _svc()
-    r = svc.write("db pool exhausted under load", weight=2.0, source="mark", proposed_by="a")
-    assert isinstance(r, WriteResult) and r.status == "pending"
-    ep = store.get_episode(r.pending_id)
-    assert ep.status == "pending" and ep.approved_by is None
-    assert store.index.size() == 0                  # NOT indexed at stage
-    assert r.content_hash == content_hash("db pool exhausted under load")
-
-
-def test_pending_value_is_null():
-    svc, store = _svc()
-    r = svc.write("retry with exponential backoff", proposed_by="a")
-    assert store.get_episode(r.pending_id).value is None   # value computed at approve
-
-
-def test_stage_dedup_same_proposer():
-    svc, store = _svc()
-    a = svc.write("same insight text", proposed_by="a")
-    b = svc.write("same insight text", proposed_by="a")
-    assert a.pending_id == b.pending_id and b.deduped is True
-    assert len(svc.list_pending()) == 1
-
-
-# ── #5a redact branch: only masked text is staged ─────────────────────────────
-def test_redact_stages_masked_text_no_raw_secret():
-    svc, store = _svc(mode="redact")
-    text = f"connect with {SECRET} please"
-    r = svc.write(text, proposed_by="a")
-    assert r.status == "redacted" and r.scan.action == "redact"
-    staged = store.get_episode(r.pending_id).text
-    assert SECRET not in staged and "[REDACTED]" in staged
-    assert r.content_hash == content_hash(staged)               # hash over redacted text
-    assert r.content_hash != content_hash(text)
-    # the raw secret reached neither the episodes row nor the blob
-    assert store.fetch(r.content_hash) == staged
-    assert SECRET not in (store.fetch(r.content_hash) or "")
-
-
-# ── #5b: approve is the only path that indexes; approved is recallable ─────────
-def test_approve_flips_status_and_indexes():
-    svc, store = _svc()
-    r = svc.write("vector index rebuild on boot", proposed_by="a")
-    assert store.index.size() == 0
-    approved, skipped = svc.approve([r.pending_id], "human")
-    assert approved == [r.pending_id] and skipped == []
-    ep = store.get_episode(r.pending_id)
+    r = _write(svc, "vector index rebuild on boot")
+    assert isinstance(r, WriteResult) and r.status == "approved"
+    ep = store.get_episode(r.episode_id)
     assert ep.status == "approved" and ep.approved_by == "human" and ep.value is not None
-    assert store.index.size() == 1                  # approve is the ONLY indexer
+    assert store.index.size() == 1                  # write is the indexer now (no approve step)
+    assert r.content_hash == content_hash("vector index rebuild on boot")
+    assert store.counts() == (1, 0)                 # 1 approved, 0 pending
 
 
-def test_approved_is_recallable():
+def test_approved_is_recallable_without_a_separate_step():
     svc, store = _svc()
     text = "use BEGIN IMMEDIATE for the writer lane"
-    r = svc.write(text, proposed_by="a")
-    svc.approve([r.pending_id], "human")
+    r = _write(svc, text)
     q = FakeProvider(d=DIM).encode(text)            # deterministic: same text → same vec
     hits = store.index.search(q, k=1)
-    assert hits and hits[0][0] == r.pending_id
+    assert hits and hits[0][0] == r.episode_id
 
 
-def test_approve_idempotent_and_unknown_skipped():
+# ── dedup: same text → same id, one row, one index entry ──────────────────────
+def test_write_dedup_same_text():
     svc, store = _svc()
-    r = svc.write("idempotent approve", proposed_by="a")
-    svc.approve([r.pending_id], "human")
-    approved, skipped = svc.approve([r.pending_id, 9999], "human2")  # replay + unknown
-    assert approved == [] and set(skipped) == {r.pending_id, 9999}
-    assert store.get_episode(r.pending_id).approved_by == "human"   # unchanged
-    assert store.index.size() == 1                                   # exactly one entry
+    a = _write(svc, "same insight text")
+    b = _write(svc, "same insight text")
+    assert a.episode_id == b.episode_id and b.deduped is True
+    assert store.counts() == (1, 0)
+    assert store.index.size() == 1
 
 
-# ── reject ────────────────────────────────────────────────────────────────────
-def test_reject_drops_and_never_indexes():
+def test_dedup_does_not_overwrite_original_approver():
     svc, store = _svc()
-    r = svc.write("reject me", proposed_by="a")
-    rejected, skipped = svc.reject([r.pending_id])
-    assert rejected == [r.pending_id]
-    assert store.get_episode(r.pending_id) is None and store.index.size() == 0
+    a = _write(svc, "durable shared insight", approved_by="alice")
+    b = _write(svc, "durable shared insight", approved_by="bob")
+    assert a.episode_id == b.episode_id and b.deduped is True
+    assert store.get_episode(a.episode_id).approved_by == "alice"   # first approver wins
 
 
-def test_reject_keep_flag():
+# ── #5a redact branch: only masked text is stored, and it is approved ─────────
+def test_redact_stores_masked_text_no_raw_secret():
+    svc, store = _svc(mode="redact")
+    text = f"connect with {SECRET} please"
+    r = _write(svc, text)
+    assert r.status == "redacted" and r.scan.action == "redact"
+    stored = store.get_episode(r.episode_id).text
+    assert SECRET not in stored and "[REDACTED]" in stored
+    assert r.content_hash == content_hash(stored)               # hash over redacted text
+    assert r.content_hash != content_hash(text)
+    # the raw secret reached neither the episodes row nor the blob
+    assert store.fetch(r.content_hash) == stored
+    assert SECRET not in (store.fetch(r.content_hash) or "")
+    # a redacted write is ALSO approved + recallable (no pending state survives)
+    assert store.get_episode(r.episode_id).status == "approved"
+    assert store.index.size() == 1
+
+
+# ── no-leak on a downstream failure: nothing is left half-written ─────────────
+def test_embed_failure_raises_and_leaves_no_row(monkeypatch):
     svc, store = _svc()
-    r = svc.write("keep but never recall", proposed_by="a")
-    svc.reject([r.pending_id], keep_rejected=True)
-    ep = store.get_episode(r.pending_id)
-    assert ep is not None and ep.status == "pending"   # retained, still non-recallable
+
+    def _boom(_t):
+        raise RuntimeError("embedder dead")
+    monkeypatch.setattr(svc._embedder, "encode", _boom)
+    with pytest.raises(RuntimeError, match="embedder dead"):
+        _write(svc, "clean text that fails to embed")
+    assert store.counts() == (0, 0)                 # the staged row was dropped
     assert store.index.size() == 0
 
 
-def test_reject_cannot_unpublish_approved():
+def test_approve_failure_raises_and_leaves_no_row(monkeypatch):
     svc, store = _svc()
-    r = svc.write("approved then reject attempt", proposed_by="a")
-    svc.approve([r.pending_id], "human")
-    rejected, skipped = svc.reject([r.pending_id])
-    assert rejected == [] and skipped == [r.pending_id]
-    assert store.get_episode(r.pending_id).status == "approved"
+    monkeypatch.setattr(store, "approve", lambda *a, **k: False)   # lost-update CAS race
+    with pytest.raises(RuntimeError, match="approve failed"):
+        _write(svc, "clean text whose approve loses the CAS")
+    assert store.counts() == (0, 0)                 # the dangling staged row was dropped
+    assert store.index.size() == 0
 
 
 # ── the secret-never-logged invariant (REFUSE + REDACT paths) ─────────────────
@@ -160,7 +145,7 @@ def test_refuse_log_contains_no_secret_substring(caplog):
     svc, store = _svc()
     with caplog.at_level(logging.DEBUG, logger="hive.admission"):
         with pytest.raises(SecretRefused):
-            svc.write(f"key {SECRET}", proposed_by="a")
+            _write(svc, f"key {SECRET}")
     assert caplog.records                                  # something WAS logged
     for rec in caplog.records:
         assert SECRET not in rec.getMessage()
@@ -170,7 +155,7 @@ def test_refuse_log_contains_no_secret_substring(caplog):
 def test_redact_log_contains_no_secret_substring(caplog):
     svc, store = _svc(mode="redact")
     with caplog.at_level(logging.DEBUG, logger="hive.admission"):
-        svc.write(f"key {SECRET} here", proposed_by="a")
+        _write(svc, f"key {SECRET} here")
     assert caplog.records
     for rec in caplog.records:
         assert SECRET not in rec.getMessage()
@@ -180,29 +165,16 @@ def test_redact_log_contains_no_secret_substring(caplog):
 def test_secret_refused_exception_carries_no_secret():
     svc, store = _svc()
     try:
-        svc.write(f"key {SECRET}", proposed_by="a")
+        _write(svc, f"key {SECRET}")
         assert False, "expected SecretRefused"
     except SecretRefused as e:
         assert SECRET not in str(e)                        # only rule names + counts
 
 
-# ── the credit boundary: admission writes zero loop tables ────────────────────
+# ── the credit boundary: admission writes zero (dormant) loop tables ──────────
 def test_admission_touches_no_loop_tables():
     svc, store = _svc()
-    r = svc.write("boundary check", proposed_by="a")
-    svc.approve([r.pending_id], "human")
-    r2 = svc.write("second", proposed_by="a")
-    svc.reject([r2.pending_id])
+    _write(svc, "boundary check")
+    _write(svc, "second boundary check")
     assert _count(store, "exposure") == 0
     assert _count(store, "task_outcomes") == 0
-
-
-# ── list_pending surfaces frozen StagedEpisode carriers ───────────────────────
-def test_list_pending_returns_staged_episodes():
-    svc, store = _svc()
-    svc.write("pending one", proposed_by="a")
-    r2 = svc.write("pending two", proposed_by="b")
-    svc.approve([r2.pending_id], "human")              # approved drops out of pending
-    pend = svc.list_pending()
-    assert len(pend) == 1 and isinstance(pend[0], StagedEpisode)
-    assert pend[0].text == "pending one" and pend[0].status == "pending"
