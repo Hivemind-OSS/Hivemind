@@ -46,9 +46,11 @@ def test_episode_rejects_bad_value():
 
 def test_episode_rejects_approver_status_mismatch():
     with pytest.raises(ValueError):
-        _ep(status="approved", approved_by=None)         # approved without approver
-    with pytest.raises(ValueError):
-        _ep(status="pending", approved_by="u")           # pending with approver
+        _ep(status="pending", approved_by="u")           # approver on a pending row
+    # trust-v2 relaxation: approved WITHOUT an approver is the autonomous-capture
+    # shape (trust defaults to quarantined) — constructable, but it under-claims.
+    ep = _ep(status="approved", approved_by=None)
+    assert ep.trust == "quarantined"
 
 
 # ── stage / approve / reject ──────────────────────────────────────────────────

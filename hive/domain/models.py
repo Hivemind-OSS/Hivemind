@@ -13,6 +13,8 @@ from typing import Optional
 
 import numpy as np
 
+from hive.domain.lifecycle import ESTABLISHED, PROVISIONAL, QUARANTINED, TRUST_STATES
+
 
 def content_hash(text: str) -> str:
     """sha256(text) hex — the fetch key + dedup key that binds a memory to its text."""
@@ -61,10 +63,17 @@ EMPTY_NO_DATA = "EMPTY_NO_DATA"
 
 @dataclass(frozen=True, slots=True)
 class RecallHit:
-    """One surfaced memory handed to the agent (framed under ``reference_context``)."""
+    """One surfaced memory handed to the agent (framed under ``reference_context``).
+
+    ``trust`` + ``ts`` label every hit so a consumer can discount provisional
+    content and order coexisting versions (immutable rows + dedup mean an "update"
+    always coexists as a second row). Defaults are FAIL-SAFE: a construction site
+    that forgets to wire them under-claims (quarantined/epoch-0), never over-claims."""
     episode_id: int
     text: str
     sim: float
+    trust: str = QUARANTINED
+    ts: int = 0
 
 
 @dataclass(frozen=True, slots=True)
@@ -129,8 +138,13 @@ class SettledExposure:
 class Episode:
     """A captured insight. Self-asserting: an inconsistent Episode is
     UNCONSTRUCTABLE — content_hash binds text, value is unit-norm float32[d] (or
-    None while pending), and approved ⇔ approved_by set (never-hallucinate /
-    approved-only made structural)."""
+    None while pending), and the trust/status/approver invariants hold.
+
+    v2 (trust lifecycle): ``status`` now reads as *materialized* (scanned +
+    embedded + blob complete); ``trust`` carries trust. The old biconditional
+    ``approved ⇔ approved_by`` relaxes to implications so the autonomous-capture
+    shape (approved + no approver + quarantined) is constructable while a lying
+    row still is not."""
     id: int
     tenant_id: str
     text: str
@@ -139,20 +153,32 @@ class Episode:
     source: str
     tags: str
     content_hash: str
-    status: str                        # 'pending' | 'approved'
+    status: str                        # 'pending' | 'approved'  (materialization)
     proposed_by: str
     value: Optional["np.ndarray"] = None
     approved_by: Optional[str] = None
     approved_ts: Optional[int] = None
     version: int = 0
+    trust: str = QUARANTINED           # fail-safe default: unserved until vouched/promoted
+    superseded_by: Optional[int] = None   # latest applied successor (None = live)
+    last_active_ts: int = 0            # liveness clock: capture/write, promotion, exposure
 
     def __post_init__(self) -> None:
         if self.content_hash != content_hash(self.text):
             raise ValueError("content_hash does not bind text (hash≠sha256(text))")
         if self.status not in ("pending", "approved"):
             raise ValueError(f"bad status {self.status!r}")
-        if (self.status == "approved") != (self.approved_by is not None):
-            raise ValueError("invariant: status=='approved' iff approved_by is set")
+        if self.trust not in TRUST_STATES:
+            raise ValueError(f"bad trust {self.trust!r}")
+        if self.approved_by is not None and self.status != "approved":
+            raise ValueError("invariant: approved_by set requires status='approved'")
+        if self.trust in (ESTABLISHED, PROVISIONAL) and self.status != "approved":
+            raise ValueError(
+                "invariant: a servable-trust episode must be status='approved'")
+        if self.superseded_by is not None and self.trust != "deprecated":
+            raise ValueError(
+                "invariant: superseded_by requires trust='deprecated' "
+                "(a live row cannot point at a successor)")
         if self.value is not None:
             v = self.value
             if getattr(v, "dtype", None) != np.float32:

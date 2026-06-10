@@ -61,6 +61,7 @@ _HEAD_WVER_KEY = "embedding:head:w_version"
 _REQUIRED_TABLES = frozenset({
     "blobs", "episodes", "exposure", "task_outcomes", "meta",
     "utility", "utility_sources", "utility_layer",
+    "recall_misses", "evidence_events",
 })
 
 

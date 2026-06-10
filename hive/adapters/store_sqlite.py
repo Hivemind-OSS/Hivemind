@@ -54,12 +54,16 @@ CREATE TABLE IF NOT EXISTS episodes(
   content_hash TEXT NOT NULL,
   status TEXT NOT NULL CHECK(status IN ('pending','approved')),
   proposed_by TEXT, approved_by TEXT, approved_ts INTEGER,
-  version INTEGER NOT NULL DEFAULT 0);
+  version INTEGER NOT NULL DEFAULT 0,
+  trust TEXT NOT NULL DEFAULT 'quarantined',
+  superseded_by INTEGER,
+  last_active_ts INTEGER NOT NULL DEFAULT 0);
 CREATE INDEX IF NOT EXISTS idx_episodes_status ON episodes(status);
 CREATE INDEX IF NOT EXISTS idx_episodes_hash ON episodes(content_hash);
+CREATE INDEX IF NOT EXISTS idx_episodes_trust ON episodes(trust);
 CREATE TABLE IF NOT EXISTS exposure(
   trace_id TEXT NOT NULL, episode_id INTEGER NOT NULL, recall_margin REAL NOT NULL,
-  task_ref TEXT, injected_ts INTEGER NOT NULL,
+  task_ref TEXT, injected_ts INTEGER NOT NULL, agent_id TEXT,
   PRIMARY KEY(trace_id, episode_id));
 CREATE TABLE IF NOT EXISTS task_outcomes(
   task_ref TEXT NOT NULL, trace_id TEXT NOT NULL, family_scope TEXT NOT NULL, repo TEXT,
@@ -69,6 +73,20 @@ CREATE TABLE IF NOT EXISTS task_outcomes(
   PRIMARY KEY(task_ref, trace_id));
 CREATE INDEX IF NOT EXISTS idx_task_outcomes_settle ON task_outcomes(state, settle_at);
 CREATE TABLE IF NOT EXISTS meta(key TEXT PRIMARY KEY, value TEXT);
+CREATE TABLE IF NOT EXISTS recall_misses(
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  query_text TEXT NOT NULL,
+  query_vector BLOB,
+  agent_id TEXT NOT NULL,
+  miss_type TEXT NOT NULL CHECK(miss_type IN ('no_match','abstained','secret_refused')),
+  ts INTEGER NOT NULL);
+CREATE INDEX IF NOT EXISTS idx_misses_ts ON recall_misses(ts);
+CREATE TABLE IF NOT EXISTS evidence_events(
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  episode_id INTEGER NOT NULL, kind TEXT NOT NULL,
+  actor TEXT NOT NULL, ts INTEGER NOT NULL,
+  payload TEXT NOT NULL DEFAULT '{}');
+CREATE INDEX IF NOT EXISTS idx_evidence_episode ON evidence_events(episode_id, kind);
 """
 
 
@@ -78,6 +96,17 @@ class SqliteEpisodeStore:
         self.conn = conn
         self.index = index            # MutableVectorIndex (warm cache); None in ledger-only tests
         self._isolation_frac = isolation_frac   # guardrail-2 (A5) held-out slice; 0.0 ⇒ off
+        # No in-place migration path exists — this build starts from a clean, empty
+        # store (prior-format memories are not carried over). CREATE IF NOT EXISTS
+        # would leave an old-format episodes table untouched (and the trust-index DDL
+        # would then crash cryptically), so refuse it BEFORE the script runs, with a
+        # clear message. An absent table is fine — the script creates the v2 shape.
+        cols = {r["name"] for r in conn.execute("PRAGMA table_info(episodes)")}
+        if cols and "trust" not in cols:
+            _log.error("store.schema_predates_lifecycle missing_column=trust")
+            raise RuntimeError(
+                "episodes table predates the trust-lifecycle schema (no trust column); "
+                "this build has no migration — start from a clean store/volume")
         conn.executescript(_SCHEMA)
         if isolation_frac > 0.0:
             # guardrail-2 (A5) stamps held-out membership into the co-located utility
@@ -195,7 +224,9 @@ class SqliteEpisodeStore:
             id=r["id"], tenant_id=r["tenant_id"], text=r["text"], value=value,
             weight=r["weight"], ts=r["ts"], source=r["source"] or "", tags=r["tags"] or "",
             content_hash=r["content_hash"], status=r["status"], proposed_by=r["proposed_by"] or "",
-            approved_by=r["approved_by"], approved_ts=r["approved_ts"], version=r["version"])
+            approved_by=r["approved_by"], approved_ts=r["approved_ts"], version=r["version"],
+            trust=r["trust"], superseded_by=r["superseded_by"],
+            last_active_ts=r["last_active_ts"])
 
     def fetch(self, content_hash_hex: str) -> Optional[str]:
         r = self.conn.execute(
