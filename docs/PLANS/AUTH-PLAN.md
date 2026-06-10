@@ -320,6 +320,24 @@ docker compose exec hive-server python -m hive.tools.authctl revoke alice-laptop
 → that device's next request returns 401
 ```
 
+**Remote teammate — any OS, any network** (`REMOTE-ACCESS-PLAN.md`, **landed**): the
+operator starts the opt-in tunnel (needs `NGROK_AUTHTOKEN` + `NGROK_DOMAIN`, see
+`.env.example`; a plain `up` never exposes anything):
+```
+docker compose --profile tunnel up -d
+```
+The teammate runs the same one-liner against the stable HTTPS URL instead of localhost:
+```
+export HIVE_TOKEN=hive_9f3c…
+claude mcp add --transport http hive https://your-brain.ngrok.app/mcp \
+  --header "Authorization: Bearer ${HIVE_TOKEN}"
+```
+TLS terminates at the ngrok edge (the token is never cleartext on an untrusted hop), and
+the endpoint self-defends: per-token throttle → 429 + `Retry-After` (default 120 req /
+60 s; `HIVE_HTTP_RATE_LIMIT=0` disables; `HIVE_HTTP_RATE_WINDOW_S` sets the window) and a
+request body cap → 413 (default 1 MiB; `HIVE_HTTP_MAX_BODY_BYTES`). Same tokens, same
+revoke flow — the tunnel is only the network door.
+
 ---
 
 ## 11. Security model & the one requirement
@@ -336,10 +354,12 @@ docker compose exec hive-server python -m hive.tools.authctl revoke alice-laptop
   (required for the Docker `ports:` map to reach it), but the host mapping is
   `127.0.0.1:8765` only, so it is never exposed beyond host-loopback — the spec's intent.
   INV-4 + the token are the rebinding guards.
-- **Transport encryption is required for remote use** (the token is a cleartext credential):
-  reach the loopback-mapped daemon through an **SSH tunnel**
-  (`ssh -NL 8765:localhost:8765 user@host`, zero-dependency) or a **Caddy/HTTPS** front. The
-  tunnel/proxy is the network door, the token is the identity.
+- **Transport encryption is required for remote use** (the token is a cleartext credential).
+  **Landed path: the profile-gated ngrok sidecar** (`REMOTE-ACCESS-PLAN.md`) — TLS at the
+  ngrok edge, and the app self-defends with a per-token 429 throttle + 413 body cap, both
+  in-repo tested. Zero-dependency alternative: an **SSH tunnel**
+  (`ssh -NL 8765:localhost:8765 user@host`); or a **Caddy/HTTPS** front. The tunnel/proxy
+  is the network door, the token is the identity.
 
 ---
 

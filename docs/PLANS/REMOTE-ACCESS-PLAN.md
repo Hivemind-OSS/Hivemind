@@ -1,6 +1,10 @@
 # Hivemind — Secure Remote Team Access via an ngrok Tunnel
 
-**Status:** DRAFT — awaiting human approval. **Supersedes the LAN-bind approach** of the earlier
+**Status:** LANDED 2026-06-10 — implemented as four green chunks on master (rate_limit
+module → transport belts → entrypoint knobs → ngrok sidecar; full suite green after each,
+RULE-2 mutations red/restored per chunk; AUTH-PLAN §10/§11 runbook updated). AC1 (live
+cross-network client) remains an operator-run check — it needs a real ngrok account +
+second machine; AC2–AC6 are pinned by the suite. **Supersedes the LAN-bind approach** of the earlier
 `LAN-ACCESS-AND-ADMIN-CLI-PLAN.md` (now split in two): host-LAN binding cannot *guarantee*
 cross-OS / cross-network reach (WiFi AP client-isolation, Mac/Windows host firewalls, DHCP IP churn
 all defeat it, none inside the app's control). This plan instead **bakes an outbound ngrok tunnel
