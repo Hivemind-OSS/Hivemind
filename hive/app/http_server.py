@@ -18,6 +18,13 @@ for simplicity (escape valve: AUTH-PLAN §12). The daemon never crashes on a bad
 Stdlib only (``http.server``) — zero new dependencies. The §4 endpoint contract lives in
 ``_build_handler`` (unit-tested against a real loopback server on 127.0.0.1:0); ``run_http``
 is the thin, blocking bind+serve wrapper.
+
+Part S (REMOTE-ACCESS-PLAN) adds the two self-defense belts a tunnel-exposed endpoint
+needs, both keyword-only and DEFAULT-OFF (AC6 — every existing call site is unchanged):
+a body cap that 413s on the DECLARED Content-Length before any body byte is read (the
+cheapest flood dies first, pre-auth), and a per-token limiter that 429s a single verified
+label post-auth (D3 — keyed on identity, never a forwarded IP) with ``Retry-After``.
+Both are HTTP-status outcomes, consistent with the 401/403/405/202 channel doctrine.
 """
 from __future__ import annotations
 
@@ -30,10 +37,12 @@ from typing import Callable, Optional
 from hive.app.mcp_server import (
     HiveMCPServer, MCPRequest, MCPResponse, ServerIdentity, _err,
 )
+from hive.app.rate_limit import TokenBucketLimiter
 
 _log = logging.getLogger("hive.app.http_server")
 
 _JSON = "application/json"
+_DEFAULT_MAX_BODY = 1 << 20      # 1 MiB — generous for JSON-RPC tool calls (gbrain parity)
 
 
 def _bearer(headers) -> Optional[str]:
@@ -49,11 +58,16 @@ def _bearer(headers) -> Optional[str]:
 
 def _build_handler(server: HiveMCPServer,
                    verify: Callable[[str], Optional[str]],
-                   lock: threading.Lock) -> type:
+                   lock: threading.Lock, *,
+                   limiter: Optional[TokenBucketLimiter] = None,
+                   max_body_bytes: int = _DEFAULT_MAX_BODY) -> type:
     """Build the ``BaseHTTPRequestHandler`` subclass that enforces the §4 endpoint contract.
     Factored out of ``run_http`` so the contract is unit-testable against a real loopback
     ``ThreadingHTTPServer`` on an ephemeral port (``run_http`` only binds + serve_forever).
-    The RULE-2 mutation (skip the ``verify``-None → 401 guard) lives in ``do_POST``."""
+    The Part S belts are keyword-only and defaulted OFF/generous (``limiter=None`` ⇒ no
+    429 path exists; AC6). ``limiter.check`` runs under the SAME global lock as ``verify``
+    — the limiter has no internal locking by contract. The RULE-2 mutations (skip the
+    ``verify``-None → 401 guard; drop the 413/429 guards) live in ``do_POST``."""
 
     class _Handler(BaseHTTPRequestHandler):
         protocol_version = "HTTP/1.1"          # keep-alive; every body is drained so it is safe
@@ -74,12 +88,17 @@ def _build_handler(server: HiveMCPServer,
         def _json(self, code: int, obj: dict, extra: Optional[dict] = None) -> None:
             self._send(code, json.dumps(obj).encode("utf-8"), _JSON, extra)
 
+        def _declared_length(self) -> int:
+            """The DECLARED Content-Length (0 on absent/malformed) — reads no body byte,
+            so the body cap can reject on it before any allocation. // O(1)."""
+            try:
+                return int(self.headers.get("Content-Length") or 0)
+            except (TypeError, ValueError):
+                return 0
+
         def _read_body(self) -> bytes:
             """Drain exactly Content-Length bytes (keep-alive correctness even on a reject)."""
-            try:
-                n = int(self.headers.get("Content-Length") or 0)
-            except (TypeError, ValueError):
-                n = 0
+            n = self._declared_length()
             return self.rfile.read(n) if n > 0 else b""
 
         # ── method routing ───────────────────────────────────────────────────────
@@ -91,6 +110,14 @@ def _build_handler(server: HiveMCPServer,
 
         def do_POST(self) -> None:
             try:
+                # (0) body cap (413, AC5): reject on the DECLARED length BEFORE the body
+                # is read into memory and before verify/parse — the cheapest flood dies
+                # first. The unread body makes the connection unreusable, so the client
+                # is told to close (send_header('Connection','close') also flags the
+                # server side). ← dropping this return is a RULE-2 mutation.
+                if self._declared_length() > max_body_bytes:
+                    return self._json(413, {"error": "payload_too_large"},
+                                      extra={"Connection": "close"})
                 body = self._read_body()                       # drain first (keep-alive safe)
                 # (1) Origin guard (spec MUST, DNS-rebinding): a browser is never legitimate.
                 if self.headers.get("Origin") is not None:     # INV-4
@@ -99,8 +126,17 @@ def _build_handler(server: HiveMCPServer,
                 tok = _bearer(self.headers)
                 with lock:
                     label = verify(tok) if tok else None
+                    # (2b) per-token throttle (429, AC4): POST-auth, keyed on the verified
+                    # label (D3 — no forwarded-IP trust), under the same lock (the limiter
+                    # has no internal locking). Never consulted for an invalid token —
+                    # that path 401s below. ← dropping this guard is a RULE-2 mutation.
+                    rl = (limiter.check(label)
+                          if (limiter is not None and label is not None) else None)
                 if label is None:                              # ← skipping this guard is the RULE-2 mut
                     return self._json(401, {"error": "unauthorized"})
+                if rl is not None and not rl.allowed:
+                    return self._json(429, {"error": "rate_limited"},
+                                      extra={"Retry-After": str(rl.retry_after_s)})
                 # (3) parse JSON-RPC with the SAME guards as run_stdio
                 try:
                     payload = json.loads(body)
@@ -145,10 +181,15 @@ def _build_handler(server: HiveMCPServer,
 
 def run_http(server: HiveMCPServer, *, host: str, port: int,
              verify: Callable[[str], Optional[str]],
-             lock: threading.Lock) -> None:                    # pragma: no cover — blocking serve
+             lock: threading.Lock,
+             limiter: Optional[TokenBucketLimiter] = None,
+             max_body_bytes: int = _DEFAULT_MAX_BODY) -> None:  # pragma: no cover — blocking serve
     """Bind a ``ThreadingHTTPServer`` on ``(host, port)`` and serve the §4 contract forever.
     The blocking serve loop is the (uncovered) transport wrapper; the contract itself lives in
-    ``_build_handler``, exercised on a real loopback server in the tests."""
-    httpd = ThreadingHTTPServer((host, port), _build_handler(server, verify, lock))
+    ``_build_handler``, exercised on a real loopback server in the tests. The Part S belts
+    (``limiter`` / ``max_body_bytes``) thread through defaulted-off (AC6)."""
+    httpd = ThreadingHTTPServer((host, port),
+                                _build_handler(server, verify, lock,
+                                               limiter=limiter, max_body_bytes=max_body_bytes))
     _log.info("http.serving host=%s port=%d", host, port)
     httpd.serve_forever()
