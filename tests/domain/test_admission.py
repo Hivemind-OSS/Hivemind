@@ -178,3 +178,129 @@ def test_admission_touches_no_loop_tables():
     _write(svc, "second boundary check")
     assert _count(store, "exposure") == 0
     assert _count(store, "task_outcomes") == 0
+
+
+# ═══ autonomous capture (quarantine path) + human supersession ═════════════════
+
+class _RecordingLifecycle:
+    """The trigger seam capture drives: records the synchronous promotion check
+    and the decay-sweep piggyback (the real service is fail-open inside)."""
+    def __init__(self) -> None:
+        self.captures: list[int] = []
+        self.sweeps: int = 0
+
+    def on_capture(self, episode_id: int):
+        self.captures.append(int(episode_id))
+        return None
+
+    def sweep(self):
+        self.sweeps += 1
+        return {}
+
+
+def _svc_v2(mode: str = "refuse", *, lifecycle=None, autonomy_enabled: bool = True):
+    conn = connect(":memory:")
+    store = SqliteEpisodeStore(conn, index=ExhaustiveCosineIndex(DIM))
+    svc = AdmissionService(store, DefaultSecretScanner(redact_mode=mode),
+                           FakeProvider(d=DIM), now=lambda: 1_000,
+                           lifecycle=lifecycle, autonomy_enabled=autonomy_enabled)
+    return svc, store
+
+
+def test_capture_lands_quarantined_unserved():
+    svc, store = _svc_v2()
+    r = svc.capture("an unvouched but maybe useful insight", proposed_by="agent-1")
+    assert r.status == "quarantined" and r.deduped is False
+    ep = store.get_episode(r.episode_id)
+    assert ep.status == "approved" and ep.trust == "quarantined"   # materialized…
+    assert ep.approved_by is None and ep.value is not None          # …no approver, embedded
+    assert store.index.size() == 0                                  # not in the index
+    assert store.scan_servable(now=2_000, provisional_ttl_s=10**6) == []  # not scannable
+    assert store.scan_approved() == []                              # nor via the alias
+
+
+def test_capture_secret_floor_unmoved():
+    svc, store = _svc_v2()
+    with pytest.raises(SecretRefused):
+        svc.capture(f"my key {SECRET}", proposed_by="agent-1")
+    assert _count(store, "episodes") == 0 and _count(store, "blobs") == 0
+    assert store.index.size() == 0
+
+
+def test_capture_triggers_promotion_check_and_sweep():
+    life = _RecordingLifecycle()
+    svc, store = _svc_v2(lifecycle=life)
+    r = svc.capture("durable insight needing demand", proposed_by="agent-1")
+    assert life.captures == [r.episode_id]            # the candidate was evaluated…
+    assert life.sweeps == 1                           # …and the sweep piggybacked once
+    svc.capture("a second distinct insight", proposed_by="agent-1")
+    assert life.sweeps == 2                           # once per capture
+
+
+def test_capture_dedup_never_touches_existing_trust():
+    life = _RecordingLifecycle()
+    svc, store = _svc_v2(lifecycle=life)
+    est = _write(svc, "an established team fact")     # human-vouched, established
+    r = svc.capture("an established team fact", proposed_by="agent-1")
+    assert r.deduped is True and r.episode_id == est.episode_id
+    ep = store.get_episode(est.episode_id)
+    assert ep.trust == "established"                  # capture has NO power over it
+    assert ep.approved_by == "human"
+    assert life.captures == [] and life.sweeps == 0   # dedup is not a new candidate
+
+
+def test_capture_disabled_refuses_cleanly():
+    life = _RecordingLifecycle()
+    svc, store = _svc_v2(lifecycle=life, autonomy_enabled=False)
+    r = svc.capture("anything at all", proposed_by="agent-1")
+    assert r.status == "disabled" and r.episode_id is None and r.scan is None
+    assert _count(store, "episodes") == 0 and _count(store, "blobs") == 0
+    assert life.captures == [] and life.sweeps == 0   # triggers never fire
+
+
+def test_write_unchanged_lands_established():
+    svc, store = _svc_v2()
+    r = _write(svc, "human approved insight")
+    assert r.status == "approved" and r.superseded is None
+    ep = store.get_episode(r.episode_id)
+    assert ep.trust == "established" and ep.approved_by == "human"
+    assert store.index.size() == 1                    # served immediately
+
+
+def test_write_replaces_supersedes_atomically():
+    svc, store = _svc_v2()
+    old = _write(svc, "the port is 5432")
+    new = _write(svc, "the port is 6543 since the migration", replaces=old.episode_id)
+    assert new.superseded == old.episode_id
+    dead = store.get_episode(old.episode_id)
+    assert dead.trust == "deprecated" and dead.superseded_by == new.episode_id
+    assert store.get_episode(new.episode_id).trust == "established"
+    # the retired row is out of every serving layer
+    assert old.episode_id not in {eid for eid, _ in store.scan_approved()}
+    # idempotent retry: same correction again dedups to the same replacement row
+    again = _write(svc, "the port is 6543 since the migration", replaces=old.episode_id)
+    assert again.deduped is True and again.episode_id == new.episode_id
+    n_audits = store.conn.execute(
+        "SELECT COUNT(*) AS c FROM evidence_events WHERE episode_id=? AND kind='supersede'",
+        (old.episode_id,)).fetchone()["c"]
+    assert n_audits == 1                              # no duplicate audit row
+
+
+def test_write_replaces_unknown_target_fails_whole_call():
+    svc, store = _svc_v2()
+    with pytest.raises(ValueError, match="does not exist"):
+        _write(svc, "a correction aimed at nothing", replaces=424242)
+    # the WHOLE call failed BEFORE staging: nothing stored, nothing retired
+    assert _count(store, "episodes") == 0 and _count(store, "blobs") == 0
+
+
+def test_write_replaces_self_dedup_is_benign_noop():
+    svc, store = _svc_v2()
+    old = _write(svc, "exactly this text")
+    # the "correction" dedups back to the target itself → self-supersede refused,
+    # the row stays live (a memory can never retire itself)
+    r = _write(svc, "exactly this text", replaces=old.episode_id)
+    assert r.deduped is True and r.episode_id == old.episode_id
+    assert r.superseded is None
+    ep = store.get_episode(old.episode_id)
+    assert ep.trust == "established" and ep.superseded_by is None
