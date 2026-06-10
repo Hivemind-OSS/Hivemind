@@ -34,6 +34,27 @@ services:
       timeout: 10s
       retries: 10
       start_period: 120s
+  # ---- OPT-IN PUBLIC TUNNEL (profile: tunnel) — REMOTE-ACCESS-PLAN Part A ----------
+  # Outbound, NAT-traversing HTTPS tunnel to the daemon — reachable from any OS/network.
+  # Profile-gated: a plain `docker compose up` does NOT start this (AC2). Reaches the
+  # daemon over the COMPOSE NETWORK (hive-server:8765), so NO host port is published here
+  # and the daemon needs no LAN bind (D5). ngrok lives in its own image — the hive image
+  # stays hermetically offline (D1/AC3). TLS terminates at the ngrok edge, so the bearer
+  # token is never cleartext on an untrusted hop.
+  ngrok:
+    image: ngrok/ngrok:3
+    profiles: ["tunnel"]
+    # `:-` (not `:?`) so a non-tunnel `up` still parses; `hive up --tunnel` fail-fasts on
+    # these before invoking the tunnel profile (secrets-via-env at the front door — see
+    # ADMIN-CLI-PLAN.md §4). Until the CLI lands: docker compose --profile tunnel up -d.
+    environment:
+      NGROK_AUTHTOKEN: "${NGROK_AUTHTOKEN:-}"
+    # `--url` pins the account's (free) static domain so the teammate URL is STABLE across
+    # restarts; ngrok v3 flag. Forwards to the daemon's in-container port over the compose net.
+    command: ["http", "hive-server:8765", "--url", "${NGROK_DOMAIN:-}"]
+    depends_on:
+      hive-server: { condition: service_healthy }   # only tunnel a daemon that's actually warm
+    restart: unless-stopped
   # ---- FUTURE SWAP (commented; uncovering it is the only change to externalize) ----
   # embedder:
   #   image: hive-embedder:vmin

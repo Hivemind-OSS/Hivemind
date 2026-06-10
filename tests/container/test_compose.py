@@ -5,6 +5,14 @@ decision (restart: unless-stopped, stdin attach — NOT `run --rm` cold-warm-per
 the compose-level tenant fail-fast, and the env-key↔config alignment (the corrected
 HIVE_EMBEDDING__MODEL / HIVE_OBS__LOG_LEVEL keys must name a REAL config field, else they
 are dead operator knobs); (2) `docker compose config` validity, skip-guarded on the CLI.
+
+REMOTE-ACCESS-PLAN Part A adds the tunnel contract: the `ngrok` sidecar is PROFILE-GATED
+(a plain `up` starts no tunnel — AC2), publishes no host port (egress only), reaches the
+daemon over the COMPOSE network (`hive-server:8765`, never a host address), only tunnels
+a HEALTHY daemon, and lives in its own image — the hive image bakes in no tunnel binary
+(D1/AC3, the hermetically-offline invariant). The RULE-2 mutation (drop
+`profiles: ["tunnel"]` → a default `up` would expose the daemon) reds
+`test_tunnel_is_profile_gated`.
 """
 from __future__ import annotations
 
@@ -131,6 +139,69 @@ def test_no_legacy_dead_keys():
     pairs = _env_pairs()
     assert "HIVE_EMBEDDING__MODEL_NAME" not in pairs
     assert "HIVE_OBSERVABILITY__LOG_LEVEL" not in pairs
+
+
+# ── the opt-in public tunnel (REMOTE-ACCESS-PLAN Part A) ──────────────────────
+def _service_block(name: str) -> str:
+    """The literal text of one 2-space-indented service block: from `  <name>:` until the
+    next line at ≤2-space indentation (sibling service, top-level key, or 2-indent comment)."""
+    lines, out, capturing = _text().splitlines(), [], False
+    for ln in lines:
+        if re.match(rf"^  {re.escape(name)}:\s*$", ln):
+            capturing = True
+            out.append(ln)
+            continue
+        if capturing:
+            if ln.strip() and re.match(r"^(\S|  \S)", ln):
+                break
+            out.append(ln)
+    return "\n".join(out)
+
+
+def test_tunnel_is_profile_gated():
+    # AC2: a plain `docker compose up` must NOT start ngrok — exposure is the explicit
+    # `--profile tunnel`. No host `ports:` either: the sidecar is egress-only.
+    blk = _service_block("ngrok")
+    assert blk, "ngrok service missing from compose.yaml"
+    assert re.search(r'profiles:\s*\[\s*"tunnel"\s*\]', blk)   # ← RULE-2: removing this reds here
+    assert "ports:" not in blk
+
+
+def test_tunnel_depends_on_healthy_daemon():
+    # only tunnel a daemon that is actually warm (healthcheck = embedder-resident gate)
+    blk = _service_block("ngrok")
+    assert "depends_on" in blk
+    assert "hive-server" in blk and "service_healthy" in blk
+
+
+def test_tunnel_uses_compose_network_upstream():
+    # the sidecar reaches the daemon over the COMPOSE network — zero host-exposure change
+    # (D5: the host publish stays loopback-only; no LAN bind, no host.docker.internal).
+    blk = _service_block("ngrok")
+    assert "hive-server:8765" in blk
+    assert "127.0.0.1" not in blk and "host.docker.internal" not in blk
+
+
+def test_hive_image_has_no_tunnel_baked_in():
+    # D1/AC3: ngrok lives in its OWN image; the hive image stays hermetically offline —
+    # no phone-home binary in the brain image, byte-identical to the pre-tunnel build.
+    blk = _service_block("ngrok")
+    m = re.search(r"image:\s*(\S+)", blk)
+    assert m and m.group(1).startswith("ngrok/ngrok")
+    assert "hive:vmin" not in blk
+    dockerfile = (_ROOT / "Dockerfile").read_text()
+    assert "ngrok" not in dockerfile.lower()
+
+
+def test_env_example_documents_tunnel_vars():
+    # the operator front door: tenant id live, tunnel credentials present but COMMENTED —
+    # the example must never ship a real value (secrets stay out of git).
+    env_ex = (_ROOT / ".env.example").read_text()
+    assert "HIVE_TENANT_ID" in env_ex
+    assert "NGROK_AUTHTOKEN" in env_ex and "NGROK_DOMAIN" in env_ex
+    for ln in env_ex.splitlines():
+        if "NGROK_AUTHTOKEN" in ln:
+            assert ln.lstrip().startswith("#"), "NGROK_AUTHTOKEN must ship commented out"
 
 
 # ── docker compose config validity (skip-guarded on the CLI; daemon-free) ─────
