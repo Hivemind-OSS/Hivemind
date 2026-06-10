@@ -5,11 +5,18 @@ The strict order config→migrate→index→warm→serve, the fail-fast exit cod
 "serve is UNREACHABLE unless every prior step succeeded" invariant are pinned here against
 an injected fake boot — no Docker required. Three of the four RULE-2 mutations live in
 this module (missing-env guard, swallow-embedder-exception, migrate-failure return).
+
+REMOTE-ACCESS-PLAN Part S adds the hardening knobs, resolved with the SAME discipline as
+`_resolve_port` (default / override / `0`-disables / malformed→EX_CONFIG before assembly,
+never a raise out of boot): `HIVE_HTTP_RATE_LIMIT`+`HIVE_HTTP_RATE_WINDOW_S` and
+`HIVE_HTTP_MAX_BODY_BYTES`. `_make_http_serve` must construct a real `TokenBucketLimiter`
+from the resolved values and thread `limiter=`/`max_body_bytes=` into `run_http`.
 """
 from __future__ import annotations
 
 import pytest
 
+from hive.app.rate_limit import TokenBucketLimiter
 from hive.tools import entrypoint as E
 
 
@@ -229,11 +236,14 @@ def test_embedder_not_resident_exits_69():
 def test_make_http_serve_wires_run_http_with_port_and_verify():
     """_make_http_serve builds the default serve from the injectable run_http, the resolved
     port, and the token store's verify CALLABLE (no SQLite class leaks into the transport).
-    Mutating verify=boot.token_store.verify makes this red."""
+    Part S: it must ALSO construct a TokenBucketLimiter and thread it + max_body_bytes
+    through (defaults: 120/60s, 1 MiB). Mutating verify=boot.token_store.verify makes
+    this red."""
     captured: dict = {}
 
-    def fake_run_http(server, *, host, port, verify, lock):
-        captured.update(server=server, host=host, port=port, verify=verify, lock=lock)
+    def fake_run_http(server, *, host, port, verify, lock, limiter, max_body_bytes):
+        captured.update(server=server, host=host, port=port, verify=verify, lock=lock,
+                        limiter=limiter, max_body_bytes=max_body_bytes)
 
     boot = _RecordingBoot([])
     serve = E._make_http_serve(boot, 9999, run_http=fake_run_http)
@@ -244,6 +254,26 @@ def test_make_http_serve_wires_run_http_with_port_and_verify():
     assert captured["port"] == 9999
     assert captured["verify"] == boot.token_store.verify   # the verify SEAM, not the class
     assert captured["lock"] is not None
+    assert isinstance(captured["limiter"], TokenBucketLimiter)
+    assert captured["max_body_bytes"] == 1 << 20           # the generous default cap
+
+
+def test_make_http_serve_constructs_limiter_from_resolved_values():
+    """The knobs actually BITE: a limiter built with rate_limit=5 allows exactly 5 checks
+    on one label, and the explicit max_body_bytes reaches run_http verbatim."""
+    captured: dict = {}
+
+    def fake_run_http(server, *, host, port, verify, lock, limiter, max_body_bytes):
+        captured.update(limiter=limiter, max_body_bytes=max_body_bytes)
+
+    serve = E._make_http_serve(_RecordingBoot([]), 8765, rate_limit=5, rate_window_s=2.5,
+                               max_body_bytes=512, run_http=fake_run_http)
+    serve(object())
+    assert captured["max_body_bytes"] == 512
+    limiter = captured["limiter"]
+    assert isinstance(limiter, TokenBucketLimiter)
+    assert all(limiter.check("dev").allowed for _ in range(5))
+    assert not limiter.check("dev").allowed                # the 6th — limit=5 was wired in
 
 
 def test_main_default_serve_is_http_with_default_port(monkeypatch):
@@ -283,3 +313,75 @@ def test_invalid_http_port_exits_config(bad):
                 serve=_serve_recorder(calls))
     assert rc == E.EX_CONFIG
     assert calls == []
+
+
+# ── Part S hardening knobs: resolved like _resolve_port (REMOTE-ACCESS-PLAN §4) ──
+def test_resolve_rate_limit_defaults():
+    assert E._resolve_rate_limit({}) == (120, 60.0)
+
+
+def test_resolve_rate_limit_overrides():
+    env = {"HIVE_HTTP_RATE_LIMIT": "30", "HIVE_HTTP_RATE_WINDOW_S": "10"}
+    assert E._resolve_rate_limit(env) == (30, 10.0)
+
+
+def test_resolve_rate_limit_zero_disables():
+    # `0` is a VALID operator choice (AC4): the limiter's disabled sentinel, not an error.
+    assert E._resolve_rate_limit({"HIVE_HTTP_RATE_LIMIT": "0"}) == (0, 60.0)
+
+
+@pytest.mark.parametrize("env", [
+    {"HIVE_HTTP_RATE_LIMIT": "abc"},
+    {"HIVE_HTTP_RATE_LIMIT": "-1"},
+    {"HIVE_HTTP_RATE_LIMIT": "1.5"},
+    {"HIVE_HTTP_RATE_WINDOW_S": "xyz"},
+    {"HIVE_HTTP_RATE_WINDOW_S": "0"},
+    {"HIVE_HTTP_RATE_WINDOW_S": "-2"},
+])
+def test_resolve_rate_limit_malformed_is_none(env):
+    # malformed/negative → None (the caller maps to EX_CONFIG) — never a raise, never a
+    # silent fallback to the default (a typo'd knob must not quietly weaken the belt).
+    assert E._resolve_rate_limit(env) is None
+
+
+def test_resolve_max_body_default_and_override():
+    assert E._resolve_max_body({}) == 1 << 20
+    assert E._resolve_max_body({"HIVE_HTTP_MAX_BODY_BYTES": "2048"}) == 2048
+
+
+@pytest.mark.parametrize("bad", ["abc", "-1", "0", "1.5"])
+def test_resolve_max_body_malformed_is_none(bad):
+    # a zero/negative cap would reject EVERY body — config error, not a knob setting.
+    assert E._resolve_max_body({"HIVE_HTTP_MAX_BODY_BYTES": bad}) is None
+
+
+@pytest.mark.parametrize("env", [
+    {"HIVE_TENANT_ID": "acme", "HIVE_HTTP_RATE_LIMIT": "nope"},
+    {"HIVE_TENANT_ID": "acme", "HIVE_HTTP_RATE_WINDOW_S": "-3"},
+    {"HIVE_TENANT_ID": "acme", "HIVE_HTTP_MAX_BODY_BYTES": "nope"},
+])
+def test_invalid_hardening_env_exits_config_before_assembly(env):
+    calls: list = []
+    rc = E.main(env=env, build_boot=_boot_factory(_RecordingBoot(calls)),
+                serve=_serve_recorder(calls))
+    assert rc == E.EX_CONFIG
+    assert calls == []                             # fail-fast BEFORE build_boot, like the port
+
+
+def test_main_default_serve_threads_resolved_hardening(monkeypatch):
+    """main() threads the RESOLVED env knobs into _make_http_serve — the operator's
+    values, not the defaults, reach the daemon."""
+    captured: dict = {}
+
+    def fake_make_http_serve(boot, port, **kw):
+        captured.update(port=port, **kw)
+        return lambda s: None
+
+    monkeypatch.setattr(E, "_make_http_serve", fake_make_http_serve)
+    rc = E.main(env={"HIVE_TENANT_ID": "acme", "HIVE_HTTP_RATE_LIMIT": "7",
+                     "HIVE_HTTP_RATE_WINDOW_S": "30", "HIVE_HTTP_MAX_BODY_BYTES": "4096"},
+                build_boot=_boot_factory(_RecordingBoot([])))
+    assert rc == E.EX_OK
+    assert captured["rate_limit"] == 7
+    assert captured["rate_window_s"] == 30.0
+    assert captured["max_body_bytes"] == 4096

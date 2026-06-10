@@ -34,6 +34,7 @@ import threading
 from typing import Any, Callable, Mapping, Optional, Protocol
 
 from hive.app.config import Config
+from hive.app.rate_limit import TokenBucketLimiter   # stdlib-light, torch-free
 
 _log = logging.getLogger("hive.entrypoint")
 
@@ -47,6 +48,13 @@ _DEFAULT_DB_PATH = "/data/shared.db"
 _DEFAULT_AGENT_ID = "default-agent"
 _DEFAULT_LOG_LEVEL = logging.INFO
 _DEFAULT_HTTP_PORT = 8765
+# Part S hardening defaults (REMOTE-ACCESS-PLAN §4): generous for a busy single agent,
+# `HIVE_HTTP_RATE_LIMIT=0` disables. The 1 MiB cap mirrors http_server._DEFAULT_MAX_BODY
+# (kept separate — the entrypoint owns the OPERATOR env contract; http_server stays
+# importable without it and is deliberately lazy-imported at serve time).
+_DEFAULT_RATE_LIMIT = 120
+_DEFAULT_RATE_WINDOW_S = 60.0
+_DEFAULT_MAX_BODY_BYTES = 1 << 20
 
 
 def _configure_logging(level: int) -> None:
@@ -118,22 +126,29 @@ def _default_build_boot(cfg: Config, *, tenant_id: str, agent_id: str) -> Boot:
 
 
 def _make_http_serve(boot: Boot, port: int, *,
+                     rate_limit: int = _DEFAULT_RATE_LIMIT,
+                     rate_window_s: float = _DEFAULT_RATE_WINDOW_S,
+                     max_body_bytes: int = _DEFAULT_MAX_BODY_BYTES,
                      run_http: Optional[Callable[..., None]] = None) -> Callable[[Any], None]:
     """The DEFAULT serve step (replacing stdio): a warm HTTP daemon that authenticates every
     connecting device by its bearer token. The transport depends on a `verify` CALLABLE
     (`boot.token_store.verify`) — never the concrete SQLite class — so no adapter detail leaks
     into the transport. One `threading.Lock` serializes all handler execution (the shared conn
-    + embedder are not thread-safe). `run_http` is injectable ONLY so this default path is
-    unit-testable: every existing entrypoint test injects `serve`, so this path is otherwise
-    uncovered. The real `run_http` is lazy-imported (torch-free) so module import stays light."""
+    + embedder are not thread-safe). Part S: the resolved hardening knobs become a
+    `TokenBucketLimiter` (rate_limit<=0 ⇒ its disabled sentinel) + `max_body_bytes`, threaded
+    into `run_http`. `run_http` is injectable ONLY so this default path is unit-testable:
+    every existing entrypoint test injects `serve`, so this path is otherwise uncovered. The
+    real `run_http` is lazy-imported (torch-free) so module import stays light."""
     if run_http is None:
         from hive.app.http_server import run_http as run_http_impl  # noqa: PLC0415 — lazy, torch-free
         run_http = run_http_impl
     lock = threading.Lock()
+    limiter = TokenBucketLimiter(limit=rate_limit, window_s=rate_window_s)
 
     def serve(server: Any) -> None:
         run_http(server, host="0.0.0.0", port=port,
-                 verify=boot.token_store.verify, lock=lock)
+                 verify=boot.token_store.verify, lock=lock,
+                 limiter=limiter, max_body_bytes=max_body_bytes)
     return serve
 
 
@@ -154,6 +169,51 @@ def _resolve_port(env: Mapping[str, str]) -> Optional[int]:
         _log.error("entrypoint.http_port_out_of_range var=HIVE_HTTP_PORT code=%d", EX_CONFIG)
         return None
     return port
+
+
+def _resolve_rate_limit(env: Mapping[str, str]) -> Optional[tuple[int, float]]:
+    """Resolve the per-token throttle: `$HIVE_HTTP_RATE_LIMIT` requests (default 120;
+    `0` DISABLES — the AC4 escape hatch) per `$HIVE_HTTP_RATE_WINDOW_S` seconds (default
+    60). Returns None on a malformed/negative limit or a malformed/non-positive window
+    (the caller maps that to EX_CONFIG) — a typo'd knob must fail fast, never silently
+    weaken the belt. NEVER echoes the env value. // O(1)."""
+    raw_limit = (env.get("HIVE_HTTP_RATE_LIMIT") or "").strip()
+    try:
+        limit = int(raw_limit) if raw_limit else _DEFAULT_RATE_LIMIT
+    except ValueError:
+        _log.error("entrypoint.invalid_rate_limit var=HIVE_HTTP_RATE_LIMIT code=%d", EX_CONFIG)
+        return None
+    if limit < 0:
+        _log.error("entrypoint.invalid_rate_limit var=HIVE_HTTP_RATE_LIMIT code=%d", EX_CONFIG)
+        return None
+    raw_window = (env.get("HIVE_HTTP_RATE_WINDOW_S") or "").strip()
+    try:
+        window_s = float(raw_window) if raw_window else _DEFAULT_RATE_WINDOW_S
+    except ValueError:
+        _log.error("entrypoint.invalid_rate_window var=HIVE_HTTP_RATE_WINDOW_S code=%d", EX_CONFIG)
+        return None
+    if window_s <= 0:
+        _log.error("entrypoint.invalid_rate_window var=HIVE_HTTP_RATE_WINDOW_S code=%d", EX_CONFIG)
+        return None
+    return limit, window_s
+
+
+def _resolve_max_body(env: Mapping[str, str]) -> Optional[int]:
+    """Resolve the request body cap: `$HIVE_HTTP_MAX_BODY_BYTES` (default 1 MiB). A
+    zero/negative cap would reject EVERY body, so non-positive is malformed → None →
+    EX_CONFIG (disable by setting it large, not zero). NEVER echoes the value. // O(1)."""
+    raw = (env.get("HIVE_HTTP_MAX_BODY_BYTES") or "").strip()
+    if not raw:
+        return _DEFAULT_MAX_BODY_BYTES
+    try:
+        max_body = int(raw)
+    except ValueError:
+        _log.error("entrypoint.invalid_max_body var=HIVE_HTTP_MAX_BODY_BYTES code=%d", EX_CONFIG)
+        return None
+    if max_body <= 0:
+        _log.error("entrypoint.invalid_max_body var=HIVE_HTTP_MAX_BODY_BYTES code=%d", EX_CONFIG)
+        return None
+    return max_body
 
 
 def _resolve_env(env: Mapping[str, str]) -> Optional[tuple[str, str, str]]:
@@ -227,6 +287,13 @@ def main(argv: Optional[list[str]] = None, *, env: Optional[Mapping[str, str]] =
     port = _resolve_port(env)                           # malformed HIVE_HTTP_PORT → fail fast
     if port is None:
         return EX_CONFIG
+    rate = _resolve_rate_limit(env)                     # Part S knobs: same fail-fast discipline
+    if rate is None:
+        return EX_CONFIG
+    rate_limit, rate_window_s = rate
+    max_body_bytes = _resolve_max_body(env)
+    if max_body_bytes is None:
+        return EX_CONFIG
     try:
         cfg = Config.load(db_path=db_path, env=env, runtime={"tenant_id": tenant_id})
     except Exception as exc:                            # noqa: BLE001 — bad config is EX_CONFIG
@@ -243,7 +310,9 @@ def main(argv: Optional[list[str]] = None, *, env: Optional[Mapping[str, str]] =
 
     # Default the serve step to the warm HTTP daemon (needs boot.token_store.verify, so it is
     # built only after assembly). An injected `serve` (every unit test) takes precedence.
-    serve = serve or _make_http_serve(boot, port)
+    serve = serve or _make_http_serve(boot, port, rate_limit=rate_limit,
+                                      rate_window_s=rate_window_s,
+                                      max_body_bytes=max_body_bytes)
 
     # Invalidate any STALE ready marker from a prior boot BEFORE migrate — a restarted
     # container (persistent volume + reused PID 1) must start red until THIS boot warms.
