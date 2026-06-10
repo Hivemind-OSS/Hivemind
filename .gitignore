@@ -50,3 +50,10 @@ backups/
 *.swp
 .DS_Store
 Thumbs.db
+
+
+# Graphify files
+graphify-out
+
+# ── Agent tooling (local only; do not ship) ──
+.claude/
