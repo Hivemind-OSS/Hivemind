@@ -110,7 +110,10 @@ def test_pending_never_in_candidates_single_predicate():
     s.approve(a, "human", _unit(1, 0, 0, 0), expected_version=0)
     ids = {eid for eid, _ in s.scan_approved()}
     assert ids == {a} and p not in ids
-    assert _RECALL_PREDICATE == "status='approved'"   # single source of "recallable"
+    # single source of "recallable": SQL prefilters materialized rows; the full
+    # decision is lifecycle.is_servable inside scan_servable (scan_approved = its
+    # no-clock fail-closed alias)
+    assert _RECALL_PREDICATE == "status='approved' AND value IS NOT NULL"
 
 
 def test_pending_value_is_null():

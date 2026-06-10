@@ -9,6 +9,7 @@ written) but their accessor methods are gone. Episode-CRUD / admission is below.
 from __future__ import annotations
 
 import hashlib
+import json
 import logging
 import sqlite3
 from contextlib import contextmanager
@@ -18,13 +19,23 @@ import numpy as np
 
 from hive.adapters.sqlite_db import tx
 from hive.domain.errors import SqliteBusyExhausted
+from hive.domain.lifecycle import (
+    DEPRECATED, ESTABLISHED, PROVISIONAL, QUARANTINED, TRUST_STATES,
+    MissRow, decayed, is_servable,
+)
 from hive.domain.models import Episode, content_hash
 
 _log = logging.getLogger("hive.store")
 
-# The SINGLE definition of "recallable" — kills the verified 4-site tombstoned=0
-# predicate-scatter. scan_approved() is the only candidate source for recall.
-_RECALL_PREDICATE = "status='approved'"
+# The SQL PREFILTER under the single servability rule: only materialized rows can
+# serve. The full predicate is hive.domain.lifecycle.is_servable — scan_servable()
+# applies it per row, and it is the ONLY candidate source for recall (scan_approved()
+# is its no-clock fail-closed alias).
+_RECALL_PREDICATE = "status='approved' AND value IS NOT NULL"
+
+# "no clock" sentinel for the fail-closed scan_approved() alias: with now pushed to
+# the far future, a provisional row can never prove freshness ⇒ established-only.
+_FAR_FUTURE = 1 << 62
 
 # Sentinel family for episode-level held-out membership (guardrail-2, A5). Isolation
 # is per-EPISODE, but the utility table is keyed (episode_id, family_scope); we stamp
@@ -151,12 +162,18 @@ class SqliteEpisodeStore:
                 (tenant_id, text, weight, ts, source, tags, h, proposed_by))
             return int(cur.lastrowid), False
 
-    def approve(self, episode_id: int, approver: str, value: "np.ndarray",
-                expected_version: int, approved_ts: int = 0) -> bool:
-        """CAS-flip pending→approved (writes value) THEN best-effort index sync after
-        commit [B3]. Idempotent (already-approved ⇒ no-op True); a stale expected_version
-        ⇒ no flip (lost-update / double-admission blocked). The index add is a warm-cache
-        side effect — durable truth is status='approved'; boot rebuild recovers divergence."""
+    def complete(self, episode_id: int, value: "np.ndarray", *, expected_version: int,
+                 trust: str, approver: Optional[str] = None, approved_ts: int = 0,
+                 last_active_ts: int = 0) -> bool:
+        """CAS-flip pending→approved (materialized: value written) with an explicit
+        trust state, THEN best-effort index sync after commit [B3] — the index add
+        happens IFF the row lands in a servable trust state (established/provisional;
+        freshness at the stamp instant is definitional). A quarantined complete is
+        embedded but absent from the index. Idempotent (already-approved ⇒ no-op True);
+        a stale expected_version ⇒ no flip (lost-update / double-admission blocked).
+        Durable truth is the row; boot rebuild recovers warm-cache divergence."""
+        if trust not in TRUST_STATES:
+            raise ValueError(f"bad trust {trust!r}")
         vbytes = np.ascontiguousarray(np.asarray(value, dtype=np.float32)).tobytes()
         with tx(self.conn):
             row = self.conn.execute(
@@ -165,26 +182,35 @@ class SqliteEpisodeStore:
                 return True   # idempotent
             n = self.conn.execute(
                 "UPDATE episodes SET status='approved', approved_by=?, approved_ts=?, "
-                "value=?, version=version+1 "
+                "value=?, trust=?, last_active_ts=?, version=version+1 "
                 "WHERE id=? AND version=? AND status='pending'",
-                (approver, approved_ts, vbytes, episode_id, expected_version)).rowcount
+                (approver, approved_ts, vbytes, trust, last_active_ts,
+                 episode_id, expected_version)).rowcount
             if n == 1 and _is_isolation(episode_id, self._isolation_frac):
                 # guardrail-2 (A5): the SINGLE writer of isolation membership. Stamp the
-                # held-out flag ATOMICALLY with the approval flip — same tx, co-located
-                # utility table [A7] — so an approved episode can never be left un-stamped
-                # (the loop's held-out slice is decided exactly once, at admission).
+                # held-out flag ATOMICALLY with the materialization flip — same tx,
+                # co-located utility table [A7] — so a materialized episode can never be
+                # left un-stamped (the held-out slice is decided exactly once).
                 self.conn.execute(
                     "INSERT INTO utility(episode_id, family_scope, isolation) VALUES(?,?,1) "
                     "ON CONFLICT(episode_id, family_scope) DO UPDATE SET isolation=1",
                     (episode_id, _ISOLATION_FAMILY))
-        if n == 1 and self.index is not None:
+        if n == 1 and trust in (ESTABLISHED, PROVISIONAL) and self.index is not None:
             try:
                 self.index.sync_approved(episode_id, np.asarray(value, dtype=np.float32))
             except Exception:
-                # best-effort warm cache [B3]: durable truth is status='approved';
+                # best-effort warm cache [B3]: durable truth is the row;
                 # rebuild_index_from_store() on boot recovers the divergence.
                 pass
         return n == 1
+
+    def approve(self, episode_id: int, approver: str, value: "np.ndarray",
+                expected_version: int, approved_ts: int = 0) -> bool:
+        """The human-vouched flip — thin wrapper over ``complete(trust='established')``
+        (served immediately; liveness clock starts at the approval stamp)."""
+        return self.complete(episode_id, value, expected_version=expected_version,
+                             trust=ESTABLISHED, approver=approver,
+                             approved_ts=approved_ts, last_active_ts=approved_ts)
 
     def reject(self, episode_id: int, *, keep: bool = False) -> None:
         """Drop a pending row (default). keep_rejected retains it as non-recallable
@@ -194,18 +220,41 @@ class SqliteEpisodeStore:
         with tx(self.conn):
             self.conn.execute("DELETE FROM episodes WHERE id=? AND status='pending'", (episode_id,))
 
-    def scan_approved(self) -> list[tuple[int, "np.ndarray"]]:
-        """The ONLY candidate source for recall — the single _RECALL_PREDICATE."""
+    def scan_servable(self, *, now: int,
+                      provisional_ttl_s: int) -> list[tuple[int, "np.ndarray"]]:
+        """The ONLY candidate source for recall. SQL prefilters to materialized rows
+        (_RECALL_PREDICATE); the full decision per row is the ONE pure predicate
+        ``lifecycle.is_servable`` — established always, provisional iff fresh,
+        quarantined/deprecated never.  // O(N) time."""
         out: list[tuple[int, np.ndarray]] = []
         for r in self.conn.execute(
-            f"SELECT id, value FROM episodes WHERE {_RECALL_PREDICATE} AND value IS NOT NULL"):
-            out.append((r["id"], np.frombuffer(r["value"], dtype=np.float32).copy()))
+                f"SELECT id, value, status, trust, last_active_ts "
+                f"FROM episodes WHERE {_RECALL_PREDICATE}"):
+            if is_servable(status=r["status"], trust=r["trust"],
+                           last_active_ts=r["last_active_ts"], now=now,
+                           provisional_ttl_s=provisional_ttl_s):
+                out.append((r["id"], np.frombuffer(r["value"], dtype=np.float32).copy()))
         return out
 
-    def rebuild_index_from_store(self) -> None:
-        """Divergence-recovery guarantee [B3]: rebuild the warm cache from approved-only."""
-        if self.index is not None:
+    def scan_approved(self) -> list[tuple[int, "np.ndarray"]]:
+        """Compat alias — the no-clock FAIL-CLOSED reading of ``scan_servable``: with
+        ``now`` pushed to the far future a provisional row can never prove freshness,
+        so this returns established-only (never over-serves)."""
+        return self.scan_servable(now=_FAR_FUTURE, provisional_ttl_s=0)
+
+    def rebuild_index_from_store(self, *, now: Optional[int] = None,
+                                 provisional_ttl_s: Optional[int] = None) -> None:
+        """Divergence-recovery guarantee [B3]: rebuild the warm cache from the
+        servable set. Callers with a clock (the boot path) pass ``now`` +
+        ``provisional_ttl_s`` so fresh provisional rows are included; with no clock
+        the rebuild is fail-closed (established-only)."""
+        if self.index is None:
+            return
+        if now is None or provisional_ttl_s is None:
             self.index.rebuild_from_store(self.scan_approved())
+        else:
+            self.index.rebuild_from_store(
+                self.scan_servable(now=now, provisional_ttl_s=provisional_ttl_s))
 
     def list_pending(self, since: int = 0) -> list[dict]:
         """Pending proposals with ts >= since (the durable cursor for hive_pending),
@@ -243,6 +292,222 @@ class SqliteEpisodeStore:
             elif r["status"] == "pending":
                 pending = int(r["c"])
         return approved, pending
+
+    # ── trust lifecycle (promotion / supersession / decay) ────────────────────
+    def set_trust(self, episode_id: int, new_trust: str, *, now: int) -> bool:
+        """Transactional trust transition on a MATERIALIZED row. Promotion into a
+        servable state stamps ``last_active_ts=now`` (a fresh promotion is never
+        instantly dead); demotion leaves the clock untouched. Index sync after
+        commit is best-effort [B3] — add on entering a servable trust state, remove
+        on leaving (boot rebuild recovers divergence). False on unknown/unflipped
+        rows; raises on an unknown trust label (caller bug, not data)."""
+        if new_trust not in TRUST_STATES:
+            raise ValueError(f"bad trust {new_trust!r}")
+        servable_states = (ESTABLISHED, PROVISIONAL)
+        with tx(self.conn):
+            r = self.conn.execute(
+                "SELECT status, trust, value FROM episodes WHERE id=?",
+                (episode_id,)).fetchone()
+            if r is None or r["status"] != "approved":
+                return False
+            old_trust = r["trust"]
+            if new_trust in servable_states:
+                self.conn.execute(
+                    "UPDATE episodes SET trust=?, last_active_ts=? WHERE id=?",
+                    (new_trust, now, episode_id))
+            else:
+                self.conn.execute(
+                    "UPDATE episodes SET trust=? WHERE id=?", (new_trust, episode_id))
+        if self.index is not None:
+            try:
+                if new_trust in servable_states and r["value"] is not None:
+                    self.index.sync_approved(
+                        episode_id, np.frombuffer(r["value"], dtype=np.float32).copy())
+                elif old_trust in servable_states and new_trust not in servable_states:
+                    self.index.remove(episode_id)
+            except Exception:                      # noqa: BLE001 — warm cache only [B3]
+                _log.warning("store.set_trust_index_sync_failed episode_id=%s", episode_id)
+        return True
+
+    def supersede(self, target_id: int, replacement_id: int, *, actor: str,
+                  ts: int) -> bool:
+        """The ONE owner of retirement-with-replacement: retire (deprecated) + stamp
+        ``superseded_by`` + ONE audit row, in ONE tx; de-index after commit. Guards:
+        self-supersede refused; unknown target/replacement refused; idempotent re-run
+        (column already stamped with this replacement ⇒ no duplicate audit);
+        re-supersede with a NEW replacement is last-write-wins on the column with
+        history kept in the ledger."""
+        if target_id == replacement_id:
+            _log.warning("store.supersede_self_refused episode_id=%s", target_id)
+            return False
+        with tx(self.conn):
+            t = self.conn.execute(
+                "SELECT superseded_by FROM episodes WHERE id=?", (target_id,)).fetchone()
+            if t is None:
+                return False
+            if self.conn.execute("SELECT 1 FROM episodes WHERE id=?",
+                                 (replacement_id,)).fetchone() is None:
+                return False
+            if t["superseded_by"] == replacement_id:
+                return True                        # idempotent re-run: no duplicate audit
+            self.conn.execute(
+                "UPDATE episodes SET trust=?, superseded_by=? WHERE id=?",
+                (DEPRECATED, replacement_id, target_id))
+            self.conn.execute(
+                "INSERT INTO evidence_events(episode_id, kind, actor, ts, payload) "
+                "VALUES(?,?,?,?,?)",
+                (target_id, "supersede", actor, ts,
+                 json.dumps({"replacement_id": replacement_id})))
+        if self.index is not None:
+            try:
+                self.index.remove(target_id)
+            except Exception:                      # noqa: BLE001 — warm cache only [B3]
+                _log.warning("store.supersede_deindex_failed episode_id=%s", target_id)
+        _log.info("store.superseded target=%s replacement=%s actor=%s",
+                  target_id, replacement_id, actor)
+        return True
+
+    def terminal_successor(self, episode_id: int, *,
+                           max_depth: int = 10) -> Optional[tuple[int, str]]:
+        """Walk the ``superseded_by`` chain to its terminal row and return
+        ``(episode_id, content_hash)`` — hash because fetch is hash-keyed. None if
+        the row is not superseded (or unknown). Depth-capped + visited-set-bounded
+        so a (raw-SQL-only) cycle terminates instead of hanging.  // O(depth)."""
+        seen = {episode_id}
+        cur = episode_id
+        moved = False
+        for _ in range(max_depth):
+            r = self.conn.execute(
+                "SELECT superseded_by FROM episodes WHERE id=?", (cur,)).fetchone()
+            if r is None or r["superseded_by"] is None:
+                break
+            nxt = int(r["superseded_by"])
+            if nxt in seen:                        # cycle: stop at the last new node
+                break
+            seen.add(nxt)
+            cur = nxt
+            moved = True
+        if not moved:
+            return None
+        h = self.conn.execute(
+            "SELECT content_hash FROM episodes WHERE id=?", (cur,)).fetchone()
+        return (cur, h["content_hash"]) if h is not None else None
+
+    def sweep_decayed(self, *, now: int, q_ttl_s: int, p_ttl_s: int) -> dict:
+        """Materialize the lazy ``lifecycle.decayed`` rule: TTL-lapsed quarantined/
+        provisional rows flip to deprecated, each with ONE ``ttl_expired`` audit row,
+        in ONE tx; lapsed provisional rows are de-indexed after commit. Idempotent
+        (deprecated rows never re-match); bounded by the live quarantined+provisional
+        count.  // O(live) time."""
+        flips: list[tuple[int, str]] = []          # (episode_id, old_trust)
+        with tx(self.conn):
+            for r in self.conn.execute(
+                    "SELECT id, trust, ts, last_active_ts FROM episodes "
+                    "WHERE trust IN (?,?)", (QUARANTINED, PROVISIONAL)):
+                if decayed(trust=r["trust"], last_active_ts=r["last_active_ts"],
+                           created_ts=r["ts"], now=now,
+                           quarantine_ttl_s=q_ttl_s, provisional_ttl_s=p_ttl_s):
+                    flips.append((int(r["id"]), r["trust"]))
+            for eid, old_trust in flips:
+                self.conn.execute(
+                    "UPDATE episodes SET trust=? WHERE id=?", (DEPRECATED, eid))
+                self.conn.execute(
+                    "INSERT INTO evidence_events(episode_id, kind, actor, ts, payload) "
+                    "VALUES(?,?,?,?,?)",
+                    (eid, "ttl_expired", "server", now,
+                     json.dumps({"from": old_trust})))
+        if self.index is not None:
+            for eid, old_trust in flips:
+                if old_trust == PROVISIONAL:       # quarantined rows were never indexed
+                    try:
+                        self.index.remove(eid)
+                    except Exception:              # noqa: BLE001 — warm cache only [B3]
+                        _log.warning("store.sweep_deindex_failed episode_id=%s", eid)
+        out = {QUARANTINED: 0, PROVISIONAL: 0}
+        for _eid, old_trust in flips:
+            out[old_trust] += 1
+        if flips:
+            _log.info("store.sweep_decayed quarantined=%d provisional=%d now=%d",
+                      out[QUARANTINED], out[PROVISIONAL], now)
+        return out
+
+    def quarantined_candidates(
+            self, *, now: int, quarantine_ttl_s: int,
+    ) -> list[tuple[int, "np.ndarray", str, int, int]]:
+        """Live (non-decayed) quarantined rows — the promotion scan's candidate set:
+        ``(id, value, proposed_by, ts, last_active_ts)``. Death is decided by the
+        ONE pure ``lifecycle.decayed`` rule (don't promote the dead)."""
+        out: list[tuple[int, np.ndarray, str, int, int]] = []
+        for r in self.conn.execute(
+                "SELECT id, value, proposed_by, ts, last_active_ts FROM episodes "
+                "WHERE trust=? AND status='approved' AND value IS NOT NULL",
+                (QUARANTINED,)):
+            if not decayed(trust=QUARANTINED, last_active_ts=r["last_active_ts"],
+                           created_ts=r["ts"], now=now,
+                           quarantine_ttl_s=quarantine_ttl_s,
+                           provisional_ttl_s=0):  # unused on the quarantined branch
+                out.append((int(r["id"]),
+                            np.frombuffer(r["value"], dtype=np.float32).copy(),
+                            r["proposed_by"] or "", int(r["ts"]),
+                            int(r["last_active_ts"])))
+        return out
+
+    def insert_audit(self, episode_id: int, kind: str, actor: str, ts: int,
+                     payload: str) -> int:
+        """One server-written audit row (evidence_events is server-written ONLY —
+        no tool writes here). Returns the row id."""
+        with tx(self.conn):
+            cur = self.conn.execute(
+                "INSERT INTO evidence_events(episode_id, kind, actor, ts, payload) "
+                "VALUES(?,?,?,?,?)", (episode_id, kind, actor, ts, payload))
+            return int(cur.lastrowid)
+
+    def trust_counts(self) -> dict[str, int]:
+        """Per-trust-state row counts for hive_health — ALL four states present
+        (a zero is signal: quarantine pile-up must be visible, never silent)."""
+        out = {t: 0 for t in TRUST_STATES}
+        for r in self.conn.execute(
+                "SELECT trust, COUNT(*) AS c FROM episodes GROUP BY trust"):
+            if r["trust"] in out:
+                out[r["trust"]] = int(r["c"])
+        return out
+
+    # ── ExposureLedger port (the recall side-channel writer) ──────────────────
+    def record_exposure(self, trace_id: str, items: Sequence[tuple[int, float]],
+                        *, agent_id: str, ts: int) -> None:
+        """Persist WHO was served WHAT and refresh the served rows' liveness clocks
+        — ONE tx, so an exposure can never land without its last_active bump (a
+        served provisional row that failed to refresh would decay while in use)."""
+        with tx(self.conn):
+            for eid, margin in items:
+                self.conn.execute(
+                    "INSERT INTO exposure(trace_id, episode_id, recall_margin, "
+                    "injected_ts, agent_id) VALUES(?,?,?,?,?)",
+                    (trace_id, int(eid), float(margin), ts, agent_id))
+            for eid, _margin in items:
+                self.conn.execute(
+                    "UPDATE episodes SET last_active_ts=? WHERE id=?", (ts, int(eid)))
+
+    def record_miss(self, query_text: str, query_vector: Optional[bytes],
+                    agent_id: str, miss_type: str, *, ts: int) -> None:
+        """Persist one non-answer (the demand signal). The CALLER owns the secret
+        floor — a refused query arrives here already stripped (empty text, None
+        vector); a redacted one arrives masked with a vector re-encoded from the
+        masked text. miss_type is CHECK-constrained by the DDL."""
+        with tx(self.conn):
+            self.conn.execute(
+                "INSERT INTO recall_misses(query_text, query_vector, agent_id, "
+                "miss_type, ts) VALUES(?,?,?,?,?)",
+                (query_text, query_vector, agent_id, miss_type, ts))
+
+    def misses_window(self, since_ts: int) -> list[MissRow]:
+        """The demand-window slice: misses STRICTLY after ``since_ts`` that carry a
+        vector (secret-refused rows persist none and can never drive promotion)."""
+        return [MissRow(vector=np.frombuffer(r["query_vector"], dtype=np.float32).copy(),
+                        agent_id=r["agent_id"], ts=int(r["ts"]))
+                for r in self.conn.execute(
+                    "SELECT query_vector, agent_id, ts FROM recall_misses "
+                    "WHERE ts>? AND query_vector IS NOT NULL ORDER BY id", (since_ts,))]
 
     # ── meta watermark kv ─────────────────────────────────────────────────────
     def meta_get(self, key: str) -> Optional[str]:

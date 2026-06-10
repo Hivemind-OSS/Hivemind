@@ -8,14 +8,29 @@ measured demand promotes it to ``provisional`` (served WITH its label); a human
 re-evaluates (store scan predicate, index membership sync, per-hit recall belt);
 ``decayed`` is the lazy death rule the sweep materializes.
 
-PURE: stdlib only. The purity gate (tests/test_purity.py) forbids
+PURE: stdlib + numpy carriers only. The purity gate (tests/test_purity.py) forbids
 sqlite3 | torch | subprocess | os | git | time imports anywhere in hive/domain/.
 """
 from __future__ import annotations
 
+from dataclasses import dataclass
+
+import numpy as np  # permitted in domain (not in the forbidden I/O set)
+
 QUARANTINED, PROVISIONAL, ESTABLISHED, DEPRECATED = (
     "quarantined", "provisional", "established", "deprecated")
 TRUST_STATES = (QUARANTINED, PROVISIONAL, ESTABLISHED, DEPRECATED)
+
+
+@dataclass(frozen=True, slots=True)
+class MissRow:
+    """One recorded recall miss inside the demand window — the carrier the store
+    returns and the demand rule consumes. ``agent_id`` is the asker's authenticated
+    token label (the anti-gaming key); ``vector`` is the query embedding (re-encoded
+    from the REDACTED text when the scanner masked; never present for refused)."""
+    vector: "np.ndarray"
+    agent_id: str
+    ts: int
 
 
 def is_servable(*, status: str, trust: str, last_active_ts: int,

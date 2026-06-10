@@ -96,6 +96,19 @@ class UtilityStore(Protocol):
 
 
 @runtime_checkable
+class ExposureLedger(Protocol):
+    """The recall side-channel writer: WHO was served WHAT (exposure, refreshing the
+    served rows' liveness clocks in the same tx) and which queries got NO answer
+    (misses — the demand signal). ``query_vector`` is raw float32 bytes or None
+    (secret-refused misses persist no content). Implemented by the episode store;
+    the recall pipeline depends only on this port."""
+    def record_exposure(self, trace_id: str, items: Sequence[tuple[int, float]],
+                        *, agent_id: str, ts: int) -> None: ...
+    def record_miss(self, query_text: str, query_vector: Optional[bytes],
+                    agent_id: str, miss_type: str, *, ts: int) -> None: ...
+
+
+@runtime_checkable
 class SecretScanner(Protocol):
     """Deterministic credential scan run BEFORE staging (refuse/redact) [§9]."""
     def scan(self, text: str) -> "ScanVerdictLike": ...
