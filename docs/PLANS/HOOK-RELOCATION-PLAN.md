@@ -1,7 +1,16 @@
 # Hivemind — Simplest Final System (v3)
 
-**Status:** DRAFT — awaiting approval (RULE-1 planning gate; no code written)
+**Status:** LANDED (built as specified, with one later amendment — see banner)
 **Date:** 2026-06-05
+
+> **SUPERSEDED IN PART (2026-06-10, AUTONOMY-PLAN v2):** the §3.1 ask-first capture
+> directive ("ask the user 'save this to team memory?'; on yes, hive_write") is
+> superseded by **hook manifest v2**: durable insights are captured WITHOUT asking via
+> `hive_capture` (they land quarantined and serve only after fleet demand promotes
+> them); `hive_write(approved_by=…)` remains the human-vouched path and gains
+> `replaces=` for corrections. A v1-manifest link is flagged by
+> `hive_health.manifest_outdated` to drive re-init. Everything else in this plan
+> (client-gating, self-onboarding, tiers) still describes the shipped system.
 **Supersedes:** v2.1. v3 is the simplification: **client-gated capture (no server-side
 queue), 4 tools, a self-onboarding server.** Keeps the runtime-agnostic delivery and the
 producer strip; drops the pending/approve/reject machinery.

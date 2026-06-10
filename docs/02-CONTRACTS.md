@@ -8,6 +8,115 @@
 
 ---
 
+## §0 — Trust-lifecycle delta (2026-06-10, AUTONOMY-PLAN v2 — supersedes the marked fragments below)
+
+The mechanical memory-lifecycle build (quarantine → demand-promotion → decay → supersession)
+amends this registry **additively**. Where the sections below still read "exactly 8 tools",
+"5 tools", `hive_pending`/`hive_approve`, or the bare `status='approved'` recall predicate,
+THIS section wins. The store starts **clean** (human decision): no migration/backfill exists,
+and an old-format `episodes` table is refused at store construction.
+
+### §0.1 DDL delta (all in the base `_SCHEMA`; column default = fail-safe)
+
+```sql
+-- episodes gains:
+trust TEXT NOT NULL DEFAULT 'quarantined',   -- quarantined|provisional|established|deprecated
+superseded_by INTEGER,                       -- latest applied successor (NULL = live)
+last_active_ts INTEGER NOT NULL DEFAULT 0;   -- liveness clock: capture/write, promotion, exposure
+CREATE INDEX idx_episodes_trust ON episodes(trust);
+-- exposure gains: agent_id TEXT (who was served)
+CREATE TABLE recall_misses(                  -- every non-answer, the demand signal
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  query_text TEXT NOT NULL,                  -- ''/masked when the scanner fired
+  query_vector BLOB,                         -- NULL on secret_refused
+  agent_id TEXT NOT NULL,                    -- the asker (the anti-gaming key)
+  miss_type TEXT NOT NULL CHECK(miss_type IN ('no_match','abstained','secret_refused')),
+  ts INTEGER NOT NULL);
+CREATE TABLE evidence_events(                -- SERVER-WRITTEN audit ONLY (no tool writes here)
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  episode_id INTEGER NOT NULL, kind TEXT NOT NULL,  -- kind ∈ {promote, ttl_expired, supersede}
+  actor TEXT NOT NULL, ts INTEGER NOT NULL,
+  payload TEXT NOT NULL DEFAULT '{}');
+```
+
+`trust` is enforced in the `Episode` model (no DDL CHECK — Appendix-A layers widen the enum
+without a table rebuild). The old `(status='approved') = (approved_by IS NOT NULL)` CHECKs do
+not exist in the shipped schema; the Episode invariants v2 are: `approved_by ⇒ approved`,
+`trust ∈ (established|provisional) ⇒ approved`, `superseded_by ⇒ deprecated`.
+
+### §0.2 The serving predicate (replaces §1.2's bare status check)
+
+```
+servable ≡ status='approved' AND (
+      trust='established'
+   OR (trust='provisional' AND last_active_ts > now − provisional_ttl) )
+```
+
+ONE source: `hive.domain.lifecycle.is_servable`, re-evaluated by (1) `store.scan_servable`
+(boot/index rebuild; `scan_approved()` is its no-clock FAIL-CLOSED alias = established-only),
+(2) promotion/demotion index membership sync, (3) the RecallPipeline RESOLVE step (a lapsed
+row is dropped BEFORE it can be exposed — exposure refreshes liveness and would resurrect
+it), and (4) the mcp_server per-hit belt (redundancy). `status` now reads as *materialized*
+(scanned + embedded + blob complete); `trust` carries trust — naming debt, accepted.
+
+### §0.3 The lifecycle state machine
+
+```
+            hive_capture                    demand (DemandRule)            TTL (decayed)
+  (born) ──────────────► quarantined ────────────────────► provisional ──────────────► deprecated
+                              │  TTL: now−max(ts,last_active) > q_ttl        ▲   exposure refreshes
+                              └──────────────────────────► deprecated        │   last_active_ts
+  hive_write ────────────────────────────────────────────► established ──────┘
+  (human-vouched, served instantly)        hive_write(replaces=X) │ supersede: the ONLY
+                                                                  ▼ retirement of established
+                                                              deprecated (+superseded_by stamped)
+```
+
+Promotion (`DemandRule.decide`, pure): ≥ `demand_m` window misses at cosine ≥ `demand_tau`,
+≥1 matched identity ≠ the writer (structural anti-gaming), no servable competitor at cosine
+≥ `competitor_tau` (inclusive veto). Non-finite inputs fail CLOSED. Triggers run synchronously
+at the two demand-changing moments: `on_capture` (admission) and `on_miss` (recall, record-
+then-trigger); the decay sweep runs at boot (before index rebuild) and after each capture.
+`established` never age-decays; supersession (`store.supersede`, one owner, one tx, ONE audit
+row, idempotent, self-supersede refused) is its only retirement.
+
+### §0.4 Tool surface: EXACTLY 6 (supersedes "8 tools" / "5 tools" prose)
+
+`hive_write` (+ optional `replaces`: validated-exists BEFORE staging, retirement after the
+new row lands; envelope gains `superseded`) · `hive_capture` (NEW — required `text`; lands
+`trust='quarantined'`, `approved_by` NULL; `{status:'disabled'}` when autonomy is off; NO
+replaces) · `hive_recall` (hits gain `trust` + `ts`; exposure on CONFIDENT; every non-answer
+recorded as a miss, secret-scanned first: REFUSE ⇒ empty text + NULL vector +
+`secret_refused`; REDACT ⇒ masked text + re-encoded vector) · `hive_fetch` (+
+`superseded_by: {episode_id, content_hash}` terminal-successor annotation) · `hive_health`
+(+ `trust_counts`, `n_misses_7d`, `include_gaps` → top-10 deterministic cosine-clustered gap
+report, `manifest_outdated`) · `hive_init` (manifest **v2**: capture-without-asking via
+hive_capture; `correction` hook = hive_write replaces). `hive_evidence` does NOT exist.
+
+### §0.5 ExposureLedger port (revived, sessionless)
+
+```python
+@runtime_checkable
+class ExposureLedger(Protocol):
+    def record_exposure(self, trace_id: str, items: Sequence[tuple[int, float]],
+                        *, agent_id: str, ts: int) -> None: ...   # bumps last_active SAME tx
+    def record_miss(self, query_text: str, query_vector: Optional[bytes],
+                    agent_id: str, miss_type: str, *, ts: int) -> None: ...
+```
+
+Implemented by `SqliteEpisodeStore`; the RecallPipeline REQUIRES it (plus `clock_now`,
+`scanner`, `provisional_ttl_s`) — fail-open per call, never silently absent. With
+`autonomy.enabled=false` the read path writes ZERO rows (byte-stable; trust/ts labels stay,
+additive-only) and capture refuses with `{status:'disabled'}`.
+
+### §0.6 Config group
+
+`autonomy`: `enabled` (tier C) · `demand_m=3` · `demand_window_days=14` · `demand_tau=0.75`
+· `competitor_tau=0.85` · `quarantine_ttl_days=14` · `provisional_ttl_days=45` (all knobs
+tier B; taus finite in (0,1], counts ≥ 1).
+
+---
+
 ## §1 — Consolidated SQLite schema (ONE WAL DB)
 
 All persistent state lives in **one** SQLite-WAL file on the one named volume (`/data/shared.db`), under the one single-writer `BEGIN IMMEDIATE` lane (ported `_begin_immediate_retrying`, `persistence.py:90`). Resolution **A7** collapses the separate `telemetry.db` sink: `exposure`, `task_outcomes`, and `utility` are all M03-owned tables in this DB, so the whole producer tick (associate → settle → clawback → emit → drain → posterior-write) is **one transaction**.

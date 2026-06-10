@@ -2,6 +2,19 @@
 
 Derived from: "Demand-Driven Context: A Methodology for Building Enterprise Knowledge Bases Through Agent Failure" (arXiv:2603.14057). Core thesis: agent retrieval failures are demand signals and should drive knowledge base prioritization.
 
+> **Status (2026-06-10, AUTONOMY-PLAN landed):**
+> **TODO 1 — LANDED-BY** the trust-lifecycle build (`recall_misses` table, the
+> `ExposureLedger.record_miss` path with the three miss types, secret-scanned
+> query text; `tests/mcp/test_tools_v2.py`).
+> **TODO 2 — OBSOLETE**: the pending/approval queue it would weight no longer
+> exists (client-gated v3 removed `hive_pending`/`hive_approve`).
+> **TODO 3 — LANDED-BY** `hive_health(include_gaps=true)` (the fold-in option):
+> deterministic cosine-clustered top-10 gap report in `hive/app/gaps.py`.
+> **TODO 4 — RECAST as the demand-promotion rule**: instead of miss-triggered
+> *proposals to a human queue*, misses now mechanically PROMOTE a matching
+> quarantined capture (`DemandRule`: ≥ demand_m misses, ≥1 non-writer identity,
+> no servable competitor). The feedback loop closed without load-bearing humans.
+
 ---
 
 ## TODO 1 — Record recall misses (enabler for all below)

@@ -1,6 +1,7 @@
 # Hivemind — Mechanical Memory Lifecycle (quarantine → demand → decay)
 
-**Status:** APPROVED v2 — building (C1 in progress)
+**Status:** LANDED 2026-06-10 (C1–C6 built, each chunk green + RULE-2'd; suite
+669 passed locally, 12 real-embedder acceptance tests run in-container)
 **Amendment (2026-06-10, human-directed):** the §3.3 in-place migration/backfill and AC9
 are CUT — this build starts from a **clean, empty store** (no prior-version memories are
 carried over; context loading is a later concern). The store **refuses** an old-format
@@ -523,5 +524,11 @@ C5 is the only chunk that changes observable tool behavior, and its two ★ acce
 
 ---
 
-**Gate:** awaiting approval to start at **C1**. One chunk at a time; each lands with its diff,
-green suite, and RULE-2 report before the next begins.
+**Gate:** CLOSED — landed C1 (212dc5a) → C2 (8bfa30f) → C3 (73c7ef7) → C4 (2a58812) →
+C5 (61e3365) → C6 (docs). Implementation deviations from this plan, all recorded above or
+in 02-CONTRACTS §0: the clean-start amendment (AC9/§3.3 cut); the servability belt ALSO
+lives in the RecallPipeline resolve step (exposing a lapsed row would refresh its liveness
+and resurrect it — found by the C5 belt test); recall encodes BEFORE the empty-index
+short-circuit so cold-store misses carry vectors (else cold-start demand can never
+accumulate); `scan_approved()` survives as the no-clock fail-closed alias of
+`scan_servable` (established-only).
