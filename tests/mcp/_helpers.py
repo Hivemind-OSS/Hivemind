@@ -13,37 +13,58 @@ import random
 from hive.adapters.index_exhaustive import ExhaustiveCosineIndex
 from hive.adapters.sqlite_db import connect
 from hive.adapters.store_sqlite import SqliteEpisodeStore
+from hive.app.config import AutonomyConfig
 from hive.app.mcp_server import HiveMCPServer, MCPRequest, ServerIdentity
 from hive.domain.admission import AdmissionService
+from hive.domain.lifecycle import DemandRule, LifecycleService
 from hive.domain.recall import NormalizedEntropyGate, RecallPipeline
 from hive.domain.surfacer import UtilitySurfacer
 from tests.fakes._fakes import (
     FakeClock, FakeInstallPlanner, FakeProvider, FakeScanner, FakeUtilityStore,
 )
 
+_DAY_S = 86_400
+
 
 def build_real_server(*, d: int = 64, h: float = 0.5, beta: float = 16.0,
                       top_n: int = 10, t0: int = 1000, trailer: str = "Hive-Trace",
-                      scanner=None, planner=None):
-    """Return (server, clock). ``clock`` is mutable so tests can stamp distinct ts."""
+                      scanner=None, planner=None, autonomy=None):
+    """Return (server, clock). ``clock`` is mutable so tests can stamp distinct ts.
+    The FULL trust-lifecycle is wired (real DemandRule + LifecycleService on the
+    real store), mirroring build_container — pass ``autonomy`` to tune the knobs."""
     conn = connect(":memory:")             # production semantics (isolation_level=None, WAL, FKs)
     index = ExhaustiveCosineIndex(dim=d)
     store = SqliteEpisodeStore(conn, index=index)
     embedder = FakeProvider(d=d)
     scanner = scanner or FakeScanner()
     clock = FakeClock(t0)
-    admission = AdmissionService(store, scanner, embedder, now=clock.now)
+    aut = autonomy or AutonomyConfig()
+    lifecycle = LifecycleService(
+        store=store, index=index,
+        rule=DemandRule(demand_m=aut.demand_m, demand_tau=aut.demand_tau,
+                        competitor_tau=aut.competitor_tau),
+        now=clock.now,
+        demand_window_s=aut.demand_window_days * _DAY_S,
+        quarantine_ttl_s=aut.quarantine_ttl_days * _DAY_S,
+        provisional_ttl_s=aut.provisional_ttl_days * _DAY_S,
+        enabled=aut.enabled)
+    admission = AdmissionService(store, scanner, embedder, now=clock.now,
+                                 lifecycle=lifecycle, autonomy_enabled=aut.enabled)
     recall = RecallPipeline(
         embedder=embedder, index=index, gate=NormalizedEntropyGate(h, beta),
         surfacer=UtilitySurfacer(enabled=False, epsilon_explore=0.0, f_min=0.5,
                                  f_max=1.5, rng=random.Random(0)),
         reader=store, utility_store=FakeUtilityStore(),
-        recall_top_n=top_n)
+        recall_top_n=top_n,
+        ledger=store, clock_now=clock.now, scanner=scanner,
+        provisional_ttl_s=aut.provisional_ttl_days * _DAY_S,
+        lifecycle=lifecycle, autonomy_enabled=aut.enabled)
     planner = planner or FakeInstallPlanner(stamp_trailer=trailer)
     server = HiveMCPServer(
         admission=admission, recall=recall, store=store, embedder=embedder,
         install_planner=planner, identity=ServerIdentity("default", "agent"),
-        now=clock.now, started_ts=t0, db_path="", trailer_key=trailer)
+        now=clock.now, started_ts=t0, db_path="", trailer_key=trailer,
+        autonomy=aut)
     return server, clock
 
 

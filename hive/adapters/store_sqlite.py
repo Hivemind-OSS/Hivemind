@@ -500,6 +500,34 @@ class SqliteEpisodeStore:
                 "miss_type, ts) VALUES(?,?,?,?,?)",
                 (query_text, query_vector, agent_id, miss_type, ts))
 
+    def episode_id_by_hash(self, content_hash_hex: str) -> Optional[int]:
+        """Resolve a content hash to its episode id (fetch is hash-keyed; the
+        supersession annotation needs the row behind the hash)."""
+        r = self.conn.execute(
+            "SELECT id FROM episodes WHERE content_hash=? LIMIT 1",
+            (content_hash_hex,)).fetchone()
+        return int(r["id"]) if r is not None else None
+
+    def miss_count_since(self, since_ts: int) -> int:
+        """Misses recorded strictly after ``since_ts`` (hive_health telemetry)."""
+        return int(self.conn.execute(
+            "SELECT COUNT(*) AS c FROM recall_misses WHERE ts>?",
+            (since_ts,)).fetchone()["c"])
+
+    def misses_detail_window(self, since_ts: int) -> list[dict]:
+        """Full miss rows (text + type + ts + optional vector) for the demand-gap
+        report — unlike ``misses_window`` this INCLUDES vector-less secret_refused
+        rows (they count in telemetry; they can never drive promotion)."""
+        out: list[dict] = []
+        for r in self.conn.execute(
+                "SELECT query_text, query_vector, miss_type, ts FROM recall_misses "
+                "WHERE ts>? ORDER BY id", (since_ts,)):
+            vec = (np.frombuffer(r["query_vector"], dtype=np.float32).copy()
+                   if r["query_vector"] is not None else None)
+            out.append({"query_text": r["query_text"], "vector": vec,
+                        "miss_type": r["miss_type"], "ts": int(r["ts"])})
+        return out
+
     def misses_window(self, since_ts: int) -> list[MissRow]:
         """The demand-window slice: misses STRICTLY after ``since_ts`` that carry a
         vector (secret-refused rows persist none and can never drive promotion)."""

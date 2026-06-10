@@ -1,7 +1,8 @@
-"""M06 protocol surface: exactly-5 tools, the dropped verbs absent (the AgentCortex-7
-AND the removed approval queue hive_pending/approve/reject), JSON-RPC error semantics,
-the schema-enforcement belt (malformed call never reaches a port — ★), and loop-survival
-on a raising handler (stack never returned to the agent)."""
+"""M06 protocol surface: exactly-6 tools, the dropped verbs absent (the AgentCortex-7,
+the removed approval queue hive_pending/approve/reject, AND no hive_evidence — client-fed
+evidence does not exist in this build), JSON-RPC error semantics, the schema-enforcement
+belt (malformed call never reaches a port — ★), and loop-survival on a raising handler
+(stack never returned to the agent)."""
 from __future__ import annotations
 
 import io
@@ -16,21 +17,22 @@ from hive.domain.secret_scan import scan as _scan
 from tests.fakes._fakes import FakeIndex
 from tests.mcp._helpers import build_real_server, content, is_error, tool_call
 
-_FIVE = {"hive_write", "hive_recall", "hive_fetch", "hive_init", "hive_health"}
-_DROPPED = {"hive_pending", "hive_approve", "hive_reject",
+_SIX = {"hive_write", "hive_capture", "hive_recall", "hive_fetch",
+        "hive_init", "hive_health"}
+_DROPPED = {"hive_pending", "hive_approve", "hive_reject", "hive_evidence",
             "hive_consolidate", "hive_schemas", "hive_recall_cold",
             "hive_restore_cold", "hive_reconsolidate", "hive_audit", "hive_outcome"}
 
 
-def test_tool_list_is_exactly_5():
+def test_tool_list_is_exactly_6():
     server, _ = build_real_server()
     resp = server.handle(MCPRequest(1, "tools/list", {}))
     names = {t["name"] for t in resp.result["tools"]}
-    assert names == _FIVE
-    assert len(resp.result["tools"]) == 5
+    assert names == _SIX
+    assert len(resp.result["tools"]) == 6
     assert names.isdisjoint(_DROPPED)
     # the static table and the live reply are the same source
-    assert {t["name"] for t in TOOL_DEFINITIONS} == _FIVE
+    assert {t["name"] for t in TOOL_DEFINITIONS} == _SIX
 
 
 def test_initialize_and_ping():

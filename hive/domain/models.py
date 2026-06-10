@@ -242,8 +242,8 @@ TIER_MCP, TIER_RULES, TIER_HOOKS = 0, 1, 2
 @dataclass(frozen=True, slots=True)
 class HookSpec:
     """One abstract, harness-INDEPENDENT behavioral hook the system wants installed (the
-    'what'). ``event`` ∈ {task-start, turn-end, commit}; ``action`` ∈ {recall, capture};
-    ``directive`` is the NL instruction projected onto each host."""
+    'what'). ``event`` ∈ {task-start, turn-end, correction, commit}; ``action`` ∈
+    {recall, capture, write}; ``directive`` is the NL instruction projected onto each host."""
     event: str
     action: str
     directive: str

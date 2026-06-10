@@ -2,6 +2,7 @@
 from tests.fakes._fakes import (
     FakeClock,
     FakeIndex,
+    FakeLedger,
     FakeProvider,
     FakeScanner,
     FakeStore,
@@ -9,6 +10,6 @@ from tests.fakes._fakes import (
 )
 
 __all__ = [
-    "FakeClock", "FakeIndex", "FakeProvider", "FakeScanner",
+    "FakeClock", "FakeIndex", "FakeLedger", "FakeProvider", "FakeScanner",
     "FakeStore", "FakeUtilityStore",
 ]

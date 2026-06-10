@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import dataclasses
 import logging
+import math
 import os
 from dataclasses import dataclass, field, fields, is_dataclass
 from typing import Any, Mapping, Optional
@@ -147,6 +148,32 @@ class UtilityConfig:
 
 
 @dataclass(frozen=True)
+class AutonomyConfig:
+    """The mechanical memory-lifecycle knobs (quarantine → demand-promotion →
+    decay). ``enabled=False`` flips the whole subsystem inert: capture refused,
+    no promotion/decay, no ledger writes on the read path — byte-stable with the
+    pre-lifecycle build (labels stay, additive-only)."""
+    enabled: bool = True
+    demand_m: int = 3               # window misses required to promote
+    demand_window_days: int = 14
+    demand_tau: float = 0.75        # miss ↔ candidate cosine floor
+    competitor_tau: float = 0.85    # candidate ↔ servable cosine ⇒ demand already answered
+    quarantine_ttl_days: int = 14
+    provisional_ttl_days: int = 45
+
+    def __post_init__(self) -> None:
+        for name in ("demand_m", "demand_window_days",
+                     "quarantine_ttl_days", "provisional_ttl_days"):
+            v = getattr(self, name)
+            if int(v) < 1:
+                raise ValueError(f"autonomy.{name} must be >= 1 (got {v})")
+        for name in ("demand_tau", "competitor_tau"):
+            v = getattr(self, name)
+            if not (math.isfinite(v) and 0.0 < v <= 1.0):
+                raise ValueError(f"autonomy.{name} must be finite in (0, 1] (got {v})")
+
+
+@dataclass(frozen=True)
 class RetentionConfig:
     backup_keep: int = 30
     backup_dir: str = ""                 # "" ⇒ computed as <db_dir>/backups at load()
@@ -173,13 +200,14 @@ _GROUP_TYPES: dict[str, type] = {
     "recall": RecallConfig,
     "producer": ProducerConfig,
     "utility": UtilityConfig,
+    "autonomy": AutonomyConfig,
     "retention": RetentionConfig,
     "obs": ObservabilityConfig,
 }
 # field-groups constructed (and thus validated) BEFORE runtime, so a field-level error
 # (e.g. recall.epsilon_explore) surfaces ahead of the db_path-required check.
 _FIELD_GROUP_ORDER = ("geometry", "embedding", "index", "recall",
-                      "producer", "utility", "retention", "obs")
+                      "producer", "utility", "autonomy", "retention", "obs")
 
 
 @dataclass(frozen=True)
@@ -191,6 +219,7 @@ class Config:
     recall: RecallConfig
     producer: ProducerConfig
     utility: UtilityConfig
+    autonomy: AutonomyConfig
     retention: RetentionConfig
     obs: ObservabilityConfig
 
@@ -378,7 +407,14 @@ RELOAD_TIER: dict[str, str] = {
     "index.backend": "C",
     "runtime.db_path": "C",
     "runtime.tenant_id": "C",
+    "autonomy.enabled": "C",        # flips tool behavior + trigger wiring → restart
     # B — hot-swappable live
+    "autonomy.demand_m": "B",
+    "autonomy.demand_window_days": "B",
+    "autonomy.demand_tau": "B",
+    "autonomy.competitor_tau": "B",
+    "autonomy.quarantine_ttl_days": "B",
+    "autonomy.provisional_ttl_days": "B",
     "recall.H_frac_max": "B",
     "recall.epsilon_explore": "B",
     "recall.softmax_beta": "B",

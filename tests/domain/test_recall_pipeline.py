@@ -23,7 +23,7 @@ from hive.domain.recall import (
 )
 from hive.domain.surfacer import UtilitySurfacer
 from tests.fakes._fakes import (
-    FakeEpisodeReader, FakeIndex, FakeUtilityStore,
+    FakeEpisodeReader, FakeIndex, FakeLedger, FakeScanner, FakeUtilityStore,
 )
 
 D = 16
@@ -107,7 +107,7 @@ class _SpyUtil(FakeUtilityStore):
 
 
 def _pipe(*, index, reader, query_vec, util=None, surfacer=None,
-          recall_top_n=10, h=0.5, beta=16.0, embedder=None):
+          recall_top_n=10, h=0.5, beta=16.0, embedder=None, ledger=None):
     return RecallPipeline(
         embedder=embedder or _StubProvider(query_vec),
         index=index,
@@ -118,6 +118,10 @@ def _pipe(*, index, reader, query_vec, util=None, surfacer=None,
         reader=reader,
         utility_store=util or FakeUtilityStore(),
         recall_top_n=recall_top_n,
+        ledger=ledger if ledger is not None else FakeLedger(),
+        clock_now=lambda: 0,
+        scanner=FakeScanner(),
+        provisional_ttl_s=10**9,        # effectively fresh-forever for these tests
     )
 
 

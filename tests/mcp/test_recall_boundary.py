@@ -92,7 +92,9 @@ def test_recall_framed_as_reference_context_not_instructions():
     assert "instructions" not in env and "command" not in env
     assert env["abstained"] is False
     hit = env["reference_context"][0]
-    assert set(hit) == {"episode_id", "text", "sim", "content_hash"}
+    # trust + ts are the additive lifecycle labels (consumers discount provisional
+    # content and order coexisting versions by them)
+    assert set(hit) == {"episode_id", "text", "sim", "content_hash", "trust", "ts"}
 
 
 def test_recall_trace_id_present_on_hit_and_abstain():

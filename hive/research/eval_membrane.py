@@ -45,6 +45,7 @@ from typing import Callable, Iterable, Optional, Sequence, Union
 import numpy as np
 
 from hive.adapters.index_exhaustive import ExhaustiveCosineIndex
+from hive.adapters.scanner_regex import DefaultSecretScanner
 from hive.adapters.sqlite_db import connect
 from hive.adapters.store_sqlite import SqliteEpisodeStore
 from hive.adapters.utility_store_sqlite import SqliteUtilityStore
@@ -146,10 +147,15 @@ class _EvalService:
         surfacer = UtilitySurfacer(
             enabled=surfacer_enabled, epsilon_explore=epsilon_explore,
             f_min=f_min, f_max=f_max, rng=random.Random(0))
+        # autonomy_enabled=False: the eval membrane measures the READ path only —
+        # no exposure/miss rows, no promotion triggers, byte-stable measurements.
         self.pipeline = RecallPipeline(
             embedder=embedder, index=self.index, gate=gate, surfacer=surfacer,
             reader=self.store, utility_store=self.util,
-            recall_top_n=int(recall_top_n))
+            recall_top_n=int(recall_top_n),
+            ledger=self.store, clock_now=lambda: 0,
+            scanner=DefaultSecretScanner(), provisional_ttl_s=10**9,
+            autonomy_enabled=False)
         self._ts = 0
 
     def write(self, text: str, *, weight: float = 1.0) -> int:

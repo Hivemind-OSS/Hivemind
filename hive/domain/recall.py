@@ -22,14 +22,16 @@ from __future__ import annotations
 import logging
 import math
 import uuid
-from typing import Optional, Sequence
+from typing import Callable, Optional, Sequence
 
+from hive.domain.lifecycle import is_servable
 from hive.domain.models import (
     CONFIDENT, AgentContext, Episode, RecallHit, RecallResult, Scored,
 )
 from hive.domain.ports import (
-    EmbeddingProvider, EpisodeReader, UtilityStore, VectorIndex,
+    EmbeddingProvider, EpisodeReader, ExposureLedger, UtilityStore, VectorIndex,
 )
+from hive.domain.secret_scan import REDACT, REFUSE
 from hive.domain.surfacer import UtilitySurfacer
 
 _log = logging.getLogger("hive.recall")
@@ -161,7 +163,9 @@ class RecallPipeline:
         self, *, embedder: EmbeddingProvider, index: VectorIndex,
         gate: NormalizedEntropyGate, surfacer: UtilitySurfacer,
         reader: EpisodeReader, utility_store: UtilityStore,
-        recall_top_n: int,
+        recall_top_n: int, ledger: ExposureLedger, clock_now: Callable[[], int],
+        scanner, provisional_ttl_s: int, lifecycle=None,
+        autonomy_enabled: bool = True,
     ) -> None:
         self.embedder = embedder
         self.index = index
@@ -170,6 +174,20 @@ class RecallPipeline:
         self.reader = reader
         self.utility_store = utility_store
         self.recall_top_n = int(recall_top_n)
+        # the recall side-channel (REQUIRED, never silently absent): exposure on
+        # CONFIDENT, a recorded miss on every non-answer. Writes are fail-open for
+        # the read — a ledger fault never breaks recall — and fully inert when
+        # autonomy is disabled (byte-stable read path).
+        self.ledger = ledger
+        self.clock_now = clock_now
+        self.scanner = scanner            # SecretScanner: the miss-text secret floor
+        # the pipeline-level servability belt: a non-servable row is dropped at
+        # RESOLVE, before it can be surfaced or exposed — exposure refreshes
+        # liveness, so exposing a TTL-lapsed row would resurrect it. The mcp
+        # handler re-checks per hit as redundancy; both read the ONE is_servable.
+        self.provisional_ttl_s = int(provisional_ttl_s)
+        self.lifecycle = lifecycle        # LifecycleService or None: on_miss trigger
+        self.autonomy_enabled = bool(autonomy_enabled)
 
     def recall(self, query: str, *, agent_id: str,
                agent_ctx: AgentContext) -> RecallResult:
@@ -177,15 +195,21 @@ class RecallPipeline:
         fam = _resolve_query_family(agent_ctx)
 
         # encode → search (fail-closed: embedder/index/authority failure ⇒ EMPTY).
+        value_q = None
         try:
             if not self.index.is_authoritative():
                 _log.error("non-authoritative index rejected (never-flip guard) "
                            "→ EMPTY_NO_DATA (agent_id=%s)", agent_id)
+                self._note_non_answer(query, None, agent_id, "no_match")
                 return RecallResult.empty(trace_id)
+            # encode BEFORE the empty-index short-circuit: a cold store's misses
+            # must still carry their query vector or demand can never accumulate
+            # and no quarantined capture would ever promote (cold-start deadlock).
+            value_q = self.embedder.encode(query)
             if self.index.size() == 0:
                 _log.debug("empty index → EMPTY_NO_DATA (agent_id=%s)", agent_id)
+                self._note_non_answer(query, value_q, agent_id, "no_match")
                 return RecallResult.empty(trace_id)
-            value_q = self.embedder.encode(query)
             # search the FULL approved set so the gate sees the whole distribution;
             # recall_top_n only truncates hits, NEVER the abstain decision (§4.2).
             candidates = self.index.search(value_q, self.index.size())
@@ -195,6 +219,7 @@ class RecallPipeline:
         except Exception as exc:                       # noqa: BLE001 — fail closed
             _log.error("recall encode/search failure (agent_id=%s): %r "
                        "→ EMPTY_NO_DATA", agent_id, exc)
+            self._note_non_answer(query, value_q, agent_id, "no_match")
             return RecallResult.empty(trace_id)
 
         # abstain gate (self-fail-closed to SUPPRESS). One-way: suppress returns here.
@@ -202,6 +227,7 @@ class RecallPipeline:
         if suppress:
             _log.info("ABSTAIN trace=%s h_norm=%.4f top_margin=%.4f n_cands=%d",
                       trace_id, entropy_norm, top_margin, len(sims))
+            self._note_non_answer(query, value_q, agent_id, "abstained")
             return RecallResult.abstain(trace_id, entropy_norm, top_margin)
 
         # ── CONFIDENT path ────────────────────────────────────────────────────
@@ -215,41 +241,103 @@ class RecallPipeline:
             full_masses = _softmax_mass_from_sims(sims, self.gate.beta)
             utility_map = self._utility_map(fam)
 
-            # resolve the top_n candidates to full episodes (weight + text), keeping
-            # each hit's full-set mass. A hit that cannot resolve is dropped (logged).
-            resolved: list[tuple[Scored, float, str]] = []   # (scored, full_mass, text)
+            # resolve the top_n candidates to full episodes (weight + text + trust
+            # labels), keeping each hit's full-set mass. A hit that cannot resolve
+            # OR is no longer servable is dropped HERE — before it can be surfaced
+            # or exposed (a TTL-lapsed row in the stale warm index must never get
+            # its liveness refreshed by the very read that should have refused it).
+            now_belt = int(self.clock_now())
+            resolved: list[tuple[Scored, float, Episode]] = []   # (scored, full_mass, ep)
             for rank, (eid, sim) in enumerate(candidates[:self.recall_top_n]):
                 ep: Optional[Episode] = self.reader.get_episode(int(eid))
-                if ep is None:
-                    _log.warning("resolve miss eid=%s (dropped) trace=%s", eid, trace_id)
+                if ep is None or not is_servable(
+                        status=ep.status, trust=ep.trust,
+                        last_active_ts=ep.last_active_ts, now=now_belt,
+                        provisional_ttl_s=self.provisional_ttl_s):
+                    _log.warning("resolve drop (missing/unservable) eid=%s trace=%s",
+                                 eid, trace_id)
                     continue
                 resolved.append(
                     (Scored(int(eid), float(ep.weight), float(sim)),
-                     full_masses[rank], ep.text))
+                     full_masses[rank], ep))
 
             if not resolved:
                 _log.error("gate passed but 0 candidates resolved → EMPTY_NO_DATA "
                            "(fail-closed) trace=%s", trace_id)
+                self._note_non_answer(query, value_q, agent_id, "no_match")
                 return RecallResult.empty(trace_id)
 
             # D1 margins over the RETURNED set (score order): margin_j = mass_j −
             # mass_{j+1}; the last returned hit's next mass is 0 ⇒ its own mass.
-            hit_margins = _recall_margins([fm for _s, fm, _t in resolved])
-            by_eid = {s.episode_id: (hit_margins[j], text)
-                      for j, (s, _fm, text) in enumerate(resolved)}
-            scored = [s for s, _fm, _t in resolved]
+            hit_margins = _recall_margins([fm for _s, fm, _e in resolved])
+            by_eid = {s.episode_id: (hit_margins[j], ep)
+                      for j, (s, _fm, ep) in enumerate(resolved)}
+            scored = [s for s, _fm, _e in resolved]
 
             ordered = self.surfacer.order(scored, utility_map, family_scope=fam)
-            hits = tuple(RecallHit(s.episode_id, by_eid[s.episode_id][1], s.sim)
-                         for s in ordered)
+            # every served hit carries its trust label + creation ts so the consumer
+            # can discount provisional content and order coexisting versions.
+            hits = tuple(
+                RecallHit(s.episode_id, by_eid[s.episode_id][1].text, s.sim,
+                          trust=by_eid[s.episode_id][1].trust,
+                          ts=by_eid[s.episode_id][1].ts)
+                for s in ordered)
         except Exception as exc:                       # noqa: BLE001 — fail closed
             _log.error("recall surface failure (agent_id=%s): %r → EMPTY_NO_DATA",
                        agent_id, exc)
+            self._note_non_answer(query, value_q, agent_id, "no_match")
             return RecallResult.empty(trace_id)
 
+        # exposure: WHO was served WHAT, with the per-hit margins, refreshing the
+        # served rows' liveness — recorded post-resolve in surfaced order.
+        self._note_exposure(
+            trace_id, [(s.episode_id, by_eid[s.episode_id][0]) for s in ordered],
+            agent_id)
         _log.debug("CONFIDENT trace=%s n_hits=%d top_sim=%.4f",
                    trace_id, len(hits), hits[0].sim)
         return RecallResult(CONFIDENT, trace_id, hits, entropy_norm, top_margin)
+
+    # ── the recall side-channel (exposure + demand), fail-open for the read ───
+    def _note_exposure(self, trace_id: str, items: list, agent_id: str) -> None:
+        """Persist the served set (liveness refresh rides the same tx in the
+        adapter). A fault is logged and swallowed — never breaks the read. Inert
+        when autonomy is disabled (no new rows on the read path)."""
+        if not self.autonomy_enabled:
+            return
+        try:
+            self.ledger.record_exposure(trace_id, items, agent_id=agent_id,
+                                        ts=int(self.clock_now()))
+        except Exception as exc:                       # noqa: BLE001 — fail open
+            _log.warning("exposure record failed (trace=%s): %r — recall unaffected",
+                         trace_id, exc)
+
+    def _note_non_answer(self, query: str, vector, agent_id: str,
+                         miss_type: str) -> None:
+        """Record the non-answer (the demand signal), secret-scanned BEFORE
+        persistence: REFUSE ⇒ no content survives (empty text, no vector,
+        type='secret_refused' — counts in telemetry, can never drive promotion);
+        REDACT ⇒ masked text + a vector re-encoded FROM the masked text (never the
+        raw query's). Then the synchronous on_miss promotion trigger (the miss is
+        recorded FIRST so the trigger's window includes it). Fail-open; inert when
+        autonomy is disabled."""
+        if not self.autonomy_enabled:
+            return
+        try:
+            text, vec, mtype = query, vector, miss_type
+            verdict = self.scanner.scan(query)
+            if verdict.action == REFUSE:
+                text, vec, mtype = "", None, "secret_refused"
+            elif verdict.action == REDACT:
+                text = verdict.redacted_text or ""
+                vec = self.embedder.encode(text)
+            vbytes = vec.tobytes() if vec is not None else None
+            self.ledger.record_miss(text, vbytes, agent_id, mtype,
+                                    ts=int(self.clock_now()))
+            if self.lifecycle is not None and vec is not None:
+                self.lifecycle.on_miss(vec, agent_id)
+        except Exception as exc:                       # noqa: BLE001 — fail open
+            _log.warning("miss record failed (agent=%s): %r — recall unaffected",
+                         agent_id, exc)
 
     def _utility_map(self, fam: str) -> dict:
         """utility_map for the live family; a store failure degrades to identity ({})."""

@@ -37,12 +37,18 @@ import sys
 from dataclasses import dataclass
 from typing import Any, Callable, Mapping, Optional
 
-from hive.app.onboard import onboarding_hint, provenance_banner
+from hive.app.gaps import cluster_misses
+from hive.app.onboard import (
+    ONBOARDING_MANIFEST_VERSION, onboarding_hint, provenance_banner,
+)
 from hive.app.tool_defs import TOOL_DEFINITIONS
 from hive.domain.errors import SecretRefused
+from hive.domain.lifecycle import is_servable
 from hive.domain.models import CONFIDENT, AgentContext
 
 _log = logging.getLogger("hive.app.mcp_server")
+
+_DAY_S = 86_400
 
 MCP_VERSION = "2024-11-05"
 SERVER_NAME = "hive"
@@ -54,10 +60,10 @@ _SCHEMA_BY_NAME: dict[str, dict] = {t["name"]: t["inputSchema"] for t in TOOL_DE
 
 # §7 V4 substrate: the capture verb(s) whose server-arrival is stamped as
 # meta[hook:last_seen:<tool>], so hive_health.hooks_seen lets the onboarding agent confirm a
-# Tier-2 OS hook actually reached the server. ONLY hive_write (capture) is stamped — recall/
+# Tier-2 OS hook actually reached the server. ONLY the capture verbs are stamped — recall/
 # health/init/fetch stay pure reads (no write-amplification on the read path).
 _HOOK_SEEN_PREFIX = "hook:last_seen:"
-_HOOK_SEEN_TOOLS: frozenset = frozenset({"hive_write"})
+_HOOK_SEEN_TOOLS: frozenset = frozenset({"hive_write", "hive_capture"})
 
 
 # ── JSON-RPC envelopes (PORT) ────────────────────────────────────────────────
@@ -195,8 +201,8 @@ class HiveMCPServer:
     def __init__(self, *, admission, recall, store, embedder, install_planner,
                  identity: ServerIdentity, now: Callable[[], int],
                  started_ts: int = 0, db_path: str = "",
-                 trailer_key: str = "Hive-Trace") -> None:
-        self.admission = admission          # AdmissionService: write (client-gated, direct-approved)
+                 trailer_key: str = "Hive-Trace", autonomy=None) -> None:
+        self.admission = admission          # AdmissionService: write + capture
         self.recall = recall                # RecallPipeline: recall(query,*,agent_id,agent_ctx)
         self.store = store                  # EpisodeStore: get_episode (belt) / fetch / counts
         self.embedder = embedder            # EmbeddingProvider: health probes (d, w_version, name)
@@ -206,8 +212,16 @@ class HiveMCPServer:
         self.started_ts = int(started_ts)
         self.db_path = db_path
         self.trailer_key = trailer_key
+        # the lifecycle knob group (duck-typed AutonomyConfig); None ⇒ defaults.
+        # The recall belt's per-hit is_servable re-check reads provisional_ttl off
+        # it; the gap report reads demand_window/demand_tau.
+        if autonomy is None:
+            from hive.app.config import AutonomyConfig   # noqa: PLC0415 — lazy default
+            autonomy = AutonomyConfig()
+        self.autonomy = autonomy
         self._tool_handlers: dict[str, Callable[[dict, ServerIdentity], dict]] = {
             "hive_write": self._handle_write,
+            "hive_capture": self._handle_capture,
             "hive_recall": self._handle_recall,
             "hive_fetch": self._handle_fetch,
             "hive_init": self._handle_init,
@@ -283,10 +297,11 @@ class HiveMCPServer:
         # proposed_by is ALWAYS the authenticated caller — INV-2: no client field to assert it
         # (``proposed_by`` is gone from the write schema). RULE-2 mut: read self.identity here.
         proposed_by = identity.agent_id
+        replaces = args.get("replaces")           # human-vouched supersession target
         try:
             res = self.admission.write(text, approved_by=approved_by,
                                        proposed_by=proposed_by, source=source,
-                                       tags=tags_str)
+                                       tags=tags_str, replaces=replaces)
         except SecretRefused as e:
             # REFUSE: nothing written (0 rows). Envelope carries rule NAMES, never bytes.
             return {"status": "refused", "reason": str(e),
@@ -296,9 +311,30 @@ class HiveMCPServer:
         out: dict = {"status": res.status, "id": res.episode_id,
                      "content_hash": res.content_hash, "scan": _scan_report(res.scan),
                      "approved_by": approved_by}
+        if res.superseded is not None:           # the vouched correction retired its target
+            out["superseded"] = res.superseded
         if res.status == "redacted" and res.scan.redacted_text is not None:
             out["redacted_preview"] = _preview(res.scan.redacted_text)
         return out
+
+    def _handle_capture(self, args: dict, identity: ServerIdentity) -> dict:
+        text = args.get("text")
+        source = args.get("source") or ""
+        tags = args.get("tags") or []
+        tags_str = ",".join(str(t) for t in tags) if isinstance(tags, list) else str(tags)
+        try:
+            res = self.admission.capture(text, proposed_by=identity.agent_id,
+                                         source=source, tags=tags_str)
+        except SecretRefused as e:
+            # REFUSE: nothing written (0 rows). Envelope carries rule NAMES, never bytes.
+            return {"status": "refused", "reason": str(e),
+                    "scan": {"action": "refuse", "rules": e.rules,
+                             "n_findings": e.n_findings}}
+        if res.status == "disabled":             # autonomy off — nothing written
+            return {"status": "disabled"}
+        return {"status": res.status, "id": res.episode_id,
+                "content_hash": res.content_hash, "scan": _scan_report(res.scan),
+                "deduped": res.deduped}
 
     def _handle_recall(self, args: dict, identity: ServerIdentity) -> dict:
         query = args.get("query") or ""
@@ -306,16 +342,25 @@ class HiveMCPServer:
                            language=args.get("language") or "",
                            workflow=args.get("workflow") or "general")
         result = self.recall.recall(query, agent_id=identity.agent_id, agent_ctx=ctx)
-        # ── BELT 2: approved-only re-filter, independent of the index (RULE-2 mut #2) ──
+        # ── BELT 2: servable-only re-filter, independent of the index (RULE-2 mut #2).
+        # The per-hit is_servable re-check is the AUTHORITATIVE freshness layer: a
+        # TTL-lapsed provisional row still sitting in the warm index is dropped HERE
+        # even before the sweep materializes its death.
+        now = int(self.now())
+        belt_ttl_s = int(self.autonomy.provisional_ttl_days) * _DAY_S
         hits: list[dict] = []
         for h in result.hits:
             ep = self.store.get_episode(h.episode_id)
-            if ep is None or ep.status != "approved":        # ← delete this guard ⇒ mut #2
+            if ep is None or not is_servable(                # ← delete this guard ⇒ mut #2
+                    status=ep.status, trust=ep.trust,
+                    last_active_ts=ep.last_active_ts, now=now,
+                    provisional_ttl_s=belt_ttl_s):
                 _log.warning("mcp.recall_belt_drop", extra={"event": "mcp.recall_belt_drop",
                              "trace_id": result.trace_id, "episode_id": h.episode_id})
                 continue
             hits.append({"episode_id": h.episode_id, "text": h.text,
-                         "sim": float(h.sim), "content_hash": ep.content_hash})
+                         "sim": float(h.sim), "content_hash": ep.content_hash,
+                         "trust": h.trust, "ts": h.ts})
         # an empty post-belt set is an ABSTAIN, never a confident-empty (never-hallucinate)
         abstained = (result.state != CONFIDENT) or (not hits)
         env: dict = {"reference_context": hits, "abstained": abstained,
@@ -331,7 +376,22 @@ class HiveMCPServer:
     def _handle_fetch(self, args: dict, identity: ServerIdentity) -> dict:
         h = args.get("content_hash") or ""
         text = self.store.fetch(h)                           # clean miss → None, never raises
-        return {"found": text is not None, "text": text}
+        out: dict = {"found": text is not None, "text": text}
+        if text is not None:
+            # supersession annotation: a fetched-but-superseded row names its
+            # TERMINAL successor as {episode_id, content_hash} (hash because fetch
+            # is hash-keyed — a bare id would be unfollowable). Best-effort: an
+            # annotation fault never breaks the fetch.
+            try:
+                eid = self.store.episode_id_by_hash(h)
+                succ = self.store.terminal_successor(eid) if eid is not None else None
+                if succ is not None:
+                    out["superseded_by"] = {"episode_id": succ[0],
+                                            "content_hash": succ[1]}
+            except Exception:                                # noqa: BLE001 — annotation only
+                _log.warning("mcp.fetch_successor_probe_failed", extra={
+                    "event": "mcp.fetch_successor_probe_failed"}, exc_info=True)
+        return out
 
     def _handle_init(self, args: dict, identity: ServerIdentity) -> dict:
         repo_path = args.get("repo_path") or ""
@@ -374,6 +434,17 @@ class HiveMCPServer:
                 "uptime_s": max(0, int(self.now()) - self.started_ts),
                 "trailer_key": self.trailer_key}
             snap["hooks_seen"] = self._hooks_seen()          # §7 V4: last-seen tick per capture verb
+            # trust-lifecycle telemetry: quarantine pile-up must be visible, never
+            # silent. Best-effort — an older store double (tests) may lack these.
+            try:
+                snap["trust_counts"] = self.store.trust_counts()
+                snap["n_misses_7d"] = self.store.miss_count_since(
+                    int(self.now()) - 7 * _DAY_S)
+            except Exception:                                # noqa: BLE001 — telemetry only
+                _log.warning("mcp.health_trust_probe_failed", extra={
+                    "event": "mcp.health_trust_probe_failed"}, exc_info=True)
+            if args.get("include_gaps"):
+                snap["gaps"] = self._gap_report()
             if repo_path is not None:
                 linked, link = self._link_status(repo_path)
                 snap["linked"] = linked
@@ -382,6 +453,11 @@ class HiveMCPServer:
                     snap["onboarding"] = onboarding_hint()
                 else:                                # §5.3.3 re-touch: the bootstrap short-circuit
                     snap["setup"] = {"complete": True, "next": None}
+                    # an old-manifest link drives re-init (the v2 hooks change the
+                    # capture contract from ask-first to capture-without-asking)
+                    snap["manifest_outdated"] = bool(
+                        int((link or {}).get("manifest_version", 1))
+                        < ONBOARDING_MANIFEST_VERSION)
             return snap
         except Exception as e:                               # fail-closed subset ONLY
             _log.error("mcp.health_probe_fail", extra={"event": "mcp.health_probe_fail",
@@ -391,6 +467,19 @@ class HiveMCPServer:
                     "db_path": self.db_path}
 
     # ── health helpers ────────────────────────────────────────────────────────
+    def _gap_report(self) -> list[dict]:
+        """The clustered demand-gap report (deterministic, capped window, top-10).
+        Window + cosine neighborhood mirror what the promotion rule sees, so a
+        reported gap is exactly un-served demand. Degrades to [] on a probe fault."""
+        try:
+            window_s = int(self.autonomy.demand_window_days) * _DAY_S
+            rows = self.store.misses_detail_window(int(self.now()) - window_s)
+            return cluster_misses(rows, tau=float(self.autonomy.demand_tau))
+        except Exception:                                    # noqa: BLE001 — telemetry only
+            _log.warning("mcp.gap_report_failed", extra={
+                "event": "mcp.gap_report_failed"}, exc_info=True)
+            return []
+
     def _db_size(self) -> int:
         try:
             return os.path.getsize(self.db_path) if self.db_path and \

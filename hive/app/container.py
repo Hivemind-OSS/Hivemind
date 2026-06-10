@@ -39,12 +39,14 @@ from hive.app.health import health
 from hive.app.mcp_server import HiveMCPServer, ServerIdentity
 from hive.app.onboard import InstallPlanner
 from hive.domain.admission import AdmissionService
+from hive.domain.lifecycle import DemandRule, LifecycleService
 from hive.domain.recall import RecallPipeline
 from hive.domain.surfacer import UtilitySurfacer
 
 _log = logging.getLogger("hive.container")
 
 _MEMORY_DB = ":memory:"
+_DAY_S = 86_400
 
 # Deterministic RNG seed: the surfacer ε-explore is seeded from a fixed constant so a
 # container build is reproducible (a test can assert a stable recall order; the Phase-1
@@ -74,6 +76,7 @@ class Container:
         self, *, cfg: Config, conn, index, store, utility_store, token_store, embedder, scanner,
         clock, gate, surfacer, recall,
         admission, install_planner, identity: ServerIdentity, started_ts: int,
+        lifecycle=None,
     ) -> None:
         self.cfg = cfg
         self.conn = conn
@@ -91,6 +94,7 @@ class Container:
         self.install_planner = install_planner
         self.identity = identity
         self.started_ts = int(started_ts)
+        self.lifecycle = lifecycle          # LifecycleService (boot sweep + triggers)
 
     # ── Boot protocol (the strict boot order the entrypoint enforces) ─────────────
     def migrate(self) -> None:
@@ -112,10 +116,15 @@ class Container:
                   len(present), self.cfg.db_path)
 
     def build_index(self) -> None:
-        """Warm the in-RAM index from the store's APPROVED-only rows (the §4.3 divergence
-        recovery: durable truth is status='approved'; the cache is rebuilt from it)."""
-        self.store.rebuild_index_from_store()
-        _log.info("container.index_built size=%d", self.index.size())
+        """Boot order: decay sweep FIRST (materialize lazy TTL deaths so the
+        rebuild never warms a dead row), THEN warm the in-RAM index from the
+        SERVABLE set (the divergence recovery: the durable rows are truth; the
+        cache is rebuilt from them)."""
+        swept = self.lifecycle.sweep() if self.lifecycle is not None else {}
+        self.store.rebuild_index_from_store(
+            now=int(self.clock.now()),
+            provisional_ttl_s=int(self.cfg.autonomy.provisional_ttl_days) * _DAY_S)
+        _log.info("container.index_built size=%d swept=%s", self.index.size(), swept)
 
     def warm_embedder(self) -> Any:
         """Bring the embedder RESIDENT (model loaded + head frozen) and persist the frozen
@@ -140,7 +149,8 @@ class Container:
             admission=self.admission, recall=self.recall, store=self.store,
             embedder=self.embedder, install_planner=self.install_planner,
             identity=self.identity, now=self.clock.now, started_ts=self.started_ts,
-            db_path=db_path, trailer_key=self.cfg.producer.stamp_trailer)
+            db_path=db_path, trailer_key=self.cfg.producer.stamp_trailer,
+            autonomy=self.cfg.autonomy)
 
     # ── convenience surfaces (health probe + clean shutdown) ──────────────────────
     def health(self, *, repo_path: Optional[str] = None):
@@ -208,21 +218,38 @@ def build_container(cfg: Config, *, tenant_id: str, agent_id: str,
     surfacer = UtilitySurfacer(
         enabled=False, epsilon_explore=cfg.recall.epsilon_explore,
         f_min=cfg.utility.f_min, f_max=cfg.utility.f_max, rng=random.Random(_SURFACER_SEED))
+    # The mechanical lifecycle: pure DemandRule + the trigger service, wired into
+    # admission (capture trigger + sweep piggyback) and recall (miss trigger).
+    aut = cfg.autonomy
+    lifecycle = LifecycleService(
+        store=store, index=index,
+        rule=DemandRule(demand_m=aut.demand_m, demand_tau=aut.demand_tau,
+                        competitor_tau=aut.competitor_tau),
+        now=clock.now,
+        demand_window_s=aut.demand_window_days * _DAY_S,
+        quarantine_ttl_s=aut.quarantine_ttl_days * _DAY_S,
+        provisional_ttl_s=aut.provisional_ttl_days * _DAY_S,
+        enabled=aut.enabled)
     recall = RecallPipeline(
         embedder=embedder, index=index, gate=gate, surfacer=surfacer,
         reader=store, utility_store=utility_store,
-        recall_top_n=cfg.recall.recall_top_n)
-    admission = AdmissionService(store, scanner, embedder, now=clock.now)
+        recall_top_n=cfg.recall.recall_top_n,
+        ledger=store, clock_now=clock.now, scanner=scanner,
+        provisional_ttl_s=aut.provisional_ttl_days * _DAY_S,
+        lifecycle=lifecycle, autonomy_enabled=aut.enabled)
+    admission = AdmissionService(store, scanner, embedder, now=clock.now,
+                                 lifecycle=lifecycle, autonomy_enabled=aut.enabled)
 
     install_planner = InstallPlanner(
         store, stamp_trailer=cfg.producer.stamp_trailer, block_version=1)
     identity = ServerIdentity(tenant_id=tenant_id, agent_id=agent_id)
 
-    _log.info("container.assembled tenant_id=%s db_path=%s d=%d backend=%s provider=%s",
-              tenant_id, cfg.db_path, cfg.geometry.d, cfg.index.backend, cfg.embedding.provider)
+    _log.info("container.assembled tenant_id=%s db_path=%s d=%d backend=%s provider=%s "
+              "autonomy=%s", tenant_id, cfg.db_path, cfg.geometry.d, cfg.index.backend,
+              cfg.embedding.provider, aut.enabled)
     return Container(
         cfg=cfg, conn=conn, index=index, store=store, utility_store=utility_store,
         token_store=token_store,
         embedder=embedder, scanner=scanner, clock=clock, gate=gate, surfacer=surfacer,
         recall=recall, admission=admission, install_planner=install_planner,
-        identity=identity, started_ts=int(clock.now()))
+        identity=identity, started_ts=int(clock.now()), lifecycle=lifecycle)

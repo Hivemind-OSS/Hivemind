@@ -123,17 +123,23 @@ class FakeIndex:
 
 
 def make_episode(episode_id: int, text: str, weight: float = 1.0,
-                 *, status: str = "approved") -> Episode:
+                 *, status: str = "approved", trust: Optional[str] = None,
+                 last_active_ts: int = 0, ts: int = 0) -> Episode:
     """A valid (self-asserting) Episode for resolve-seam tests — content_hash binds
-    text, approved ⇔ approved_by set. ``value`` is None (the recall pipeline reads
-    only text + weight off a resolved episode, never the vector)."""
+    text. An approved episode defaults to trust='established' (mirroring the real
+    store, where the human-vouched flip stamps established); pass ``trust`` to model
+    provisional/quarantined rows. ``value`` is None (the recall pipeline reads only
+    text + weight + labels off a resolved episode, never the vector)."""
     approved = status == "approved"
+    if trust is None:
+        trust = "established" if approved else "quarantined"
     return Episode(
         id=int(episode_id), tenant_id="default", text=text, weight=float(weight),
-        ts=0, source="test", tags="", content_hash=content_hash(text),
+        ts=int(ts), source="test", tags="", content_hash=content_hash(text),
         status=status, proposed_by="tester",
         approved_by="approver" if approved else None,
         approved_ts=0 if approved else None, version=0,
+        trust=trust, last_active_ts=int(last_active_ts),
     )
 
 
@@ -246,6 +252,24 @@ class FakeScanner:
 
     def scan(self, text: str) -> ScanVerdict:
         return _scan(text, mode=self._mode)
+
+
+class FakeLedger:
+    """ExposureLedger: in-memory recording of exposures + misses (the recall
+    side-channel the pipeline writes)."""
+    def __init__(self) -> None:
+        self.exposures: list[dict] = []
+        self.misses: list[dict] = []
+
+    def record_exposure(self, trace_id: str, items, *, agent_id: str, ts: int) -> None:
+        self.exposures.append({"trace_id": trace_id,
+                               "items": [(int(e), float(m)) for e, m in items],
+                               "agent_id": agent_id, "ts": int(ts)})
+
+    def record_miss(self, query_text: str, query_vector, agent_id: str,
+                    miss_type: str, *, ts: int) -> None:
+        self.misses.append({"query_text": query_text, "query_vector": query_vector,
+                            "agent_id": agent_id, "miss_type": miss_type, "ts": int(ts)})
 
 
 class FakeInstallPlanner:
