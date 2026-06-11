@@ -2110,3 +2110,49 @@ None of these touches the one hard guarantee — a pending row is never recallab
 - Index-reconcile-on-startup: A treats index-absence as primary and does not require reconcile; B requires it because approve() does index.add outside the status-commit transaction. Decision: can the status-flip and index.add be wrapped in one SQLite transaction (index is in-process, exact, SQLite-backed) to make reconcile unnecessary, or is the vector index out-of-transaction by construction (forcing B's reconcile + its test)? This determines whether the crash-window is a correctness seam or eliminated.
 - Content-hash dedup at admission: both note dedup is the write-path's job (§3 content_hash), not admission's, so two identical-text pending rows can both be approved. Confirm whether the write path dedups pre-stage (spec §3 lists content_hash for 'fetch + dedup') so the admission trio never needs to.
 - approver attribution under §9 honest seam: confirm the MVP TrustingRelayPolicy (approver must be non-empty) is the agreed floor and that SignedApprovalPolicy is strictly the reserved fleet-tier port — i.e. no signature verification is built now.
+
+---
+
+## D9. Hybrid lexical recall channel (2026-06-11 — `docs/PLANS/HYBRID-RECALL-PLAN.md` v2, landed gated-off)
+
+Adds the lexical (BM25/FTS5) channel fused with the dense channel by RRF **inside the CONFIDENT
+branch only**, OFF by default (`recall.hybrid`, reload tier C), plus `hive/research/channel_eval.py` —
+the labels-only instrument whose paired-bootstrap `lo > 0` on per-query recall@k deltas alone can
+justify flipping it. Never-hallucinate is untouched: the entropy gate evaluates the dense cosine
+distribution before any lexical I/O (mutation-pinned). Four design-twice calls:
+
+**D-V1 — store-owned, in-transaction FTS vs a separate `Fts5LexicalIndex` adapter.**
+*Rejected:* a Python-side adapter synced best-effort from the store, like the dense warm cache — two
+modules know `episodes_fts` (the adapter reads, the store triggers), a second handle threads through
+container/store, sync is post-commit best-effort though the table is durable, and a `content=''`
+contentless FTS5 table cannot per-row DELETE before SQLite 3.43 (supersede/demote/sweep need deletes).
+*Chosen:* the store owns every byte of FTS SQL in the same transactions that move trust states
+(`complete`/`set_trust`/`supersede`/`sweep_decayed` + `rebuild_fts` boot self-heal — atomic, cannot
+diverge), exposing one read-only port method (`LexicalIndex.search_text`; `lexical_index=store`, the
+exact `reader=store`/`ledger=store` idiom). *Trade accepted:* the `EpisodeStore` god-port grows by two
+methods (resolution B5 already accepts this shape; the method group is cohesive).
+
+**D-V2 — cross-encoder rerank deferred wholesale** (the prior draft shipped its production scaffolding
+off-by-default). Sequential evidence: rerank gains stack on a hybrid baseline, so its eval is only
+meaningful after hybrid is measured; a port + two adapters + a `hive[rerank]` extra + three config
+fields ahead of any evidence is scaffolding-before-measurement (~40% of the surface, cut). *Add-back:*
+a `Reranker` port + `NoopReranker`/`CrossEncoderReranker` behind `hive[rerank]`, capped at a
+fused-shortlist `rerank_top_k`, when `channel_eval` (extended with a rerank arm) justifies it.
+
+**D-V3 (D-H7) — exposure margins under fusion reordering.** *Rejected:* RRF-score-based margins
+(uncalibrated, breaks the D1 "same masses the gate computed" invariant); skipping exposure for
+lexical-resurfaced hits (a serve must refresh liveness — the exposure-resurrection rule). *Chosen:*
+per-hit margins over the resolved set's **dense masses in mass-descending order** — same helper, same
+gate masses, non-negative by construction, byte-identical reduction when hybrid is off. A
+lexical-resurrected hit gets a small (own-mass-floored) credit weight: conservative, and currently zero
+live impact because the surfacer is observed-not-applied (`enabled=False`).
+
+**D-G1 — knowledge-graph layer formally dropped** from the recall hot path: vector beats GraphRAG on
+local-factual recall at ~3× less cost (the /socratic-5 adversarial review's falsification; reference
+branches already stripped). *Add-back:* a separate global-sensemaking tool, never the recall hot path.
+
+Sibling calls recorded in the plan: **D-V4** (FTS maintained always when available + boot rebuild, so
+`recall.hybrid` is a pure read-path switch, never a data migration; a stripped SQLite degrades to
+`fts_enabled=False` — silent with hybrid off, boot fail-fast with hybrid on) and **D-V5** (no registry
+seam, no `lexical_backend`/`rrf_k` config — one conceivable backend is not a swap axis; `rrf_k=60` is
+the canonical zero-tune code constant; lexical depth = `recall_top_n`, symmetric with dense).

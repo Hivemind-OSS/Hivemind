@@ -75,8 +75,9 @@ convenience. Single deployment per org; the instance *is* the data boundary.
   **negative is a successful outcome**: it kills six unbuilt moves cheaply.
 
 ## Out of scope (one line each)
-Consolidation/GMM · federation · differential privacy · BM25/graph channels &
-cross-encoder rerank · cold/archive tier · bi-temporal & supersession · multi-tenant ·
+Consolidation/GMM · federation · differential privacy · graph channels &
+cross-encoder rerank (the BM25/FTS5+RRF hybrid landed 2026-06-11, gated OFF — see
+non-goals) · cold/archive tier · bi-temporal & supersession · multi-tenant ·
 adversarial-fleet security (poisoning, Sybil, clawback-gaming, per-source trust).
 
 ## Hard constraints on this pass
@@ -108,9 +109,9 @@ testing on every gate/ranker/state-machine/credit path. **Docs only** this pass 
 - Consolidation / GMM / schema-formation — clusters measured as noise (silhouette 0.036); the store stays append-only and the loop credits episodes, not schemas.
 - Federation across instances — single-tenant-per-instance is the hard boundary; no cross-instance pooling.
 - Differential privacy / secure aggregation — unproven moat, post-MVP.
-- Hybrid recall channels (BM25/FTS5 + RRF fusion) — deferred to the gated TODO that runs only after the dense-only benchmark is green and re-tested on the code corpus.
-- Cross-encoder reranking — conditional-only benefit + carries the rerank_top_k truncation bug; off for the MVP.
-- Graph recall / relational graph — fleet/moat tier, deferred.
+- Hybrid recall channels (BM25/FTS5 + RRF fusion) — **implemented 2026-06-11, gated OFF** (`recall.hybrid=false`, reload tier C): store-owned FTS mirror of the servable set + confident-branch-only RRF; activation requires `channel_eval`'s paired bootstrap CI `lo > 0` on labeled recall@k (HYBRID-RECALL-PLAN v2 / decision D9).
+- Cross-encoder reranking — conditional-only benefit + carries the rerank_top_k truncation bug; **deferred wholesale** (D-V2): its eval only stacks on a measured hybrid baseline.
+- Graph recall / relational graph — **formally dropped from the recall hot path** (D-G1: vector beats GraphRAG on local-factual recall at ~3× less cost); add-back only as a separate global-sensemaking tool.
 - Cold / archive tier (recall_cold, restore_cold) — post-MVP; no cold tables or tools.
 - Bi-temporal validity and supersession columns — not needed for episodic recall; dropped on import.
 - Multi-tenant isolation beyond the single-instance boundary — tenant_id is a constant label, not a query filter.

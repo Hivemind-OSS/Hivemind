@@ -63,7 +63,7 @@ of today's baseline (recall@5 0.026 → ~0.35) at honest abstention, in ~5k LOC 
    learn   :  commit → producer.step (associate→settle→clawback→emit→drain→posterior) → surfacer biases recall
 ```
 
-## §3 — Decisions-made log (the 7 design-twice calls — full detail in `01-DECISIONS.md`)
+## §3 — Decisions-made log (the design-twice calls — full detail in `01-DECISIONS.md`)
 
 | # | Decision | Winner | Rejected alternative — and WHY it lost |
 |---|---|---|---|
@@ -76,7 +76,9 @@ of today's baseline (recall@5 0.026 → ~0.35) at honest abstention, in ~5k LOC 
 | **D7** | Admission / approval surface | **`AdmissionLedger` idempotent FSM** (pending→approved\|rejected, terminal, replay-safe) + **approved-only JOIN at the query layer** | *Direct `status`-column mutation with a post-filter* — a post-filter can leak a pending row. The query-layer JOIN makes a pending row **structurally unreachable**; the FSM makes approval idempotent. |
 | **D8** (2026-06-10) | Autonomous capture lifecycle | **v2 mechanical demand** (AUTONOMY-PLAN): `hive_capture` lands quarantined-unservable; promotion = measured recall-miss demand from ≥1 non-writer identity with no servable competitor; decay by TTL; human `hive_write(replaces=)` is the only retirement of established. Every load-bearing signal is server-observable (writes, recalls, token identities, time). | *v1 evidence economy* (tiers, `hive_evidence`, `trustctl` review queues) — made humans and cooperating agents **load-bearing fuel** that would not reliably arrive; promotion would starve. Cut to AUTONOMY-PLAN Appendix A with add-back paths. Promotion deliberately means *demanded-unique-not-self-demanded*, NOT *true* — the guards are the per-hit trust label, cheap supersession, and decay. |
 
-**Cross-cutting locked facts:** hexagonal; single Docker service; one SQLite-WAL volume; **exactly 6 MCP tools** (v3 client-gating dropped the queue verbs; the lifecycle build added `hive_capture`); geometry `bge-small(384)→PCA→d=256` dense cosine; exhaustive index authoritative; normalized-entropy abstention `H/ln(N_eff)>0.5`; serving = `lifecycle.is_servable` (established, or fresh provisional, labeled).
+| **D9** (2026-06-11) | Hybrid lexical recall channel | **Store-owned in-tx FTS5 mirror + RRF fusion inside the confident branch, default-OFF** (HYBRID-RECALL-PLAN v2): `episodes_fts` moves in the same transactions as trust state (4 sync sites + boot `rebuild_fts`); the pipeline sees one read-only `LexicalIndex` method (`lexical_index=store`, the `reader=store` idiom); the gate decides on the dense distribution BEFORE any lexical I/O; D-H7 margins over mass-descending order; `recall.hybrid` (tier C) flips only on `channel_eval`'s paired-bootstrap `lo > 0` on labels. | *Separate `Fts5LexicalIndex` adapter + registry seam* (D-V1: two owners of `episodes_fts`, best-effort sync for a durable table, contentless-FTS5 per-row-DELETE bug); *cross-encoder rerank now* (D-V2: deferred wholesale — rerank evidence only stacks on a measured hybrid baseline); *RRF-score margins / skipping exposure on lexical hits* (D-V3: uncalibrated; a serve must refresh liveness); *graph channel* (D-G1: vector beats GraphRAG on local-factual recall at ~3× less cost — dropped from the hot path). |
+
+**Cross-cutting locked facts:** hexagonal; single Docker service; one SQLite-WAL volume; **exactly 6 MCP tools** (v3 client-gating dropped the queue verbs; the lifecycle build added `hive_capture`); geometry `bge-small(384)→PCA→d=256` dense cosine; exhaustive index authoritative; normalized-entropy abstention `H/ln(N_eff)>0.5`; serving = `lifecycle.is_servable` (established, or fresh provisional, labeled); hybrid lexical channel (FTS5+RRF, confident-branch-only) **implemented, default-off** pending `channel_eval` CI evidence.
 
 ## §4 — Swap-seam map (the explicit user mandate)
 
@@ -100,7 +102,7 @@ producer is a future adapter needing its own cross-process single-writer design 
 - **Agent-relayed approval** — the server trusts the agent to relay the human "yes" (§9 high-trust residual); a fleet tier would harden it with authenticated admission.
 - **`EpisodeStore` god-port** (15+ methods across episodes/blob/ledger/migration) — accepted to keep the single-writer transaction as one object (resolution **B5**); a future ledger extraction forces a multi-call-site edit. The widest surface in the system; method groups are pre-segregated.
 - **Open test-decisions D1–D4** (spec §5) — dense-vs-sparse ranker, β recalibration, `H_frac_max` floor, embedder tier — ship with the pinned defaults; each is a single eval A/B that decides the winner before ship.
-- **Deferred §8.3 hybrid** (BM25/FTS5 + RRF + cross-encoder) and **Phase-2 live-loop hardening** — gated TODOs after the dense-only benchmark / keystone are green.
+- **Hybrid lexical channel (BM25/FTS5 + RRF) implemented, gated OFF** (2026-06-11, D9) — `recall.hybrid=false` is a pure read-path switch (the FTS mirror is always maintained when SQLite has FTS5, D-V4); flipping is a human tier-C change gated on `channel_eval`'s paired-bootstrap `lo > 0`. **Cross-encoder rerank stays deferred wholesale** (D-V2). **Phase-2 live-loop hardening** — gated TODO after the keystone is green.
 - **In-RAM index ⇒ boot-rebuild is the recovery guarantee** (resolution **B3**): the in-tx index add is a best-effort warm cache; durable truth is `status='approved'`, and the index is rebuilt from `scan_approved` on boot.
 - **Residuals (§9):** the consuming model is trusted to treat recalled text as reference (not command); auto-capture coverage is uneven across harnesses.
 
