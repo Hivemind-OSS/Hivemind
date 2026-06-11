@@ -11,6 +11,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import re
 import sqlite3
 from contextlib import contextmanager
 from typing import Iterator, Optional, Sequence
@@ -119,6 +120,17 @@ class SqliteEpisodeStore:
                 "episodes table predates the trust-lifecycle schema (no trust column); "
                 "this build has no migration — start from a clean store/volume")
         conn.executescript(_SCHEMA)
+        # Lexical mirror of the SERVABLE set (plain FTS5, NOT contentless — per-row
+        # DELETE must work on every SQLite that has FTS5). Probed, never assumed: a
+        # stripped build degrades to fts_enabled=False (harmless while recall.hybrid
+        # is off; the container fail-fasts at boot when hybrid is on).
+        try:
+            conn.execute("CREATE VIRTUAL TABLE IF NOT EXISTS episodes_fts "
+                         "USING fts5(text, tokenize='porter unicode61')")
+            self.fts_enabled = True
+        except sqlite3.OperationalError:
+            _log.warning("store.fts5_unavailable — lexical channel disabled")
+            self.fts_enabled = False
         if isolation_frac > 0.0:
             # guardrail-2 (A5) stamps held-out membership into the co-located utility
             # table at approve(); that table is owned by SqliteUtilityStore. FAIL FAST +
@@ -195,6 +207,11 @@ class SqliteEpisodeStore:
                     "INSERT INTO utility(episode_id, family_scope, isolation) VALUES(?,?,1) "
                     "ON CONFLICT(episode_id, family_scope) DO UPDATE SET isolation=1",
                     (episode_id, _ISOLATION_FAMILY))
+            # lexical mirror, same tx as the flip (unlike the best-effort dense cache,
+            # the FTS rows are durable — they must move with the trust state or never):
+            # a quarantined complete stays absent, exactly like the dense index.
+            if n == 1 and self.fts_enabled and trust in (ESTABLISHED, PROVISIONAL):
+                self._fts_upsert(episode_id)
         if n == 1 and trust in (ESTABLISHED, PROVISIONAL) and self.index is not None:
             try:
                 self.index.sync_approved(episode_id, np.asarray(value, dtype=np.float32))
@@ -318,6 +335,13 @@ class SqliteEpisodeStore:
             else:
                 self.conn.execute(
                     "UPDATE episodes SET trust=? WHERE id=?", (new_trust, episode_id))
+            # lexical mirror, same tx as the trust flip: enter servable ⇒ upsert,
+            # leave servable ⇒ delete (mirrors the dense sync below, but atomic).
+            if self.fts_enabled:
+                if new_trust in servable_states:
+                    self._fts_upsert(episode_id)
+                elif old_trust in servable_states:
+                    self._fts_delete(episode_id)
         if self.index is not None:
             try:
                 if new_trust in servable_states and r["value"] is not None:
@@ -358,6 +382,8 @@ class SqliteEpisodeStore:
                 "VALUES(?,?,?,?,?)",
                 (target_id, "supersede", actor, ts,
                  json.dumps({"replacement_id": replacement_id})))
+            if self.fts_enabled:                   # lexical mirror, same tx
+                self._fts_delete(target_id)
         if self.index is not None:
             try:
                 self.index.remove(target_id)
@@ -416,6 +442,9 @@ class SqliteEpisodeStore:
                     "VALUES(?,?,?,?,?)",
                     (eid, "ttl_expired", "server", now,
                      json.dumps({"from": old_trust})))
+                # lexical mirror, same tx as the flip (quarantined was never present)
+                if self.fts_enabled and old_trust == PROVISIONAL:
+                    self._fts_delete(eid)
         if self.index is not None:
             for eid, old_trust in flips:
                 if old_trust == PROVISIONAL:       # quarantined rows were never indexed
@@ -536,6 +565,65 @@ class SqliteEpisodeStore:
                 for r in self.conn.execute(
                     "SELECT query_vector, agent_id, ts FROM recall_misses "
                     "WHERE ts>? AND query_vector IS NOT NULL ORDER BY id", (since_ts,))]
+
+    # ── lexical (FTS5) mirror of the servable set ─────────────────────────────
+    # The store owns every byte of episodes_fts SQL: membership moves in the SAME
+    # transactions that move trust states (the 4 sync sites above), so the mirror
+    # cannot diverge from the rows it was written with. The read side is the ONE
+    # LexicalIndex port method; the boot rebuild is defense-in-depth. TTL lapse by
+    # clock (no transition) is the one staleness mode no sync sees — the recall
+    # resolve belt (is_servable at RESOLVE) stays the authoritative last word.
+    def _fts_upsert(self, episode_id: int) -> None:
+        """Idempotent delete-then-insert; INSERT-SELECT so the text never
+        round-trips through Python. Caller holds the tx + the fts_enabled guard."""
+        self.conn.execute("DELETE FROM episodes_fts WHERE rowid=?", (episode_id,))
+        self.conn.execute(
+            "INSERT INTO episodes_fts(rowid, text) "
+            "SELECT id, text FROM episodes WHERE id=?", (episode_id,))
+
+    def _fts_delete(self, episode_id: int) -> None:
+        self.conn.execute("DELETE FROM episodes_fts WHERE rowid=?", (episode_id,))
+
+    def search_text(self, query: str, k: int) -> list[tuple[int, float]]:
+        """LexicalIndex port: BM25 over the FTS mirror. The raw query is reduced to
+        its word tokens (capped at 64) and rebuilt as an OR of quoted tokens —
+        quoting defines FTS5-syntax injection/errors out of existence (AND/NOT/
+        parens/quotes in user text are inert). Returns (episode_id, score)
+        score-DESCENDING (bm25() is smaller-is-better ⇒ score = −bm25). No tokens /
+        fts disabled / engine error ⇒ [] (fail-open to the dense channel)."""
+        if not self.fts_enabled:
+            return []
+        tokens = re.findall(r"\w+", query)[:64]
+        if not tokens:
+            return []
+        match = " OR ".join(f'"{t}"' for t in tokens)
+        try:
+            return [(int(r["rowid"]), -float(r["score"]))
+                    for r in self.conn.execute(
+                        "SELECT rowid, bm25(episodes_fts) AS score FROM episodes_fts "
+                        "WHERE episodes_fts MATCH ? ORDER BY bm25(episodes_fts) "
+                        "LIMIT ?", (match, int(k)))]
+        except sqlite3.OperationalError:
+            _log.warning("store.fts_query_failed — degrading to dense-only")
+            return []
+
+    def rebuild_fts(self, *, now: int, provisional_ttl_s: int) -> None:
+        """Boot self-heal, sibling of ``rebuild_index_from_store``: delete-all +
+        re-insert the servable set (the same per-row ``is_servable`` filter as
+        ``scan_servable``), in ONE tx. No-op when fts is disabled."""
+        if not self.fts_enabled:
+            return
+        with tx(self.conn):
+            self.conn.execute("DELETE FROM episodes_fts")
+            for r in self.conn.execute(
+                    f"SELECT id, status, trust, last_active_ts "
+                    f"FROM episodes WHERE {_RECALL_PREDICATE}"):
+                if is_servable(status=r["status"], trust=r["trust"],
+                               last_active_ts=r["last_active_ts"], now=now,
+                               provisional_ttl_s=provisional_ttl_s):
+                    self.conn.execute(
+                        "INSERT INTO episodes_fts(rowid, text) "
+                        "SELECT id, text FROM episodes WHERE id=?", (r["id"],))
 
     # ── meta watermark kv ─────────────────────────────────────────────────────
     def meta_get(self, key: str) -> Optional[str]:
