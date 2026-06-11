@@ -147,3 +147,50 @@ def test_d_mismatch_fails_fast():
     with pytest.raises(ValueError, match="must agree"):
         build_container(_cfg(), tenant_id="t1", agent_id="a1",
                         embedder=FakeWarmProvider(d=128))   # geometry.d defaults to 256
+
+
+# ── hybrid recall wiring (lexical channel = the store, behind recall.hybrid) ──
+def test_hybrid_off_wires_no_lexical_index():
+    c = _build()
+    assert c.recall.lexical_index is None
+    assert c.recall.hybrid_enabled is False
+
+
+def test_hybrid_wires_lexical_index_to_store():
+    # the store IS the LexicalIndex adapter (same idiom as reader=store/ledger=store)
+    c = _build(recall={"hybrid": True})
+    assert c.recall.lexical_index is c.store
+    assert c.recall.hybrid_enabled is True
+
+
+def test_hybrid_requires_fts5(monkeypatch):
+    """hybrid=true on a stripped SQLite (no FTS5) fails FAST at boot; the same
+    stripped build with hybrid off boots fine (silent degrade)."""
+    import hive.app.container as container_mod
+    from hive.adapters.store_sqlite import SqliteEpisodeStore
+
+    class _NoFtsStore(SqliteEpisodeStore):
+        def __init__(self, *a, **k):
+            super().__init__(*a, **k)
+            self.fts_enabled = False
+
+    monkeypatch.setattr(container_mod, "SqliteEpisodeStore", _NoFtsStore)
+    with pytest.raises(RuntimeError, match="FTS5"):
+        build_container(_cfg(recall={"hybrid": True}), tenant_id="t1", agent_id="a1",
+                        embedder=FakeWarmProvider(d=256))
+    c = build_container(_cfg(), tenant_id="t1", agent_id="a1",
+                        embedder=FakeWarmProvider(d=256))
+    assert c.recall.lexical_index is None
+
+
+def test_build_index_self_heals_fts():
+    """build_index() rebuilds the FTS mirror after the dense rebuild — drift
+    introduced behind the store's back is healed at boot."""
+    c = _build(recall={"hybrid": True})
+    c.warm_embedder()
+    c.admission.write("a memory about fts healing", proposed_by="a1",
+                      approved_by="user")
+    c.conn.execute("DELETE FROM episodes_fts")            # simulate mirror drift
+    assert c.store.search_text("healing", 5) == []
+    c.build_index()
+    assert [eid for eid, _sc in c.store.search_text("healing", 5)]

@@ -24,12 +24,14 @@ import math
 import uuid
 from typing import Callable, Optional, Sequence
 
+from hive.domain.fusion import rrf_fuse
 from hive.domain.lifecycle import is_servable
 from hive.domain.models import (
     CONFIDENT, AgentContext, Episode, RecallHit, RecallResult, Scored,
 )
 from hive.domain.ports import (
-    EmbeddingProvider, EpisodeReader, ExposureLedger, UtilityStore, VectorIndex,
+    EmbeddingProvider, EpisodeReader, ExposureLedger, LexicalIndex, UtilityStore,
+    VectorIndex,
 )
 from hive.domain.secret_scan import REDACT, REFUSE
 from hive.domain.surfacer import UtilitySurfacer
@@ -166,6 +168,8 @@ class RecallPipeline:
         recall_top_n: int, ledger: ExposureLedger, clock_now: Callable[[], int],
         scanner, provisional_ttl_s: int, lifecycle=None,
         autonomy_enabled: bool = True,
+        lexical_index: Optional[LexicalIndex] = None,
+        hybrid_enabled: bool = False,
     ) -> None:
         self.embedder = embedder
         self.index = index
@@ -188,6 +192,11 @@ class RecallPipeline:
         self.provisional_ttl_s = int(provisional_ttl_s)
         self.lifecycle = lifecycle        # LifecycleService or None: on_miss trigger
         self.autonomy_enabled = bool(autonomy_enabled)
+        # the lexical (BM25) channel, fused by RRF inside the CONFIDENT branch only.
+        # OFF by default and byte-inert when off: the dense shortlist is used as-is
+        # and the port is never called.
+        self.lexical_index = lexical_index
+        self.hybrid_enabled = bool(hybrid_enabled)
 
     def recall(self, query: str, *, agent_id: str,
                agent_ctx: AgentContext) -> RecallResult:
@@ -241,15 +250,45 @@ class RecallPipeline:
             full_masses = _softmax_mass_from_sims(sims, self.gate.beta)
             utility_map = self._utility_map(fam)
 
-            # resolve the top_n candidates to full episodes (weight + text + trust
-            # labels), keeping each hit's full-set mass. A hit that cannot resolve
-            # OR is no longer servable is dropped HERE — before it can be surfaced
-            # or exposed (a TTL-lapsed row in the stale warm index must never get
-            # its liveness refreshed by the very read that should have refused it).
+            # the gate's masses + the honest dense cosine, keyed by eid — the ONLY
+            # mass/sim source for the resolve step. The dense search spans the full
+            # servable index, so every servable id has an entry; a fused id WITHOUT
+            # one (dense-cache divergence) is dropped fail-closed at resolve.
+            dense_ids = [int(eid) for eid, _sim in candidates]
+            mass_by_eid = {dense_ids[i]: full_masses[i] for i in range(len(dense_ids))}
+            sim_by_eid = {dense_ids[i]: float(candidates[i][1])
+                          for i in range(len(dense_ids))}
+
+            # hybrid (off by default): fuse the lexical (BM25) ranking into the
+            # shortlist. The lexical call sits INSIDE the confident branch — the
+            # gate decided on the dense distribution alone, before any lexical I/O
+            # (never-hallucinate unchanged) — and ANY lexical/fusion fault degrades
+            # to the dense shortlist, never to EMPTY (the gate already ruled the
+            # dense field confident).
+            shortlist = dense_ids[:self.recall_top_n]
+            if self.hybrid_enabled and self.lexical_index is not None:
+                try:
+                    lex_ids = [int(eid) for eid, _s in self.lexical_index.search_text(
+                        query, self.recall_top_n)]
+                    shortlist = rrf_fuse([dense_ids, lex_ids])[:self.recall_top_n]
+                except Exception as exc:           # noqa: BLE001 — degrade to dense
+                    _log.warning("lexical channel failure (trace=%s): %r — "
+                                 "dense-only", trace_id, exc)
+
+            # resolve the shortlist to full episodes (weight + text + trust labels),
+            # keeping each hit's full-set mass. A hit that cannot resolve OR is no
+            # longer servable is dropped HERE — before it can be surfaced or exposed
+            # (a TTL-lapsed row in the stale warm index must never get its liveness
+            # refreshed by the very read that should have refused it).
             now_belt = int(self.clock_now())
             resolved: list[tuple[Scored, float, Episode]] = []   # (scored, full_mass, ep)
-            for rank, (eid, sim) in enumerate(candidates[:self.recall_top_n]):
-                ep: Optional[Episode] = self.reader.get_episode(int(eid))
+            for eid in shortlist:
+                mass = mass_by_eid.get(eid)
+                if mass is None:
+                    _log.warning("resolve drop (no dense mass) eid=%s trace=%s",
+                                 eid, trace_id)
+                    continue
+                ep: Optional[Episode] = self.reader.get_episode(eid)
                 if ep is None or not is_servable(
                         status=ep.status, trust=ep.trust,
                         last_active_ts=ep.last_active_ts, now=now_belt,
@@ -258,8 +297,7 @@ class RecallPipeline:
                                  eid, trace_id)
                     continue
                 resolved.append(
-                    (Scored(int(eid), float(ep.weight), float(sim)),
-                     full_masses[rank], ep))
+                    (Scored(eid, float(ep.weight), sim_by_eid[eid]), mass, ep))
 
             if not resolved:
                 _log.error("gate passed but 0 candidates resolved → EMPTY_NO_DATA "
@@ -267,9 +305,19 @@ class RecallPipeline:
                 self._note_non_answer(query, value_q, agent_id, "no_match")
                 return RecallResult.empty(trace_id)
 
-            # D1 margins over the RETURNED set (score order): margin_j = mass_j −
-            # mass_{j+1}; the last returned hit's next mass is 0 ⇒ its own mass.
-            hit_margins = _recall_margins([fm for _s, fm, _e in resolved])
+            # D1 margins over the RETURNED set, taken in MASS-DESCENDING order: the
+            # shortlist may be fusion-reordered (non-monotone masses), and a gap over
+            # non-monotone masses could go negative. Stable-sort positions by mass
+            # desc, take consecutive gaps, map back by position — byte-identical to
+            # the dense-order computation when the shortlist is dense-ordered, and
+            # every margin is non-negative by construction under fusion. The last
+            # (lowest-mass) hit's next mass is 0 ⇒ its own mass.
+            order_desc = sorted(range(len(resolved)), key=lambda j: resolved[j][1],
+                                reverse=True)
+            gaps = _recall_margins([resolved[j][1] for j in order_desc])
+            hit_margins = [0.0] * len(resolved)
+            for pos, j in enumerate(order_desc):
+                hit_margins[j] = gaps[pos]
             by_eid = {s.episode_id: (hit_margins[j], ep)
                       for j, (s, _fm, ep) in enumerate(resolved)}
             scored = [s for s, _fm, _e in resolved]

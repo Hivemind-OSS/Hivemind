@@ -121,9 +121,12 @@ class Container:
         SERVABLE set (the divergence recovery: the durable rows are truth; the
         cache is rebuilt from them)."""
         swept = self.lifecycle.sweep() if self.lifecycle is not None else {}
-        self.store.rebuild_index_from_store(
-            now=int(self.clock.now()),
-            provisional_ttl_s=int(self.cfg.autonomy.provisional_ttl_days) * _DAY_S)
+        now = int(self.clock.now())
+        p_ttl_s = int(self.cfg.autonomy.provisional_ttl_days) * _DAY_S
+        self.store.rebuild_index_from_store(now=now, provisional_ttl_s=p_ttl_s)
+        # FTS self-heal AFTER the dense rebuild (same servable snapshot): recovers
+        # pre-feature stores and any mirror drift; no-op when FTS is unavailable.
+        self.store.rebuild_fts(now=now, provisional_ttl_s=p_ttl_s)
         _log.info("container.index_built size=%d swept=%s", self.index.size(), swept)
 
     def warm_embedder(self) -> Any:
@@ -198,6 +201,13 @@ def build_container(cfg: Config, *, tenant_id: str, agent_id: str,
     # guardrail-2 fail-fast (isolation_frac > 0 requires that table) is satisfied.
     utility_store = SqliteUtilityStore(conn)
     store = SqliteEpisodeStore(conn, index=index, isolation_frac=cfg.utility.isolation_frac)
+    # hybrid recall needs the store's FTS5 mirror: a stripped SQLite degrades
+    # silently while hybrid is off, but with hybrid ON it must fail at boot —
+    # never serve dense-only while claiming the lexical channel is live.
+    if cfg.recall.hybrid and not store.fts_enabled:
+        raise RuntimeError(
+            "recall.hybrid=true but this SQLite build lacks FTS5 — use an "
+            "FTS5-enabled SQLite or set recall.hybrid=false (HIVE_RECALL__HYBRID)")
     # Auth token store: owns its own `access_tokens` table; independent of the utility/episode
     # ORDER constraint above (no cross-table dependency), so it can be built anywhere after conn.
     token_store = SqliteTokenStore(conn)
@@ -236,7 +246,11 @@ def build_container(cfg: Config, *, tenant_id: str, agent_id: str,
         recall_top_n=cfg.recall.recall_top_n,
         ledger=store, clock_now=clock.now, scanner=scanner,
         provisional_ttl_s=aut.provisional_ttl_days * _DAY_S,
-        lifecycle=lifecycle, autonomy_enabled=aut.enabled)
+        lifecycle=lifecycle, autonomy_enabled=aut.enabled,
+        # the store IS the lexical adapter (the reader=store/ledger=store idiom);
+        # OFF keeps the pipeline byte-inert with no handle to reach the channel.
+        lexical_index=store if cfg.recall.hybrid else None,
+        hybrid_enabled=cfg.recall.hybrid)
     admission = AdmissionService(store, scanner, embedder, now=clock.now,
                                  lifecycle=lifecycle, autonomy_enabled=aut.enabled)
 
