@@ -99,6 +99,7 @@ class RecallConfig:
     recall_top_n: int = 10
     epsilon_explore: float = 0.1          # [A4] guardrail-1 — the ONE validated ε (>0)
     softmax_beta: float = 16.0            # gate mass temperature (β>0)
+    hybrid: bool = False                  # lexical(FTS5)+RRF channel; flips only on channel_eval CI evidence
 
     def __post_init__(self) -> None:
         if not (0.0 < self.H_frac_max <= 1.0):
@@ -408,6 +409,7 @@ RELOAD_TIER: dict[str, str] = {
     "runtime.db_path": "C",
     "runtime.tenant_id": "C",
     "autonomy.enabled": "C",        # flips tool behavior + trigger wiring → restart
+    "recall.hybrid": "C",           # changes index wiring + the read path → restart
     # B — hot-swappable live
     "autonomy.demand_m": "B",
     "autonomy.demand_window_days": "B",

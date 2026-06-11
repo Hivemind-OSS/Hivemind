@@ -234,6 +234,27 @@ def test_isolation_frac_is_tier_A():
     assert reload(old, new) is new   # tier A ⇒ accepted
 
 
+def test_recall_hybrid_defaults_off_and_is_tier_C():
+    # hybrid ships OFF by construction — flipping the default is the live-risk
+    # mutation (the lexical channel must never activate without the CI evidence).
+    cfg = Config.load(db_path=":memory:")
+    assert cfg.recall.hybrid is False
+    # tier C: changes index wiring + the read path ⇒ restart, never a hot swap
+    from hive.app.config import RELOAD_TIER
+    assert RELOAD_TIER["recall.hybrid"] == "C"
+    new = Config.load(db_path=":memory:", recall={"hybrid": True})
+    assert new.recall.hybrid is True
+    assert diff_tier(cfg, new) == "C"
+    with pytest.raises(TierViolation, match=r"recall\.hybrid|tier C|restart"):
+        reload(cfg, new)
+
+
+def test_recall_hybrid_env_coercion():
+    # the operational activation path: HIVE_RECALL__HYBRID=true + restart
+    cfg = Config.load(db_path=":memory:", env={"HIVE_RECALL__HYBRID": "true"})
+    assert cfg.recall.hybrid is True
+
+
 def test_diff_tier_no_change_is_A():
     old = Config.load(db_path=":memory:")
     new = Config.load(db_path=":memory:")
