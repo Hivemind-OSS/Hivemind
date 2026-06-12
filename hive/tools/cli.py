@@ -21,10 +21,13 @@ is exactly that (token/tokens).
 from __future__ import annotations
 
 import argparse
+import json
 import subprocess
 import sys
 import time
 from typing import Callable, Mapping, Optional, Sequence, TextIO
+
+from hive.tools import creditctl
 
 SERVICE = "hive-server"           # single source of the compose service name (mirrors compose.yaml)
 HTTP_PORT = 8765                  # the daemon's loopback HTTP port (mirrors compose.yaml)
@@ -44,13 +47,15 @@ Run = Callable[..., "subprocess.CompletedProcess"]
 
 
 def default_run(argv: Sequence[str], env: Optional[Mapping[str, str]] = None, *,
-                capture: bool = True) -> subprocess.CompletedProcess:
+                capture: bool = True,
+                input: Optional[str] = None) -> subprocess.CompletedProcess:
     """The one place that actually spawns a child. `env` is passed through whole (the
     prod caller hands os.environ), so compose interpolation sees the operator's vars.
-    // O(child)."""
+    `input` pipes text to the child's stdin (the credit NDJSON ingest rides this —
+    a keyword-only, additive widening). // O(child)."""
     return subprocess.run(
         list(argv), env=None if env is None else dict(env),
-        capture_output=capture, text=True)
+        capture_output=capture, text=True, input=input)
 
 
 def _compose(*args: str, profile: Optional[str] = None) -> list[str]:
@@ -200,6 +205,38 @@ def _tokens(args, *, run: Run, out: TextIO, env: Mapping[str, str], ask) -> int:
     return EX_OK
 
 
+def _credit(args, *, run: Run, out: TextIO, env: Mapping[str, str], ask) -> int:
+    """Outcome credit, end to end: scan the clone/mirror HOST-side (the server never
+    reads repos), report the scan summary — including the aged-unsettled squash-leak
+    alarm — on stderr, then pipe ONLY the settled rows as NDJSON into the in-container
+    ingest over stdin. Never load-bearing: skipping this verb changes nothing."""
+    if args.fetch:
+        fetched = creditctl._default_run(("git", "-C", args.path, "fetch", "--quiet"))
+        if fetched.returncode != 0:
+            print(f"hive: git fetch failed: {(fetched.stderr or '').strip()}",
+                  file=sys.stderr)
+            return EX_UNAVAILABLE
+    rows = creditctl.scan_repo(
+        args.path, trailer_key=args.trailer_key, main_ref=args.main_ref,
+        since=args.since)
+    summary = creditctl.scan_summary(rows, now=int(time.time()))
+    print(f"hive credit: scan {json.dumps(summary, sort_keys=True)}", file=sys.stderr)
+    settled = [r for r in rows if r["settled"]]
+    if not settled:
+        print("hive credit: no settled trailer commits — nothing to ingest",
+              file=sys.stderr)
+        return EX_OK
+    ndjson = "".join(json.dumps(r, sort_keys=True) + "\n" for r in settled)
+    child = run(_compose("exec", "-T", SERVICE, "python", "-m",
+                         "hive.tools.creditctl", "ingest", "--ndjson", "-"),
+                env, input=ndjson)
+    if child.returncode != 0:
+        sys.stderr.write(child.stderr or "")
+        return EX_UNAVAILABLE
+    out.write(child.stdout or "")                      # the ingest JSON report
+    return EX_OK
+
+
 def _connect(args, *, run: Run, out: TextIO, env: Mapping[str, str], ask) -> int:
     """Print the teammate's transport-registration one-liner. Transport ONLY: the
     per-repo handshake (hive_init) stays agent-driven over MCP."""
@@ -231,6 +268,7 @@ _HANDLERS: dict[str, Callable[..., int]] = {
     "revoke": _revoke,
     "tokens": _tokens,
     "connect": _connect,
+    "credit": _credit,
 }
 
 # Verbs that never touch compose (pure local prints) skip the tenant gate.
@@ -277,6 +315,18 @@ def main(argv: Optional[list[str]] = None, *, run: Optional[Run] = None,
     p_revoke.add_argument("seat", help="the seat label to revoke")
     sub.add_parser("tokens", help="list provisioned seat labels (never the tokens)")
     sub.add_parser("connect", help="print the teammate's `claude mcp add` line (transport only)")
+    p_credit = sub.add_parser(
+        "credit", help="scan a clone/mirror's trailer commits, ingest settled outcomes")
+    p_credit.add_argument("path", nargs="?", default=".",
+                          help="repo clone or --mirror to scan (default: .)")
+    p_credit.add_argument("--fetch", action="store_true",
+                          help="git fetch the repo first (mirror cron convenience)")
+    p_credit.add_argument("--main-ref", default=None,
+                          help="settlement ref (default: mirror-aware ladder)")
+    p_credit.add_argument("--trailer-key", default=creditctl.TRAILER_KEY_DEFAULT,
+                          help="commit-trailer key to scan for")
+    p_credit.add_argument("--since", default=None,
+                          help="optional git --since bound (operator-owned optimization)")
     args = parser.parse_args(argv)
 
     # Every compose-touching verb needs the tenant id — compose interpolation

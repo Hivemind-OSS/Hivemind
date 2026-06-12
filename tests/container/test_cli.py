@@ -26,16 +26,19 @@ def seq_in(argv, *words) -> bool:
 
 
 class FakeRun:
-    """Records every argv; answers from `script` — a list of (predicate, CompletedProcess)
-    pairs tried in order — else a default rc-0 empty result."""
+    """Records every argv (+ the call kwargs, e.g. the stdin `input=` pipe); answers
+    from `script` — a list of (predicate, CompletedProcess) pairs tried in order —
+    else a default rc-0 empty result."""
 
     def __init__(self, script=()):
         self.calls: list[list[str]] = []
+        self.kws: list[dict] = []
         self.script = list(script)
 
     def __call__(self, argv, env=None, **kw) -> subprocess.CompletedProcess:
         argv = [str(a) for a in argv]
         self.calls.append(argv)
+        self.kws.append(dict(kw))
         for pred, result in self.script:
             if pred(argv):
                 return result
@@ -261,3 +264,45 @@ def test_connect_without_domain_prints_loopback_line(capsys):
     assert rc == cli.EX_OK
     assert "http://localhost:8765/mcp" in out.getvalue()
     assert "NGROK_DOMAIN" in capsys.readouterr().err   # says why it fell back to loopback
+
+
+# ── credit: host-side scan piped into the in-container ingest over stdin ────────
+
+
+def test_credit_pipes_settled_ndjson_to_creditctl_ingest(monkeypatch, capsys):
+    rows = [
+        {"commit_sha": "aaa1", "commit_ts": 100, "repo": "r", "trace_ids": ["t1"],
+         "settled": True, "outcome": "win"},
+        {"commit_sha": "bbb2", "commit_ts": 110, "repo": "r", "trace_ids": ["t2"],
+         "settled": False, "outcome": None},
+    ]
+    monkeypatch.setattr(cli.creditctl, "scan_repo", lambda path, **kw: rows)
+    fake = FakeRun(script=[(lambda a: seq_in(a, "ingest"),
+                            proc(stdout='{"ingested": 1}\n'))])
+    out = io.StringIO()
+    rc = cli.main(["credit", "/some/mirror.git"], run=fake, out=out, env=ENV)
+    assert rc == cli.EX_OK
+    assert any(seq_in(c, "exec", "-T", "hive-server", "python", "-m",
+                      "hive.tools.creditctl", "ingest", "--ndjson", "-")
+               for c in fake.calls)
+    piped = fake.kws[0].get("input", "")
+    assert "aaa1" in piped and "bbb2" not in piped     # ONLY settled rows ride the pipe
+    assert '"ingested": 1' in out.getvalue()           # the ingest report reaches stdout
+    assert "aged_unsettled" in capsys.readouterr().err  # the scan summary (alarm) on stderr
+
+
+def test_credit_no_settled_rows_skips_ingest(monkeypatch):
+    monkeypatch.setattr(cli.creditctl, "scan_repo",
+                        lambda path, **kw: [{"commit_sha": "c", "commit_ts": 1,
+                                             "repo": "r", "trace_ids": ["t"],
+                                             "settled": False, "outcome": None}])
+    fake = FakeRun()
+    rc = cli.main(["credit"], run=fake, out=io.StringIO(), env=ENV)
+    assert rc == cli.EX_OK
+    assert fake.calls == []                            # nothing settled → no exec at all
+
+
+def test_default_run_forwards_stdin_input():
+    # the keyword-only widening the credit pipe rides — additive, no signature break
+    p = cli.default_run(["cat"], None, input="ndjson-line\n")
+    assert p.returncode == 0 and p.stdout == "ndjson-line\n"
