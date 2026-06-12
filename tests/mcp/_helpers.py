@@ -32,7 +32,10 @@ def build_real_server(*, d: int = 64, h: float = 0.5, beta: float = 16.0,
     """Return (server, clock). ``clock`` is mutable so tests can stamp distinct ts.
     The FULL trust-lifecycle is wired (real DemandRule + LifecycleService on the
     real store), mirroring build_container — pass ``autonomy`` to tune the knobs."""
-    conn = connect(":memory:")             # production semantics (isolation_level=None, WAL, FKs)
+    # production semantics (isolation_level=None, WAL, FKs) INCLUDING the thread
+    # posture: build_container shares one conn across HTTP handler threads
+    # (lock-serialized), so the helper mirrors check_same_thread=False too.
+    conn = connect(":memory:", check_same_thread=False)
     index = ExhaustiveCosineIndex(dim=d)
     store = SqliteEpisodeStore(conn, index=index)
     embedder = FakeProvider(d=d)
@@ -42,7 +45,9 @@ def build_real_server(*, d: int = 64, h: float = 0.5, beta: float = 16.0,
     lifecycle = LifecycleService(
         store=store, index=index,
         rule=DemandRule(demand_m=aut.demand_m, demand_tau=aut.demand_tau,
-                        competitor_tau=aut.competitor_tau),
+                        competitor_tau=aut.competitor_tau,
+                        solo_mode=aut.solo_mode,
+                        solo_min_span_days=aut.solo_min_span_days),
         now=clock.now,
         demand_window_s=aut.demand_window_days * _DAY_S,
         quarantine_ttl_s=aut.quarantine_ttl_days * _DAY_S,

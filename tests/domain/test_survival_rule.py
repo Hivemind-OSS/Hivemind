@@ -196,3 +196,27 @@ def test_sweep_disabled_is_inert():
     st = _SurvivalStore(exposures=_spread(t0=NOW - 20 * DAY))
     assert _service(st, enabled=False).sweep() == {}
     assert st.calls == [] and st.audits == []
+
+
+def test_solo_established_stays_human_only():
+    # AC9: in solo mode the MECHANICAL ladder tops out at provisional. The solo
+    # demand rule promotes on elapsed-span (one identity is enough), but the
+    # survival rule deliberately keeps the distinct-identity key — writer-only
+    # exposure never establishes, so `established` is reachable only through
+    # hive_write (the human vouch). HITL held structurally, not by wording.
+    import numpy as np
+
+    from hive.domain.lifecycle import DemandRule, MissRow
+
+    cand = np.array([1.0, 0.0, 0.0], dtype=np.float32)
+    solo = DemandRule(demand_m=3, demand_tau=0.75, competitor_tau=0.85,
+                      solo_mode=True, solo_min_span_days=1)
+    misses = [MissRow(vector=cand, agent_id="solo-dev", ts=t)
+              for t in (0, DAY // 2, DAY)]                    # 24h span, ONE identity
+    promo = solo.decide(candidate_vec=cand, candidate_writer="solo-dev",
+                        misses=misses, competitor_top_sim=-1.0)
+    assert promo.promote is True                              # → provisional unlocked
+    # …but the same single identity reading it for a month establishes NOTHING
+    reads = [_exp("solo-dev", i * 5 * DAY) for i in range(6)]
+    surv = _rule().decide(writer="solo-dev", exposures=reads, now=NOW)
+    assert surv.establish is False and surv.reason == "insufficient_identities"

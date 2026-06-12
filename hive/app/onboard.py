@@ -142,6 +142,10 @@ HARNESS_PROFILES: dict[str, HarnessProfile] = {
         "cline", (".clinerules",), "cline_mcp_settings.json", None, TIER_RULES),
     "opencode": HarnessProfile(
         "opencode", ("AGENTS.md",), "opencode.json", None, TIER_RULES),
+    "codex": HarnessProfile(
+        "codex", ("AGENTS.md",),
+        "~/.codex/config.toml (mcp_servers entry + Authorization: Bearer header)",
+        None, TIER_RULES),
     "generic": HarnessProfile(
         "generic", DEFAULT_RULES_FILE_CANDIDATES, "(agent resolves per host)", None, TIER_RULES),
 }
@@ -178,6 +182,15 @@ def _render_playbook(manifest: HookManifest, profile: HarnessProfile) -> str:
     lines = [f"Hivemind hook manifest v{manifest.manifest_version} — apply on "
              f"{profile.harness} (tier {profile.max_tier}):"]
     lines.extend(f"- on {h.event} ({h.action}): {h.directive}" for h in manifest.hooks)
+    # §3.4 seat-token contract: per-seat identity is the default OUTCOME of
+    # onboarding, not tribal knowledge. The exec line / token mint is operator-
+    # owned config, so surfacing it here is reference text, never a server write.
+    lines.append(
+        f"MCP registration (operator-owned config): {profile.mcp_config_target}. "
+        "Identity is per seat: stdio exec lines pass --agent <repo-name> (one "
+        "identity per project); HTTP clients mint one token per seat "
+        "(hive token <seat>) — a fleet sharing one token structurally cannot "
+        "promote its own captures.")
     lines += [
         "Setup sequence (run once, in order):",
         f"1. Materialize: write the rules block into {profile.rules_file_candidates[0]}"

@@ -254,6 +254,79 @@ def test_sweep_delegates_with_configured_ttls():
     assert st.calls == [("sweep_decayed", NOW, Q_TTL, P_TTL)]
 
 
+# ── solo mode (§3.5): elapsed-span demand replaces identity diversity ───────────
+DAY = 86_400
+MIDNIGHT = 30 * DAY                       # a UTC midnight tick (ts % 86400 == 0)
+
+
+def _solo_rule(m: int = 3, span_days: int = 1) -> DemandRule:
+    return DemandRule(demand_m=m, demand_tau=0.75, competitor_tau=0.85,
+                      solo_mode=True, solo_min_span_days=span_days)
+
+
+def test_solo_ctor_validates_span():
+    with pytest.raises(ValueError):
+        DemandRule(demand_m=3, demand_tau=0.75, competitor_tau=0.85,
+                   solo_mode=True, solo_min_span_days=0)
+
+
+def test_solo_sub_day_burst_never_promotes():
+    # ★ the runaway-loop guard, bucket-proof: m matched misses inside < 24h
+    # elapsed — INCLUDING the fixture straddling UTC midnight (23:59 + 00:01),
+    # which calendar-day buckets would wrongly count as two "days".
+    burst = [_miss("solo-dev", ts=1000), _miss("solo-dev", ts=2000),
+             _miss("solo-dev", ts=3000)]
+    d = _solo_rule().decide(candidate_vec=CAND, candidate_writer="solo-dev",
+                            misses=burst, competitor_top_sim=-1.0)
+    assert d.promote is False and d.reason == "solo_span"
+    straddle = [_miss("solo-dev", ts=MIDNIGHT - 60),          # 23:59
+                _miss("solo-dev", ts=MIDNIGHT + 60),          # 00:01 next day
+                _miss("solo-dev", ts=MIDNIGHT + 120)]
+    d2 = _solo_rule().decide(candidate_vec=CAND, candidate_writer="solo-dev",
+                             misses=straddle, competitor_top_sim=-1.0)
+    assert d2.promote is False and d2.reason == "solo_span"
+
+
+def test_solo_span_promotes_same_identity():
+    # the solo unlock: one identity, first-to-last ≥ solo_min_span_days·86400
+    # (boundary: EXACTLY 24h elapsed passes — the compare is inclusive)
+    spread = [_miss("solo-dev", ts=1000), _miss("solo-dev", ts=1000 + DAY // 2),
+              _miss("solo-dev", ts=1000 + DAY)]
+    d = _solo_rule().decide(candidate_vec=CAND, candidate_writer="solo-dev",
+                            misses=spread, competitor_top_sim=-1.0)
+    assert d.promote is True and d.reason == "demand"
+    assert d.n_other_identities == 0                          # still computed/audited
+    # one second short of the span refuses
+    short = [_miss("solo-dev", ts=1000), _miss("solo-dev", ts=2000),
+             _miss("solo-dev", ts=1000 + DAY - 1)]
+    d2 = _solo_rule().decide(candidate_vec=CAND, candidate_writer="solo-dev",
+                             misses=short, competitor_top_sim=-1.0)
+    assert d2.promote is False and d2.reason == "solo_span"
+
+
+def test_solo_keeps_other_clauses():
+    # demand_m floor and competitor veto are NOT relaxed by solo mode
+    spread2 = [_miss("solo-dev", ts=1000), _miss("solo-dev", ts=1000 + DAY)]
+    d = _solo_rule(m=3).decide(candidate_vec=CAND, candidate_writer="solo-dev",
+                               misses=spread2, competitor_top_sim=-1.0)
+    assert d.promote is False and d.reason == "insufficient_demand"
+    spread3 = [_miss("solo-dev", ts=1000), _miss("solo-dev", ts=2000),
+               _miss("solo-dev", ts=1000 + DAY)]
+    d2 = _solo_rule().decide(candidate_vec=CAND, candidate_writer="solo-dev",
+                             misses=spread3, competitor_top_sim=0.9)
+    assert d2.promote is False and d2.reason == "competitor_answers"
+
+
+def test_solo_off_keeps_identity_clause():
+    # solo_mode=False ⇒ the landed behavior, byte-stable: writer-only demand
+    # spread over ANY span is still self_demand
+    spread = [_miss("writer-1", ts=1000), _miss("writer-1", ts=1000 + DAY),
+              _miss("writer-1", ts=1000 + 2 * DAY)]
+    d = _rule().decide(candidate_vec=CAND, candidate_writer="writer-1",
+                       misses=spread, competitor_top_sim=-1.0)
+    assert d.promote is False and d.reason == "self_demand"
+
+
 def test_triggers_never_raise_into_caller():
     # a store fault inside a trigger is logged and swallowed — a promotion fault
     # must never break the capture/recall that triggered it

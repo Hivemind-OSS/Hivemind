@@ -133,18 +133,31 @@ class DemandRule:
         AND competitor_top_sim < competitor_tau                   (a servable row
             this close already answers it — near-dup pile-up prevention)
     Pure, total, never raises; ANY non-finite input ⇒ promote=False (fail-closed,
-    NaN/inf in any position).  // O(|misses|·d)."""
+    NaN/inf in any position).  // O(|misses|·d).
+
+    Solo mode (§3.5, operator-consented): a single-seat fleet structurally cannot
+    produce identity diversity, so with ``solo_mode`` the diversity clause SWAPS —
+    distinct identity → elapsed-span demand: ``max(ts) − min(ts)`` over the matched
+    misses must be ≥ ``solo_min_span_days``·86400 (the SurvivalRule span idiom — a
+    sub-24h burst never promotes, even straddling UTC midnight). All other clauses
+    are unchanged; ``n_other_identities`` is still computed into the verdict."""
 
     def __init__(self, *, demand_m: int, demand_tau: float,
-                 competitor_tau: float) -> None:
+                 competitor_tau: float, solo_mode: bool = False,
+                 solo_min_span_days: int = 1) -> None:
         if int(demand_m) < 1:
             raise ValueError(f"demand_m must be >= 1 (got {demand_m})")
+        if int(solo_min_span_days) < 1:
+            raise ValueError(
+                f"solo_min_span_days must be >= 1 (got {solo_min_span_days})")
         for name, v in (("demand_tau", demand_tau), ("competitor_tau", competitor_tau)):
             if not (math.isfinite(v) and 0.0 < v <= 1.0):
                 raise ValueError(f"{name} must be finite in (0, 1] (got {v})")
         self.demand_m = int(demand_m)
         self.demand_tau = float(demand_tau)
         self.competitor_tau = float(competitor_tau)
+        self.solo_mode = bool(solo_mode)
+        self.solo_min_span_days = int(solo_min_span_days)
 
     def decide(self, *, candidate_vec: "np.ndarray", candidate_writer: str,
                misses: Sequence[MissRow],
@@ -164,7 +177,15 @@ class DemandRule:
             if len(matched) < self.demand_m:
                 return PromotionDecision(False, len(matched), n_other, comp,
                                          "insufficient_demand")
-            if n_other == 0:
+            if self.solo_mode:
+                # elapsed-span demand: ELAPSED max−min, deliberately NOT calendar-
+                # day buckets — a midnight-straddling burst must never count as
+                # two "days" (the bucket idiom's one realistic bypass).
+                span_s = max(m.ts for m in matched) - min(m.ts for m in matched)
+                if span_s < self.solo_min_span_days * _DAY_S:
+                    return PromotionDecision(False, len(matched), n_other, comp,
+                                             "solo_span")
+            elif n_other == 0:
                 return PromotionDecision(False, len(matched), 0, comp, "self_demand")
             if comp >= self.competitor_tau:
                 return PromotionDecision(False, len(matched), n_other, comp,

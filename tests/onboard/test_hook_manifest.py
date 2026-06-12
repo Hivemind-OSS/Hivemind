@@ -52,9 +52,9 @@ def test_manifest_version_is_the_single_source():
     assert len(HOOK_MANIFEST.hooks) >= 1
 
 
-def test_six_profiles_present_only_claude_code_is_tier2():
+def test_profiles_present_only_claude_code_is_tier2():
     assert set(HARNESS_PROFILES) == {"claude-code", "cursor", "windsurf", "cline",
-                                     "opencode", "generic"}
+                                     "opencode", "codex", "generic"}
     tier2 = {h for h, p in HARNESS_PROFILES.items() if p.max_tier >= TIER_HOOKS}
     assert tier2 == {"claude-code"}                       # the only host with a hook mechanism today
 
@@ -75,7 +75,7 @@ def test_build_recipe_claude_code_is_tier2_with_hook_file():
 
 
 def test_build_recipe_tier1_hosts_emit_no_hook_files():
-    for harness in ("cursor", "windsurf", "cline", "opencode", "generic"):
+    for harness in ("cursor", "windsurf", "cline", "opencode", "codex", "generic"):
         r = build_recipe(harness)
         assert r.resolved_tier == TIER_RULES
         assert r.hook_files == ()                         # no OS hooks below Tier 2

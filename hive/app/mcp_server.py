@@ -443,6 +443,9 @@ class HiveMCPServer:
             except Exception:                                # noqa: BLE001 — telemetry only
                 _log.warning("mcp.health_trust_probe_failed", extra={
                     "event": "mcp.health_trust_probe_failed"}, exc_info=True)
+            hint = self._solo_hint()                         # §3.5: stalls self-describe
+            if hint is not None:
+                snap["solo_hint"] = hint
             if args.get("include_gaps"):
                 snap["gaps"] = self._gap_report()
             if repo_path is not None:
@@ -467,6 +470,32 @@ class HiveMCPServer:
                     "db_path": self.db_path}
 
     # ── health helpers ────────────────────────────────────────────────────────
+    def _solo_hint(self) -> Optional[str]:
+        """§3.5: when single-seat traffic is WASTING demand (≥ demand_m window
+        misses, all from ≤1 identity) under the anti-gaming rule, the autonomy
+        loop is silently inert — return the self-describing hint. None when
+        autonomy is off, solo_mode is already on, the store is empty/quiet, or
+        the probe faults (telemetry only, never breaks health)."""
+        try:
+            if not bool(getattr(self.autonomy, "enabled", True)):
+                return None
+            if bool(getattr(self.autonomy, "solo_mode", False)):
+                return None
+            window_s = int(self.autonomy.demand_window_days) * _DAY_S
+            misses = self.store.misses_window(int(self.now()) - window_s)
+            if len(misses) < int(self.autonomy.demand_m):    # ← the wasted-demand floor
+                return None
+            if len({m.agent_id for m in misses}) > 1:
+                return None
+            return ("single-seat traffic: demand-promotion is inert under the "
+                    "anti-gaming rule — set HIVE_AUTONOMY__SOLO_MODE=true or "
+                    "provision per-seat identities (one token per seat: "
+                    "hive token <seat>)")
+        except Exception:                                    # noqa: BLE001 — telemetry only
+            _log.warning("mcp.solo_hint_probe_failed", extra={
+                "event": "mcp.solo_hint_probe_failed"}, exc_info=True)
+            return None
+
     def _gap_report(self) -> list[dict]:
         """The clustered demand-gap report (deterministic, capped window, top-10).
         Window + cosine neighborhood mirror what the promotion rule sees, so a

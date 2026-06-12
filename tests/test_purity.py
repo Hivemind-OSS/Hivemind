@@ -47,6 +47,17 @@ def test_domain_imports_no_io() -> None:
     assert not offenders, f"domain/ must not import I/O modules: {offenders}"
 
 
+def test_client_is_stdlib_only_by_ast() -> None:
+    # hive/client.py is the VENDORABLE single-file client: its import set is an
+    # explicit stdlib allowlist (the static half of the vendoring fence; the
+    # transitive/runtime half lives in tests/clients/test_hive_client.py).
+    allowed = {"__future__", "json", "urllib", "typing"}
+    imports = _module_imports(ROOT / "client.py")
+    assert imports <= allowed, (
+        f"hive/client.py must stay stdlib-only/vendorable; "
+        f"illegal imports: {imports - allowed}")
+
+
 def test_research_not_imported_by_runtime() -> None:
     offenders: dict[str, set[str]] = {}
     for path in _full_module_paths("domain", "adapters", "app"):

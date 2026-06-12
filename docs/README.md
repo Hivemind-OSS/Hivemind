@@ -19,6 +19,7 @@ reference, reviewed against the `software-design-review` (APOSD + agent-native) 
 | 6 | [`06-DESIGN-DOC.md`](06-DESIGN-DOC.md) | The lightweight living map: module/port diagram, decisions log, **swap-seam map**, tech debt, repo-navigation note | 7 |
 | 7 | [`07-REVIEW.md`](07-REVIEW.md) | The integrated design review (8/10+ across the board, swap-seam 9/10) + completeness critic. **Blockers it raised are CLOSED in §8.** | — |
 | 8 | [`08-RESOLUTIONS.md`](08-RESOLUTIONS.md) | **Authoritative pins** (Clusters A–D) closing all review blockers; override any contradicting module text | 6 |
+| 9 | [`CLIENTS.md`](CLIENTS.md) | Reaching the hive from anything that can POST: the **seat-token contract** (one token per agent seat — identity is the promotion fuel), solo mode, the vendorable `hive/client.py`, Codex registration, framework recipes | — |
 
 ## Headline
 
