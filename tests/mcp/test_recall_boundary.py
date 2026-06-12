@@ -93,8 +93,10 @@ def test_recall_framed_as_reference_context_not_instructions():
     assert env["abstained"] is False
     hit = env["reference_context"][0]
     # trust + ts are the additive lifecycle labels (consumers discount provisional
-    # content and order coexisting versions by them)
-    assert set(hit) == {"episode_id", "text", "sim", "content_hash", "trust", "ts"}
+    # content and order coexisting versions by them); credit is the outcome-ledger
+    # annotation (wins/losses per memory)
+    assert set(hit) == {"episode_id", "text", "sim", "content_hash", "trust", "ts",
+                        "credit"}
 
 
 def test_recall_trace_id_present_on_hit_and_abstain():
@@ -112,3 +114,63 @@ def test_recall_envelope_uses_trace_id_key_not_request_id():
     env = content(tool_call(server, "hive_recall", {"query": "x"}))
     assert "trace_id" in env
     assert "request_id" not in env                         # the rename is pinned
+
+
+# ── credit annotation: the outcome-ledger consumer (non-load-bearing) ───────────
+def test_recall_hits_carry_credit_counts():
+    server, _ = build_real_server()
+    eid = write_text(server, "a credited memory")["id"]
+    server.recall = _StubRecall(_confident(eid, "a credited memory"))
+    env0 = content(tool_call(server, "hive_recall", {"query": "q"}))
+    assert env0["reference_context"][0]["credit"] == {"wins": 0, "losses": 0}
+    server.store.record_outcome(commit_sha="c1", episode_id=eid, trace_id="T-abc",
+                                repo="o/r", outcome="win", recall_margin=0.4,
+                                commit_ts=100, ingested_ts=200)
+    server.store.record_outcome(commit_sha="c2", episode_id=eid, trace_id="T-abc",
+                                repo="o/r", outcome="loss", recall_margin=0.4,
+                                commit_ts=110, ingested_ts=210)
+    env = content(tool_call(server, "hive_recall", {"query": "q"}, req_id=2))
+    assert env["reference_context"][0]["credit"] == {"wins": 1, "losses": 1}
+    # ranking inputs are untouched — credit is an annotation, not a reorder
+    assert env["reference_context"][0]["sim"] == env0["reference_context"][0]["sim"]
+
+
+def test_recall_store_without_stats_method_omits_credit_field():
+    # feature-probe degrade: a store double without the ledger method (fakes,
+    # older builds) yields hits WITHOUT the field — never an error, never {}.
+    server, _ = build_real_server()
+    eid = write_text(server, "plain memory")["id"]
+    server.recall = _StubRecall(_confident(eid, "plain memory"))
+
+    class _NoStats:
+        def __init__(self, inner):
+            self._inner = inner
+
+        def __getattr__(self, name):
+            if name == "outcome_stats_for_episodes":
+                raise AttributeError(name)
+            return getattr(self._inner, name)
+
+    server.store = _NoStats(server.store)
+    env = content(tool_call(server, "hive_recall", {"query": "q"}))
+    hit = env["reference_context"][0]
+    assert "credit" not in hit
+    assert env["abstained"] is False                       # recall itself unharmed
+
+
+def test_recall_stats_raising_logs_omits_field_recall_succeeds():
+    # present-but-raising: the fault is logged and the FIELD is omitted — the
+    # recall envelope still returns its hits (never a blanket except masking wiring).
+    server, _ = build_real_server()
+    eid = write_text(server, "fragile ledger memory")["id"]
+    server.recall = _StubRecall(_confident(eid, "fragile ledger memory"))
+
+    def boom(_ids):
+        raise RuntimeError("ledger probe blew up")
+
+    server.store.outcome_stats_for_episodes = boom         # instance attr shadows
+    env = content(tool_call(server, "hive_recall", {"query": "q"}))
+    hit = env["reference_context"][0]
+    assert "credit" not in hit                             # omitted, never partial
+    assert env["abstained"] is False
+    assert hit["episode_id"] == eid

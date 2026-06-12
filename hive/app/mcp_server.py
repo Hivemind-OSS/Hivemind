@@ -362,6 +362,24 @@ class HiveMCPServer:
             hits.append({"episode_id": h.episode_id, "text": h.text,
                          "sim": float(h.sim), "content_hash": ep.content_hash,
                          "trust": h.trust, "ts": h.ts})
+        # credit annotation: the outcome ledger's (wins, losses) per surviving hit.
+        # A getattr feature-probe — absent on fakes/older stores ⇒ no field; present
+        # but raising ⇒ log + omit the field on EVERY hit (the try wraps only the
+        # probe, never the envelope build — a blanket except would mask wiring).
+        # Annotation only: ranking stays untouched (the utility flip is keystone-gated).
+        stats_fn = getattr(self.store, "outcome_stats_for_episodes", None)
+        if stats_fn is not None and hits:
+            stats = None
+            try:
+                stats = stats_fn([h["episode_id"] for h in hits])
+            except Exception:                                # noqa: BLE001 — annotation only
+                _log.warning("mcp.recall_credit_probe_failed", extra={
+                    "event": "mcp.recall_credit_probe_failed",
+                    "trace_id": result.trace_id}, exc_info=True)
+            if stats is not None:
+                for h in hits:
+                    w, losses = stats.get(h["episode_id"], (0, 0))
+                    h["credit"] = {"wins": int(w), "losses": int(losses)}
         # an empty post-belt set is an ABSTAIN, never a confident-empty (never-hallucinate)
         abstained = (result.state != CONFIDENT) or (not hits)
         env: dict = {"reference_context": hits, "abstained": abstained,
