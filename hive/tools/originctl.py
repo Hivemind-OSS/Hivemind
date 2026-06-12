@@ -23,12 +23,16 @@ with no brain runtime installed; the store imports live inside ``main``.
 """
 from __future__ import annotations
 
+import argparse
 import json
+import os
 import re
+import sys
+import time
 import urllib.error
 import urllib.request
 from datetime import datetime, timezone
-from typing import Any, Callable, Iterator, Mapping, Optional, Sequence
+from typing import Any, Callable, Iterator, Mapping, Optional, Sequence, TextIO
 
 # The trailer convention v2: ``<key>: <trace32hex> <episode_id> [...]`` — the agent
 # names ONLY the memories that materially shaped the committed code. The key is
@@ -261,3 +265,100 @@ def scan_github(repo: str, *, token: Optional[str], now: int,
     s["loss_rows"] = len(losses)
     s["credit_groups"] = sum(len(w["credits"]) for w in wins)
     return wins + losses, s
+
+
+def ingest(store: Any, rows: Sequence[Mapping[str, Any]], *, now: int) -> dict:
+    """Land one scan batch: win rows FIRST (claimed ∩ served per trace — only
+    memories the named trace actually exposed can be credited, with the REAL
+    recall_margin recovered from the exposure row), then loss rows (one-way
+    ``settle_loss`` flips). Win-before-loss ordering + the PK-scoped DO-NOTHING
+    insert + the one-way flip keep the ledger MONOTONE under stateless hourly
+    rescans — a merge+revert arriving in one batch settles loss, and a later
+    re-scan re-offering the win cannot resurrect it. Unknown traces and unserved
+    claims are counted, written nowhere. // O(rows · credit-set size)."""
+    wins_ingested = duplicates = unknown = unserved = losses_flipped = 0
+    win_rows = [r for r in rows if r.get("kind") == "win"]
+    loss_rows = [r for r in rows if r.get("kind") == "loss"]
+    for row in win_rows:
+        for group in row.get("credits", ()):
+            trace_id = str(group.get("trace_id", ""))
+            served = dict(store.exposures_by_trace(trace_id))
+            if not served:
+                unknown += 1
+                continue
+            for eid in group.get("episode_ids", ()):
+                if int(eid) not in served:
+                    unserved += 1          # claimed but never served on this trace
+                    continue
+                landed = store.record_outcome(
+                    commit_sha=str(row["commit_sha"]), episode_id=int(eid),
+                    trace_id=trace_id, repo=row.get("repo"),
+                    outcome="win", recall_margin=float(served[int(eid)]),
+                    commit_ts=int(row["commit_ts"]), ingested_ts=int(now))
+                if landed:
+                    wins_ingested += 1
+                else:
+                    duplicates += 1
+    for row in loss_rows:
+        losses_flipped += int(store.settle_loss(str(row["commit_sha"]),
+                                                ts=int(now)))
+    return {"wins_ingested": wins_ingested, "duplicates": duplicates,
+            "unknown_traces": unknown, "unserved_claims": unserved,
+            "losses_flipped": losses_flipped, "totals": store.outcome_totals()}
+
+
+def main(argv: Optional[list[str]] = None, *, env: Optional[Mapping[str, str]] = None,
+         connect_fn: Optional[Callable[[str], Any]] = None,
+         out: Optional[TextIO] = None, stdin: Optional[TextIO] = None) -> int:
+    """The container-side entry: read NDJSON rows, land the batch, print ONE JSON
+    report line to stdout (machine-parseable; diagnostics go to stderr). db_path
+    resolves from --db / $HIVE_STORE__DB_PATH and FAILS FAST if absent — the
+    authctl contract exactly. // O(rows)."""
+    env = os.environ if env is None else env
+    out = out if out is not None else sys.stdout
+    stdin = stdin if stdin is not None else sys.stdin
+
+    parser = argparse.ArgumentParser(
+        prog="hive.tools.originctl",
+        description="Ingest win/loss credit rows (NDJSON) into task_outcomes.")
+    parser.add_argument("--db", default=None,
+                        help="SQLite store path (default: $HIVE_STORE__DB_PATH)")
+    sub = parser.add_subparsers(dest="cmd", required=True)
+    p_ingest = sub.add_parser("ingest", help="read NDJSON rows and land win/loss credit")
+    p_ingest.add_argument("--ndjson", default="-", help="rows file, or - for stdin")
+    args = parser.parse_args(argv)
+
+    db_path = (args.db or env.get("HIVE_STORE__DB_PATH") or "").strip()
+    if not db_path:
+        print("originctl: --db or $HIVE_STORE__DB_PATH is required", file=sys.stderr)
+        return EX_CONFIG
+
+    # Container-side imports, deliberately NOT module-level: the host CLI imports
+    # this module for the scan half and must not pull the brain runtime (numpy et al).
+    from hive.adapters.sqlite_db import connect
+    from hive.adapters.store_sqlite import SqliteEpisodeStore
+
+    store = SqliteEpisodeStore((connect_fn or connect)(db_path))
+
+    fh = stdin if args.ndjson == "-" else open(args.ndjson, encoding="utf-8")
+    rows: list[dict] = []
+    try:
+        for lineno, line in enumerate(fh, 1):
+            if not line.strip():
+                continue
+            try:
+                rows.append(json.loads(line))
+            except ValueError:
+                print(f"originctl: bad NDJSON on line {lineno}", file=sys.stderr)
+                return EX_SOFTWARE
+    finally:
+        if fh is not stdin:
+            fh.close()
+
+    report = ingest(store, rows, now=int(time.time()))
+    print(json.dumps(report, sort_keys=True), file=out)
+    return EX_OK
+
+
+if __name__ == "__main__":  # pragma: no cover — module entry (`python -m hive.tools.originctl`)
+    raise SystemExit(main(sys.argv[1:]))

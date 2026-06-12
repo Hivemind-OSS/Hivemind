@@ -311,3 +311,117 @@ def test_scan_raises_loud_on_api_error_status():
     with pytest.raises(originctl.GithubApiError) as ei:
         _scan(routes)
     assert ei.value.status == 404
+
+
+# ── ingest: claimed ∩ served, idempotent, monotone under rescans ────────────────
+
+
+@pytest.fixture()
+def store():
+    from hive.adapters.sqlite_db import connect
+    from hive.adapters.store_sqlite import SqliteEpisodeStore
+    return SqliteEpisodeStore(connect(":memory:"))
+
+
+def _win(sha="a1", traces=((TRACE_A, (3, 4)),), ts=100):
+    return {"kind": "win", "commit_sha": sha, "commit_ts": ts, "repo": "o/r",
+            "credits": [{"trace_id": t, "episode_ids": list(e)} for t, e in traces]}
+
+
+def _loss(sha="a1", ts=110):
+    return {"kind": "loss", "commit_sha": sha, "commit_ts": ts, "repo": "o/r"}
+
+
+def test_ingest_credits_claimed_intersect_served_with_real_margin(store):
+    store.record_exposure(TRACE_A, [(3, 0.9), (4, 0.2)], agent_id="a", ts=50)
+    # claims 3 (served on this trace) + 99 (never served) — only the intersection lands
+    report = originctl.ingest(store, [_win(traces=((TRACE_A, (3, 99)),))], now=200)
+    assert report["wins_ingested"] == 1
+    assert report["unserved_claims"] == 1
+    rows = store.conn.execute(
+        "SELECT episode_id, outcome, recall_margin, repo FROM task_outcomes").fetchall()
+    assert [(r["episode_id"], r["outcome"]) for r in rows] == [(3, "win")]
+    assert rows[0]["recall_margin"] == 0.9        # the REAL margin, from the exposure row
+    assert rows[0]["repo"] == "o/r"
+
+
+def test_ingest_unknown_trace_counted_not_written(store):
+    report = originctl.ingest(store, [_win(traces=((TRACE_B, (5,)),))], now=200)
+    assert report["unknown_traces"] == 1 and report["wins_ingested"] == 0
+    n = store.conn.execute("SELECT COUNT(*) AS c FROM task_outcomes").fetchone()["c"]
+    assert n == 0
+
+
+def test_ingest_idempotent_reingest_counts_duplicates(store):
+    store.record_exposure(TRACE_A, [(3, 0.9), (4, 0.2)], agent_id="a", ts=50)
+    r1 = originctl.ingest(store, [_win()], now=200)
+    assert r1["wins_ingested"] == 2 and r1["duplicates"] == 0
+    r2 = originctl.ingest(store, [_win()], now=300)            # hourly re-scan, same rows
+    assert r2["wins_ingested"] == 0 and r2["duplicates"] == 2
+    n = store.conn.execute("SELECT COUNT(*) AS c FROM task_outcomes").fetchone()["c"]
+    assert n == 2
+
+
+def test_merge_and_revert_in_one_batch_wins_land_then_flip(store):
+    store.record_exposure(TRACE_A, [(3, 0.9)], agent_id="a", ts=50)
+    # loss FIRST in row order: ingest must process wins before losses regardless
+    report = originctl.ingest(store, [_loss("a1"), _win("a1", traces=((TRACE_A, (3,)),))],
+                              now=200)
+    assert report["wins_ingested"] == 1 and report["losses_flipped"] == 1
+    row = store.conn.execute("SELECT outcome FROM task_outcomes").fetchone()
+    assert row["outcome"] == "loss"
+
+
+def test_monotone_win_then_loss_then_reingested_win_stays_loss(store):
+    # the CV6-gap pin: a revert arriving AFTER the win's ingest settles it loss; the
+    # next stateless re-scan re-offering the same win cannot resurrect it.
+    store.record_exposure(TRACE_A, [(3, 0.9)], agent_id="a", ts=50)
+    originctl.ingest(store, [_win("a1", traces=((TRACE_A, (3,)),))], now=200)
+    r2 = originctl.ingest(store, [_loss("a1")], now=300)
+    assert r2["losses_flipped"] == 1
+    r3 = originctl.ingest(store, [_win("a1", traces=((TRACE_A, (3,)),))], now=400)
+    assert r3["wins_ingested"] == 0 and r3["duplicates"] == 1
+    row = store.conn.execute("SELECT outcome FROM task_outcomes").fetchone()
+    assert row["outcome"] == "loss"
+
+
+def test_loss_for_uncredited_sha_flips_nothing(store):
+    report = originctl.ingest(store, [_loss("nothere")], now=200)
+    assert report["losses_flipped"] == 0
+    assert report["totals"] == {"settled_rows": 0, "distinct_episodes": 0}
+
+
+# ── the module entry (`python -m hive.tools.originctl ingest --ndjson -`) ───────
+
+
+def test_main_ingest_reads_ndjson_stdin_reports_json(tmp_path):
+    import io
+    from hive.adapters.sqlite_db import connect
+    from hive.adapters.store_sqlite import SqliteEpisodeStore
+    db = str(tmp_path / "shared.db")
+    SqliteEpisodeStore(connect(db)).record_exposure(
+        TRACE_A, [(3, 0.9)], agent_id="a", ts=50)
+    ndjson = json.dumps(_win(traces=((TRACE_A, (3,)),))) + "\n"
+    out = io.StringIO()
+    rc = originctl.main(["ingest", "--ndjson", "-"],
+                        env={"HIVE_STORE__DB_PATH": db},
+                        stdin=io.StringIO(ndjson), out=out)
+    assert rc == originctl.EX_OK
+    report = json.loads(out.getvalue())
+    assert report["wins_ingested"] == 1
+    assert report["totals"]["settled_rows"] == 1
+
+
+def test_main_missing_db_is_config_error():
+    import io
+    rc = originctl.main(["ingest", "--ndjson", "-"], env={},
+                        stdin=io.StringIO(""), out=io.StringIO())
+    assert rc == originctl.EX_CONFIG
+
+
+def test_main_bad_ndjson_is_software_error():
+    import io
+    rc = originctl.main(["ingest", "--ndjson", "-"],
+                        env={"HIVE_STORE__DB_PATH": ":memory:"},
+                        stdin=io.StringIO("{not json\n"), out=io.StringIO())
+    assert rc == originctl.EX_SOFTWARE
