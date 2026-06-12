@@ -25,7 +25,9 @@ import uuid
 from typing import Callable, Optional, Sequence
 
 from hive.domain.fusion import rrf_fuse
-from hive.domain.lifecycle import is_servable
+from hive.domain.lifecycle import (
+    ESTABLISHED, PROVISIONAL, _cosine, is_servable,
+)
 from hive.domain.models import (
     CONFIDENT, AgentContext, Episode, RecallHit, RecallResult, Scored,
 )
@@ -143,6 +145,46 @@ class NormalizedEntropyGate:
             return (True, 1.0, 0.0)
 
 
+# ── CV3 version shadowing: a pure post-resolve dedup (default OFF) ─────────────
+# Trust rank for the winner pick. Anything outside the two servable states ranks
+# lowest (the resolve belt should have dropped it; rank-defensive, not load-bearing).
+_TRUST_RANK = {ESTABLISHED: 1, PROVISIONAL: 0}
+
+
+def shadow_filter(episodes: Sequence[Episode], *,
+                  shadow_tau: float) -> list[Episode]:
+    """Within ONE confident shortlist: of any pair with pairwise
+    cosine(value_i, value_j) >= shadow_tau, only the WINNER serves — higher
+    trust rank (established > provisional: a newer unverified capture must not
+    hide a human-vouched row); tie → newer ``ts``; tie → lower ``episode_id``
+    (stable). Cosines use the value vectors already on the resolved carrier;
+    an absent / non-finite / zero-norm vector is UNDECIDABLE — it never shadows
+    and is never shadowed (fail-open = serve both, the status quo). Survivors
+    keep input order. Pure, total.  // O(k²·d), k ≤ recall_top_n."""
+    if len(episodes) < 2:
+        return list(episodes)
+    order = sorted(range(len(episodes)),
+                   key=lambda i: (-_TRUST_RANK.get(episodes[i].trust, -1),
+                                  -int(episodes[i].ts), int(episodes[i].id)))
+    kept_idx: list[int] = []
+    for i in order:                       # winners first: a kept row shadows losers
+        vec = episodes[i].value
+        is_shadowed = False
+        if vec is not None:
+            for j in kept_idx:
+                kv = episodes[j].value
+                if kv is None:
+                    continue
+                c = _cosine(vec, kv)      # None = undecidable ⇒ never shadows
+                if c is not None and c >= shadow_tau:
+                    is_shadowed = True
+                    break
+        if not is_shadowed:
+            kept_idx.append(i)
+    keep = set(kept_idx)
+    return [ep for i, ep in enumerate(episodes) if i in keep]
+
+
 # ── query → family (A2): the SOLE owner of the live query's family_scope ──────
 def _resolve_query_family(ctx: AgentContext) -> str:
     """Byte-identical grammar to the producer's link-time family_scope (§11):
@@ -170,6 +212,8 @@ class RecallPipeline:
         autonomy_enabled: bool = True,
         lexical_index: Optional[LexicalIndex] = None,
         hybrid_enabled: bool = False,
+        shadow_enabled: bool = False,
+        shadow_tau: float = 0.95,
     ) -> None:
         self.embedder = embedder
         self.index = index
@@ -197,6 +241,12 @@ class RecallPipeline:
         # and the port is never called.
         self.lexical_index = lexical_index
         self.hybrid_enabled = bool(hybrid_enabled)
+        # CV3 serve-time version shadowing: OFF by default and byte-inert when
+        # off (golden-tested). The filter is the LAST transform before the
+        # surfacer, so it dedups what is actually served regardless of which
+        # upstream channels (dense / RRF / rerank) produced the shortlist.
+        self.shadow_enabled = bool(shadow_enabled)
+        self.shadow_tau = float(shadow_tau)
 
     def recall(self, query: str, *, agent_id: str,
                agent_ctx: AgentContext) -> RecallResult:
@@ -304,6 +354,22 @@ class RecallPipeline:
                            "(fail-closed) trace=%s", trace_id)
                 self._note_non_answer(query, value_q, agent_id, "no_match")
                 return RecallResult.empty(trace_id)
+
+            # CV3 shadowing — at RESOLVE, BEFORE margins/surfacing/exposure: a
+            # shadowed row's liveness is never refreshed by the query that hid
+            # it (the lapse-resurrection ordering rule, applied forward). The
+            # winner always survives, so a non-empty resolved set stays
+            # non-empty. A filter fault serves UNFILTERED (status quo, fail-
+            # open) — never EMPTY: the gate already ruled this field confident.
+            if self.shadow_enabled and len(resolved) > 1:
+                try:
+                    kept = {e.id for e in shadow_filter(
+                        [ep for _s, _m, ep in resolved],
+                        shadow_tau=self.shadow_tau)}
+                    resolved = [r for r in resolved if r[2].id in kept]
+                except Exception as exc:           # noqa: BLE001 — serve both
+                    _log.warning("shadow filter failure (trace=%s): %r — "
+                                 "serving unfiltered", trace_id, exc)
 
             # D1 margins over the RETURNED set, taken in MASS-DESCENDING order: the
             # shortlist may be fusion-reordered (non-monotone masses), and a gap over

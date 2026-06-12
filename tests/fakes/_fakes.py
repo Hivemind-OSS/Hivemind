@@ -124,12 +124,14 @@ class FakeIndex:
 
 def make_episode(episode_id: int, text: str, weight: float = 1.0,
                  *, status: str = "approved", trust: Optional[str] = None,
-                 last_active_ts: int = 0, ts: int = 0) -> Episode:
+                 last_active_ts: int = 0, ts: int = 0,
+                 value: Optional[np.ndarray] = None) -> Episode:
     """A valid (self-asserting) Episode for resolve-seam tests — content_hash binds
     text. An approved episode defaults to trust='established' (mirroring the real
     store, where the human-vouched flip stamps established); pass ``trust`` to model
-    provisional/quarantined rows. ``value`` is None (the recall pipeline reads only
-    text + weight + labels off a resolved episode, never the vector)."""
+    provisional/quarantined rows. ``value`` defaults to None (margin/surface tests
+    read only text + weight + labels); the CV3 shadow tests pass the vector — the
+    real store's get_episode always populates it."""
     approved = status == "approved"
     if trust is None:
         trust = "established" if approved else "quarantined"
@@ -140,6 +142,7 @@ def make_episode(episode_id: int, text: str, weight: float = 1.0,
         approved_by="approver" if approved else None,
         approved_ts=0 if approved else None, version=0,
         trust=trust, last_active_ts=int(last_active_ts),
+        value=None if value is None else np.asarray(value, dtype=np.float32),
     )
 
 
@@ -148,8 +151,9 @@ class FakeEpisodeReader:
     def __init__(self) -> None:
         self._by_id: dict[int, Episode] = {}
 
-    def add(self, episode_id: int, text: str, weight: float = 1.0) -> Episode:
-        ep = make_episode(episode_id, text, weight)
+    def add(self, episode_id: int, text: str, weight: float = 1.0,
+            **episode_kwargs) -> Episode:
+        ep = make_episode(episode_id, text, weight, **episode_kwargs)
         self._by_id[int(episode_id)] = ep
         return ep
 

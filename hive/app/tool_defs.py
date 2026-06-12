@@ -73,7 +73,9 @@ TOOL_DEFINITIONS: list[dict] = [
     {"name": "hive_health",
      "description": "Cheap liveness/identity snapshot (+ trust_counts, n_misses_7d). "
                     "Fail-closed {ok:false,error,db_path} on a probe failure. "
-                    "include_gaps=true adds the clustered demand-gap report. "
+                    "include_gaps=true adds the clustered demand-gap report + the "
+                    "contested-memory report (servable rows recent misses cluster "
+                    "against — the supersession-review queue). "
                     "embedder_loaded gates the container HEALTHCHECK.",
      "inputSchema": {"type": "object", "required": [],
                      "properties": {"repo_path": {"type": "string"},

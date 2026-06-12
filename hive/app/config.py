@@ -100,8 +100,13 @@ class RecallConfig:
     epsilon_explore: float = 0.1          # [A4] guardrail-1 — the ONE validated ε (>0)
     softmax_beta: float = 16.0            # gate mass temperature (β>0)
     hybrid: bool = False                  # lexical(FTS5)+RRF channel; flips only on channel_eval CI evidence
+    shadow: bool = False                  # CV3 serve-time version shadowing; OFF ⇒ byte-identical (golden)
+    shadow_tau: float = 0.95              # pairwise cosine at/above which the loser is hidden
 
     def __post_init__(self) -> None:
+        if not (math.isfinite(self.shadow_tau) and 0.0 < self.shadow_tau <= 1.0):
+            raise ValueError(
+                f"recall.shadow_tau must be finite in (0, 1] (got {self.shadow_tau})")
         if not (0.0 < self.H_frac_max <= 1.0):
             raise ValueError(
                 f"recall.H_frac_max must be in (0.0, 1.0] (the never-hallucinate floor; "
@@ -169,6 +174,9 @@ class AutonomyConfig:
     # diversity clause for elapsed-span demand. Operator-set env, NOT client-gameable.
     solo_mode: bool = False
     solo_min_span_days: int = 1     # first-to-last matched-miss span required to promote
+    # CV3 contested-memory report: a miss cluster whose representative sits this
+    # close to a SERVABLE row marks that row contested (supersession-review queue).
+    contested_tau: float = 0.80
 
     def __post_init__(self) -> None:
         for name in ("demand_m", "demand_window_days",
@@ -178,7 +186,7 @@ class AutonomyConfig:
             v = getattr(self, name)
             if int(v) < 1:
                 raise ValueError(f"autonomy.{name} must be >= 1 (got {v})")
-        for name in ("demand_tau", "competitor_tau"):
+        for name in ("demand_tau", "competitor_tau", "contested_tau"):
             v = getattr(self, name)
             if not (math.isfinite(v) and 0.0 < v <= 1.0):
                 raise ValueError(f"autonomy.{name} must be finite in (0, 1] (got {v})")
@@ -420,6 +428,7 @@ RELOAD_TIER: dict[str, str] = {
     "runtime.tenant_id": "C",
     "autonomy.enabled": "C",        # flips tool behavior + trigger wiring → restart
     "recall.hybrid": "C",           # changes index wiring + the read path → restart
+    "recall.shadow": "C",           # changes serve output of an existing store → restart
     # B — hot-swappable live
     "autonomy.demand_m": "B",
     "autonomy.demand_window_days": "B",
@@ -432,6 +441,8 @@ RELOAD_TIER: dict[str, str] = {
     "autonomy.survival_min_exposures": "B",
     "autonomy.solo_mode": "B",
     "autonomy.solo_min_span_days": "B",
+    "autonomy.contested_tau": "B",
+    "recall.shadow_tau": "B",
     "recall.H_frac_max": "B",
     "recall.epsilon_explore": "B",
     "recall.softmax_beta": "B",

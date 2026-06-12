@@ -37,7 +37,7 @@ import sys
 from dataclasses import dataclass
 from typing import Any, Callable, Mapping, Optional
 
-from hive.app.gaps import cluster_misses
+from hive.app.gaps import cluster_misses, contested_misses
 from hive.app.onboard import (
     ONBOARDING_MANIFEST_VERSION, onboarding_hint, provenance_banner,
 )
@@ -448,6 +448,14 @@ class HiveMCPServer:
                 snap["solo_hint"] = hint
             if args.get("include_gaps"):
                 snap["gaps"] = self._gap_report()
+                contested = self._contested_report()         # CV3: the review queue
+                if contested:
+                    snap["contested"] = contested
+                    snap["contested_note"] = (
+                        "repeated abstains near a servable row = near-dups or a "
+                        "contradiction inside the store; repeated re-asks = the "
+                        "served content isn't satisfying — review and resolve "
+                        "with one hive_write(replaces=<episode_id>)")
             if repo_path is not None:
                 linked, link = self._link_status(repo_path)
                 snap["linked"] = linked
@@ -507,6 +515,23 @@ class HiveMCPServer:
         except Exception:                                    # noqa: BLE001 — telemetry only
             _log.warning("mcp.gap_report_failed", extra={
                 "event": "mcp.gap_report_failed"}, exc_info=True)
+            return []
+
+    def _contested_report(self) -> list[dict]:
+        """CV3: servable rows the window's misses cluster against (cosine ≥
+        contested_tau) — the mechanical supersession-review queue. Probes the
+        live servable index once per CLUSTER. Degrades to [] on any fault."""
+        try:
+            window_s = int(self.autonomy.demand_window_days) * _DAY_S
+            rows = self.store.misses_detail_window(int(self.now()) - window_s)
+            return contested_misses(
+                rows, tau=float(self.autonomy.demand_tau),
+                contested_tau=float(getattr(self.autonomy, "contested_tau", 0.80)),
+                search=self.recall.index.search,
+                get_episode=self.store.get_episode)
+        except Exception:                                    # noqa: BLE001 — telemetry only
+            _log.warning("mcp.contested_report_failed", extra={
+                "event": "mcp.contested_report_failed"}, exc_info=True)
             return []
 
     def _db_size(self) -> int:

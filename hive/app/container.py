@@ -255,7 +255,9 @@ def build_container(cfg: Config, *, tenant_id: str, agent_id: str,
         # the store IS the lexical adapter (the reader=store/ledger=store idiom);
         # OFF keeps the pipeline byte-inert with no handle to reach the channel.
         lexical_index=store if cfg.recall.hybrid else None,
-        hybrid_enabled=cfg.recall.hybrid)
+        hybrid_enabled=cfg.recall.hybrid,
+        shadow_enabled=cfg.recall.shadow,
+        shadow_tau=cfg.recall.shadow_tau)
     admission = AdmissionService(store, scanner, embedder, now=clock.now,
                                  lifecycle=lifecycle, autonomy_enabled=aut.enabled)
 
