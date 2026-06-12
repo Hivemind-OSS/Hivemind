@@ -2156,3 +2156,59 @@ Sibling calls recorded in the plan: **D-V4** (FTS maintained always when availab
 `fts_enabled=False` — silent with hybrid off, boot fail-fast with hybrid on) and **D-V5** (no registry
 seam, no `lexical_backend`/`rrf_k` config — one conceivable backend is not a swap axis; `rrf_k=60` is
 the canonical zero-tune code constant; lexical depth = `recall_top_n`, symmetric with dense).
+
+---
+
+## D10. Fleet convergence (2026-06-11 — `docs/PLANS/CONVERGENCE-PLAN.md`, CV1–CV5 landed; CV6 pending ADMIN-CLI)
+
+Closes the four gaps between the landed autonomous store and the fleet vision: reach (codex +
+vendorable stdlib client + the seat-token contract), the completed mechanical trust ladder
+(survival-establish), mechanical self-correction (serve-time shadowing OFF-default + the
+contested-memory report), the convergence KPI (windowed trends), and CI-gated entropy-gate
+self-calibration. Five design-twice calls:
+
+**D-C1 — solo mode: elapsed-span demand vs the cheaper/heavier alternatives.** A one-repo dev
+structurally cannot produce identity diversity (every miss is self-demand ⇒ the loop is inert).
+*Rejected:* a bare waiver of the diversity clause (deletes the only structural anti-gaming defense
+for no gain over the span clause); calendar-day buckets (`ts//86400` distinct-count — a
+midnight-straddling burst counts as two "days", the guard's one realistic bypass, and it diverges
+from SurvivalRule's span idiom); client-claimed sub-identities (one agent could forge diversity,
+breaking INV-2's point); a solo manifest variant (config-threaded wording churn the structural
+property makes unnecessary). *Chosen:* `autonomy.solo_mode` (operator env, default OFF) swaps the
+demand rule's diversity clause for ELAPSED `max(ts)−min(ts) ≥ solo_min_span_days·86400`;
+survival-establish keeps the identity key, so at solo scale `established` stays human-only —
+HITL held by structure. *Named trade:* a persistent multi-day injected attacker defeats the span;
+at solo scale that adversary defeats nearly everything, and the realistic failure (a runaway
+single-burst loop) stays blocked.
+
+**D-C2 — survival-establish lands in the SAME `established` state (risk accepted knowingly).**
+*Rejected:* a fourth servable trust state (`established_survival`) — splits the serving predicate
+and the consumer contract for an audit-level distinction. *Chosen:* one state; the audit row
+records `rule=survival`; the contested report keeps watching it; supersession stays the one-write
+correction. Spread defaults (2 non-writer identities / 14d span / 5 exposures) make a 3-seat
+fleet the establishment minimum — 2-seat fleets top out at provisional (served, labeled).
+
+**D-C3 — shadowing is serve-time suppression at RESOLVE, never state change.** *Rejected:*
+filtering after exposure (the headline ordering mutation: a hidden row's liveness would be
+refreshed by the very query that hid it — the lapse-resurrection rule, applied forward);
+newest-wins (a fresh unverified capture must not hide a human-vouched row). *Chosen:* pure
+post-resolve filter, trust-rank-first then newer-ts then lower-id, OFF by default behind a golden
+byte-stability test (hits AND ledger side effects); shadowing grants no retirement power.
+
+**D-C4 — the lifecycle store surface stays duck-typed (deviation from plan §4.4 "ports",
+built-decision-wins).** `survival_candidates`/`exposures_for` follow the landed
+`quarantined_candidates`/`sweep_decayed` precedent: LifecycleService composes a duck-typed store
+by design, and the two methods are an episodes×exposure JOIN that fits no existing Protocol
+(widening ExposureLedger would bolt trust-state knowledge onto the recall write seam).
+Conformance is held by behavior tests on the REAL adapter (tests/store) plus a semantics-mirroring
+fake in the domain tests — the protocol-widening failure mode (fake-only conformance) is covered
+without a decorative Protocol.
+
+**D-C5 — trends/gate_eval measure coverage, never outcomes; no scheduler anywhere.** The
+demand-entropy KPI (H/ln C over miss-cluster mass) + confident_rate are coverage proxies computed
+at report time over existing tables; outcome ground truth stays CV6's job (host-side
+`hive credit` git scan → the dormant task_outcomes → the keystone gate), which lands only after
+ADMIN-CLI ships the CLI dispatch surface — the server still never reads repos (the locked CV6
+boundary). gate_eval recommends a (`H_frac_max`, `softmax_beta`) change only on paired-bootstrap
+`lo > 0` over replay-derived labels (a row must PREDATE the miss to label it); the flip stays
+operator-applied (tier B).

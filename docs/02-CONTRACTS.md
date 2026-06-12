@@ -117,6 +117,95 @@ tier B; taus finite in (0,1], counts ≥ 1).
 
 ---
 
+## §0b — Fleet-convergence delta (2026-06-11, CONVERGENCE-PLAN CV1–CV5 — additive over §0)
+
+### §0b.1 The complete mechanical trust ladder (CV2 adds the second rung)
+
+```
+            hive_capture            DemandRule (landed)             SurvivalRule (CV2)
+  agent ──► QUARANTINED ──demand──► PROVISIONAL ──survival-spread──► ESTABLISHED
+                 │ TTL 14d               │ TTL 45d (exposure-refreshed)    │ never decays
+                 ▼                       ▼                                 ▼ human supersession only
+             DEPRECATED ◄────────────────┘                  hive_write(replaces=) ──► DEPRECATED
+```
+
+`SurvivalRule.decide(writer, exposures, now)` (pure, total): establish IFF ≥ `survival_e`
+distinct identities − {writer} (the same anti-gaming key as demand) AND ≥
+`survival_min_exposures` exposures AND first-to-last span ≥ `survival_days` (inclusive).
+Evaluated ONLY inside `LifecycleService.sweep` (decay first; window = the provisional
+liveness horizon); an establishment is `set_trust(ESTABLISHED)` + ONE `establish` audit row
+(`evidence_events.kind` enum gains `establish`). Defaults `survival_e=2 / survival_days=14 /
+survival_min_exposures=5`: establishment needs a 3-seat fleet minimum; 2-seat fleets keep
+content provisional (served, labeled). Risk accepted (01-DECISIONS D-C2): same `established`
+state, audit row records `rule=survival`, contested report watches it, supersession stays the
+cheap correction.
+
+**Lifecycle store surface (duck-typed, the `quarantined_candidates` precedent — deliberately
+NOT a Protocol; behavior-tested on the real adapter):**
+
+```python
+def survival_candidates(self, *, since_ts: int, min_exposures: int) -> list[tuple[int, str]]:
+    # (episode_id, proposed_by) of PROVISIONAL rows with >= min_exposures exposures
+    # STRICTLY after since_ts — ONE aggregate (JOIN…GROUP BY…HAVING), never N+1.
+def exposures_for(self, episode_id: int, *, since_ts: int) -> list[ExposureRow]: ...
+    # ExposureRow(agent_id, ts), ts-ascending; NULL agent_id coerces to ''.
+```
+
+### §0b.2 Solo mode (CV1 §3.5 — operator-consented, NOT client-gameable)
+
+`autonomy.solo_mode=true` (env, default OFF) swaps `DemandRule`'s diversity clause: distinct
+identity → **elapsed-span demand** (`max(ts) − min(ts)` over matched misses ≥
+`solo_min_span_days`·86400 — ELAPSED, never calendar-day buckets; a midnight-straddling burst
+never promotes; failure reason `solo_span`). All other clauses unchanged. Survival-establish
+is deliberately untouched ⇒ at solo scale `established` is reachable ONLY via `hive_write`
+(HITL held structurally). `hive_health` gains `solo_hint` when ≥ `demand_m` window misses
+all carry ≤ 1 identity while solo_mode is off (the stall self-describes).
+
+### §0b.3 hive_recall serve path (CV3, default OFF) + report envelopes (CV3/CV4)
+
+`recall.shadow=true` (tier C, default **OFF** ⇒ byte-identical, golden-tested): within one
+confident resolved shortlist, of any pair with pairwise cosine ≥ `recall.shadow_tau` (0.95)
+only the winner serves — trust rank (established > provisional), then newer `ts`, then lower
+id. Runs at RESOLVE **before** exposure (a shadowed row's liveness is never refreshed by the
+query that hid it); non-finite/absent vectors never shadow (fail-open = serve both); a filter
+fault serves unfiltered, never EMPTY.
+
+`hive_health(include_gaps=true)` additionally returns `contested` + a fixed `contested_note`:
+miss clusters probed ONCE per cluster against the servable index; clusters within
+`autonomy.contested_tau` (0.80) of a servable row group by that episode —
+`{episode_id, trust, miss_count, miss_types, last_seen}`, the supersession-review queue.
+
+`hive_health(include_trends=true)` (CV4) returns `{current, previous, deltas}` over two
+half-open 14d windows `(lo, hi]`: confident/abstain/no_match counts + `confident_rate`,
+`demand_entropy` (H/ln C over miss-cluster mass; 0 below 2 clusters; the convergence KPI:
+confident_rate ↑ AND demand_entropy ↓ with `dead_capture_ratio` bounded), promotion/
+establishment/supersession counts, `median_days_to_promotion` (None-safe),
+`dead_capture_ratio`, `est_tokens_served` (Σ len(text)//4). Report-time SQL over existing
+tables; no new table, no scheduler.
+
+### §0b.4 Reach (CV1): codex profile + the vendorable client envelope
+
+`hive_init.harness` enum gains `codex` (tier 1, AGENTS.md, MCP registration reference =
+operator-owned `~/.codex/config.toml`); every recipe playbook emits the seat-identity line
+(`--agent <repo-name>` stdio / one token per seat HTTP). `hive/client.py` (stdlib-only,
+vendorable, fence-tested) speaks the existing JSON-RPC `tools/call` envelope over POST +
+bearer; `recall()` returns `reference_context` VERBATIM (hit schema single-sourced in the
+server); every transport/auth/rpc/tool failure raises `HiveError` — never a partial dict.
+**One token per agent seat** is the documented operational contract: identity diversity is
+the promotion fuel (demand + survival both key on it).
+
+### §0b.5 Config delta
+
+`autonomy`: + `survival_e=2` · `survival_days=14` · `survival_min_exposures=5` ·
+`solo_mode=false` · `solo_min_span_days=1` · `contested_tau=0.80` (all tier B).
+`recall`: + `shadow=false` (tier **C**) · `shadow_tau=0.95` (tier B, finite in (0,1]).
+Dev-time (never imported by runtime): `hive/research/gate_eval.py` sweeps
+(`H_frac_max`, `softmax_beta`) over replay-labeled misses (a miss is a false abstain iff a
+row with `ts < miss.ts` sits at cosine ≥ `label_tau=0.80`); recommends ONLY on paired
+bootstrap `lo > 0`; the change stays operator-applied.
+
+---
+
 ## §1 — Consolidated SQLite schema (ONE WAL DB)
 
 All persistent state lives in **one** SQLite-WAL file on the one named volume (`/data/shared.db`), under the one single-writer `BEGIN IMMEDIATE` lane (ported `_begin_immediate_retrying`, `persistence.py:90`). Resolution **A7** collapses the separate `telemetry.db` sink: `exposure`, `task_outcomes`, and `utility` are all M03-owned tables in this DB, so the whole producer tick (associate → settle → clawback → emit → drain → posterior-write) is **one transaction**.

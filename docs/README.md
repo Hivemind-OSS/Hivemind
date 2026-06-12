@@ -28,6 +28,7 @@ reference, reviewed against the `software-design-review` (APOSD + agent-native) 
 - **Three swap seams** (the user mandate): `EmbeddingProvider`, `VectorIndex`, `OutcomeSource` — each swaps via one config key + one adapter file, core untouched.
 - **Tests are a first-class contract:** every module ships its test-first contract; the build plan is test-first per chunk with RULE-2 mutation checks; the four product invariants each have a dedicated test + mutation.
 - **The keystone:** move #6 (verifiable git-outcome credit) ships *observed-not-applied* in Phase 1; flipped into recall only if its §6.6 eval beats the recency/frequency baselines in Phase 2.
+- **Fleet convergence (2026-06-11, CV1–CV5):** the mechanical trust ladder is complete (demand → provisional → survival-spread → established; retirement of established stays human-only); **one token per agent seat** is the hard operational contract (identity diversity is the promotion fuel — solo escape hatch: `autonomy.solo_mode`); the **convergence KPI** lives in `hive_health(include_trends=true)`: `confident_rate` ↑ AND `demand_entropy` ↓ with `dead_capture_ratio` bounded. Reaching the hive from non-MCP agents: [`CLIENTS.md`](CLIENTS.md).
 
 ## What this deliverable does NOT do
 
