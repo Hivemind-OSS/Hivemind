@@ -66,3 +66,53 @@ def test_legacy_task_outcomes_shape_refused():
         "settle_at INTEGER NOT NULL, PRIMARY KEY(task_ref, trace_id))")
     with pytest.raises(RuntimeError):
         SqliteEpisodeStore(conn)
+
+
+# ── settle_loss: the one-way win→loss flip (revert settlement, monotone) ────────
+
+
+def test_settle_loss_flips_only_win_rows_for_that_sha(store):
+    store.record_outcome(**_row())                                    # abc123 / 7  win
+    store.record_outcome(**_row(episode_id=8))                        # abc123 / 8  win
+    store.record_outcome(**_row(commit_sha="def9"))                   # def9   / 7  win
+    assert store.settle_loss("abc123", ts=999) == 2                   # rowcount returned
+    flipped = store.conn.execute(
+        "SELECT outcome, ingested_ts FROM task_outcomes WHERE commit_sha='abc123'"
+    ).fetchall()
+    assert all(r["outcome"] == "loss" and r["ingested_ts"] == 999 for r in flipped)
+    other = store.conn.execute(
+        "SELECT outcome FROM task_outcomes WHERE commit_sha='def9'").fetchone()
+    assert other["outcome"] == "win"                                  # other shas untouched
+
+
+def test_settle_loss_is_one_way_idempotent(store):
+    store.record_outcome(**_row())
+    assert store.settle_loss("abc123", ts=300) == 1
+    assert store.settle_loss("abc123", ts=400) == 0                   # already loss → no flip
+    row = store.conn.execute(
+        "SELECT outcome, ingested_ts FROM task_outcomes").fetchone()
+    assert row["outcome"] == "loss"
+    assert row["ingested_ts"] == 300                                  # first flip's stamp kept
+
+
+def test_settle_loss_unknown_sha_flips_nothing(store):
+    store.record_outcome(**_row())
+    assert store.settle_loss("nothere", ts=1) == 0
+    row = store.conn.execute("SELECT outcome FROM task_outcomes").fetchone()
+    assert row["outcome"] == "win"
+
+
+# ── outcome_stats_for_episodes: (wins, losses) keyed eid, zero-default ──────────
+
+
+def test_outcome_stats_counts_wins_and_losses_per_episode(store):
+    store.record_outcome(**_row())                                    # 7 win
+    store.record_outcome(**_row(commit_sha="def9"))                   # 7 win
+    store.record_outcome(**_row(commit_sha="eee3", outcome="loss"))   # 7 loss
+    store.record_outcome(**_row(commit_sha="def9", episode_id=8, outcome="loss"))  # 8 loss
+    stats = store.outcome_stats_for_episodes([7, 8, 99])
+    assert stats == {7: (2, 1), 8: (0, 1), 99: (0, 0)}                # 99: zero-default
+
+
+def test_outcome_stats_empty_input_returns_empty(store):
+    assert store.outcome_stats_for_episodes([]) == {}

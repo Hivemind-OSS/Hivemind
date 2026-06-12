@@ -589,6 +589,39 @@ class SqliteEpisodeStore:
                  float(recall_margin), int(commit_ts), int(ingested_ts)))
             return cur.rowcount > 0
 
+    def settle_loss(self, commit_sha: str, *, ts: int) -> int:
+        """One-way win→loss flip for every credit row of one commit (a revert names
+        it). Returns the flip count. DO-NOTHING insert + this one-way flip keeps the
+        ledger MONOTONE under stateless hourly rescans: a revert arriving after the
+        win's ingest settles it, and a later re-scan re-inserting the win is ignored
+        by the PK — no win/loss oscillation. Rides the PK prefix. // O(rows per sha)."""
+        with tx(self.conn):
+            cur = self.conn.execute(
+                "UPDATE task_outcomes SET outcome='loss', ingested_ts=? "
+                "WHERE commit_sha=? AND outcome='win'", (int(ts), commit_sha))
+            return cur.rowcount
+
+    def outcome_stats_for_episodes(
+            self, episode_ids: Sequence[int]) -> dict[int, tuple[int, int]]:
+        """(wins, losses) per requested episode id, zero-default — every requested id
+        is present in the result so a consumer never KeyErrors on an uncredited
+        memory. Rides idx_task_outcomes_episode. // O(k) grouped lookup."""
+        out = {int(e): (0, 0) for e in episode_ids}
+        if not out:
+            return out
+        placeholders = ",".join("?" for _ in out)
+        for r in self.conn.execute(
+                f"SELECT episode_id, outcome, COUNT(*) AS c FROM task_outcomes "
+                f"WHERE episode_id IN ({placeholders}) GROUP BY episode_id, outcome",
+                tuple(out)):
+            wins, losses = out[int(r["episode_id"])]
+            if r["outcome"] == "win":
+                wins = int(r["c"])
+            else:
+                losses = int(r["c"])
+            out[int(r["episode_id"])] = (wins, losses)
+        return out
+
     def outcome_totals(self) -> dict:
         """Settled-credit totals for reports/status: row volume + distinct credited
         memories (the two readiness floor inputs). // O(n) scan, report-time only."""
