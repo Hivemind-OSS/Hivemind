@@ -422,17 +422,24 @@ trailer ("crediting not enabled in this build"). CV6 enables collection, changin
 ### 8.1 Host-side scan (`hive/tools/creditctl.py` NEW + one CLI verb `hive credit [path]`)
 
 ```python
-def scan_repo(repo_path: str, *, trailer_key: str, main_ref: str = "origin/main",
+def scan_repo(repo_path: str, *, trailer_key: str = "Hive-Trace",
+              main_ref: str | None = None,
               since: str | None = None, run: Run | None = None) -> list[OutcomeRow]:
     """git log --grep=<trailer_key>: --format=<NUL-delimited fields> (NEVER diff parsing —
     classify by format fields and rev-list ancestry, not content prefixes):
-      merged  := commit is ancestor of main_ref            → outcome 'win'
-      reverted:= a later commit subject 'Revert …' names the sha (git's own format) → 'loss'
+      merged  := commit is ancestor of the resolved main ref → outcome 'win'
+      reverted:= a later commit ON MAIN names the sha via git's own revert format → 'loss'
       else    := unsettled — emitted with settled=False, never ingested
     Extracts trace_ids from the trailer line(s). DEFAULT = full-history scan every run —
     idempotent ingest makes re-scans free, and it sidesteps the unsettled-then-settled trap a
     high-water mark would create (a commit unsettled at scan N must be re-seen at scan N+1).
-    `since` is an optional rev-range optimization the operator owns, not state we keep."""
+    `since` is an optional rev-range optimization the operator owns, not state we keep.
+    Main-ref resolution (amended 2026-06-12, mirror-aware): an explicit `main_ref` wins;
+    else the first of origin/main → origin/master → main → master that rev-parses — a bare
+    --mirror clone has no origin/* remote-tracking refs, so the bare names must be in the
+    ladder. trailer_key defaults to the producer.stamp_trailer contract value ("Hive-Trace",
+    the same string the rules block and link records carry); the host CLI cannot read
+    container config, so it is an overridable default, not injected config."""
 
 def ingest(store, rows: Sequence[OutcomeRow], *, now: int) -> dict:
     """In-container (python -m hive.tools.creditctl ingest --ndjson -): trace_id → exposure rows
@@ -453,6 +460,51 @@ def ingest(store, rows: Sequence[OutcomeRow], *, now: int) -> dict:
 - Crude-labels honesty: merge/revert is a coarse win/loss. That is exactly the v1 "ungameable
   clawback" design — the keystone's job is to decide whether this signal beats recency/frequency
   causally; if it can't, the flip never happens. No judge enters.
+
+### 8.2 Deployment model (amended 2026-06-12): one mirror scanner; squash-proofing; aging alarm
+
+**Everything CV6 ever ingests is visible from `main` alone** — wins are trailer commits
+reachable from the main ref, losses are revert commits *also on main* naming them, and
+unsettled rows are never ingested. Therefore the canonical deployment needs no seat clone
+and no per-seat infrastructure:
+
+```
+# server host, once per tracked repo (a dedicated scan mirror, NOT a workspace;
+# read-only deploy key):
+git clone --mirror git@host:team/repo.git ~/hive-scan/repo.git
+# cron (daily/weekly — operator cadence):
+git -C ~/hive-scan/repo.git fetch && hive credit ~/hive-scan/repo.git
+```
+
+Seats only stamp trailers. Any working clone MAY also run `hive credit` (idempotent
+`(commit_sha, episode_id)` ingest makes overlapping scans free); the mirror is simply the
+deployment that makes "the server host is not where repos are worked on" irrelevant.
+
+**Squash-merge trailer survival** (the only flow that destroys trailers — merge commits and
+rebase-merges carry them onto main natively), three layers, strongest first:
+1. *Mechanical:* set the repo's squash-message default to **"PR title and commit details"**
+   — constituent commit messages (trailers included) land in the squash commit on main.
+2. *Convention:* agents also put their `Hive-Trace:` lines in the **PR description** (the
+   "title and description" squash default carries it). Manifest-v3 wording for this is
+   DEFERRED — `HOWTO.md` carries it operator-side today.
+3. *Alarm:* the scan report flags trailer commits aged beyond a threshold that never
+   settled (a GitHub `--mirror` clone also fetches `refs/pull/*/head`, which outlive
+   deleted branches). Report-only — never a gate ("accelerant, never fuel").
+No double credit under squash: only the main-side sha settles; the original feature-branch
+shas stay unsettled forever and are never ingested.
+
+**`task_outcomes` DDL — the §8.1 implementation gate FIRED (2026-06-12):** the legacy table
+was the Phase-0 clawback shape — `PRIMARY KEY(task_ref, trace_id)`, a
+provisional/settled/clawed-back state machine, and `files_touched`/`introduced_lines`
+diff-text columns this plan explicitly rejects. It is dormant (zero writers; readiness/
+keystone consume assembled counts, not the table). Under the clean-store regime it is
+REPLACED, not migrated: `PRIMARY KEY(commit_sha, episode_id)` with
+`trace_id, repo, outcome CHECK(win|loss), recall_margin, commit_ts, ingested_ts`; the boot
+guard (episodes-table precedent) extends to refuse a legacy-shaped `task_outcomes`.
+
+**Per-seat HTTP ingest** (an authenticated `tools/call` submission path for repos the server
+host cannot fetch — e.g. never-pushed local-only repos on another machine) is a DEFERRED
+add-back (§10); the mirror model removes the need for every push-to-remote team.
 
 ---
 
@@ -531,15 +583,20 @@ Files: `hive/research/gate_eval.py` (NEW), `tests/research/test_gate_eval.py`, p
 | `test_runtime_never_imports_research` | existing AST fence covers the new module. |
 RULE-2: `recommend` reads point estimate → ★ red.
 
-**CV6 — creditctl** *(after ADMIN-CLI lands; verb rides its dispatch table)*
-Files: `hive/tools/creditctl.py` (NEW), `hive/tools/cli.py` (+`credit`), `tests/tools/test_creditctl.py`
-(fixture repos built by the test), `tests/container/test_cli.py` (+verb argv).
+**CV6 — creditctl** *(after ADMIN-CLI lands; verb rides its dispatch table; §8.2 amendment applies)*
+Files: `hive/tools/creditctl.py` (NEW), `hive/tools/cli.py` (+`credit`, + keyword-only `input=`
+widening of `default_run`), `hive/adapters/store_sqlite.py` (task_outcomes v2 DDL + guard +
+`record_outcome`/`exposures_by_trace`), `tests/tools/test_creditctl.py` (fixture repos built by
+the test), `tests/store/` (+outcome tests), `tests/container/test_cli.py` (+verb argv).
 | Test | Assertion |
 |---|---|
 | `test_scan_classifies_merge_revert_unsettled` ★ | fixture repo: merged trailer commit ⇒ win; reverted ⇒ loss; branch-only ⇒ unsettled. Ancestry via rev-list, asserted no diff text is ever parsed (no `--patch` in argv). |
 | `test_ingest_idempotent_no_double_credit` ★ | same NDJSON twice ⇒ identical `task_outcomes` counts ((sha,eid) keyed). |
 | `test_unknown_trace_ids_reported_not_written` | counts in report, zero rows. |
 | `test_unsettled_then_settled_credits_once` | scan while branch-only ⇒ nothing ingested; merge; full re-scan ⇒ exactly one win row (the trap the full-scan default closes). |
+| `test_mirror_bare_clone_resolves_main` (§8.2) | scan of a `--mirror` clone (no origin/*) resolves the bare main ref and classifies identically. |
+| `test_squash_carried_trailer_settles_main_sha_only` (§8.2) | trailer present only in the squashed commit message on main ⇒ one win row keyed by the MAIN-side sha; the branch originals stay unsettled; no double credit. |
+| `test_report_flags_aged_unsettled` (§8.2) | a trailer commit older than the aging threshold and not settled ⇒ counted in the report's aging field; never ingested. |
 RULE-2: drop the upsert key → idempotency ★ red; ancestry check inverted → classification ★ red.
 
 **CV7 — Docs** *(no code)*: 02-CONTRACTS (client envelope, new store methods, trust ladder
