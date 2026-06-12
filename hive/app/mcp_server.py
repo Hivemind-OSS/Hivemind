@@ -38,6 +38,7 @@ from dataclasses import dataclass
 from typing import Any, Callable, Mapping, Optional
 
 from hive.app.gaps import cluster_misses, contested_misses
+from hive.app.trends import compute_trends
 from hive.app.onboard import (
     ONBOARDING_MANIFEST_VERSION, onboarding_hint, provenance_banner,
 )
@@ -446,6 +447,8 @@ class HiveMCPServer:
             hint = self._solo_hint()                         # §3.5: stalls self-describe
             if hint is not None:
                 snap["solo_hint"] = hint
+            if args.get("include_trends"):
+                snap["trends"] = self._trends_report()       # CV4: the convergence KPI
             if args.get("include_gaps"):
                 snap["gaps"] = self._gap_report()
                 contested = self._contested_report()         # CV3: the review queue
@@ -516,6 +519,20 @@ class HiveMCPServer:
             _log.warning("mcp.gap_report_failed", extra={
                 "event": "mcp.gap_report_failed"}, exc_info=True)
             return []
+
+    def _trends_report(self) -> dict:
+        """CV4: current-vs-previous 14d windows over existing tables — the
+        convergence KPI (confident_rate ↑, demand_entropy ↓, dead_capture_ratio
+        bounded). Composes the gaps clustering; degrades to {} on a fault."""
+        try:
+            tau = float(self.autonomy.demand_tau)
+            return compute_trends(
+                self.store, lambda rows: cluster_misses(rows, tau=tau),
+                now=int(self.now()))
+        except Exception:                                    # noqa: BLE001 — telemetry only
+            _log.warning("mcp.trends_report_failed", extra={
+                "event": "mcp.trends_report_failed"}, exc_info=True)
+            return {}
 
     def _contested_report(self) -> list[dict]:
         """CV3: servable rows the window's misses cluster against (cosine ≥
