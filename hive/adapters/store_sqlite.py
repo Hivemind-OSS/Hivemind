@@ -22,7 +22,7 @@ from hive.adapters.sqlite_db import tx
 from hive.domain.errors import SqliteBusyExhausted
 from hive.domain.lifecycle import (
     DEPRECATED, ESTABLISHED, PROVISIONAL, QUARANTINED, TRUST_STATES,
-    MissRow, decayed, is_servable,
+    ExposureRow, MissRow, decayed, is_servable,
 )
 from hive.domain.models import Episode, content_hash
 
@@ -480,6 +480,32 @@ class SqliteEpisodeStore:
                             r["proposed_by"] or "", int(r["ts"]),
                             int(r["last_active_ts"])))
         return out
+
+    def survival_candidates(self, *, since_ts: int,
+                            min_exposures: int) -> list[tuple[int, str]]:
+        """``(episode_id, proposed_by)`` of PROVISIONAL materialized rows with
+        >= ``min_exposures`` exposures STRICTLY after ``since_ts`` — ONE aggregate
+        (JOIN + GROUP BY + HAVING), the survival prefilter; never an N+1 per-row
+        COUNT loop. The pure SurvivalRule then judges only these.  // O(exposure
+        window) time in SQL."""
+        return [(int(r["id"]), r["proposed_by"] or "") for r in self.conn.execute(
+            "SELECT e.id AS id, e.proposed_by AS proposed_by FROM episodes e "
+            "JOIN exposure x ON x.episode_id = e.id "
+            "WHERE e.trust=? AND e.status='approved' AND x.injected_ts>? "
+            "GROUP BY e.id HAVING COUNT(*)>=? ORDER BY e.id",
+            (PROVISIONAL, since_ts, int(min_exposures)))]
+
+    def exposures_for(self, episode_id: int, *,
+                      since_ts: int) -> list[ExposureRow]:
+        """One candidate's exposure events STRICTLY after ``since_ts``,
+        ts-ascending — the carrier ``SurvivalRule.decide`` consumes. A NULL
+        agent_id (pre-identity rows) coerces to '' so it can never alias a real
+        writer label."""
+        return [ExposureRow(agent_id=r["agent_id"] or "", ts=int(r["injected_ts"]))
+                for r in self.conn.execute(
+                    "SELECT agent_id, injected_ts FROM exposure "
+                    "WHERE episode_id=? AND injected_ts>? ORDER BY injected_ts",
+                    (int(episode_id), since_ts))]
 
     def insert_audit(self, episode_id: int, kind: str, actor: str, ts: int,
                      payload: str) -> int:

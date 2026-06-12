@@ -161,10 +161,20 @@ class AutonomyConfig:
     competitor_tau: float = 0.85    # candidate ↔ servable cosine ⇒ demand already answered
     quarantine_ttl_days: int = 14
     provisional_ttl_days: int = 45
+    # CV2 survival-establish (the 2nd mechanical rung; rides `enabled`):
+    survival_e: int = 2             # distinct non-writer identities required
+    survival_days: int = 14         # minimum first-to-last exposure span
+    survival_min_exposures: int = 5
+    # CV1 §3.5 solo mode: a single-seat fleet swaps the demand rule's identity-
+    # diversity clause for elapsed-span demand. Operator-set env, NOT client-gameable.
+    solo_mode: bool = False
+    solo_min_span_days: int = 1     # first-to-last matched-miss span required to promote
 
     def __post_init__(self) -> None:
         for name in ("demand_m", "demand_window_days",
-                     "quarantine_ttl_days", "provisional_ttl_days"):
+                     "quarantine_ttl_days", "provisional_ttl_days",
+                     "survival_e", "survival_days", "survival_min_exposures",
+                     "solo_min_span_days"):
             v = getattr(self, name)
             if int(v) < 1:
                 raise ValueError(f"autonomy.{name} must be >= 1 (got {v})")
@@ -417,6 +427,11 @@ RELOAD_TIER: dict[str, str] = {
     "autonomy.competitor_tau": "B",
     "autonomy.quarantine_ttl_days": "B",
     "autonomy.provisional_ttl_days": "B",
+    "autonomy.survival_e": "B",
+    "autonomy.survival_days": "B",
+    "autonomy.survival_min_exposures": "B",
+    "autonomy.solo_mode": "B",
+    "autonomy.solo_min_span_days": "B",
     "recall.H_frac_max": "B",
     "recall.epsilon_explore": "B",
     "recall.softmax_beta": "B",
