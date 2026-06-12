@@ -124,11 +124,12 @@ class RecallConfig:
 @dataclass(frozen=True)
 class ProducerConfig:
     """Vestigial after the producer strip: only ``stamp_trailer`` survives — the git
-    trailer key the (deferred) credit Walk would key on, and the single source for the
-    onboarding rules block's ``<TRAILER_KEY>``. The watch_repos / assoc / poll / provider
-    fields went with the producer subsystem. An empty trailer is rejected downstream
-    (onboard.render_rules_block / RulesBlock), where it would actually cause harm."""
-    stamp_trailer: str = "Hive-Trace"
+    trailer key the origin credit scan keys on (v2 grammar: 32-hex trace + episode
+    ids), and the single source for the onboarding rules block's ``<TRAILER_KEY>``.
+    The old ``Hive-Trace`` key is inert-but-counted by the scanner (the re-onboard
+    nudge). An empty trailer is rejected downstream (onboard.render_rules_block /
+    RulesBlock), where it would actually cause harm."""
+    stamp_trailer: str = "Hive-Credit"
 
 
 @dataclass(frozen=True)

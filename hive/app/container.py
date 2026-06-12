@@ -262,7 +262,7 @@ def build_container(cfg: Config, *, tenant_id: str, agent_id: str,
                                  lifecycle=lifecycle, autonomy_enabled=aut.enabled)
 
     install_planner = InstallPlanner(
-        store, stamp_trailer=cfg.producer.stamp_trailer, block_version=1)
+        store, stamp_trailer=cfg.producer.stamp_trailer, block_version=2)
     identity = ServerIdentity(tenant_id=tenant_id, agent_id=agent_id)
 
     _log.info("container.assembled tenant_id=%s db_path=%s d=%d backend=%s provider=%s "

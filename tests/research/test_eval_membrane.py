@@ -207,6 +207,21 @@ def test_strip_stamped_tokens_removes_label_leak():
     assert "T9" not in strip_stamped_tokens("note\nco-trace: T8 T9", trailer_key="Co-Trace")
 
 
+def test_strip_covers_both_trailer_generations():
+    # History carries BOTH stamp generations side by side: the v1 Hive-Trace key and
+    # the v2 Hive-Credit key must each strip BY DEFAULT, and a custom key must not
+    # cost the built-in generations (either one leaking fakes a lexical match).
+    assert "T1" not in strip_stamped_tokens("x\nHive-Trace: T1 T2")
+    v2 = f"x\nHive-Credit: {'a' * 32} 12 34"
+    cleaned_v2 = strip_stamped_tokens(v2)
+    assert "a" * 32 not in cleaned_v2 and "12" not in cleaned_v2
+    both = f"x\nCo-Trace: T8\nHive-Trace: T9\nHive-Credit: {'b' * 32} 7"
+    cleaned = strip_stamped_tokens(both, trailer_key="Co-Trace")
+    for tok in ("T8", "T9", "7", "b" * 32):
+        assert tok not in cleaned
+    assert "x" in cleaned
+
+
 def test_scored_bucket_duplicate_text_keeps_gold():
     # AUDIT MED-6: a gold doc whose text is identical to a later distractor must NOT be
     # erased by last-writer-wins id resolution (the store dedups identical text to one

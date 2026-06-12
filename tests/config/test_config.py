@@ -31,6 +31,12 @@ def test_defaults_match_spec_geometry():
     assert cfg.retention.backup_keep == 30
 
 
+def test_producer_stamp_trailer_defaults_to_credit_v2():
+    # The trailer convention v2: agents stamp Hive-Credit (trace + episode ids);
+    # the old Hive-Trace key is inert-but-counted by the origin scanner.
+    assert Config.load(toml_path=None, env={}).producer.stamp_trailer == "Hive-Credit"
+
+
 # ── [A4] ε relocation: recall.epsilon_explore validated, producer has none ─────
 def test_recall_epsilon_validated_positive():
     with pytest.raises(ValueError, match=r"recall\.epsilon_explore"):

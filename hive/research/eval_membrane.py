@@ -76,9 +76,11 @@ _LOCOMO_CATEGORY_TYPE: dict = {
     4: "single-session-user", 5: _ABSTENTION_TYPE,
 }
 
-# The stamp trailer the §6.3 de-confounding rail strips (the prior eval-artifact
-# label leak (a)). Default key matches producer.stamp_trailer ("Hive-Trace").
-_DEFAULT_TRAILER_KEY = "Hive-Trace"
+# The stamp trailers the §6.3 de-confounding rail strips (the prior eval-artifact
+# label leak (a)). BOTH generations strip by default — replayed history carries v1
+# Hive-Trace stamps next to v2 Hive-Credit stamps, and either leaks.
+_DEFAULT_TRAILER_KEY = "Hive-Credit"
+_LEGACY_TRAILER_KEY = "Hive-Trace"
 _TOKEN_PAT = re.compile(r"[a-z0-9]+")
 
 
@@ -523,15 +525,18 @@ def load_locomo(path: str) -> list[dict]:
 
 def strip_stamped_tokens(text: str, *, trailer_key: str = _DEFAULT_TRAILER_KEY) -> str:
     """Remove the commit-stamp label leak (eval artifact (a)): every stamped trailer
-    is deleted so a stamped trace id can never leak into the corpus as a retrievable
-    token and fake a match. The exact stamp format is pinned here (part of the
-    contract): the trailer key, ``:``, and the WHOLE value run to end-of-line — the
-    producer's stamp is multi-token (``Hive-Trace: <T1> <T2> ...``, models.py) and a
-    trailer is conventionally its own line, so EOL is the correct boundary (matching
-    one ``\\S+`` token would leak T2, T3, …). Case-INSENSITIVE because git matches
-    trailer keys case-insensitively, so a lowercase ``hive-trace:`` stamp must also be
-    stripped. // O(len)."""
-    pat = re.compile(rf"{re.escape(trailer_key)}\s*:[^\n\r]*", re.IGNORECASE)
+    is deleted so a stamped trace/episode id can never leak into the corpus as a
+    retrievable token and fake a match. The exact stamp format is pinned here (part
+    of the contract): the trailer key, ``:``, and the WHOLE value run to
+    end-of-line — stamps are multi-token (``<key>: <T1> <T2> ...``) and a trailer is
+    conventionally its own line, so EOL is the correct boundary (matching one
+    ``\\S+`` token would leak T2, T3, …). Case-INSENSITIVE because git matches
+    trailer keys case-insensitively. BOTH built-in generations are always stripped
+    alongside the caller's key — replayed history carries old ``Hive-Trace`` stamps
+    next to new ``Hive-Credit`` ones. // O(len)."""
+    keys = {trailer_key, _DEFAULT_TRAILER_KEY, _LEGACY_TRAILER_KEY}
+    alt = "|".join(re.escape(k) for k in sorted(keys))
+    pat = re.compile(rf"(?:{alt})\s*:[^\n\r]*", re.IGNORECASE)
     return pat.sub("", text)
 
 

@@ -8,6 +8,7 @@ hard-code the template literal → red).
 from __future__ import annotations
 
 import hashlib
+import re
 
 import pytest
 
@@ -58,12 +59,24 @@ def test_rules_block_unconstructable_when_illformed():
 def test_trailer_key_is_single_sourced():
     # The trailer is interpolated from the (config) stamp_trailer — never literal. A
     # custom trailer must appear verbatim in the rendered body and the placeholder must
-    # be fully substituted; the default literal must NOT leak in.
+    # be fully substituted; neither generation's default literal may leak in.
     block = render_rules_block("ZZZ-Custom-Trailer", 1)
     assert block.trailer_key == "ZZZ-Custom-Trailer"
     assert "ZZZ-Custom-Trailer" in block.rendered_text
     assert "<TRAILER_KEY>" not in block.rendered_text
-    assert "Hive-Trace" not in block.rendered_text          # the hard-coded literal does not leak
+    assert "Hive-Trace" not in block.rendered_text          # v1 literal does not leak
+    assert "Hive-Credit" not in block.rendered_text         # v2 literal does not leak
+
+
+def test_rules_block_v2_selective_credit_wording():
+    # v2 credit section: examples-as-spec — one exact, copyable trailer line
+    # (32-hex trace + episode ids) — and the selective-credit rule stated.
+    block = render_rules_block("Hive-Credit", 2)
+    text = block.rendered_text
+    assert rules_block_version_marker(2) in text
+    assert re.search(r"Hive-Credit: [0-9a-f]{32} \d+ \d+", text)
+    assert "materially shaped" in text
+    assert "nothing if none did" in text
 
 
 def test_render_version_embed_tracks_block_version():

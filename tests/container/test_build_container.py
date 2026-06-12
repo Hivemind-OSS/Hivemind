@@ -47,6 +47,16 @@ def test_build_container_is_boot_conformant():
     assert callable(c.warm_embedder) and callable(c.make_server)
 
 
+def test_install_planner_wired_for_v2_block(tmp_path):
+    # the composition root pins the rules-block generation: block_version=2 with the
+    # v2 default trailer key single-sourced from producer.stamp_trailer
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    plan = _build().install_planner.plan(str(repo), "generic")
+    assert plan.rules_block.block_version == 2
+    assert plan.rules_block.trailer_key == "Hive-Credit"
+
+
 def test_token_store_wired_create_verify_end_to_end():
     """build_container wires a usable SqliteTokenStore on the shared conn (the daemon's verify
     seam): create→verify round-trips and revoke→reject, with no extra wiring re-derived."""

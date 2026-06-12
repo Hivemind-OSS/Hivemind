@@ -202,7 +202,7 @@ class HiveMCPServer:
     def __init__(self, *, admission, recall, store, embedder, install_planner,
                  identity: ServerIdentity, now: Callable[[], int],
                  started_ts: int = 0, db_path: str = "",
-                 trailer_key: str = "Hive-Trace", autonomy=None) -> None:
+                 trailer_key: str = "Hive-Credit", autonomy=None) -> None:
         self.admission = admission          # AdmissionService: write + capture
         self.recall = recall                # RecallPipeline: recall(query,*,agent_id,agent_ctx)
         self.store = store                  # EpisodeStore: get_episode (belt) / fetch / counts
