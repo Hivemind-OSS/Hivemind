@@ -6,6 +6,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 ### Added
+- Outcome credit (CONVERGENCE CV6): `hive credit [path]` scans a clone/mirror's
+  `Hive-Trace:` trailer commits host-side (win = ancestor of main, loss = named by a
+  revert on main, else unsettled — ancestry only, never diff text) and pipes settled
+  rows into the in-container `creditctl ingest`; idempotent `(commit_sha, episode_id)`
+  upsert into the new `task_outcomes` v2 ledger feeds readiness → keystone →
+  `utility_rerank`. Scan summary carries an aged-unsettled squash-leak alarm.
+  Canonical deployment: one `git clone --mirror` + cron on the server host (HOWTO.md).
 - `hive` operator CLI (`hive/tools/cli.py`, stdlib-only, `[project.scripts]` entry
   point; uninstalled: `python -m hive.tools.cli`): `up [--tunnel]` (bounded
   health-wait; tunnel secrets fail-fast), `down`, `logs`, `nuke` (typed confirm),
@@ -28,6 +35,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Hook manifest v2: capture-without-asking via `hive_capture`; `correction` hook for
   `hive_write(replaces=)`.
 ### Changed
+- `task_outcomes` replaced (clean-store, boot-guarded): the dormant Phase-0 clawback
+  shape (`task_ref`/`trace_id` PK, state machine, diff-text columns) gives way to one
+  settled win|loss row per `(commit_sha, episode_id)`; `settled_exposures_since` now
+  reads it directly (`repo` is the family carrier, settle clock = `ingested_ts`).
 - Tool surface is now exactly 6 verbs (+`hive_capture`); serving is decided by the
   single `lifecycle.is_servable` predicate (established, or fresh provisional) at the
   scan, the index sync, the pipeline resolve step, and the per-hit belt.

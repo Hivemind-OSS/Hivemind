@@ -1,11 +1,15 @@
 # Hivemind — Fleet Convergence: the true-MVP for a self-optimizing agent hivemind
 
-**Status:** LANDED (CV1–CV5 + CV7, 2026-06-11) — **except CV6**, which stays blocked on its
-named prerequisite: ADMIN-CLI has not landed (no `hive` CLI dispatch table exists for the
-`credit` verb to ride). CV6's boundary decisions are recorded (01-DECISIONS D-C5 / D10) and
-it implements as specified here once ADMIN-CLI ships. One recorded deviation: the CV2 store
-methods stayed duck-typed rather than Protocol-widened (D-C4, built-decision-wins).
-**Date:** 2026-06-11
+**Status:** LANDED IN FULL — CV1–CV5 + CV7 on 2026-06-11; **CV6 on 2026-06-12** (commits
+`convergence CV6.0–CV6.3`, after ADMIN-CLI landed 2026-06-11), implemented per the §8.2
+amendment: single mirror-scanner deployment, mirror-aware main-ref ladder, squash-survival
+layers + aged-unsettled alarm, and the task_outcomes v2 replacement (the §8.1 gate fired —
+the Phase-0 clawback shape lacked `commit_sha`; replaced clean-store, boot-guarded;
+`settled_exposures_since` rewritten onto the credit shape, win→+1/loss→−1). Recorded
+deviations: CV2 store methods stayed duck-typed rather than Protocol-widened (D-C4,
+built-decision-wins); `record_outcome` uses a PK-scoped `ON CONFLICT … DO NOTHING` (a
+blanket `OR IGNORE` would swallow the CHECK). Operator guide: `HOWTO.md`.
+**Date:** 2026-06-11 · CV6 2026-06-12
 **Scope question answered:** "Starting from what exists, what is the minimum system that (a) every
 dev-team agent — Claude Code, Cursor, Codex, custom LangChain/LangGraph/anything — reads and writes
 without ceremony, (b) manages its own memory (noise, supersession, pruning) with maximum mechanical
