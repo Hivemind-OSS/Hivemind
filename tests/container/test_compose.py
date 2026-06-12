@@ -29,7 +29,6 @@ from hive.app import config as C
 
 _ROOT = Path(__file__).resolve().parents[2]
 _COMPOSE = _ROOT / "compose.yaml"
-_HIVE_SH = _ROOT / "hive.sh"
 
 # entrypoint-owned operator aliases (bridged into Config.load, NOT routed through HIVE_*__)
 _ENTRYPOINT_OWNED = {"HIVE_TENANT_ID", "HIVE_AGENT_ID", "HIVE_STORE__DB_PATH"}
@@ -78,14 +77,6 @@ def test_http_port_is_loopback_only():
     txt = _text()
     assert "127.0.0.1:8765:8765" in txt
     assert not re.search(r'(?m)^\s*-\s*"?8765:8765"?\s*$', txt)   # no all-interfaces publish
-
-
-def test_hive_up_uses_up_not_run_rm():
-    # the operator wrapper brings up the SAME long-lived service (up -d), it does not
-    # spin an ephemeral `run --rm` per attach (test_attach_reuses_warm_server, static form).
-    sh = _HIVE_SH.read_text()
-    assert "up -d" in sh
-    assert "run --rm" not in sh
 
 
 def test_compose_healthcheck_runs_healthcheck_module():

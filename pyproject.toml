@@ -11,6 +11,10 @@ dependencies = [
     "numpy>=1.24",
 ]
 
+[project.scripts]
+# the operator CLI (stdlib-only); uninstalled: `python -m hive.tools.cli`
+hive = "hive.tools.cli:main"
+
 [project.optional-dependencies]
 # Real embedder adapter (Phase 1); the pure domain + slice need none of these.
 embed = ["sentence-transformers>=2.2"]

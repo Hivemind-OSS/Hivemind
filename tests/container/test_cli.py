@@ -86,8 +86,8 @@ _HEALTHY = [(lambda a: seq_in(a, "ps", "-q"), proc(stdout="cid123\n")),
 
 
 def test_up_uses_up_detached_not_run_rm():
-    # migrated hive.sh contract: the long-lived warm daemon comes up via `up -d`,
-    # never an ephemeral cold-start `run --rm` per invocation.
+    # the long-lived warm daemon comes up via `up -d`, never an ephemeral
+    # cold-start `run --rm` per invocation (which re-warms the embedder each time).
     fake = FakeRun(script=list(_HEALTHY))
     rc = cli.main(["up"], run=fake, out=io.StringIO(), env=ENV)
     assert rc == cli.EX_OK
