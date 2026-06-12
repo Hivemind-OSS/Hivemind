@@ -204,6 +204,47 @@ Dev-time (never imported by runtime): `hive/research/gate_eval.py` sweeps
 row with `ts < miss.ts` sits at cosine ≥ `label_tau=0.80`); recommends ONLY on paired
 bootstrap `lo > 0`; the change stays operator-applied.
 
+### §0b.6 Outcome credit — HIVE-ORIGIN (2026-06-12; supersedes the CV6 mirror-scan flow)
+
+**Trailer v2** (`producer.stamp_trailer` default `"Hive-Credit"`; rules block v2,
+`block_version=2` at the composition root):
+`Hive-Credit: <trace32hex> <episode_id> [<episode_id>…]` — SELECTIVE: only memories that
+materially shaped the committed code; nothing if none did. Strict parse (first token
+32-hex, rest positive ints, commas tolerated); a failing line counts
+`malformed_trailer_lines`, never guessed. Old `Hive-Trace` stamps are inert (v1 promised
+"changes no reward") but counted `legacy_trailers_seen` every sync — the re-onboard
+nudge. `eval_membrane.strip_stamped_tokens` strips BOTH generations.
+
+**Scanner** (`hive.tools.originctl.scan_github` — stateless GitHub-API poller, sliding
+`lookback_days=14` window, hourly cron; no mirror, no cursor): wins from (a) merged PRs —
+trailers harvested from `/pulls/{n}/commits` (squash-safe by construction), row keyed
+`merge_commit_sha`, ts `merged_at`; (b) default-branch direct pushes keyed their own sha —
+a commit whose TRACE set is already claimed by a PR row this scan is a rebase twin,
+dropped + counted `deduped_rebase_copies` (sha set-difference cannot see rewritten shas).
+Losses: `This reverts commit <40hex>` ⇒ loss row per named sha. NDJSON row shapes:
+`{"kind":"win",commit_sha,commit_ts,repo:"owner/name",credits:[{trace_id,episode_ids}]}` /
+`{"kind":"loss",commit_sha,commit_ts,repo}`.
+
+**Ingest** (`originctl ingest`, container side): wins FIRST — per trace, credit
+`claimed ∩ exposures_by_trace(trace_id)` with the exposure row's real `recall_margin`
+(`unserved_claims` counted, written nowhere; unknown traces counted); then losses via the
+NEW adapter-only `SqliteEpisodeStore.settle_loss(commit_sha, *, ts)` — a one-way
+win→loss flip. PK-scoped DO-NOTHING insert + one-way flip ⇒ **monotone** under stateless
+re-scans (closes the CV6 revert-after-ingest swallow). Schema UNCHANGED; `repo` carries
+`owner/name`.
+
+**Consumer**: `hive_recall` hits gain `"credit": {"wins", "losses"}` via the adapter-only
+`outcome_stats_for_episodes` behind a getattr feature-probe (absent ⇒ no field;
+raising ⇒ logged + field omitted). Annotation only — ranking untouched; the utility flip
+stays keystone-gated.
+
+**CLI**: `hive origin <owner/repo|URL>` = link (token ladder `--token-stdin` >
+`$GITHUB_TOKEN`/`$GH_TOKEN` > `gh auth token` > public-repo mode; access probe; 0600
+`~/.config/hive/origins.json`, token inline — documented env-rule deviation, env
+overrides at sync; ONE `# hive-origin`-tagged `@hourly` crontab line, strip-then-append
+idempotent; first 90-day backfill). `origin sync|ls|rm` = reserved words (repo args
+always carry `/`); `rm` of the last origin strips the cron line. GitHub-only by design.
+
 ---
 
 ## §1 — Consolidated SQLite schema (ONE WAL DB)

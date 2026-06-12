@@ -6,13 +6,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 ### Added
-- Outcome credit (CONVERGENCE CV6): `hive credit [path]` scans a clone/mirror's
-  `Hive-Trace:` trailer commits host-side (win = ancestor of main, loss = named by a
-  revert on main, else unsettled — ancestry only, never diff text) and pipes settled
-  rows into the in-container `creditctl ingest`; idempotent `(commit_sha, episode_id)`
-  upsert into the new `task_outcomes` v2 ledger feeds readiness → keystone →
-  `utility_rerank`. Scan summary carries an aged-unsettled squash-leak alarm.
-  Canonical deployment: one `git clone --mirror` + cron on the server host (HOWTO.md).
+- Outcome credit (HIVE-ORIGIN; supersedes the unreleased CV6 mirror-scan flow in
+  this same cycle): `hive origin <owner/repo>` is one-command end-to-end setup —
+  token ladder (`--token-stdin` > `$GITHUB_TOKEN`/`$GH_TOKEN` > `gh auth token` >
+  public-repo mode), repo-access validation, 0600 `~/.config/hive/origins.json`
+  (token inline; `$GITHUB_TOKEN` overrides at sync), ONE marker-tagged `@hourly`
+  crontab line, first 90-day backfill. `hive origin sync|ls|rm` operate on linked
+  origins. The scanner (`hive.tools.originctl`) is a stateless GitHub-API poller
+  over merged reality: merged-PR wins keyed `merge_commit_sha` with trailers
+  harvested from the PR's constituent commits (squash-safe by construction),
+  direct-push wins, rebase twins dropped by trace-claim dedup, reverts flipping
+  wins to losses one-way (`SqliteEpisodeStore.settle_loss` — monotone under
+  stateless hourly re-scans). Trailer v2 `Hive-Credit: <trace_id> <episode_id> …`
+  is SELECTIVE (only memories that materially shaped the committed code; nothing
+  if none did); ingest credits claimed ∩ served-on-that-trace (`unserved_claims`
+  counted, written nowhere). The `task_outcomes` v2 ledger and its idempotent
+  `(commit_sha, episode_id)` upsert carry over unchanged.
+- `hive_recall` hits now carry `"credit": {"wins", "losses"}` from the outcome
+  ledger (`outcome_stats_for_episodes` behind a getattr feature-probe — annotation
+  only; ranking unchanged, the utility flip stays keystone-gated).
+- Rules block v2 (`block_version=2`): selective-credit section with an exact
+  copyable trailer example; `producer.stamp_trailer` default is now `Hive-Credit`.
+  Old `Hive-Trace` stamps stay inert but are counted as `legacy_trailers_seen`
+  every sync (the re-onboard nudge); `eval_membrane.strip_stamped_tokens` strips
+  BOTH trailer generations.
+### Removed
+- `hive credit`, `hive/tools/creditctl.py`, and the mirror-scan deployment (the
+  `--mirror` clone + cron + squash-settings discipline + aged-unsettled alarm) —
+  replaced wholesale by `hive origin`: the GitHub API serves constituent-commit
+  trailers directly, so squash survival needs no repo settings and unsettled
+  states don't exist (merged reality only).
 - `hive` operator CLI (`hive/tools/cli.py`, stdlib-only, `[project.scripts]` entry
   point; uninstalled: `python -m hive.tools.cli`): `up [--tunnel]` (bounded
   health-wait; tunnel secrets fail-fast), `down`, `logs`, `nuke` (typed confirm),

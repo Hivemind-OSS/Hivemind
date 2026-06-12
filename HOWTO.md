@@ -4,7 +4,7 @@ The operator's path from clone to a fleet that remembers, for **solo devs and sm
 teams**. Everything here runs through the `hive` CLI (`pip install -e .` gives the
 command; uninstalled, `python -m hive.tools.cli` is identical). Deep references:
 `docs/CLIENTS.md` (every client shape), `docs/PLANS/AUTH-PLAN.md` §10 (auth model),
-`docs/PLANS/CONVERGENCE-PLAN.md` §8 (outcome credit).
+`docs/PLANS/HIVE-ORIGIN-PLAN.md` (outcome credit).
 
 ## 1. First-time setup (server host, once)
 
@@ -61,58 +61,75 @@ Loopback never leaves the host, so open exactly one door:
 Never publish `0.0.0.0:8765` — a bearer token over plain LAN HTTP is cleartext.
 Offboard a seat any time: `hive revoke <seat>` → next request 401s.
 
-## 4. Outcome credit — close the loop (the part worth doing right)
+## 4. Outcome credit — close the loop (one command)
 
-Agents already stamp `Hive-Trace: <trace_id>` trailers on commits that drew on a
-recalled memory. `hive credit` turns merged/reverted reality into win/loss credit on
+Agents stamp `Hive-Credit: <trace_id> <episode_id> …` trailers on commits that a
+recalled memory **materially shaped** (selective credit — nothing if none did).
+`hive origin` turns merged/reverted GitHub reality into win/loss credit on exactly
 those memories. **Nothing here is load-bearing**: never run it and the system behaves
 identically; run it and readiness floors fill toward the keystone gate that can switch
 recall ranking to measured utility.
 
-### The seamless setup: one mirror, one cron, on the server host
-
-Everything ingestible is visible from `main` alone, so nobody's working clone needs
-scanning — teammates just commit:
+### Setup — one command, from the hive checkout
 
 ```bash
-# once per tracked repo (a dedicated scan mirror, NOT a workspace; read-only deploy key)
-git clone --mirror git@github.com:team/repo.git ~/hive-scan/repo.git
-
-# cron, daily or weekly
-hive credit --fetch ~/hive-scan/repo.git
+hive origin team/repo            # or the github.com URL
 ```
 
-Re-scans are free (idempotent `(commit_sha, episode_id)` ingest), any clone may also
-scan without coordination, and local-only repos work too — point `hive credit` at the
-repo path on whatever machine has both the repo and server access.
+That one command resolves a token (`--token-stdin` > `$GITHUB_TOKEN`/`$GH_TOKEN` >
+`gh auth token` > none = public-repo mode), validates repo access, stores the origin
+at `~/.config/hive/origins.json` (0600, token inline — the hourly cron has no env,
+the one documented deviation from the env-var rule; `$GITHUB_TOKEN` at sync time
+always overrides the stored token), installs ONE marker-tagged `@hourly` crontab
+line, and runs a first **90-day backfill** sync. Private repos need a PAT: classic
+`repo` scope, or fine-grained **Contents: Read + Pull requests: Read**.
 
-### Make every credit catchable — the squash-merge settings detail
+Day-2 verbs: `hive origin sync` (manual sweep over every linked repo),
+`hive origin ls` (linked repos — never tokens), `hive origin rm team/repo` (removing
+the last origin also strips the cron line). The cron writes to
+`~/.config/hive/origin-sync.log`; `--no-cron` at link time skips the install.
 
-Merge commits and rebase-merges carry trailers onto `main` natively. **Squash-merge is
-the one flow that destroys them**, and the fix is mechanical, set once per repo:
+### How wins and losses settle (stateless, squash-safe by construction)
 
-> **GitHub → Settings → General → Pull Requests → "Default commit message" for squash
-> merging → select "Pull request title and commit details".**
+Every sync polls the GitHub API over a sliding 14-day window — no mirror, no cursor
+state; the idempotent `(commit_sha, episode_id)` ingest makes hourly full-window
+re-scans free:
 
-That writes the constituent commit messages — trailers included — into the squash
-commit on `main`, so credit survives **by construction**, no human discipline needed.
-Two backstops for repos where you can't control settings:
+- **Merged PRs** (primary): trailers are harvested from the PR's constituent commits
+  (`/pulls/N/commits` — GitHub keeps `refs/pull/N/head` even after branch deletion),
+  so **squash-merge is safe by construction** — no repo-settings dance, no trailer
+  discipline. The win is keyed to the merge commit, timestamped `merged_at`.
+- **Direct pushes** to the default branch credit their own sha; a rebase-merge twin
+  (the same trace ids under rewritten shas) is dropped by trace-claim dedup and
+  counted `deduped_rebase_copies` — never double credit.
+- **Reverts**: `This reverts commit <sha>` flips that sha's wins to losses —
+  **one-way and monotone**, so a later re-scan re-offering the win can never undo a
+  revert (a revert-of-revert re-lands under a new sha and credits fresh).
 
-1. **PR-description convention**: put the `Hive-Trace:` lines in the PR description
-   too — the "title and description" squash default carries it onto main.
-2. **The alarm**: every `hive credit` run prints `aged_unsettled` — trailer commits
-   older than 14 days that never reached main. A climbing count means trailers are
-   leaking (usually a squash-settings regression). Report-only, never a gate.
+Selective credit is enforced server-side: ingest credits `claimed ∩ actually-served-
+on-that-trace`; ids never served on the named trace are counted (`unserved_claims`)
+and written nowhere — credit can't be gamed or fat-fingered into the ledger.
 
-No double counting either way: only the main-side sha ever settles; feature-branch
-originals stay unsettled forever and are never ingested.
+### Operational notes
+
+- **GitHub only.** Local-only or other-host repos have no credit loop in this build
+  (the old mirror scanner is recoverable from git history if ever needed).
+- **Outage longer than the window?** Wins that settled more than 14 days before the
+  next sync are missed by the hourly line — backfill once with
+  `hive origin sync --lookback 90` (any day count). The loop is non-load-bearing, so
+  a gap costs only credit freshness.
+- **Old trailers**: pre-v2 `Hive-Trace:` stamps earn nothing (their wording always
+  promised "changes no reward") but every sync counts sightings as
+  `legacy_trailers_seen` — a climbing count means a repo still runs the v1 rules
+  block; re-run `hive_init` there to onboard the v2 convention.
 
 ### What the credit feeds
 
-`task_outcomes` → readiness floors (200 settled / 30 distinct credited memories) →
-the keystone 4-arm causal gate → only a proven WIN flips `utility_rerank`. Crude
-labels by design — merge=win, revert=loss — the keystone decides whether that signal
-beats recency, never a judge.
+`task_outcomes` → recall envelopes (every hit carries `"credit": {wins, losses}`) →
+readiness floors (200 settled / 30 distinct credited memories) → the keystone 4-arm
+causal gate → only a proven WIN flips `utility_rerank`. Crude labels by design —
+merge=win, revert=loss — the keystone decides whether that signal beats recency,
+never a judge.
 
 ## 5. Day-2 operations
 
@@ -122,5 +139,6 @@ beats recency, never a judge.
 | `hive logs [svc]` | follow the daemon (or `ngrok`) logs |
 | `hive tokens` | provisioned seat labels (never the tokens) |
 | `hive revoke <seat>` | offboard a seat (next request → 401) |
-| `hive credit --fetch <mirror>` | refresh + scan + ingest outcome credit |
+| `hive origin sync [--lookback N]` | manual credit sweep (the hourly cron runs this) |
+| `hive origin ls` / `rm <repo>` | linked credit origins (never tokens) / unlink |
 | `hive down` / `hive nuke` | stop (keep data) / destroy (typed confirm) |
