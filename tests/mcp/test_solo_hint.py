@@ -1,4 +1,4 @@
-"""CV1 §3.5 — the ``solo_hint`` in hive_health: single-seat traffic wasting
+"""CV1 — the ``solo_hint`` in hive_health: single-seat traffic wasting
 demand (≥ demand_m window misses, ≤1 distinct identity) is a silent autonomy
 stall; the hint converts it into a self-describing one. Fires PRECISELY:
 absent on an empty/quiet store, absent in solo_mode, absent with ≥2 identities."""

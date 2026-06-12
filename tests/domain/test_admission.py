@@ -1,7 +1,7 @@
 """P1.4 — M05 AdmissionService: the scan → stage → embed → approve gauntlet on a real
-SQLite store + authoritative index. CLIENT-GATED capture (HOOK-RELOCATION-PLAN v3): the
+SQLite store + authoritative index. CLIENT-GATED capture: the
 server-side pending→approve queue is gone — a clean write lands APPROVED + indexed in one
-call, attributed to the caller's ``approved_by``. Owns §6.1 #5a (secret refused/redacted
+call, attributed to the caller's ``approved_by``. Owns #5a (secret refused/redacted
 pre-write); proves the secret never reaches a row, a blob, or a log line, and that the
 secret scan is the SOLE always-on gate now that the queue is removed.
 """

@@ -121,7 +121,8 @@ class ExposureLedger(Protocol):
 
 @runtime_checkable
 class SecretScanner(Protocol):
-    """Deterministic credential scan run BEFORE staging (refuse/redact) [§9]."""
+    """Deterministic credential scan run BEFORE staging (refuse/redact) — the
+    no-secret-in-any-layer floor."""
     def scan(self, text: str) -> "ScanVerdictLike": ...
 
 

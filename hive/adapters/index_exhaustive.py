@@ -1,7 +1,7 @@
 """ExhaustiveCosineIndex — the AUTHORITATIVE default vector backend [B3].
 
 Exact signed-cosine kNN over a stacked (N,d) float32 matrix. There is NO ANN
-branch and NO approx_threshold field, so the §4.3 trap (recall silently → 0 once N
+branch and NO approx_threshold field, so the silent-ANN-fallback trap (recall silently → 0 once N
 crosses a threshold) is structurally impossible: growing N can never flip the path.
 
 The in-RAM index is a best-effort WARM CACHE; `status='approved'` in SQLite is the

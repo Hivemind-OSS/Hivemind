@@ -1,4 +1,4 @@
-"""M10 [C1] — the §6.6 keystone experiment: the move-#6 control-arm causal test.
+"""M10 [C1] — the keystone control-arm experiment: the move-#6 control-arm causal test.
 
 Does utility-weighted recall *causally* beat the naive baselines on held-out task
 success? The harness scores four arms — **utility** vs **utility-off / recency /
@@ -10,9 +10,9 @@ ranking signal) and applies the pre-committed decision:
          family** AND it **traces to an ungameable clawback**. Beating *nothing*
          (utility-off) is not a win — that is trivial recency, not learning.
   KILL = utility fails to beat recency CI-significantly ⇒ ``killed=True`` ⇒ moves
-         #1/#2/#4/#5/#7 are NOT built (§6.6 / §7). A clean negative kills six
+         #1/#2/#4/#5/#7 are NOT built. A clean negative kills six
          unbuilt moves cheaply — the experiment the whole MVP exists to run.
-  INCONCLUSIVE ≠ NEGATIVE (§12 readiness pre-gate): too few settled outcomes or too
+  INCONCLUSIVE ≠ NEGATIVE (readiness pre-gate): too few settled outcomes or too
          few distinct credited memories ⇒ ``inconclusive=True`` (NOT ``killed``);
          the remedy is widen the family / extend the window.
 
@@ -45,7 +45,7 @@ log = logging.getLogger("hive.research.keystone")
 # The four control arms. They differ ONLY in the per-candidate ranking signal.
 RANKING_MODES = ("utility", "utility_off", "recency", "frequency")
 
-# §12 readiness minima (inconclusive ≠ negative). Defaults; a caller may tighten.
+# readiness minima (inconclusive ≠ negative). Defaults; a caller may tighten.
 _DEFAULT_N_SETTLED_MIN = 30
 _DEFAULT_M_MEMORIES_MIN = 10
 
@@ -204,7 +204,7 @@ class KeystoneSpec:
 
 @dataclass(frozen=True)
 class KeystoneResult:
-    """The frozen §6.6 verdict. ``win``/``killed``/``inconclusive`` are mutually the
+    """The frozen verdict. ``win``/``killed``/``inconclusive`` are mutually the
     decision; the CI tuples + per-arm results make the decision auditable."""
     arms: dict
     beats_recency: bool
@@ -232,7 +232,7 @@ def _arm(name: str, vec: Sequence[float]) -> ArmResult:
 
 def run_keystone_eval(spec: KeystoneSpec, *, n_boot: int = 10_000,
                       seed: int = 0) -> KeystoneResult:
-    """Score the four arms and apply the §6.6 decision. // see module docstring."""
+    """Score the four arms and apply the keystone decision. // see module docstring."""
     # The arms are the SAME tasks scored under different ranking signals, so their
     # per-task vectors MUST be equal length — otherwise `zip` below would SILENTLY
     # truncate the longer arm and fabricate a paired comparison out of unpaired
@@ -270,7 +270,7 @@ def run_keystone_eval(spec: KeystoneSpec, *, n_boot: int = 10_000,
     within_transfer, transfer_ci = _within_family_transfer(
         spec.transfer_present, spec.transfer_ablated, n_boot=n_boot, seed=seed)
 
-    # §12 readiness pre-gate: inconclusive ≠ negative.
+    # readiness pre-gate: inconclusive ≠ negative.
     inconclusive = (spec.settled < spec.n_settled_min
                     or spec.distinct_memories < spec.m_memories_min)
 

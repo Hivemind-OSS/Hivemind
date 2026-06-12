@@ -1,5 +1,5 @@
-"""TOOL_DEFINITIONS — the static ``tools/list`` schema table for the MCP surface
-(02-CONTRACTS §3). EXACTLY 6 tools: the trust-lifecycle build adds ``hive_capture``
+"""TOOL_DEFINITIONS — the static ``tools/list`` schema table for the MCP surface.
+EXACTLY 6 tools: the trust-lifecycle build adds ``hive_capture``
 (autonomous, lands quarantined) beside the five; ``hive_evidence`` deliberately does
 NOT exist (no client-fed evidence in this build). The server-side approval QUEUE
 (hive_pending / hive_approve / hive_reject) was removed with the move to

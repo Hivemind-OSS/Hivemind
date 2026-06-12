@@ -1,8 +1,8 @@
 """M11 — the structured-logging spine (PORT of the reference `ops/observability.py`).
 
 One JSON record per line at every boundary; configured ONCE at server start onto the `"hive"`
-root logger. The in-memory metrics registry is DROPPED for v-min (spec §10 "Diagnostics →
-health only"). Secrets are NEVER logged — callers pass field names/counts/paths, never values.
+root logger. The in-memory metrics registry is DROPPED for v-min (Diagnostics →
+health only). Secrets are NEVER logged — callers pass field names/counts/paths, never values.
 """
 from __future__ import annotations
 

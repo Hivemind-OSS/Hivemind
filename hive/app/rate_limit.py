@@ -1,7 +1,7 @@
 """TokenBucketLimiter — the per-token throttle for the HTTP transport (Part S).
 
 Under a public tunnel every request shares the tunnel's egress IP, so the load-bearing
-limiter is POST-AUTH, keyed on the VERIFIED device label (REMOTE-ACCESS-PLAN D3) — never
+limiter is POST-AUTH, keyed on the VERIFIED device label (D3) — never
 a source/forwarded IP, which sidesteps the X-Forwarded-For trust hazard entirely. One
 continuous-refill bucket per key, held in a BOUNDED LRU map so attacker-varied keys can
 never grow memory past ``max_keys``.
@@ -68,7 +68,7 @@ class TokenBucketLimiter:
                     tokens, last = self._limit, now
                 else:
                     last += refill * interval              # keep the fractional remainder
-        if tokens > 0:                 # ← RULE-2 fault: `>= 0` is the off-by-one mutation
+        if tokens > 0:                 # ← fault: `>= 0` is the off-by-one mutation
             self._touch(key, tokens - 1, last)
             return RateLimitResult(True, 0)
         # denied: the next token completes at last+interval (floor above guarantees

@@ -1,7 +1,7 @@
-"""P1.10 — M10 [C1] keystone: the §6.6 control-arm decision + the two BUILD-NEW
+"""P1.10 — M10 [C1] keystone: the control-arm decision + the two BUILD-NEW
 statistics (_non_saturating, _within_family_transfer) + the four-arm ranking seam.
 
-Locked assertions: docs/05-BUILD-PLAN.md §P1.10(a) keystone block + M10-eval.md §2.5.
+Locked assertions for the keystone block.
 """
 from __future__ import annotations
 
@@ -28,7 +28,7 @@ def _accrual(bases, *, seed, spread):
 # rising: clear upward slope, tight spread ⇒ β1_lo > 0 ⇒ non_saturating
 _RISING = _accrual([0.20, 0.35, 0.50, 0.65, 0.80], seed=1, spread=0.03)
 # saturating: plateau with a SLIGHT positive point-slope but wide spread ⇒ β1_lo ≤ 0
-# (β1_hat > 0). This is the fixture the RULE-2 mutation (β1_lo>0 → β1_hat>0) flips.
+# (β1_hat > 0). This is the fixture the mutation (β1_lo>0 → β1_hat>0) flips.
 _SATURATING = _accrual([0.48, 0.49, 0.50, 0.51, 0.52], seed=2, spread=0.25)
 
 _XFER_PRESENT = (1, 1, 1, 0, 1, 1, 1, 1, 0, 1)   # credited posterior PRESENT lifts recall
@@ -52,7 +52,7 @@ def _spec(**kw) -> KeystoneSpec:
     return KeystoneSpec(**base)
 
 
-# ── the §6.6 decision ─────────────────────────────────────────────────────────
+# ── the keystone decision ─────────────────────────────────────────────────────────
 def test_keystone_win_requires_beating_recency_AND_frequency():
     win = run_keystone_eval(_spec(), seed=0)
     assert win.beats_recency and win.beats_frequency

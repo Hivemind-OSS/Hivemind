@@ -63,11 +63,11 @@ def test_health_snapshot_has_no_secret_substring():
     assert snap["linked"] is False and snap["link"] is None
 
 
-# ── §5.2 self-onboard hint (first-touch onboarding on an unlinked repo) ───────────
+# ── self-onboard hint (first-touch onboarding on an unlinked repo) ────────────────
 def test_health_unlinked_repo_returns_onboarding_hint():
-    """§5.2: a repo with NO link record gets the onboarding block back so the agent knows
+    """A repo with NO link record gets the onboarding block back so the agent knows
     its ONE next call (hive_init) — no skill discovery, the server hands it the step.
-    Removing the unlinked branch in _handle_health drops this key (RULE-2 mutation, §7)."""
+    Removing the unlinked branch in _handle_health drops this key (deliberate mutation)."""
     server, _ = build_real_server()
     snap = content(tool_call(server, "hive_health", {"repo_path": "/tmp/fresh-unlinked"}))
     assert snap["ok"] is True
@@ -80,7 +80,7 @@ def test_health_unlinked_repo_returns_onboarding_hint():
 
 
 def test_health_linked_repo_has_no_onboarding_hint():
-    """§5.3: a re-touch of an already-linked repo finds linked:true and gets NO hint —
+    """A re-touch of an already-linked repo finds linked:true and gets NO hint —
     the onboarding block is the first-touch signal only, never repeated."""
     server, _ = build_real_server()
     repo = "/tmp/linked-repo"
@@ -155,9 +155,9 @@ def test_init_phase2_link_records_manifest_version_and_tier():
     assert confirmed["link"]["tier"] == 2 and confirmed["link"]["harness"] == "claude-code"
 
 
-# ── §6 chunk-6: verify gate substrate (banner field · setup short-circuit · V4) ───
+# ── chunk-6: verify gate substrate (banner field · setup short-circuit · V4) ──────
 def _link_repo(server, repo, harness="generic"):
-    """Drive both phases so ``repo`` is linked (mirrors the §5.1/§5.2 handshake)."""
+    """Drive both phases so ``repo`` is linked (mirrors the two-phase handshake)."""
     plan = content(tool_call(server, "hive_init", {"repo_path": repo, "harness": harness}))
     content(tool_call(server, "hive_init",
                       {"repo_path": repo, "harness": harness,
@@ -166,7 +166,7 @@ def _link_repo(server, repo, harness="generic"):
 
 
 def test_init_phase1_returns_provenance_banner():
-    """§5.3.2: phase-1 hands over the completion banner so the agent stamps it LAST. It is
+    """Phase-1 hands over the completion banner so the agent stamps it LAST. It is
     a marker OUTSIDE the hashed block — it must carry no hive-init delimiter."""
     server, _ = build_real_server()
     plan = content(tool_call(server, "hive_init",
@@ -179,7 +179,7 @@ def test_init_phase1_returns_provenance_banner():
 
 
 def test_health_linked_repo_reports_setup_complete():
-    """§5.3.3: a linked repo's health carries the bootstrap short-circuit (complete/next)
+    """A linked repo's health carries the bootstrap short-circuit (complete/next)
     and — being linked — NO onboarding hint."""
     server, _ = build_real_server()
     repo = "/tmp/linked-setup"
@@ -191,7 +191,7 @@ def test_health_linked_repo_reports_setup_complete():
 
 
 def test_health_status_probe_writes_nothing():
-    """★ §7 mutation #5: the bootstrap status probe is a PURE READ. A health call on a
+    """★ mutation #5: the bootstrap status probe is a PURE READ. A health call on a
     linked repo must issue ZERO meta_set writes — inserting any write into the linked
     branch trips this spy."""
     server, _ = build_real_server()
@@ -206,7 +206,7 @@ def test_health_status_probe_writes_nothing():
 
 
 def test_health_hooks_seen_advances_after_capture():
-    """§7 V4 substrate: hive_write stamps meta[hook:last_seen:hive_write]; hooks_seen
+    """V4 substrate: hive_write stamps meta[hook:last_seen:hive_write]; hooks_seen
     surfaces it and it ADVANCES across captures (a pure-read verb would not move it)."""
     server, clock = build_real_server()
     assert content(tool_call(server, "hive_health", {}))["hooks_seen"] == {}   # nothing yet

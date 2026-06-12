@@ -100,7 +100,7 @@ class Container:
     def migrate(self) -> None:
         """Verify the store is migrated: every required table present (a missing one is a
         botched migration ⇒ raise ⇒ EX_SOFTWARE) and, for a persistent file DB, WAL active
-        (the §6 defensive boot assert; :memory: reports 'memory', not 'wal', so skip it)."""
+        (the defensive boot assert; :memory: reports 'memory', not 'wal', so skip it)."""
         present = {r["name"] for r in self.conn.execute(
             "SELECT name FROM sqlite_master WHERE type='table'")}
         missing = _REQUIRED_TABLES - present
@@ -224,7 +224,7 @@ def build_container(cfg: Config, *, tenant_id: str, agent_id: str,
 
     gate = registry.build_gate(cfg)
     # Phase-1 INERT surfacer: enabled=False ⇒ byte-identical passthrough (utility observed,
-    # not applied). Flipping this default to True is the §6.1 RULE-2 mutation.
+    # not applied). Flipping this default to True is the deliberate mutation the acceptance tests catch.
     surfacer = UtilitySurfacer(
         enabled=False, epsilon_explore=cfg.recall.epsilon_explore,
         f_min=cfg.utility.f_min, f_max=cfg.utility.f_max, rng=random.Random(_SURFACER_SEED))

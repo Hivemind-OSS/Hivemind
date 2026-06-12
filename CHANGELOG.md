@@ -44,7 +44,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   MCP registration line; transport only, never `hive_init`).
 - `authctl list` subcommand + `SqliteTokenStore.labels()` — seat inventory, labels
   only, never hashes.
-- Mechanical memory lifecycle (AUTONOMY-PLAN v2): `hive_capture` lands insights
+- Mechanical memory lifecycle: `hive_capture` lands insights
   quarantined (embedded, structurally unservable); measured recall-miss demand from
   ≥1 non-writer identity auto-promotes to `provisional`, served WITH its trust label;
   TTL decay retires unused quarantined/provisional rows; `hive_write(replaces=)` is

@@ -1,5 +1,5 @@
-"""§4 hook manifest + harness profile/recipe — the abstract, versioned HookManifest
-projected onto each IDE at its capability tier. The load-bearing invariant (the §7 mutation
+"""hook manifest + harness profile/recipe — the abstract, versioned HookManifest
+projected onto each IDE at its capability tier. The load-bearing invariant (the mutation
 pin): a Tier-≤1 host NEVER receives OS hook files — enforced at construction, so a violation
 is UNCONSTRUCTABLE, not merely asserted."""
 from __future__ import annotations
@@ -33,7 +33,7 @@ def test_profile_max_tier_iff_hook_mechanism():
 
 
 def test_recipe_tier1_must_emit_zero_hook_files():
-    """★ the §7 mutation pin: a Tier-≤1 host with OS hook files cannot be constructed."""
+    """★ the mutation pin: a Tier-≤1 host with OS hook files cannot be constructed."""
     with pytest.raises(ValueError):
         HarnessRecipe(harness="x", resolved_tier=TIER_RULES, manifest_version=1,
                       rules_addendum="a", playbook="p", hook_files=(HookFile("p", "c", "m"),))

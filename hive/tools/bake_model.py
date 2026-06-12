@@ -4,7 +4,7 @@
 runs in the Dockerfile *builder* stage to materialize the sentence-transformer weights
 into an image LAYER, so the runtime image (with `HF_HUB_OFFLINE=1`/`TRANSFORMERS_OFFLINE=1`)
 can load the model with the network namespace removed (`--network none`) — the product's
-"local & self-contained / no-network-on-hot-path" invariant (spec §1) made STRUCTURAL,
+"local & self-contained / no-network-on-hot-path" invariant made STRUCTURAL,
 not documented.
 
 `--dest` MUST be the HF hub cache dir the offline runtime resolves: with `HF_HOME=/opt/
@@ -62,7 +62,7 @@ def bake(model: str, dest: str, *, loader: Optional[Callable[[str, str], None]] 
         return FAILED
     if not _nonempty_dir(dest):
         # a loader that ran but wrote nothing ⇒ no weights baked ⇒ the offline guarantee
-        # is a lie; refuse to let the build succeed (the §1 invariant must be real).
+        # is a lie; refuse to let the build succeed (the no-network-on-hot-path invariant must be real).
         _log.error("bake.empty_dest model=%s dest=%s — no weights written", model, dest)
         return FAILED
     _log.info("bake.complete model=%s dest=%s", model, dest)

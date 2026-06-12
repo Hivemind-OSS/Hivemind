@@ -1,4 +1,4 @@
-"""§6.1 Phase-1-inert acceptance + the chunk's RULE-2 mutation target — utility is
+"""Phase-1-inert acceptance + the chunk's deliberate mutation target — utility is
 OBSERVED-NOT-APPLIED: posteriors accrue, but the surfacer (enabled=False) NEVER moves
 recall order. Flipping ``surfacer.enabled`` to True in build_container makes
 ``test_acceptance_utility_observed_not_applied`` go RED (the confident-negative posterior

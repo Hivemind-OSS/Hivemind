@@ -15,9 +15,9 @@ them and on the healthcheck — prose in a log cannot lie about an exit code:
     70 EX_SOFTWARE     — an internal boot step failed (migrate / index / assembly)
     78 EX_CONFIG       — a required env var is missing OR Config validation failed
 
-Boundary (M12 §5): the entrypoint OWNS the operator-facing env contract for the three
+Boundary: the entrypoint OWNS the operator-facing env contract for the three
 boot-critical values the ported server shape needs (`tenant_id` / `db_path` / `agent_id`,
-the §6.2 compose keys `HIVE_TENANT_ID` / `HIVE_STORE__DB_PATH` / `HIVE_AGENT_ID`) and
+the compose keys `HIVE_TENANT_ID` / `HIVE_STORE__DB_PATH` / `HIVE_AGENT_ID`) and
 bridges them into `Config.load`; the rest of the config tree is M-config's `HIVE_*__`
 namespace, which the entrypoint does NOT re-parse. The REAL adapter assembly (store +
 embedder + index + server) lands in P1.14 (`hive.app.container.build_container`) and is
@@ -48,7 +48,7 @@ _DEFAULT_DB_PATH = "/data/shared.db"
 _DEFAULT_AGENT_ID = "default-agent"
 _DEFAULT_LOG_LEVEL = logging.INFO
 _DEFAULT_HTTP_PORT = 8765
-# Part S hardening defaults (REMOTE-ACCESS-PLAN §4): generous for a busy single agent,
+# Part S hardening defaults: generous for a busy single agent,
 # `HIVE_HTTP_RATE_LIMIT=0` disables. The 1 MiB cap mirrors http_server._DEFAULT_MAX_BODY
 # (kept separate — the entrypoint owns the OPERATOR env contract; http_server stays
 # importable without it and is deliberately lazy-imported at serve time).
@@ -58,7 +58,7 @@ _DEFAULT_MAX_BODY_BYTES = 1 << 20
 
 
 def _configure_logging(level: int) -> None:
-    """Bind the structured-JSON-to-stderr handler onto the `hive` logger (M12 §6: all boot
+    """Bind the structured-JSON-to-stderr handler onto the `hive` logger (all boot
     checkpoints are JSON on stderr; stdout is the JSON-RPC channel). Idempotent — safe to
     call twice (default level pre-config, then the operator's `cfg.obs.log_level`). Lazy
     import so module import stays light and torch-free. // O(1)."""
@@ -276,12 +276,12 @@ def main(argv: Optional[list[str]] = None, *, env: Optional[Mapping[str, str]] =
     pid = os.getpid() if pid is None else pid
 
     # Structured JSON → stderr at a safe default BEFORE config loads, so even the missing-env
-    # error surfaces in the §6 format (re-leveled to cfg.obs.log_level once config is known).
+    # error surfaces in the structured-JSON format (re-leveled to cfg.obs.log_level once config is known).
     _configure_logging(_DEFAULT_LOG_LEVEL)
 
     # ── config.loaded (EX_CONFIG on missing-env OR validation failure) ──
     resolved = _resolve_env(env)
-    if resolved is None:                                # ← removing this guard is RULE-2 mut #2
+    if resolved is None:                                # ← removing this guard is mutation #2
         return EX_CONFIG
     tenant_id, db_path, agent_id = resolved
     port = _resolve_port(env)                           # malformed HIVE_HTTP_PORT → fail fast
@@ -323,7 +323,7 @@ def main(argv: Optional[list[str]] = None, *, env: Optional[Mapping[str, str]] =
         boot.migrate()
     except Exception as exc:                            # noqa: BLE001
         _log.error("entrypoint.migrate_failed kind=%s code=%d", type(exc).__name__, EX_SOFTWARE)
-        return EX_SOFTWARE                              # ← deleting this return is RULE-2 mut #4
+        return EX_SOFTWARE                              # ← deleting this return is mutation #4
     _log.info("entrypoint.migrate_done")
 
     # ── index.built (EX_SOFTWARE) ──
@@ -340,7 +340,7 @@ def main(argv: Optional[list[str]] = None, *, env: Optional[Mapping[str, str]] =
     except Exception as exc:                            # noqa: BLE001 — dead embedder
         _log.error("entrypoint.embedder_warm_failed kind=%s code=%d",
                    type(exc).__name__, EX_UNAVAILABLE)
-        return EX_UNAVAILABLE                           # ← swallowing this is RULE-2 mut #3
+        return EX_UNAVAILABLE                           # ← swallowing this is mutation #3
     if not bool(getattr(embedder, "loaded", False)):
         _log.error("entrypoint.embedder_not_resident code=%d", EX_UNAVAILABLE)
         return EX_UNAVAILABLE

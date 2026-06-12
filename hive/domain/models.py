@@ -50,7 +50,7 @@ class Scored:
     sim: float
 
 
-# RecallState / RecallHit / RecallResult — the recall surface (02-CONTRACTS §2.1).
+# RecallState / RecallHit / RecallResult — the recall surface.
 # abstain-no-resurrect is made STRUCTURAL on RecallResult: a non-CONFIDENT result
 # carrying hits is UNCONSTRUCTABLE (__post_init__ raises), so no fallback can
 # repopulate a refused query.
@@ -79,7 +79,7 @@ class RecallHit:
 @dataclass(frozen=True, slots=True)
 class RecallResult:
     """The frozen result of a recall. ``hits`` is non-empty IFF ``CONFIDENT``;
-    ``trace_id`` is ALWAYS present (hit AND abstain) — the §11 move-#6 join key."""
+    ``trace_id`` is ALWAYS present (hit AND abstain) — the move-#6 join key."""
     state: RecallState
     trace_id: str
     hits: tuple[RecallHit, ...]
@@ -97,13 +97,13 @@ class RecallResult:
     def __post_init__(self) -> None:
         if self.state not in (CONFIDENT, ABSTAIN, EMPTY_NO_DATA):
             raise ValueError(f"bad recall state {self.state!r}")
-        # §2.1 biconditional, BOTH directions structural:
+        # the CONFIDENT<->has-hits biconditional, BOTH directions structural:
         #  - only CONFIDENT may carry hits (abstain-no-resurrect), AND
         #  - CONFIDENT must carry ≥1 hit (no empty-confident — the reverse resurrect).
         if self.state != CONFIDENT and self.hits:
             raise ValueError("only CONFIDENT may carry hits (abstain-no-resurrect)")
         if self.state == CONFIDENT and not self.hits:
-            raise ValueError("CONFIDENT must carry ≥1 hit (§2.1 biconditional)")
+            raise ValueError("CONFIDENT must carry ≥1 hit (CONFIDENT<->has-hits biconditional)")
         if not (0.0 <= self.entropy_norm <= 1.0):
             raise ValueError("entropy_norm must be in [0,1]")
 
@@ -116,7 +116,7 @@ class RecallResult:
 @dataclass(frozen=True, slots=True)
 class SettledExposure:
     """One settled task-outcome joined with the eids it exposed — the unit the
-    PredictionBiasMonitor scores (guardrail-3 / §12 readiness instrument, A6).
+    PredictionBiasMonitor scores (guardrail-3 / readiness instrument, A6).
     ``reward_sign`` is ±1 (settled_pos → +1, clawed_back → −1); realized maps +1→1,
     −1→0 "like the mean". ``exposed`` is the recalled eids credited at recall time;
     ``settle_ts`` is when reality landed (the window key). An unconstrainable
@@ -189,7 +189,7 @@ class Episode:
 
 # ── onboarding carriers (M07 hive_init handshake; M06 depends on the port) ────
 
-# The §6.4 marker delimiters. The block is located + hashed by these bounds so the
+# The marker delimiters. The block is located + hashed by these bounds so the
 # phase-2 confirm hashes EXACTLY what the agent installed. Defined here (the carrier
 # that enforces them) so there is one source of truth for both the renderer (M07
 # onboard.py) and the conformance-checking fakes.
@@ -211,7 +211,7 @@ class RulesBlock:
     a hash that does not bind that body — is UNCONSTRUCTABLE, so the recorded link
     cannot lie about what was installed. ``trailer_key`` is ALWAYS sourced from
     ``producer.stamp_trailer`` (never literal); requiring it to appear in the body
-    kills the §11/§6.1#6 CONFIG_DRIFT silent-join-failure at construction time — a
+    kills the CONFIG_DRIFT silent-join-failure at construction time — a
     hard-coded template literal that diverges from ``trailer_key`` cannot be built."""
     rendered_text: str
     trailer_key: str
@@ -233,7 +233,7 @@ class RulesBlock:
             raise ValueError("block_hash does not bind rendered_text")
 
 
-# ── runtime-agnostic delivery (§4): capability tiers + hook manifest/profile/recipe ──
+# ── runtime-agnostic delivery: capability tiers + hook manifest/profile/recipe ──
 # Tier 0 = MCP tools (universal); Tier 1 = rules-file contract (default); Tier 2 = native
 # hooks (claude-code). A new IDE is a new HarnessProfile ROW, never a code change.
 TIER_MCP, TIER_RULES, TIER_HOOKS = 0, 1, 2
@@ -251,7 +251,7 @@ class HookSpec:
 
 @dataclass(frozen=True, slots=True)
 class HookManifest:
-    """The VERSIONED, harness-independent set of behavioral hooks (§4). Projected onto a
+    """The VERSIONED, harness-independent set of behavioral hooks. Projected onto a
     concrete host by HarnessRecipe; the ``generic`` profile returns it verbatim (as JSON)
     + an NL playbook so an un-profiled agent can self-apply it. ``manifest_version`` is the
     single source both the link record and the hive_health onboarding hint report."""
@@ -265,7 +265,7 @@ class HookManifest:
 
 @dataclass(frozen=True, slots=True)
 class HarnessProfile:
-    """One DATA row per IDE (§4) — a new host is a new row, not code. ``max_tier`` caps
+    """One DATA row per IDE — a new host is a new row, not code. ``max_tier`` caps
     materialization: a host with no hook mechanism can NEVER be handed OS hook files.
     Non-Claude ``mcp_config_target`` paths are best-effort (verify at build time)."""
     harness: str
@@ -295,7 +295,7 @@ class HookFile:
 
 @dataclass(frozen=True, slots=True)
 class HarnessRecipe:
-    """A HookManifest PROJECTED onto one harness at its resolved tier. INVARIANT (the §7
+    """A HookManifest PROJECTED onto one harness at its resolved tier. INVARIANT (the
     mutation pin, enforced at construction so a violation is UNCONSTRUCTABLE): a Tier-≤1
     host emits ZERO ``hook_files`` (no OS hooks below Tier 2) and a Tier-2 host emits ≥1.
     ``rules_addendum`` is the Tier-≥1 capture directive; ``playbook`` is the NL self-apply
@@ -320,7 +320,7 @@ class HarnessRecipe:
 @dataclass(frozen=True, slots=True)
 class InstallPlan:
     """The typed result of hive_init phase-1 (zero writes). ``expected_confirm_hash`` is
-    the phase-2 confirmation key; ``manifest``/``recipe`` carry the §4 hook manifest and
+    the phase-2 confirmation key; ``manifest``/``recipe`` carry the hook manifest and
     its per-harness projection. Frozen so the plan cannot drift between render and confirm."""
     rules_file: str
     harness: str
@@ -343,7 +343,7 @@ class InstallPlan:
 
 # ── utility posterior (Beta-Bernoulli) ───────────────────────────────────────
 
-# Pinned in docs/08-RESOLUTIONS.md Cluster D2: uniform prior Beta(1,1),
+# Pinned in Cluster D2: uniform prior Beta(1,1),
 # normal-approx CI, confident iff the (1 - 2·(1-ci_level)) interval excludes 0.5.
 PRIOR_A: float = 1.0
 PRIOR_B: float = 1.0
@@ -377,6 +377,6 @@ class UtilityPosterior:
     def ci_excludes_half(self, ci_level: float = 0.90) -> bool:
         """True iff the normal-approx CI excludes the no-signal point u₀=0.5 [D2].
         confident ⇔ |mean − 0.5| > Z·sd  (the gate that keeps un-confident utility
-        from ever moving ranking, spec §4.7 invariant)."""
+        from ever moving ranking — an invariant)."""
         z = _Z_FOR_CI.get(round(ci_level, 2), 1.645)
         return abs(self.mean() - 0.5) > z * self._sd()

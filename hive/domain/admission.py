@@ -1,5 +1,5 @@
 """AdmissionService — the one deep module that turns a proposed insight into a
-recallable memory through a single irreversible-by-construction gauntlet (M05 §1):
+recallable memory through a single irreversible-by-construction gauntlet (M05):
 
   1. deterministic secret scan BEFORE any persistence (refuse/redact pre-stage),
   2. content-hash-deduped staging,
@@ -7,7 +7,7 @@ recallable memory through a single irreversible-by-construction gauntlet (M05 §
      flipped to ``status='approved'`` (the only recallable state) before ``write``
      returns.
 
-CLIENT-GATED capture (HOOK-RELOCATION-PLAN v3): the server-side pending→approve QUEUE
+CLIENT-GATED capture: the server-side pending→approve QUEUE
 was removed. A write is approved by a human in native chat BEFORE the tool call; the
 caller passes that approver as ``approved_by`` and the server records it. There is no
 ``list_pending`` / ``approve`` / ``reject`` surface — the ONE non-bypassable gate that
@@ -21,7 +21,7 @@ swap seam.
 
 Secret-safety: on REFUSE nothing is written (0 rows, 0 blobs) and ``SecretRefused``
 carries only rule names; on REDACT only the masked text is stored; no log line ever
-contains the secret text (every field logged is a label/count/id) — §6.1 #5a/#5b.
+contains the secret text (every field logged is a label/count/id) — #5a/#5b.
 """
 from __future__ import annotations
 

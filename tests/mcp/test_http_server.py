@@ -1,18 +1,18 @@
-"""Chunk 3 — run_http: per-device bearer auth in front of HiveMCPServer (AUTH-PLAN §4).
+"""Chunk 3 — run_http: per-device bearer auth in front of HiveMCPServer.
 
 Drives the REAL handler (``_build_handler``) on a real loopback ``ThreadingHTTPServer`` at
 127.0.0.1:0, with a SpyServer standing in for HiveMCPServer so the transport obligations are
 tested in isolation: 200/result on a valid token, 401-BEFORE-handle (INV-1), identity
 threading (token label → ``identity.agent_id``), 202 notification, 405 GET, 403 Origin,
-INV-3 robustness, and channel separation (protocol errors ride a 200). The RULE-2 mutation
+INV-3 robustness, and channel separation (protocol errors ride a 200). The mutation
 (do_POST skips the ``verify``-None → 401 guard) makes the missing-token test red.
 
-REMOTE-ACCESS-PLAN Part S extends the contract with the two transport belts, both
+Part S extends the contract with the two transport belts, both
 keyword-only and DEFAULT-OFF so every pre-existing test here doubles as the AC6
 backward-compat proof: a ``limiter`` throttles one verified label with 429+``Retry-After``
 (handle untouched, other labels unaffected), and ``max_body_bytes`` rejects an oversized
 body with 413 BEFORE any body byte is read (raw-socket proof: a declared-but-never-sent
-body would hang a server that drained first). RULE-2 mutations: drop the 429 guard, drop
+body would hang a server that drained first). Mutations: drop the 429 guard, drop
 the 413 return, flip the cap comparison.
 """
 from __future__ import annotations
@@ -94,7 +94,7 @@ def _request(url, *, method="POST", body=None, token=None, headers=None):
         return e.code, e.read().decode("utf-8"), dict(e.headers)
 
 
-# ── the §4 contract ────────────────────────────────────────────────────────────
+# ── the bearer-auth contract ───────────────────────────────────────────────────
 def test_valid_token_request_returns_200_json_result(live):
     url, spy = live
     status, body, hdrs = _request(url, body=_RPC, token="good-tok")

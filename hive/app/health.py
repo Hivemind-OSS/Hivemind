@@ -3,7 +3,7 @@
 `health(cfg, store, embedder)` fails SOFT to `ok=False` on ANY probe failure (store /
 embedder) so a container HEALTHCHECK can never itself crash. Includes `embedder_loaded`
 (present + boolean; False until the model is resident — a container is not healthy before
-the model is in RAM) and `index_authoritative` (the §4.3 property). The producer-tick /
+the model is in RAM) and `index_authoritative` (the authoritative-index property). The producer-tick /
 watch-repos fields were removed with the producer subsystem.
 """
 from __future__ import annotations
@@ -33,7 +33,7 @@ class HealthSnapshot:
     error: Optional[str] = None
     # M07 additive link surfacing. ``linked`` is None UNTIL a repo_path is probed; in
     # that state as_dict() OMITS both keys so the no-repo_path payload is byte-identical
-    # to the pre-M07 snapshot (the "tool count / no-token discipline" of the M07 spec).
+    # to the pre-M07 snapshot (the "tool count / no-token discipline").
     linked: Optional[bool] = None
     link: Optional[dict] = None
 

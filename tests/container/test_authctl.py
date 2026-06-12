@@ -1,9 +1,9 @@
-"""Chunk 5 — authctl admin CLI: mint + revoke per-device tokens (AUTH-PLAN §4/§10).
+"""Chunk 5 — authctl admin CLI: mint + revoke per-device tokens.
 
 create LABEL prints the 256-bit plaintext to stdout ONCE (the operator hands it over via a
 secret manager); revoke LABEL deletes the token so the device's next request 401s. db_path
 resolves from --db / $HIVE_STORE__DB_PATH and FAILS FAST (EX_CONFIG) if absent — mirroring the
-entrypoint. The RULE-2 mutation (revoke claims success without deleting) makes the
+entrypoint. The mutation (revoke claims success without deleting) makes the
 revoke→verify-None test red.
 """
 from __future__ import annotations

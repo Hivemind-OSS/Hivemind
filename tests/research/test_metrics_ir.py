@@ -1,7 +1,7 @@
 """P1.10 — M10 pure metrics (PORT) + BUILD-NEW significance (abstention_auroc,
 bootstrap_ci). Store-free, hash-speed.
 
-Locked assertions: docs/05-BUILD-PLAN.md §P1.10(a) and docs/03-modules/M10-eval.md §2.2.
+Locked assertions for the IR-metrics scorer.
 """
 from __future__ import annotations
 
@@ -116,7 +116,7 @@ def test_auroc_nan_score_raises():
 
 
 def test_auroc_target_band_on_fixture():
-    # a realistic (imperfect) confidence split lands AUROC in the §6.1 #2 band.
+    # a realistic (imperfect) confidence split lands AUROC in the honest-abstention band.
     # 6 hits + 4 misses that overlap heavily in the middle ⇒ 18/24 concordant = 0.75.
     scores = [0.92, 0.85, 0.80, 0.74, 0.60, 0.40,   # hits (a low straggler at 0.40)
               0.78, 0.70, 0.55, 0.35]               # misses (high stragglers 0.78/0.70)

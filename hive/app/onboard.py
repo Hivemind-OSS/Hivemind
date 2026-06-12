@@ -6,7 +6,7 @@ LIE about which block content landed:
 
   - **Phase 1** (`plan`): pure except read-only filesystem probes. Resolves the primary
     rules file (ordered candidate list, first existing wins, else CLAUDE.md fallback),
-    renders the §6.4 marker-delimited rules block with ``trailer_key`` single-sourced
+    renders the marker-delimited rules block with ``trailer_key`` single-sourced
     from ``producer.stamp_trailer`` (NEVER literal), and returns a typed ``InstallPlan``
     carrying ``expected_confirm_hash == rules_block.block_hash``. Zero writes.
   - **Phase 2** (`confirm`): the agent has written the block; the server recomputes the
@@ -51,7 +51,7 @@ DEFAULT_RULES_FILE_CANDIDATES: tuple[str, ...] = (
 
 _LINK_KEY_PREFIX = "hive_init:link:"
 
-# ── §5.2 self-onboard hint ───────────────────────────────────────────────────────
+# ── self-onboard hint ───────────────────────────────────────────────────────
 # The first-touch instruction any tool returns when touched from a repo with NO link
 # record. ``manifest_version`` is single-sourced here for now; chunk-5's HookManifest
 # makes the InstallPlanner the authoritative version source (the helper already accepts
@@ -62,7 +62,7 @@ ONBOARDING_MANIFEST_VERSION = 2
 
 
 def onboarding_hint(manifest_version: Optional[int] = None) -> dict:
-    """The §5.2 self-onboard block returned when a tool is touched from a repo with NO
+    """The self-onboard block returned when a tool is touched from a repo with NO
     link record. REFERENCE, not an instruction-to-obey: a fixed shape naming the ONE
     next call that links this repo. Carries no repo content and no secret — only a
     version int + a static ``next`` string. // O(1) time, O(1) space."""
@@ -71,9 +71,9 @@ def onboarding_hint(manifest_version: Optional[int] = None) -> dict:
             "next": "call hive_init(repo_path, harness) to install your hooks"}
 
 
-# ── §5.3.2 provenance banner (the completion marker, stamped LAST) ─────────────────
+# ── provenance banner (the completion marker, stamped LAST) ─────────────────
 # A single HTML-comment line the onboarding agent appends to the rules file ONLY AFTER
-# the §7 verify gate passes — and OUTSIDE the hashed ``<!-- hive-init -->`` block, so it
+# the verify gate passes — and OUTSIDE the hashed ``<!-- hive-init -->`` block, so it
 # can never perturb the phase-2 confirm hash. Its presence is ALSO the agent-side
 # re-touch guard ("already set up — do nothing").
 SETUP_BANNER_PREFIX = "<!-- hive-setup:"
@@ -81,7 +81,7 @@ SETUP_BANNER_PREFIX = "<!-- hive-setup:"
 
 def provenance_banner(harness: str, tier: int,
                       manifest_version: int = ONBOARDING_MANIFEST_VERSION) -> str:
-    """Render the §5.3.2 provenance banner for ``harness`` at its resolved ``tier``.
+    """Render the provenance banner for ``harness`` at its resolved ``tier``.
     REFERENCE, not an instruction: a marker the agent stamps LAST. By construction it
     contains neither ``RULES_BLOCK_START`` nor ``RULES_BLOCK_END`` (it lives outside the
     hashed block) and carries no trailer/secret — only labels + the manifest version, so
@@ -90,8 +90,8 @@ def provenance_banner(harness: str, tier: int,
             f"manifest={int(manifest_version)} · DO NOT re-run -->")
 
 
-# ── §4 hook manifest + harness profiles (abstract behaviors + per-IDE projection) ──
-# The capture directive (§3.1): the universal Tier-≥1 rules-file instruction, single-
+# ── hook manifest + harness profiles (abstract behaviors + per-IDE projection) ──
+# The capture directive: the universal Tier-≥1 rules-file instruction, single-
 # sourced here and surfaced as every recipe's rules_addendum. v2: autonomous capture —
 # no ask needed; the human enters only to CORRECT (hive_write replaces).
 _CAPTURE_DIRECTIVE = (
@@ -127,7 +127,7 @@ HOOK_MANIFEST = HookManifest(
     ),
 )
 
-# One DATA row per IDE (§4): a new host is a new row, not code. Non-Claude
+# One DATA row per IDE: a new host is a new row, not code. Non-Claude
 # ``mcp_config_target`` paths are best-effort ("verify at build time" — a wrong path is a
 # one-row fix). Only claude-code exposes a hook mechanism today (Tier 2); the rest self-
 # drive at Tier 1; an unknown host falls back to ``generic``.
@@ -152,7 +152,7 @@ HARNESS_PROFILES: dict[str, HarnessProfile] = {
 
 
 def resolve_profile(harness: str) -> HarnessProfile:
-    """The §4 profile row for ``harness``; an unknown/long-tail host falls back to
+    """The profile row for ``harness``; an unknown/long-tail host falls back to
     ``generic`` (self-resolve) — agnostic by construction, never an error. // O(1)."""
     return HARNESS_PROFILES.get(harness) or HARNESS_PROFILES["generic"]
 
@@ -173,7 +173,7 @@ def build_recipe(harness: str, manifest: HookManifest = HOOK_MANIFEST) -> Harnes
 
 def _render_playbook(manifest: HookManifest, profile: HarnessProfile) -> str:
     """The NL self-apply fallback returned on every tier (the ``generic`` deliverable
-    alongside the manifest JSON): one line per abstract hook, then the one-time §5/§7
+    alongside the manifest JSON): one line per abstract hook, then the one-time
     finalize sequence (materialize → verify gate V1–V4 → stamp the provenance banner LAST
     → re-touch short-circuit). The finalize steps ride this TRANSIENT phase-1 field — not
     the persistent ``rules_addendum`` — because they are one-shot setup, not ongoing
@@ -182,7 +182,7 @@ def _render_playbook(manifest: HookManifest, profile: HarnessProfile) -> str:
     lines = [f"Hivemind hook manifest v{manifest.manifest_version} — apply on "
              f"{profile.harness} (tier {profile.max_tier}):"]
     lines.extend(f"- on {h.event} ({h.action}): {h.directive}" for h in manifest.hooks)
-    # §3.4 seat-token contract: per-seat identity is the default OUTCOME of
+    # seat-token contract: per-seat identity is the default OUTCOME of
     # onboarding, not tribal knowledge. The exec line / token mint is operator-
     # owned config, so surfacing it here is reference text, never a server write.
     lines.append(
@@ -222,7 +222,7 @@ def _render_hook_files(manifest: HookManifest, profile: HarnessProfile) -> tuple
                      mechanism=profile.hook_mechanism or "claude-settings-json"),)
 
 
-# The §6.4 rules-file block body. ``<TRAILER_KEY>`` is the SINGLE interpolation point
+# The rules-file block body. ``<TRAILER_KEY>`` is the SINGLE interpolation point
 # for the trailer convention (sourced from producer.stamp_trailer); it is never a
 # literal. The version marker is interpolated from block_version. The phase-2 confirm
 # hashes this exact rendered body (between and including the markers).
@@ -261,18 +261,18 @@ This project is linked to a Hivemind MCP server (the `hive_*` tools).
 
 
 def render_rules_block(stamp_trailer: str, block_version: int = 1) -> RulesBlock:
-    """Render the §6.4 marker-delimited block, interpolating ``stamp_trailer`` for the
+    """Render the marker-delimited block, interpolating ``stamp_trailer`` for the
     ``<TRAILER_KEY>`` placeholder (single-sourced, NEVER literal) and the version line.
     The returned ``RulesBlock`` self-asserts markers + version + trailer-in-body + hash,
     so an ill-formed render is unconstructable. // O(len(body)) time.
 
-    Fail-fast on an empty trailer (§6 row 3): silently rendering a block with an empty
+    Fail-fast on an empty trailer: silently rendering a block with an empty
     trailer would reintroduce the exact CONFIG_DRIFT this module exists to kill."""
     if not stamp_trailer:
         _log.error("onboard.trailer_missing config_key=producer.stamp_trailer")
         raise ValueError(
             "producer.stamp_trailer is missing/empty — refusing to render a rules block "
-            "with no trailer convention (§6.1#6 CONFIG_DRIFT guard, fail-fast not default)")
+            "with no trailer convention (CONFIG_DRIFT guard, fail-fast not default)")
     body = (_BLOCK_TEMPLATE
             .replace("{version_marker}", rules_block_version_marker(block_version))
             .replace("<TRAILER_KEY>", stamp_trailer))
@@ -297,7 +297,7 @@ class InstallPlanner:
             _log.error("onboard.trailer_missing config_key=producer.stamp_trailer")
             raise ValueError(
                 "InstallPlanner requires a non-empty producer.stamp_trailer "
-                "(§6.1#6 CONFIG_DRIFT guard)")
+                "(CONFIG_DRIFT guard)")
         self._store = store                          # meta_get / meta_set (existing UPSERT kv)
         self._trailer = str(stamp_trailer)
         self._block_version = int(block_version)
@@ -307,12 +307,12 @@ class InstallPlanner:
     # ── phase 1: render the plan (zero writes; read-only probes only) ──────────
     def plan(self, repo_path: str, harness: str,
              rules_file: "Optional[str]" = None) -> InstallPlan:
-        if not os.path.isdir(repo_path):             # §6 row 2: not a dir → ERROR, fail-fast
+        if not os.path.isdir(repo_path):             # not a dir → ERROR, fail-fast
             _log.error("onboard.repo_not_a_dir repo_path=%s", repo_path)
             raise ValueError(f"repo_path is not a directory: {repo_path!r}")
         resolved = self._resolve_rules_file(repo_path, harness, rules_file)
         block = self._canonical_block()              # repo-independent canonical body
-        recipe = build_recipe(harness)               # §4 manifest projected onto this host
+        recipe = build_recipe(harness)               # manifest projected onto this host
         return InstallPlan(
             rules_file=resolved, harness=harness, rules_block=block,
             expected_confirm_hash=block.block_hash, manifest=HOOK_MANIFEST, recipe=recipe)
@@ -321,7 +321,7 @@ class InstallPlanner:
                             rules_file: Optional[str]) -> str:
         if rules_file:                               # explicit override wins
             return rules_file
-        # the harness profile drives candidate priority (§4); generic == the injected default.
+        # the harness profile drives candidate priority; generic == the injected default.
         candidates = resolve_profile(harness).rules_file_candidates or self._candidates
         for candidate in candidates:                 # first EXISTING wins (priority order)
             if os.path.exists(os.path.join(repo_path, candidate)):
@@ -343,7 +343,7 @@ class InstallPlanner:
                          (confirm_hash or b"").hex()[:12])
             return {"linked": False, "error": "stale_or_wrong_block",
                     "expected": block.block_hash.hex()}
-        profile = resolve_profile(harness)           # §6: stamp the resolved tier + manifest
+        profile = resolve_profile(harness)           # stamp the resolved tier + manifest
         link = {
             "block_hash": block.block_hash.hex(),
             "block_version": self._block_version,

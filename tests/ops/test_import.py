@@ -1,7 +1,7 @@
 """P1.12 / M07 / [B4][C5] — import_corpus (scan-before-stage, lands pending) +
 reembed_from_text (clean-store geometry rewrite, NEVER re-scans).
 
-``test_import_scans_secrets`` ★ extends §6.1#5b to the import boundary (mutation:
+``test_import_scans_secrets`` ★ extends the unrecallable-secret guard to the import boundary (mutation:
 comment out the scan → the planted token persists → red). ``test_import_lands_pending``
 proves a seeded corpus is never auto-recallable. ``test_reembed_does_not_rescan_clean_store``
 proves the [C5] asymmetry: the trusted store's geometry rewrite does NOT call the scanner.

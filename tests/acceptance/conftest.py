@@ -1,4 +1,4 @@
-"""Shared fixtures for the §6.1 acceptance gate — the REAL stack end-to-end.
+"""Shared fixtures for the acceptance gate — the REAL stack end-to-end.
 
 A real bge-small ``LocalSTEmbedder`` (loaded once per session; head fit once), a real
 ``SqliteEpisodeStore`` / ``ExhaustiveCosineIndex`` / ``DefaultSecretScanner`` wired by the
@@ -71,7 +71,7 @@ def embedder_v1(st_model):
 
 @pytest.fixture(scope="session")
 def embedder_v2(st_model):
-    """A SECOND geometry (W_version=2 ⇒ a different bootstrap-fit PCA basis) for the §6.1#4
+    """A SECOND geometry (W_version=2 ⇒ a different bootstrap-fit PCA basis) for the geometry
     re-embed migration round-trip — a genuine geometry change, same semantics."""
     return LocalSTEmbedder(model=st_model, w_version=2, bootstrap_n=448).load()
 

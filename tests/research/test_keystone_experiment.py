@@ -1,6 +1,6 @@
-"""P2.1 — the §6.6 four-arm keystone experiment DRIVER, run as a labeled DRY-RUN.
+"""P2.1 — the four-arm keystone experiment DRIVER, run as a labeled DRY-RUN.
 
-Locks docs/05-BUILD-PLAN.md §P2.1: run the four arms (utility / utility_off /
+Locks the keystone-experiment contract: run the four arms (utility / utility_off /
 recency / frequency) over the accrued corpus and assert a DEFINITE win/killed +
 lift_traces_to_clawback. Because no real clawback-settled accrual exists yet (P2.0's
 gate reads inconclusive), this runs on a CONSTRUCTED corpus and is stamped a dry-run:
@@ -92,7 +92,7 @@ def test_dry_run_is_never_a_product_verdict():
 # ── P2.0's readiness gate still PRECEDES the verdict (composes with P2.1) ──────
 def test_readiness_gate_still_blocks_under_powered_experiment():
     st, tt = build_keep_corpus()
-    # the SAME KEEP corpus, but below the §8 credit-density floor ⇒ inconclusive, NOT a
+    # the SAME KEEP corpus, but below the credit-density floor ⇒ inconclusive, NOT a
     # verdict — the readiness pre-gate precedes the keep/kill even when utility wins.
     under = run_keystone_experiment(st, tt, seed=0, settled=5, distinct_memories=2)
     assert under.result.inconclusive is True

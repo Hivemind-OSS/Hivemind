@@ -254,7 +254,7 @@ def test_sweep_delegates_with_configured_ttls():
     assert st.calls == [("sweep_decayed", NOW, Q_TTL, P_TTL)]
 
 
-# ── solo mode (§3.5): elapsed-span demand replaces identity diversity ───────────
+# ── solo mode: elapsed-span demand replaces identity diversity ───────────
 DAY = 86_400
 MIDNIGHT = 30 * DAY                       # a UTC midnight tick (ts % 86400 == 0)
 

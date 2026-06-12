@@ -1,7 +1,7 @@
 """P1.10 — M10 oracle (run_longmemeval, rewired to hive ports) + [C2] live AUROC
-wiring + capture→replay + [C3] admit + §6.3 de-confounding rails.
+wiring + capture→replay + [C3] admit + de-confounding rails.
 
-Locked assertions: docs/05-BUILD-PLAN.md §P1.10(a) + docs/03-modules/M10-eval.md §2.3/§2.4/§8.
+Locked assertions for the eval-membrane contract.
 """
 from __future__ import annotations
 
@@ -124,7 +124,7 @@ def test_abstention_confident_surface_is_fail():
 # ── [C2] live AUROC wiring on oracle output ───────────────────────────────────
 def _c2_corpus():
     """A 4-tier fixture whose live (conf, is_miss) stream lands AUROC at 0.75 (in the
-    §6.1 #2 band [0.70,0.84]) — NOT a perfect 1.0 separation. The tiers (by the gate's
+    honest-abstention AUROC band [0.70,0.84]) — NOT a perfect 1.0 separation. The tiers (by the gate's
     own normalized-entropy confidence ``1 - H/ln(N_eff)``):
       clean hit (~1.0)  >  leaky abstention miss (~0.8)  >  ambiguous hit (~0.21)  >
       clean abstention miss (~0.0)
@@ -190,7 +190,7 @@ def test_run_longmemeval_emits_continuous_abstention_scores():
     assert 0.70 <= auroc <= 0.84
 
 
-# ── §6.3 de-confounding rails ─────────────────────────────────────────────────
+# ── de-confounding rails ─────────────────────────────────────────────────
 def test_strip_stamped_tokens_removes_label_leak():
     # AUDIT HIGH-3/HIGH-4: the producer stamp is MULTI-token (Hive-Trace: <T1> <T2> ...)
     # and a trailer is its own line; the rail must strip the WHOLE value run (not just

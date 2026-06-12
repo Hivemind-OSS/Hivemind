@@ -22,7 +22,7 @@ services:
     # The warm daemon (PID 1) serves MCP over HTTP. The host mapping is LOOPBACK-ONLY: the
     # daemon binds 0.0.0.0 INSIDE the container (so the Docker port map can reach it), but the
     # host side is 127.0.0.1 only — never exposed beyond host-loopback (NOT "exposed to the
-    # network"). Remote use goes through an SSH tunnel or a reverse proxy (AUTH-PLAN §11); the
+    # network"). Remote use goes through an SSH tunnel or a reverse proxy; the
     # per-device bearer token is the identity + revocation regardless. No stdin_open/tty — an
     # HTTP service does not attach to stdin (the superseded stdio transport needed it).
     ports:
@@ -34,7 +34,7 @@ services:
       timeout: 10s
       retries: 10
       start_period: 120s
-  # ---- OPT-IN PUBLIC TUNNEL (profile: tunnel) — REMOTE-ACCESS-PLAN Part A ----------
+  # ---- OPT-IN PUBLIC TUNNEL (profile: tunnel) — Part A ----------
   # Outbound, NAT-traversing HTTPS tunnel to the daemon — reachable from any OS/network.
   # Profile-gated: a plain `docker compose up` does NOT start this (AC2). Reaches the
   # daemon over the COMPOSE NETWORK (hive-server:8765), so NO host port is published here

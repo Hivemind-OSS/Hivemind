@@ -1,4 +1,4 @@
-"""SqliteTokenStore — per-device bearer-token identity, hashed at rest (AUTH-PLAN §3/§4).
+"""SqliteTokenStore — per-device bearer-token identity, hashed at rest.
 
 The whole token lifecycle in one cohesive adapter (mirrors ``utility_store_sqlite.py``): it
 owns its ``access_tokens`` table via ``executescript(_SCHEMA)`` on the shared WAL conn. Only
@@ -62,7 +62,7 @@ class SqliteTokenStore:
     def verify(self, plaintext: str) -> Optional[str]:
         """Map a presented plaintext to its device label, or ``None`` to REJECT (unknown OR
         revoked). The lookup is BY ``token_hash`` — dropping that predicate (returning the
-        first row regardless) is the RULE-2 mutation the unknown/revoked tests catch.
+        first row regardless) is the mutation the unknown/revoked tests catch.
         // O(1) on the UNIQUE index."""
         row = self.conn.execute(
             "SELECT label FROM access_tokens WHERE token_hash=?",

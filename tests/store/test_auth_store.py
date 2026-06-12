@@ -1,9 +1,9 @@
-"""Chunk 2 — SqliteTokenStore: per-device bearer tokens, hashed at rest (AUTH-PLAN §3/§4).
+"""Chunk 2 — SqliteTokenStore: per-device bearer tokens, hashed at rest.
 
 create() mints a 256-bit plaintext shown ONCE and stores only sha256(plaintext); verify()
 maps a presented plaintext back to its device label (None ⇒ reject); revoke() deletes the
 row. The conn is built through the PROD connect() (isolation_level=None) so a bare INSERT/
-DELETE autocommits exactly as in production. The RULE-2 mutation (verify drops the
+DELETE autocommits exactly as in production. The mutation (verify drops the
 ``WHERE token_hash=?`` predicate) makes the unknown/revoked-token tests red.
 """
 from __future__ import annotations

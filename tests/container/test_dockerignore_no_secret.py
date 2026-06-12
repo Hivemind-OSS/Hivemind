@@ -1,4 +1,4 @@
-"""P1.13 / M12 — the build-layer secret floor (§9 infra), made structural.
+"""P1.13 / M12 — the build-layer secret floor (no-secret-in-any-layer infra), made structural.
 
 Two halves: (1) `.dockerignore` excludes the sensitive trees so a stray credential, the
 git history, a local venv, or the test/doc trees can never enter the build context; (2) a

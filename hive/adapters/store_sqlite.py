@@ -576,7 +576,7 @@ class SqliteEpisodeStore:
         row landed (False ⇒ already credited — full-history re-scans are free). The
         conflict-ignore is scoped to the PK (ON CONFLICT … DO NOTHING) — NOT a blanket
         OR IGNORE, which would also swallow the CHECK and let a bad outcome label
-        vanish silently; dropping the clause is the RULE-2 mutation the double-ingest
+        vanish silently; dropping the clause is the mutation the double-ingest
         test catches. ``outcome`` stays CHECK-constrained loud at the table boundary.
         // O(1)."""
         with tx(self.conn):

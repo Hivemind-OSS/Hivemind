@@ -50,7 +50,7 @@ def test_configure_is_idempotent_no_handler_pileup():
 
 
 def test_secret_never_logged():
-    # the env-coercion-failure path is the one §6 says omits the raw value (could be a secret).
+    # the env-coercion-failure path is the one that omits the raw value (could be a secret).
     secret = "sk-LIVESECRET_ghp_AKIA_payload_99887766"
     env = {"HIVE_GEOMETRY__D": secret}   # non-coercible to int → WARN, value must be withheld
 

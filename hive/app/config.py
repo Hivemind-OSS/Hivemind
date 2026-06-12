@@ -9,7 +9,7 @@ Boundary: this module WIRES, it does not COMPUTE. It depends on the registry onl
 *key membership* validation (lazy import — importing `config` never imports torch). It
 never reaches into `core/` domain logic.
 
-Grounded deviations (built-decision-wins; recorded in the design deliverable):
+Grounded deviations (built-decision-wins):
 - `recall.epsilon_explore > 0` is THE validated guardrail-1 floor [A4]; the reference's
   misplaced `producer.epsilon_explore` is DELETED (producer has no such field).
 - `db_path` defaults to `":memory:"` (ephemeral — cannot corrupt a persistent store) so a
@@ -74,7 +74,7 @@ class EmbeddingConfig:
         if self.st_projection_head != "pca":
             raise ValueError(
                 f"embedding.st_projection_head must be 'pca' (random JL rejected — measured "
-                f"worse at every d; spec §4.1); got {self.st_projection_head!r}")
+                f"worse at every d); got {self.st_projection_head!r}")
         from hive.app.registry import EMBEDDING_PROVIDERS   # lazy — no torch at import
         if self.provider not in EMBEDDING_PROVIDERS:
             raise ValueError(
@@ -115,7 +115,7 @@ class RecallConfig:
             raise ValueError(f"recall.recall_top_n must be >= 1 (got {self.recall_top_n})")
         if not self.epsilon_explore > 0.0:
             raise ValueError(
-                f"recall.epsilon_explore must be > 0 (§4.7 guardrail-1 — a 0 starves novel "
+                f"recall.epsilon_explore must be > 0 (guardrail-1 — a 0 starves novel "
                 f"memories of exposure); got {self.epsilon_explore}")
         if not self.softmax_beta > 0.0:
             raise ValueError(f"recall.softmax_beta must be > 0 (got {self.softmax_beta})")
@@ -171,7 +171,7 @@ class AutonomyConfig:
     survival_e: int = 2             # distinct non-writer identities required
     survival_days: int = 14         # minimum first-to-last exposure span
     survival_min_exposures: int = 5
-    # CV1 §3.5 solo mode: a single-seat fleet swaps the demand rule's identity-
+    # CV1 solo mode: a single-seat fleet swaps the demand rule's identity-
     # diversity clause for elapsed-span demand. Operator-set env, NOT client-gameable.
     solo_mode: bool = False
     solo_min_span_days: int = 1     # first-to-last matched-miss span required to promote
@@ -452,7 +452,7 @@ RELOAD_TIER: dict[str, str] = {
     "producer.stamp_trailer": "B",
     # A — applied on next run (no restart, no migration)
     "recall.recall_top_n": "A",
-    "utility.isolation_frac": "A",            # tier A per build-plan §638
+    "utility.isolation_frac": "A",            # tier A
     "utility.prediction_bias_window_s": "A",
     "utility.prediction_bias_threshold": "A",
     "retention.backup_keep": "A",

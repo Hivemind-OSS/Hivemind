@@ -90,6 +90,6 @@ def test_phase2_link_stamps_manifest_version_and_tier(tmp_path):
     assert res["linked"] is True
     assert res["link"]["manifest_version"] == HOOK_MANIFEST.manifest_version
     assert res["link"]["tier"] == 2 and res["link"]["harness"] == "claude-code"
-    # the §6 stamp lands in the persisted meta blob too (no new table)
+    # the manifest-version-and-tier stamp lands in the persisted meta blob too (no new table)
     blob = json.loads(store.meta_get(_link_key(tmp_path)))
     assert blob["tier"] == 2 and blob["manifest_version"] == HOOK_MANIFEST.manifest_version

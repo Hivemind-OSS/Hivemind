@@ -4,7 +4,7 @@ The load-bearing arithmetic of the eval membrane. The six metric functions are a
 verbatim PORT of the reference ``research/metrics_ir.py`` (contracts already
 correct: dedup-before-truncate, ``k<=0`` raises, empty-relevant→0.0). The two
 significance helpers (``abstention_auroc``, ``bootstrap_ci``) are BUILD-NEW — the
-§6.1 #2 AUROC gate and the §6.2 CI-significance ship rule have NO scorer anywhere
+honest-abstention AUROC gate and the CI-significance ship rule have NO scorer anywhere
 in the reference tree (grep-verified). Dev-time only — the runtime never imports
 ``hive.research`` (P0.0 AST fence).
 
@@ -138,7 +138,7 @@ def jaccard_at_k(a: Sequence[str], b: Sequence[str], k: int) -> float:
 def abstention_auroc(scores: Sequence[float], is_miss: Sequence[bool]) -> float:
     """AUROC of the abstention confidence at separating top-k HITS from MISSES,
     via the Mann-Whitney rank-sum identity = P(score(hit) > score(miss)) with
-    ties → 0.5. Maps the §6.1 #2 honest-abstention gate (target ≈0.77).
+    ties → 0.5. Maps the honest-abstention gate (target ≈0.77).
 
     ``scores`` is the gate's confidence proxy where HIGHER = more confident = LESS
     likely to abstain (the natural choice is ``1 - H/ln(N_eff)``). ``is_miss[i]``
@@ -199,7 +199,7 @@ def bootstrap_ci(
     ``(point, lo, hi)`` where ``point`` is the observed mean and ``[lo, hi]`` is
     the central ``1-alpha`` percentile interval of the bootstrap means.
 
-    The §6.2 ship rule reads this as **CI-significant iff ``lo > 0`` (improvement)
+    The ship rule reads this as **CI-significant iff ``lo > 0`` (improvement)
     or ``hi < 0`` (regression)** — a change ships only on a CI-significant delta,
     never a bare point estimate. **Deterministic** for a fixed ``seed``; **empty
     ``deltas`` RAISE** ``ValueError`` (an undefined CI is refused, not masked).

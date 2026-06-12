@@ -64,7 +64,7 @@ def test_phase1_not_a_dir_fails_fast(tmp_path):
 
 def test_phase1_empty_trailer_fails_fast():
     with pytest.raises(ValueError):
-        InstallPlanner(_store(), stamp_trailer="")       # §6 row 3: no silent empty trailer
+        InstallPlanner(_store(), stamp_trailer="")       # no silent empty trailer
 
 
 def test_phase1_plan_carries_manifest_and_recipe(tmp_path):

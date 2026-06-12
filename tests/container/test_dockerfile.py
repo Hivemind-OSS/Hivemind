@@ -90,7 +90,7 @@ def test_runtime_excludes_build_toolchain():
 
 def test_runtime_does_not_copy_source_tree_wholesale():
     # the runtime gets the INSTALLED package from the builder venv, not a raw `COPY . .`
-    # of the repo (which would drag tests/docs/.git into a layer).
+    # of the repo (which would drag the test tree and .git into a layer).
     runtime = _stages()["runtime"]
     assert "COPY --from=builder" in runtime
     assert not re.search(r"(?im)^COPY\s+\.\s+\.", runtime)

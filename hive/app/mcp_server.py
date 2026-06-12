@@ -17,7 +17,7 @@ Two load-bearing belts live HERE (in addition to the store-query suspenders):
      set is an ABSTAIN, never a confident-empty (never-hallucinate, structural).
 
 Recalled text is framed under ``reference_context`` (never ``instructions``); every
-recall envelope carries ``trace_id`` on hit AND abstain (the §11 move-#6 join key).
+recall envelope carries ``trace_id`` on hit AND abstain (the move-#6 join key).
 The stdio loop never crashes on a tool exception — the stack is logged (stderr/file),
 never returned to the agent; stdout carries only JSON-RPC.
 
@@ -59,7 +59,7 @@ _PREVIEW_LEN = 160
 # inputSchema by tool name — the single source for the pre-dispatch validation belt.
 _SCHEMA_BY_NAME: dict[str, dict] = {t["name"]: t["inputSchema"] for t in TOOL_DEFINITIONS}
 
-# §7 V4 substrate: the capture verb(s) whose server-arrival is stamped as
+# V4 substrate: the capture verb(s) whose server-arrival is stamped as
 # meta[hook:last_seen:<tool>], so hive_health.hooks_seen lets the onboarding agent confirm a
 # Tier-2 OS hook actually reached the server. ONLY the capture verbs are stamped — recall/
 # health/init/fetch stay pure reads (no write-amplification on the read path).
@@ -114,7 +114,7 @@ class ServerIdentity:
     agent_id: str = "agent"
 
 
-# ── pre-dispatch schema validation belt (§1.2 — runs before any port) ─────────
+# ── pre-dispatch schema validation belt (runs before any port) ─────────
 
 def _type_ok(val: Any, t: str) -> bool:
     """JSON-schema scalar/container type check. ``bool`` is excluded from integer/
@@ -137,7 +137,7 @@ def _type_ok(val: Any, t: str) -> bool:
 def _validate_args(name: str, args: dict) -> Optional[str]:
     """Return an error message if ``args`` violate the tool's inputSchema, else None.
     Checks required[], scalar types, and enum membership. Extra fields are ignored
-    (permissive). // O(fields) time. The deleting of the CALL to this is RULE-2
+    (permissive). // O(fields) time. The deleting of the CALL to this is
     mutation #1 — handlers do no required-field guard of their own."""
     schema = _SCHEMA_BY_NAME.get(name)
     if schema is None:
@@ -234,7 +234,7 @@ class HiveMCPServer:
         # Per-request identity (the HTTP daemon's verified caller); ``None`` ⇒ the process
         # ``ServerIdentity`` (the stdio path + every existing test pass ``req`` only, so they
         # are byte-for-byte unchanged). The transport resolves WHO calls; attribution stays
-        # in the handlers (§9-D1).
+        # in the handlers (D1).
         ident = identity or self.identity
         if req.method == "initialize":
             return MCPResponse(id=req.id, result={
@@ -266,7 +266,7 @@ class HiveMCPServer:
             _log.warning("mcp.unknown_tool", extra={"event": "mcp.unknown_tool",
                          "tool": name, "agent_id": identity.agent_id})
             return MCPResponse(id=req.id, error=_err(-32602, f"unknown tool: {name}"))
-        # ── BELT 1: schema validation BEFORE any port is touched (RULE-2 mut #1) ──
+        # ── BELT 1: schema validation BEFORE any port is touched (mut #1) ──
         verr = _validate_args(name, args)
         if verr is not None:
             _log.info("mcp.schema_reject", extra={"event": "mcp.schema_reject",
@@ -288,7 +288,7 @@ class HiveMCPServer:
 
     # ── tool handlers: (args, identity); args read permissively, _validate_args is the only
     #    required-field guard. ``identity`` is the per-request caller resolved by the transport
-    #    (HTTP daemon) or the process default (stdio) — attribution lives HERE (§9-D1). ──
+    #    (HTTP daemon) or the process default (stdio) — attribution lives HERE (D1). ──
     def _handle_write(self, args: dict, identity: ServerIdentity) -> dict:
         text = args.get("text")
         approved_by = args.get("approved_by") or ""   # required by the schema belt
@@ -296,7 +296,7 @@ class HiveMCPServer:
         tags = args.get("tags") or []
         tags_str = ",".join(str(t) for t in tags) if isinstance(tags, list) else str(tags)
         # proposed_by is ALWAYS the authenticated caller — INV-2: no client field to assert it
-        # (``proposed_by`` is gone from the write schema). RULE-2 mut: read self.identity here.
+        # (``proposed_by`` is gone from the write schema). Deliberate mutation: read self.identity here.
         proposed_by = identity.agent_id
         replaces = args.get("replaces")           # human-vouched supersession target
         try:
@@ -343,7 +343,7 @@ class HiveMCPServer:
                            language=args.get("language") or "",
                            workflow=args.get("workflow") or "general")
         result = self.recall.recall(query, agent_id=identity.agent_id, agent_ctx=ctx)
-        # ── BELT 2: servable-only re-filter, independent of the index (RULE-2 mut #2).
+        # ── BELT 2: servable-only re-filter, independent of the index (mut #2).
         # The per-hit is_servable re-check is the AUTHORITATIVE freshness layer: a
         # TTL-lapsed provisional row still sitting in the warm index is dropped HERE
         # even before the sweep materializes its death.
@@ -431,7 +431,7 @@ class HiveMCPServer:
                 "expected_confirm_hash": plan.expected_confirm_hash.hex(),
                 "manifest": _manifest_report(plan.manifest),
                 "recipe": _recipe_report(plan.recipe),
-                # §5.3.2: the completion marker the agent stamps LAST (after the verify
+                # the completion marker the agent stamps LAST (after the verify
                 # gate), OUTSIDE the hashed block — surfaced here so phase-1 hands over the
                 # whole bundle in one round-trip. NOT written by the server (no repo FS).
                 "provenance_banner": provenance_banner(plan.harness, plan.recipe.resolved_tier)}
@@ -452,7 +452,7 @@ class HiveMCPServer:
                 "index_authoritative": bool(self.recall.index.is_authoritative()),
                 "uptime_s": max(0, int(self.now()) - self.started_ts),
                 "trailer_key": self.trailer_key}
-            snap["hooks_seen"] = self._hooks_seen()          # §7 V4: last-seen tick per capture verb
+            snap["hooks_seen"] = self._hooks_seen()          # V4: last-seen tick per capture verb
             # trust-lifecycle telemetry: quarantine pile-up must be visible, never
             # silent. Best-effort — an older store double (tests) may lack these.
             try:
@@ -462,7 +462,7 @@ class HiveMCPServer:
             except Exception:                                # noqa: BLE001 — telemetry only
                 _log.warning("mcp.health_trust_probe_failed", extra={
                     "event": "mcp.health_trust_probe_failed"}, exc_info=True)
-            hint = self._solo_hint()                         # §3.5: stalls self-describe
+            hint = self._solo_hint()                         # stalls self-describe
             if hint is not None:
                 snap["solo_hint"] = hint
             if args.get("include_trends"):
@@ -481,9 +481,9 @@ class HiveMCPServer:
                 linked, link = self._link_status(repo_path)
                 snap["linked"] = linked
                 snap["link"] = link
-                if not linked:                       # §5.2 first-touch: hand the agent its next step
+                if not linked:                       # first-touch: hand the agent its next step
                     snap["onboarding"] = onboarding_hint()
-                else:                                # §5.3.3 re-touch: the bootstrap short-circuit
+                else:                                # re-touch: the bootstrap short-circuit
                     snap["setup"] = {"complete": True, "next": None}
                     # an old-manifest link drives re-init (the v2 hooks change the
                     # capture contract from ask-first to capture-without-asking)
@@ -500,7 +500,7 @@ class HiveMCPServer:
 
     # ── health helpers ────────────────────────────────────────────────────────
     def _solo_hint(self) -> Optional[str]:
-        """§3.5: when single-seat traffic is WASTING demand (≥ demand_m window
+        """When single-seat traffic is WASTING demand (≥ demand_m window
         misses, all from ≤1 identity) under the anti-gaming rule, the autonomy
         loop is silently inert — return the self-describing hint. None when
         autonomy is off, solo_mode is already on, the store is empty/quiet, or
@@ -588,7 +588,7 @@ class HiveMCPServer:
         except Exception:
             return False, None
 
-    # ── V4 hook-seen substrate (§7) ────────────────────────────────────────────
+    # ── V4 hook-seen substrate ────────────────────────────────────────────
     def _note_hook_seen(self, tool: str) -> None:
         """Stamp meta[hook:last_seen:<tool>] for a capture verb after it is served, so the
         agent can confirm a Tier-2 OS hook reached the server. Best-effort and fully self-

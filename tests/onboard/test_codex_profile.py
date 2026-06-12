@@ -1,6 +1,6 @@
 """CV1 — the ``codex`` harness profile: tier 1, AGENTS.md default, MCP
 registration surfaced as reference text (operator-owned ~/.codex/config.toml),
-and the §3.4 seat-identity line every recipe playbook now carries."""
+and the seat-identity line every recipe playbook now carries."""
 from __future__ import annotations
 
 from hive.adapters.sqlite_db import connect
@@ -33,7 +33,7 @@ def test_codex_profile_row_and_enum():
 
 
 def test_playbook_carries_registration_and_seat_identity():
-    # §3.4: per-seat identity is emitted in EVERY tier-1 recipe, not tribal
+    # per-seat identity is emitted in EVERY tier-1 recipe, not tribal
     # knowledge — the codex playbook names its config target inline.
     pb = build_recipe("codex").playbook
     assert "~/.codex/config.toml" in pb

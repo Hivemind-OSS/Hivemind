@@ -2,9 +2,7 @@
 
 The operator's path from clone to a fleet that remembers, for **solo devs and small
 teams**. Everything here runs through the `hive` CLI (`pip install -e .` gives the
-command; uninstalled, `python -m hive.tools.cli` is identical). Deep references:
-`docs/CLIENTS.md` (every client shape), `docs/PLANS/AUTH-PLAN.md` §10 (auth model),
-`docs/PLANS/HIVE-ORIGIN-PLAN.md` (outcome credit).
+command; uninstalled, `python -m hive.tools.cli` is identical).
 
 ## 1. First-time setup (server host, once)
 
@@ -14,7 +12,7 @@ hive up                     # build + start; blocks until the daemon is actually
 ```
 
 - The daemon serves MCP over HTTP on **127.0.0.1:8765 only**. Public exposure is never
-  implicit — see §3.
+  implicit — see section 3.
 - Data lives in the `hive-data` volume: `hive down` preserves it, `hive nuke` destroys
   it (typed confirmation).
 - **Upgrading across schema generations**: this build refuses old-format tables at boot

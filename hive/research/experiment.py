@@ -1,17 +1,17 @@
-"""P2.1 — the §6.6 four-arm keystone EXPERIMENT driver (dry-run capable).
+"""P2.1 — the four-arm keystone EXPERIMENT driver (dry-run capable).
 
 Runs the four control arms (utility / utility_off / recency / frequency) over a
 hermetic store through the REAL recall pipeline + the REAL ``_rank_candidates``
 seam, measures recall@k per arm, assembles a ``KeystoneSpec`` from those measured
 vectors + a REAL credit-accrual sweep + REAL present-vs-ablated transfer, and applies
-``run_keystone_eval``'s §6.6 decision. Nothing in the spec is hand-pasted: every
+``run_keystone_eval``'s decision. Nothing in the spec is hand-pasted: every
 number is produced by the same ranking machinery a Phase-2 production run would use —
 only the *corpus* is constructed.
 
 **PROVENANCE IS LOAD-BEARING.** On a constructed corpus this is a **DRY-RUN**: it
 validates the experiment MACHINERY end-to-end (and the tests prove it can both KEEP
 *and* KILL, so it is not rigged), but its verdict is **NEVER a product keep/kill** —
-a real verdict requires real clawback-settled accrual clearing the §8 readiness gate
+a real verdict requires real clawback-settled accrual clearing the readiness gate
 (P2.0), which does not yet exist. ``is_product_verdict`` can only be True under
 ``provenance == "PRODUCTION"``; a synthetic run is *structurally* incapable of
 claiming product status, so a dry-run KEEP can never be mistaken for the real thing.
@@ -64,7 +64,7 @@ class Task:
 
 @dataclass(frozen=True)
 class ExperimentReport:
-    """The §6.6 verdict plus its PROVENANCE. ``is_product_verdict`` is the integrity
+    """The keystone verdict plus its PROVENANCE. ``is_product_verdict`` is the integrity
     flag: it is True only for a real PRODUCTION run over accrued clawback-settled
     outcomes — a synthetic dry-run is structurally pinned to False."""
     result: KeystoneResult
@@ -177,7 +177,7 @@ def run_keystone_experiment(
     is_product_verdict: bool = False,
     note: str = "",
 ) -> ExperimentReport:
-    """Drive the four-arm §6.6 experiment over the constructed corpus and apply the
+    """Drive the four-arm experiment over the constructed corpus and apply the
     keystone decision. Returns the verdict + the assembled spec + its provenance.
 
     The integrity invariant: ``is_product_verdict`` is forced False unless
@@ -236,7 +236,7 @@ def _keep_task(i: int, *, n_distractors: int = 6) -> Task:
 def _kill_task(i: int, *, n_distractors: int = 6) -> Task:
     """A task where UTILITY provides NO lift over recency/frequency: the gold is ALSO
     the newest, most-frequent, highest-sim memory, so every arm surfaces it. The
-    utility arm ties recency ⇒ utility beats nothing ⇒ the §6.6 pre-committed KILL."""
+    utility arm ties recency ⇒ utility beats nothing ⇒ the pre-committed KILL."""
     gold = Doc(text=f"{_QUERY} goldmemory{i}", credit=_DEFAULT_CREDIT,
                ts=99, freq=99, weight=1.0)
     distractors = tuple(

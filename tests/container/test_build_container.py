@@ -4,7 +4,7 @@ Fast (a fake warm embedder, no bge load): proves the Boot conformance, the Phase
 utility-inert policy, the floor-by-identity gate wiring, the warm/persist-head step, the
 migrate schema/WAL assertion, the approved-only index warm, and — the load-bearing wiring
 fact — the SqliteUtilityStore-before-SqliteEpisodeStore order that guardrail-2 needs.
-The real-embedder end-to-end §6.1 gates live in tests/acceptance/*.
+The real-embedder end-to-end geometry gates live in tests/acceptance/*.
 """
 from __future__ import annotations
 
@@ -69,7 +69,7 @@ def test_token_store_wired_create_verify_end_to_end():
 
 def test_phase1_surfacer_is_inert():
     """Utility OBSERVED-NOT-APPLIED: the surfacer is disabled (byte-identical passthrough).
-    Flipping this default to True is the §6.1 RULE-2 mutation (caught in tests/acceptance)."""
+    Flipping this default to True is the deliberate mutation the acceptance tests catch."""
     assert _build().surfacer.enabled is False
 
 
@@ -145,7 +145,7 @@ def test_make_server_round_trips_write_recall():
 def test_isolation_frac_on_builds_clean_utility_table_first():
     """isolation_frac > 0 requires the `utility` table to exist when SqliteEpisodeStore is
     constructed; build_container builds SqliteUtilityStore FIRST, so this must NOT raise.
-    Swapping the order (RULE-2 mutation) makes this red with the guardrail-2 fail-fast."""
+    Swapping the order (deliberate mutation) makes this red with the guardrail-2 fail-fast."""
     c = build_container(_cfg(utility={"isolation_frac": 0.5}),
                         tenant_id="t1", agent_id="a1", embedder=FakeWarmProvider(d=256))
     assert c.store._isolation_frac == 0.5

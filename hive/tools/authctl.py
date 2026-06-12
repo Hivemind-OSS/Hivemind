@@ -1,4 +1,4 @@
-"""authctl — the admin CLI for per-device bearer tokens (AUTH-PLAN §4/§10).
+"""authctl — the admin CLI for per-device bearer tokens.
 
 `python -m hive.tools.authctl create <label>` mints a token for a teammate's device, stores
 ONLY its sha256, and prints the 256-bit plaintext to STDOUT exactly once (the operator hands
@@ -78,7 +78,7 @@ def main(argv: Optional[list[str]] = None, *, env: Optional[Mapping[str, str]] =
         return EX_OK
 
     # args.cmd == "revoke" (subparsers are required, so no other value reaches here)
-    removed = store.revoke(args.label)              # ← claiming success without deleting is RULE-2 mut
+    removed = store.revoke(args.label)              # ← claiming success without deleting is the mutation the tests catch
     if not removed:
         print(f"authctl: no token for {args.label!r} (nothing revoked)", file=sys.stderr)
         return EX_SOFTWARE

@@ -6,11 +6,11 @@ the compose-level tenant fail-fast, and the env-key↔config alignment (the corr
 HIVE_EMBEDDING__MODEL / HIVE_OBS__LOG_LEVEL keys must name a REAL config field, else they
 are dead operator knobs); (2) `docker compose config` validity, skip-guarded on the CLI.
 
-REMOTE-ACCESS-PLAN Part A adds the tunnel contract: the `ngrok` sidecar is PROFILE-GATED
+Part A adds the tunnel contract: the `ngrok` sidecar is PROFILE-GATED
 (a plain `up` starts no tunnel — AC2), publishes no host port (egress only), reaches the
 daemon over the COMPOSE network (`hive-server:8765`, never a host address), only tunnels
 a HEALTHY daemon, and lives in its own image — the hive image bakes in no tunnel binary
-(D1/AC3, the hermetically-offline invariant). The RULE-2 mutation (drop
+(D1/AC3, the hermetically-offline invariant). The deliberate mutation (drop
 `profiles: ["tunnel"]` → a default `up` would expose the daemon) reds
 `test_tunnel_is_profile_gated`.
 """
@@ -67,7 +67,7 @@ def test_long_lived_warm_server_not_run_rm():
     # per connection and defeats the no-network/cost model). The evidence is the loopback port
     # map + restart policy; the stdio-attach `stdin_open` belonged to the superseded transport.
     assert "restart: unless-stopped" in _text()
-    assert "127.0.0.1:8765:8765" in _text()        # host-loopback HTTP mapping (AUTH-PLAN §5/§11)
+    assert "127.0.0.1:8765:8765" in _text()        # host-loopback HTTP mapping
     assert "run --rm" not in _text()
 
 
@@ -95,7 +95,7 @@ def test_named_volume_persists():
 
 def test_compose_env_keys_resolve():
     """Every HIVE_* env key is either entrypoint-owned OR names a REAL (group, field) in
-    Config and coerces — closing the dead-knob drift the verbatim §6.2 keys had
+    Config and coerces — closing the dead-knob drift the verbatim keys had
     (HIVE_EMBEDDING__MODEL_NAME / HIVE_OBSERVABILITY__LOG_LEVEL named nothing)."""
     pairs = _env_pairs()
     hive_keys = [k for k in pairs if k.startswith("HIVE_")]
@@ -126,13 +126,13 @@ def test_compose_env_keys_resolve():
 
 
 def test_no_legacy_dead_keys():
-    # the two §6.2 keys that named nothing must not reappear
+    # the two keys that named nothing must not reappear
     pairs = _env_pairs()
     assert "HIVE_EMBEDDING__MODEL_NAME" not in pairs
     assert "HIVE_OBSERVABILITY__LOG_LEVEL" not in pairs
 
 
-# ── the opt-in public tunnel (REMOTE-ACCESS-PLAN Part A) ──────────────────────
+# ── the opt-in public tunnel (Part A) ─────────────────────────────────────────
 def _service_block(name: str) -> str:
     """The literal text of one 2-space-indented service block: from `  <name>:` until the
     next line at ≤2-space indentation (sibling service, top-level key, or 2-indent comment)."""
@@ -154,7 +154,7 @@ def test_tunnel_is_profile_gated():
     # `--profile tunnel`. No host `ports:` either: the sidecar is egress-only.
     blk = _service_block("ngrok")
     assert blk, "ngrok service missing from compose.yaml"
-    assert re.search(r'profiles:\s*\[\s*"tunnel"\s*\]', blk)   # ← RULE-2: removing this reds here
+    assert re.search(r'profiles:\s*\[\s*"tunnel"\s*\]', blk)   # ← deliberate mutation: removing this reds here
     assert "ports:" not in blk
 
 

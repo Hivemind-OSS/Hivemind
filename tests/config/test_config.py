@@ -1,14 +1,14 @@
 """P1.9 — M11 Config: frozen 4-layer Config.load + fail-fast validation + env
 namespacing + reload-tier state machine.
 
-Locked assertions from docs/05-BUILD-PLAN.md §P1.9(a) and docs/03-modules/M11-config.md §2/§8.
+Locked assertions for the config contract.
 
 Grounded deviations (built-decision-wins, documented in the deliverable):
 - ``db_path`` defaults to ``":memory:"`` (ephemeral, cannot corrupt a warm store) so the
   locked ``Config.load(producer={...}) succeeds`` assertion holds with no db_path; an EMPTY
-  string is the fail-fast trigger for ``test_db_path_required``. The spec's "no silent default"
+  string is the fail-fast trigger for ``test_db_path_required``. The "no silent default"
   prose guards against silently corrupting a persistent store — ``":memory:"`` cannot.
-- ``utility.isolation_frac`` is tier **A** (per build-plan §638 "tier A"), not B.
+- ``utility.isolation_frac`` is tier **A**, not B.
 """
 from __future__ import annotations
 

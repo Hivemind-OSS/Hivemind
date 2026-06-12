@@ -104,7 +104,7 @@ def prune_backups(backup_dir: str, keep: int = 30) -> list[str]:
 
 def run_daily_backup(cfg: "Config") -> BackupRecord:
     """Scheduled entry: snapshot `cfg.db_path` into `cfg.retention.backup_dir` then prune to
-    `cfg.retention.backup_keep`. The single ops floor (spec §4.6)."""
+    `cfg.retention.backup_keep`. The single ops floor."""
     src = cfg.runtime.db_path
     backup_dir = cfg.retention.backup_dir or os.path.join(
         os.path.dirname(os.path.abspath(src)) or ".", "backups")

@@ -11,7 +11,7 @@ from hive.domain.fusion import rrf_fuse
 from hive.domain.ports import LexicalIndex
 
 
-# ── rank-based + stable (the RULE-2 target: 1/(k+rank) must use the rank) ─────
+# ── rank-based + stable (the mutation target: 1/(k+rank) must use the rank) ─────
 def test_rrf_is_rank_based_and_stable():
     # presence at a TOP rank in one list beats presence DEEP in two lists once the
     # depth penalty dominates (k=1 makes it visible at toy size):

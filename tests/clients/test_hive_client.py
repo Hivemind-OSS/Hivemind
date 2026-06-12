@@ -1,7 +1,7 @@
 """CV1 — HiveClient, tested against the REAL HTTP stack: the real HiveMCPServer
 (real admission/recall/store) behind ``_build_handler`` on a real loopback
 ``ThreadingHTTPServer``, with a REAL SqliteTokenStore verifying the bearer (the
-AUTH-PLAN test idiom) — the client/server envelope contract cannot drift unseen.
+real-credential bearer-verification test idiom) — the client/server envelope contract cannot drift unseen.
 
 The vendorability contract is enforced, not prose: importing ``hive.client``
 pulls in nothing outside the stdlib (transitively, subprocess-asserted), and a

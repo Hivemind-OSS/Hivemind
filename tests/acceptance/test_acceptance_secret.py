@@ -1,4 +1,4 @@
-"""§6.1 #5a acceptance — the secret floor end-to-end: a credential in a write is REFUSED
+"""#5a acceptance — the secret floor end-to-end: a credential in a write is REFUSED
 before any persistence (0 rows, 0 blobs), the refused envelope carries rule NAMES only,
 and nothing about the secret reaches a row, blob, or recall."""
 from __future__ import annotations
@@ -9,7 +9,7 @@ import logging
 from hive.app.mcp_server import MCPRequest
 from tests.acceptance.conftest import build_acc
 
-# A realistic AWS access-key shape (a §9 rule family). Not a real credential.
+# A realistic AWS access-key shape (a secret-floor rule family). Not a real credential.
 _PLANTED = "deploy creds: AKIAIOSFODNN7EXAMPLE / wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"
 
 
@@ -36,7 +36,7 @@ def test_acceptance_secret_refused(embedder_v1):
 
 def test_acceptance_secret_never_in_any_row_after_mixed_writes(embedder_v1):
     """A clean write lands; a secret write is refused — and a scan of every persisted row
-    + blob contains no secret substring (the §6.1#5a floor is structural, not hoped-for)."""
+    + blob contains no secret substring (the #5a floor is structural, not hoped-for)."""
     c = build_acc(embedder_v1)
     c.admission.write("a perfectly clean durable insight about caching",
                       proposed_by="acc", approved_by="acc")
@@ -52,7 +52,7 @@ def test_acceptance_secret_never_in_any_row_after_mixed_writes(embedder_v1):
 
 
 def test_acceptance_secret_never_in_logs(embedder_v1, caplog):
-    """§6.1#5a, the log half: the structured logs emitted on a refused write carry rule NAMES
+    """#5a, the log half: the structured logs emitted on a refused write carry rule NAMES
     + counts only — the secret bytes appear in no message and no extra field, end-to-end."""
     c = build_acc(embedder_v1)
     hive_log = logging.getLogger("hive")

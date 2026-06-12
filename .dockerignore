@@ -1,7 +1,7 @@
 # Keep the build context minimal AND secret-free: only pyproject.toml + hive/ become
 # layers (the Dockerfile COPYs exactly those). Everything below is excluded so a stray
 # credential, the git history, a local venv, or the test/doc trees can NEVER be baked into
-# an image layer — the §9 "no secret in any layer" floor made structural, not hoped-for.
+# an image layer — the "no secret in any layer" floor made structural, not hoped-for.
 # Enforced by tests/container/test_dockerignore_no_secret.py.
 
 # version control + CI
@@ -34,7 +34,7 @@ hive/research/
 # secrets / local env — never in the context, never in a layer. Each pattern has a
 # top-level form AND a **/ form: a bare `*.key` / `.env` matches only the context ROOT, so
 # without the recursive sibling a credential nested in hive/ (COPY hive/ ./hive/) would slip
-# into a layer. Depth-agnostic is the whole point of the §9 floor.
+# into a layer. Depth-agnostic is the whole point of the no-secret-in-any-layer floor.
 .env
 .env.*
 *.pem

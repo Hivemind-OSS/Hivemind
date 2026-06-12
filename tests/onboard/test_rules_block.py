@@ -2,7 +2,7 @@
 
 A block missing markers / version embed / trailer-in-body / a binding hash is
 UNCONSTRUCTABLE, so the recorded link can never claim content that was not installed.
-``test_trailer_key_is_single_sourced`` ★ is the §11/§6.1#6 CONFIG_DRIFT guard (mutation:
+``test_trailer_key_is_single_sourced`` ★ is the CONFIG_DRIFT guard (mutation:
 hard-code the template literal → red).
 """
 from __future__ import annotations

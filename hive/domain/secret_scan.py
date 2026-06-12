@@ -1,4 +1,4 @@
-"""Deterministic credential scan (§9) — the one always-on substrate floor.
+"""Deterministic credential scan — the one always-on substrate floor.
 
 PURE: stdlib ``re`` + ``math`` only (no I/O; the purity gate forbids
 sqlite/torch/subprocess/os/git/time here). Side-effect-free and deterministic so
@@ -6,13 +6,13 @@ the same text always yields the same verdict — the SecretScanner port contract
 
 The scan runs BEFORE anything is persisted. A raw credential is refused (default,
 fail-closed) or redacted; the substrate never stores the secret "the way a DB
-rejects a malformed row" (§9). The verdict CANNOT lie: a clean-with-findings, a
+rejects a malformed row". The verdict CANNOT lie: a clean-with-findings, a
 redact-without-redacted_text, or a refuse-without-a-finding is unconstructable
 (``__post_init__`` raises). A ``SecretFinding`` carries only ``rule`` + ``span``
 (char offsets into the ORIGINAL text) — never the matched bytes — so there is no
 "remember not to log the secret" rule: the finding has no secret to log.
 
-Coverage (§9): ``sk-`` / ``AKIA`` / ``ghp_`` / ``xox`` / ``pypi-`` / JWT / PEM /
+Coverage: ``sk-`` / ``AKIA`` / ``ghp_`` / ``xox`` / ``pypi-`` / JWT / PEM /
 connection-strings as named high-precision rules, plus a Shannon-entropy
 catch-all for generic high-entropy tokens (prefix-less hex/base64 secrets).
 
@@ -26,9 +26,9 @@ periodicity, so naive repetition detection misses them anyway; (c) any detector
 broad enough to catch them (period or distinct-cardinality) refuses common BENIGN
 strings — ``----------`` / ``==========`` separators, ``0b10101010…`` bit masks,
 ``XXXX…`` placeholders — degrading the capture UX on a high-trust accidental-paste
-floor; and (d) the human approval gate sees every staged write. This is the spec §9
+floor; and (d) the human approval gate sees every staged write. This is the
 "named, not solved" posture: the floor targets accidental high-entropy credential
-pastes, not adversarial low-entropy evasion (explicitly out of scope, §9).
+pastes, not adversarial low-entropy evasion (explicitly out of scope).
 """
 from __future__ import annotations
 
@@ -37,7 +37,7 @@ import re
 from dataclasses import dataclass
 from typing import Optional
 
-# ── action vocabulary (the locked ScanAction literals, 02-CONTRACTS §2.x) ─────
+# ── action vocabulary (the locked ScanAction literals) ───────────────────────
 CLEAN = "clean"
 REDACT = "redact"
 REFUSE = "refuse"
@@ -80,7 +80,7 @@ class ScanVerdict:
             raise ValueError(f"bad scan action {self.action!r}")
 
 
-# ── named high-precision rules (§9). Each is one delete-able regex with a named
+# ── named high-precision rules. Each is one delete-able regex with a named
 #    test (test_<rule>_refused) so a removed pattern turns that test red. ───────
 _PATTERNS: tuple[tuple[str, "re.Pattern[str]"], ...] = (
     ("aws_akia", re.compile(r"\bAKIA[0-9A-Z]{16}\b")),

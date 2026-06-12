@@ -4,7 +4,7 @@ The variance-preserving native→d projection head, FROZEN at construction (no l
 fit, no random fallback — the reference's encode/encode_batch split-brain is DELETED).
 The codec serializes the head so a re-embed migration round-trips W_version
 bit-for-bit — the field the reference's base64+JSON codec silently dropped, which is
-why §6.1#4 could corrupt geometry. Endianness is pinned little-endian.
+why the geometry re-embed could corrupt geometry. Endianness is pinned little-endian.
 
   24-byte header (struct '<4sHHIII I'):
    off 0  4  MAGIC b"HVH1"      off 4 2 FMT_VERSION u16=1    off 6 2 DTYPE u16=1(float32)

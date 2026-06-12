@@ -2,7 +2,7 @@
 
 Derived from: "Demand-Driven Context: A Methodology for Building Enterprise Knowledge Bases Through Agent Failure" (arXiv:2603.14057). Core thesis: agent retrieval failures are demand signals and should drive knowledge base prioritization.
 
-> **Status (2026-06-10, AUTONOMY-PLAN landed):**
+> **Status (2026-06-10, autonomy lifecycle landed):**
 > **TODO 1 — LANDED-BY** the trust-lifecycle build (`recall_misses` table, the
 > `ExposureLedger.record_miss` path with the three miss types, secret-scanned
 > query text; `tests/mcp/test_tools_v2.py`).
@@ -30,7 +30,7 @@ Add a parallel `record_miss(query_text, agent_id, miss_type, ts)` path — symme
 
 Store in a new `recall_misses` table: `(id, query_text, query_vector BLOB, agent_id, miss_type, ts)`. Secret-scan the `query_text` before persisting (same scanner, refuse→drop, redact→masked). This table is the enabler for TODOs 2, 3, and 4.
 
-RULE-2 mutations to verify: drop the `record_miss` call → miss count stays zero under forced-abstain test; wrong `miss_type` stored → type-filtered query returns wrong count.
+Mutations to verify: drop the `record_miss` call → miss count stays zero under forced-abstain test; wrong `miss_type` stored → type-filtered query returns wrong count.
 
 ---
 

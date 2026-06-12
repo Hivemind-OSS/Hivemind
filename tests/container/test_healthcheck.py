@@ -24,7 +24,7 @@ def test_healthcheck_green_when_loaded():
 
 def test_healthcheck_red_before_embedder_resident():
     # ★ ok but the model is not resident ⇒ UNHEALTHY (the one fault that would let an
-    # orchestrator route a recall at a cold server). Dropping the conjunct = RULE-2 mut.
+    # orchestrator route a recall at a cold server). Dropping the conjunct = the mutation.
     rc = H.main(probe=lambda env: {"ok": True, "embedder_loaded": False})
     assert rc == H.UNHEALTHY == 1
 

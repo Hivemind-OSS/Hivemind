@@ -60,7 +60,7 @@ def test_recall_abstain_no_resurrect():
 def test_recall_filters_to_approved_only():
     """A CONFIDENT hit whose row is still PENDING is dropped by the boundary belt;
     an empty post-belt set is an ABSTAIN, never a confident-empty. Deleting the
-    belt guard surfaces the pending row ⇒ this assertion fails (RULE-2 mut #2)."""
+    belt guard surfaces the pending row ⇒ this assertion fails (mutation #2)."""
     server, _ = build_real_server()
     # a genuine PENDING row via the store substrate (the tool path always approves now);
     # the belt must still drop a non-approved candidate the stub recall surfaces.

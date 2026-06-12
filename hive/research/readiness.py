@@ -1,8 +1,8 @@
-"""P2.0 — the pre-registered §8 Phase-2 readiness gate (credit-density probe).
+"""P2.0 — the pre-registered Phase-2 readiness gate (credit-density probe).
 
-Phase 2 (the §6.6 keystone A/B, P2.1) must NOT run underpowered. Before the
-experiment is allowed to render a keep/kill verdict, two pre-registered floors
-(fixed on the corpus BEFORE the run, docs §8) must both hold:
+Phase 2 (the keystone control-arm A/B experiment, P2.1) must NOT run underpowered.
+Before the experiment is allowed to render a keep/kill verdict, two pre-registered
+floors (fixed on the corpus BEFORE the run) must both hold:
 
   * **settled-outcome volume**  ``settled ≥ N_settled``  (settled-outcome counts
     aggregated over the Phase-1 accrual window).
@@ -10,11 +10,11 @@ experiment is allowed to render a keep/kill verdict, two pre-registered floors
     M_memories`` in the chosen family (``utility`` rows, isolation-excluded).
 
 Below either floor the verdict is **inconclusive, NOT killed** — sparsity is read
-as "widen the family / extend the window," never as a negative (§6.6 / §12). This
-module does NOT re-implement that decision: it computes the two real counters and
-hands them to ``KeystoneSpec`` so ``run_keystone_eval``'s existing pre-gate (the
-P1.10-pinned ``inconclusive`` branch) fires. The probe is the *measurement*; the
-keystone is the *gate*.
+as "widen the family / extend the window," never as a negative (the keystone's
+"inconclusive ≠ negative" contract). This module does NOT re-implement that
+decision: it computes the two real counters and hands them to ``KeystoneSpec`` so
+``run_keystone_eval``'s existing pre-gate (the P1.10-pinned ``inconclusive``
+branch) fires. The probe is the *measurement*; the keystone is the *gate*.
 
 Dev-time only — the P0.0 AST fence keeps ``domain``/``adapters``/``app`` from
 importing ``hive.research``; this reads adapters, never the reverse.
@@ -27,7 +27,7 @@ from typing import Iterable, Protocol
 
 log = logging.getLogger("hive.research.readiness")
 
-# ── pre-registered §8 thresholds (fixed BEFORE the run; docs/05-BUILD-PLAN.md §8) ──
+# ── pre-registered thresholds (fixed BEFORE the run) ──
 # The recommended family is the only machine-verifiable, high-credit-density one.
 PROD_FAMILY = "fix-failing-CI"
 PROD_N_SETTLED_MIN = 200            # settled-outcome volume floor for fix-failing-CI
@@ -43,7 +43,7 @@ class _UtilityConn(Protocol):
 class ReadinessReport:
     """The frozen credit-density measurement + the pre-gate decision it implies.
 
-    ``ready`` is the AND of both floors; a not-ready report is the §8 signal to
+    ``ready`` is the AND of both floors; a not-ready report is the signal to
     widen the family / extend the window — it is NEVER a negative on move #6."""
     family_scope: str
     settled: int
@@ -61,7 +61,7 @@ class ReadinessReport:
 
 def aggregate_settled(settled_counts: Iterable[int]) -> int:
     """Total clawback-settled outcome volume = Σ settled counts over the Phase-1 accrual
-    window (the §8-named source counter). The producer that emitted these per-tick counts
+    window (the settled-outcome source counter). The producer that emitted these per-tick counts
     was removed; callers now pass the counts directly. // O(n) time, O(1) space."""
     return sum(int(c) for c in settled_counts)
 
@@ -90,7 +90,7 @@ def readiness_probe(
     n_settled_min: int = PROD_N_SETTLED_MIN,
     m_memories_min: int = PROD_M_MEMORIES_MIN,
 ) -> ReadinessReport:
-    """Measure the two §8 credit-density floors against the real Phase-1 accrual and
+    """Measure the two credit-density floors against the real Phase-1 accrual and
     decide readiness. ``ready`` requires BOTH floors (the AND is load-bearing —
     enough settled volume on too few memories, or vice-versa, is not powered). The
     decision is logged at the boundary so an operator can see exactly which floor
@@ -115,7 +115,7 @@ def readiness_probe(
         reason = ("inconclusive (NOT a negative — widen family / extend window): "
                   + ", ".join(shortfalls) + f" in {family_scope!r}")
         # WARN, not error: under-powered is a recoverable "keep accruing" state, the
-        # §6.6 "inconclusive ≠ negative" contract — the keystone is simply not yet
+        # keystone "inconclusive ≠ negative" contract — the keystone is simply not yet
         # reachable, NOT a kill of move #6.
         log.warning("readiness.not_ready family=%s settled=%d (min %d) "
                     "distinct_memories=%d (min %d) — keystone held inconclusive",

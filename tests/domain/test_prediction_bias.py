@@ -1,4 +1,4 @@
-"""P1.6 — M08 PredictionBiasMonitor (guardrail-3 / §12 Phase-2 readiness instrument, A6).
+"""P1.6 — M08 PredictionBiasMonitor (guardrail-3 / Phase-2 readiness instrument, A6).
 
 The phantom guardrail made real: a PURE domain object (clock injected, no SQL/git)
 that measures the mean signed gap between what the ranker PREDICTED (the Beta posterior
@@ -6,7 +6,7 @@ mean it would rank by) and what REALITY DELIVERED (the settled reward) over a wi
 A large positive divergence ⇒ the ranker over-predicts utility relative to reality —
 "the ranker is stale, the codebase moved underneath it."
 
-GROUNDED DEVIATIONS from docs/08-RESOLUTIONS.md (flagged, both reconcile internal
+GROUNDED DEVIATIONS from the resolution contract (flagged, both reconcile internal
 contradictions in the source contract):
   GD-1  The resolution's "wins=9,losses=1 → predicted ≈0.9" is the prior-FREE ratio
         9/10. The deployed predictor is the Beta(1,1) prior-folded UtilityPosterior.mean()

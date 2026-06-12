@@ -1,8 +1,8 @@
 """P1.5 — M04 RecallPipeline: the never-hallucinate enforcement point.
 
 Full functional coverage against fakes only (hash-speed, no SQLite/network):
-happy path, every §6 failure mode (embedder raise / index raise / empty /
-non-authoritative), every §2 invariant (abstain⟹empty, abstain-no-resurrect
+happy path, every failure mode (embedder raise / index raise / empty /
+non-authoritative), every invariant (abstain⟹empty, abstain-no-resurrect
 STRUCTURAL, EMPTY vs ABSTAIN distinct, entropy∈[0,1], unique trace, top_n
 size-only, approved-only honest half), the D1 per-hit recall_margin value (a pure
 unit pin), the A2 family spy + cross-family isolation, and the swap-seam (a 2nd index
@@ -166,7 +166,7 @@ def test_recall_at_5_over_held_out_pairs_meets_floor():
             "q", agent_id="A", agent_ctx=CTX)
         if r.state == CONFIDENT and eid in {h.episode_id for h in r.hits[:5]}:
             hit_at5 += 1
-    assert hit_at5 / len(golds) >= 0.33   # §6.1#1 recall@5 floor
+    assert hit_at5 / len(golds) >= 0.33   # recall@5 floor
 
 
 # ── abstain ───────────────────────────────────────────────────────────────────
@@ -373,7 +373,7 @@ def test_nan_sim_index_never_confident():
 
 
 def test_confident_result_must_carry_hits():
-    # #E: the §2.1 biconditional made fully structural — CONFIDENT with empty hits is
+    # #E: the CONFIDENT<->has-hits biconditional made fully structural — CONFIDENT with empty hits is
     # unconstructable (the reverse of abstain-no-resurrect: no empty-confident either).
     from hive.domain.models import RecallResult
     with pytest.raises(ValueError):

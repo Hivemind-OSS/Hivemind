@@ -1,5 +1,5 @@
 """CreditDelta + PredictionBiasMonitor — the dormant utility-credit carrier and the
-§12 readiness instrument (guardrail-3, A6).
+readiness instrument (guardrail-3, A6).
 
 The credit-PRODUCER (the ``Attributor`` that split verifiable git outcomes into
 ``CreditDelta`` posterior updates) was removed with the producer subsystem.
@@ -27,7 +27,7 @@ class CreditDelta:
 
 
 class PredictionBiasMonitor:
-    """Guardrail-3 / §12 Phase-2 readiness instrument [A6]. PURE (clock injected, no
+    """Guardrail-3 / Phase-2 readiness instrument [A6]. PURE (clock injected, no
     SQL/git). Measures the mean signed gap between what the ranker PREDICTED (the Beta
     posterior mean it would rank by) and what REALITY DELIVERED (the settled reward)
     over the window. Positive ⇒ the ranker over-predicts utility relative to reality

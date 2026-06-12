@@ -1,10 +1,10 @@
 """M11 — the three swap seams as plain, greppable dicts + fail-fast `build_*`.
 
-Adding a provider is ONE dict entry + one adapter file, with zero core change (the spec §10
+Adding a provider is ONE dict entry + one adapter file, with zero core change (the
 swap mandate made literal: every registration is visible at one read, not hidden behind
 decorator magic). `build_gate(cfg)` is the ONE located owner that passes the frozen
 `cfg.recall` object BY IDENTITY into the abstention gate — the floor physically cannot fork
-(CONFIG_DRIFT killed structurally; M11 §2.3).
+(CONFIG_DRIFT killed structurally; M11).
 
 Registry values are LAZY constructors: Config validation checks only key-presence (cheap,
 torch-free), while the heavy adapter import happens when `build_*` actually invokes.
@@ -71,7 +71,7 @@ INDEX_PROVIDERS: dict[str, Callable[..., Any]] = {
 
 
 def build_index(cfg: "Config"):
-    """Construct the configured index; ASSERT the §4.3 authoritative property holds for an
+    """Construct the configured index; ASSERT the authoritative-index property holds for an
     authoritative backend (exhaustive never silently flips to ANN — the build-time closure of
     the approx_threshold trap)."""
     name = cfg.index.backend
@@ -93,5 +93,5 @@ def build_gate(cfg: "Config") -> NormalizedEntropyGate:
     """THE single located owner of the never-hallucinate floor wiring. The frozen
     `cfg.recall` object is handed to the gate BY IDENTITY (not `cfg.recall.H_frac_max`
     copied as a float) so a future second gate cannot fork the floor. Invariant:
-    `build_gate(cfg)._recall is cfg.recall` (pinned by test + RULE-2 mutation)."""
+    `build_gate(cfg)._recall is cfg.recall` (pinned by test + mutation)."""
     return NormalizedEntropyGate.from_recall(cfg.recall, cfg.recall.softmax_beta)

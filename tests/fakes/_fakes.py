@@ -278,7 +278,7 @@ class FakeLedger:
 
 class FakeInstallPlanner:
     """InstallPlanner double for the MCP surface. ``trailer_key`` is single-sourced
-    from the injected ``stamp_trailer`` (the §11 CONFIG_DRIFT guard the MCP layer
+    from the injected ``stamp_trailer`` (the CONFIG_DRIFT guard the MCP layer
     must surface verbatim); ``plan`` does zero writes; ``confirm`` links on a matching
     hash (lie-proof); ``link_status`` backs the additive hive_health link field."""
     def __init__(self, *, stamp_trailer: str = "Hive-Trace", block_version: int = 1) -> None:
@@ -315,7 +315,7 @@ class FakeInstallPlanner:
             return {"linked": False, "error": "stale_or_wrong_block",
                     "expected": expected.hex() if expected is not None else None}
         self.linked[repo_path] = confirm_hash
-        profile = resolve_profile(harness)               # mirror the real link record (§6)
+        profile = resolve_profile(harness)               # mirror the real link record
         return {"linked": True, "rules_file": "CLAUDE.md", "error": None,
                 "link": {"manifest_version": HOOK_MANIFEST.manifest_version,
                          "harness": profile.harness, "tier": profile.max_tier}}

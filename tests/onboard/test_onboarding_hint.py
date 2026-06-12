@@ -1,4 +1,4 @@
-"""§5.2 self-onboard hint — the pure ``onboarding_hint`` block any tool hands back when
+"""self-onboard hint — the pure ``onboarding_hint`` block any tool hands back when
 touched from a repo with NO link record. Reference-not-instructions, fixed shape, a
 version int + a static ``next`` naming the ONE call that links the repo; no repo content,
 no secret. The MCP-surface integration (hive_health) is pinned in tests/mcp."""

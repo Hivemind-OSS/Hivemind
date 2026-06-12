@@ -1,4 +1,4 @@
-"""DefaultSecretScanner — the default adapter behind the SecretScanner port (M05 §3).
+"""DefaultSecretScanner — the default adapter behind the SecretScanner port (M05).
 
 Wraps the pure ``hive.domain.secret_scan.scan`` with the configured thresholds +
 redact mode. The swap seam: a vendor DLP service or a stricter org ruleset

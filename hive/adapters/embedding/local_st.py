@@ -117,7 +117,7 @@ class LocalSTEmbedder:
         else:
             self._head = None              # fit at load() from the bootstrap corpus
         # A supplied head's geometry tag MUST match this embedder's declared w_version — a
-        # persisted-head/declared-version mismatch would silently corrupt the §6.1#4 re-embed
+        # persisted-head/declared-version mismatch would silently corrupt the geometry re-embed
         # round-trip (the head says one W_version, the stamp says another). Fail fast, loud.
         if self._head is not None and int(self._head.w_version) != self.w_version:
             raise GeometryError(

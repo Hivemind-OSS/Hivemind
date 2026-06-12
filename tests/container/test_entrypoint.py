@@ -3,10 +3,10 @@
 The strict order config→migrate→index→warm→serve, the fail-fast exit codes
 (78 EX_CONFIG / 70 EX_SOFTWARE / 69 EX_UNAVAILABLE), the embedder-resident gate, and the
 "serve is UNREACHABLE unless every prior step succeeded" invariant are pinned here against
-an injected fake boot — no Docker required. Three of the four RULE-2 mutations live in
+an injected fake boot — no Docker required. Three of the four deliberate mutations live in
 this module (missing-env guard, swallow-embedder-exception, migrate-failure return).
 
-REMOTE-ACCESS-PLAN Part S adds the hardening knobs, resolved with the SAME discipline as
+Part S adds the hardening knobs, resolved with the SAME discipline as
 `_resolve_port` (default / override / `0`-disables / malformed→EX_CONFIG before assembly,
 never a raise out of boot): `HIVE_HTTP_RATE_LIMIT`+`HIVE_HTTP_RATE_WINDOW_S` and
 `HIVE_HTTP_MAX_BODY_BYTES`. `_make_http_serve` must construct a real `TokenBucketLimiter`
@@ -232,7 +232,7 @@ def test_embedder_not_resident_exits_69():
     assert "serve" not in calls
 
 
-# ── default HTTP serve path + port resolution (the §6 path injected-serve never exercises) ──
+# ── default HTTP serve path + port resolution (the default-serve path injected-serve never exercises) ──
 def test_make_http_serve_wires_run_http_with_port_and_verify():
     """_make_http_serve builds the default serve from the injectable run_http, the resolved
     port, and the token store's verify CALLABLE (no SQLite class leaks into the transport).
@@ -315,7 +315,7 @@ def test_invalid_http_port_exits_config(bad):
     assert calls == []
 
 
-# ── Part S hardening knobs: resolved like _resolve_port (REMOTE-ACCESS-PLAN §4) ──
+# ── Part S hardening knobs: resolved like _resolve_port ──
 def test_resolve_rate_limit_defaults():
     assert E._resolve_rate_limit({}) == (120, 60.0)
 

@@ -113,7 +113,7 @@ class NormalizedEntropyGate:
     @classmethod
     def from_recall(cls, recall, beta: float) -> "NormalizedEntropyGate":
         """Construct the gate BY IDENTITY from the single frozen recall-config object
-        (CONFIG_DRIFT killed structurally — M11 §2.3). The floor is read off
+        (CONFIG_DRIFT killed structurally — M11). The floor is read off
         ``recall.H_frac_max`` and the object itself is retained at ``self._recall`` so a
         future second gate cannot fork the float. ``recall`` is duck-typed (any frozen
         object exposing ``H_frac_max``) — the domain stays unaware of ``app.Config``.
@@ -187,7 +187,7 @@ def shadow_filter(episodes: Sequence[Episode], *,
 
 # ── query → family (A2): the SOLE owner of the live query's family_scope ──────
 def _resolve_query_family(ctx: AgentContext) -> str:
-    """Byte-identical grammar to the producer's link-time family_scope (§11):
+    """Byte-identical grammar to the producer's link-time family_scope:
     "<remote>|<lang>|<workflow>".  // O(1). Empty axes collapse to "*"/"general"
     so an unscoped query selects the cross-repo aggregate slice that nothing
     credits ⇒ utility_map returns {} ⇒ surfacer is identity (safe degradation)."""
@@ -270,7 +270,7 @@ class RecallPipeline:
                 self._note_non_answer(query, value_q, agent_id, "no_match")
                 return RecallResult.empty(trace_id)
             # search the FULL approved set so the gate sees the whole distribution;
-            # recall_top_n only truncates hits, NEVER the abstain decision (§4.2).
+            # recall_top_n only truncates hits, NEVER the abstain decision.
             candidates = self.index.search(value_q, self.index.size())
             # coerce INSIDE the try: a contract-violating adapter row (NULL cosine,
             # wrong arity) must fail-closed to EMPTY, never raise (AUDIT #D).

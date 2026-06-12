@@ -28,7 +28,7 @@ def test_encode_returns_unit_norm_float32_d(emb):
     v = emb.encode("the database connection pool must be sized for concurrency")
     assert v.shape == (256,)
     assert v.dtype == np.float32
-    assert abs(float(np.linalg.norm(v)) - 1.0) < 1e-5      # ← head normalize (RULE-2 target)
+    assert abs(float(np.linalg.norm(v)) - 1.0) < 1e-5      # ← head normalize (mutation target)
 
 
 def test_encode_batch_rows_unit_norm(emb):
@@ -66,7 +66,7 @@ def test_d_matches_projected_dim(emb):
 def test_semantic_neighbours_preserved_in_projection(emb):
     """The load-bearing recall property: the 384→256 PCA head PRESERVES bge semantics —
     a related pair stays closer than an unrelated pair in the PROJECTED space (so the
-    §6.1#1 recall@5 floor is reachable, not destroyed by the dim reduction)."""
+    recall@5 floor is reachable, not destroyed by the dim reduction)."""
     q = emb.encode("the redis cache must not drop queue keys under memory pressure")
     near = emb.encode("redis maxmemory-policy and queue key persistence")
     far = emb.encode("a yellow banana is a sweet tropical fruit")
@@ -118,7 +118,7 @@ class _NanModel:
 def test_encode_rejects_non_finite_vector(emb):
     """The value WRITE boundary: a non-finite embedding is refused at the producer (never
     written to episodes.value, never crashing the index rebuild) — the reembed-nan class.
-    Deleting `_require_finite` from encode (RULE-2 mutation) makes this go red."""
+    Deleting `_require_finite` from encode (deliberate mutation) makes this go red."""
     bad = LocalSTEmbedder(model=_NanModel(), w_version=7, head=emb._head)   # real head, NaN model
     with pytest.raises(GeometryError):
         bad.encode("anything")
@@ -128,6 +128,6 @@ def test_encode_rejects_non_finite_vector(emb):
 
 def test_head_wversion_must_match_embedder(st_model, emb):
     """A persisted head from a DIFFERENT geometry cannot be loaded under a mismatched stamp —
-    that would silently corrupt the §6.1#4 re-embed round-trip. Fail fast at construction."""
+    that would silently corrupt the geometry re-embed round-trip. Fail fast at construction."""
     with pytest.raises(GeometryError):
         LocalSTEmbedder(model=st_model, w_version=2, head_bytes=emb.head_bytes())   # head is w_version=7

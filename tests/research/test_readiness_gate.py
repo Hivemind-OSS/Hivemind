@@ -1,6 +1,6 @@
-"""P2.0 — the pre-registered §8 Phase-2 readiness gate (credit-density probe).
+"""P2.0 — the pre-registered Phase-2 readiness gate (credit-density probe).
 
-Locks docs/05-BUILD-PLAN.md §P2.0 + §8: below either floor the keystone is held
+Locks the readiness-gate contract: below either floor the keystone is held
 ``inconclusive`` (NOT ``killed``) — sparsity is read as "widen / extend," never as a
 negative on move #6. The probe is the measurement; ``run_keystone_eval`` is the gate.
 
@@ -61,7 +61,7 @@ def _spec_from(report: ReadinessReport, **arm_overrides) -> KeystoneSpec:
 def test_phase2_blocked_until_credit_density():
     store = _store()
     # a handful of credited memories + a trickle of settled outcomes — far below the
-    # §8 production floors (200 settled / 30 distinct for fix-failing-CI).
+    # production credit-density floors (200 settled / 30 distinct for fix-failing-CI).
     for eid in range(5):
         _credit(store, eid)
     report = readiness_probe(_ticks(10, 12, 8), store)            # 30 settled, 5 distinct
@@ -112,7 +112,7 @@ def test_requires_both_floors_AND():
 
 
 def test_sufficient_density_lifts_the_gate():
-    # both §8 floors met ⇒ ready, AND the keystone is NO LONGER inconclusive — it now
+    # both credit-density floors met ⇒ ready, AND the keystone is NO LONGER inconclusive — it now
     # renders a real verdict (here a KILL, because recency ties utility on the arms).
     store = _store()
     for eid in range(PROD_M_MEMORIES_MIN + 2):
@@ -153,7 +153,7 @@ def test_aggregate_settled_sums_ticks():
 def test_current_accrual_is_inconclusive_no_production_stream():
     """The real Phase-1 accrual right now: zero producer ticks, an empty utility
     table (no /data store has ever run). The probe reads the truth — not ready — and
-    the keystone is therefore unreachable. This is the §8 gate holding shut by design,
+    the keystone is therefore unreachable. This is the readiness gate holding shut by design,
     NOT a negative on move #6: the remedy is to accrue in production, never to fake it."""
     empty = _store()
     report = readiness_probe([], empty)                         # the genuine current state

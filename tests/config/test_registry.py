@@ -2,7 +2,7 @@
 
 The three swap seams are plain greppable dicts; build_* fail fast on a typo'd seam;
 build_gate is the ONE located owner that passes the frozen cfg.recall object BY IDENTITY
-into the abstention gate (CONFIG_DRIFT killed structurally — M11 §2.3 must-fix #3).
+into the abstention gate (CONFIG_DRIFT killed structurally — the gate-holds-config-by-identity must-fix).
 """
 from __future__ import annotations
 
@@ -18,7 +18,7 @@ from hive.domain.recall import NormalizedEntropyGate
 def test_build_index_default_and_authoritative():
     cfg = Config.load(db_path=":memory:")
     idx = registry.build_index(cfg)
-    # exhaustive is AUTHORITATIVE, never silently ANN (spec §4.3) — build-time postcondition
+    # exhaustive is AUTHORITATIVE, never silently ANN (the silent-ANN-fallback trap) — build-time postcondition
     assert idx.is_authoritative() is True
 
 

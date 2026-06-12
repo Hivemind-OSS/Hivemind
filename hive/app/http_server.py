@@ -1,25 +1,25 @@
 """run_http — the warm HTTP daemon: per-device bearer auth in front of HiveMCPServer.
 
-The natural generalization of ``run_stdio`` (AUTH-PLAN §4): stdio is "one process, one
+The natural generalization of ``run_stdio``: stdio is "one process, one
 identity"; this is "one process, PER-REQUEST identity." A POST carries a JSON-RPC body and a
 ``Authorization: Bearer <token>`` header; the token is verified to a device label BEFORE
 ``handle()`` is reached, so an absent / unknown / revoked token never touches the recall or
 write path (INV-1 — 401). That label becomes the verified ``proposed_by`` via a per-request
 ``ServerIdentity`` threaded through ``handle(identity=…)``; the transport stays ignorant of
-tool internals (§9-D1).
+tool internals (D1).
 
 Channel separation: auth/transport outcomes are HTTP status codes (401/403/405/202);
 protocol/handler errors are JSON-RPC errors INSIDE a 200 — the two never mix. The shared
 ``sqlite3.Connection`` and the embedder are not thread-safe, so ALL handler execution (incl.
 the ``verify`` DB read) is serialized under one global lock; WAL read-concurrency is traded
-for simplicity (escape valve: AUTH-PLAN §12). The daemon never crashes on a bad request
+for simplicity (escape valve: WAL read-concurrency). The daemon never crashes on a bad request
 (INV-3) — the HTTP analog of "the stdio loop never crashes on a bad line".
 
-Stdlib only (``http.server``) — zero new dependencies. The §4 endpoint contract lives in
+Stdlib only (``http.server``) — zero new dependencies. The endpoint contract lives in
 ``_build_handler`` (unit-tested against a real loopback server on 127.0.0.1:0); ``run_http``
 is the thin, blocking bind+serve wrapper.
 
-Part S (REMOTE-ACCESS-PLAN) adds the two self-defense belts a tunnel-exposed endpoint
+Part S adds the two self-defense belts a tunnel-exposed endpoint
 needs, both keyword-only and DEFAULT-OFF (AC6 — every existing call site is unchanged):
 a body cap that 413s on the DECLARED Content-Length before any body byte is read (the
 cheapest flood dies first, pre-auth), and a per-token limiter that 429s a single verified
@@ -61,12 +61,12 @@ def _build_handler(server: HiveMCPServer,
                    lock: threading.Lock, *,
                    limiter: Optional[TokenBucketLimiter] = None,
                    max_body_bytes: int = _DEFAULT_MAX_BODY) -> type:
-    """Build the ``BaseHTTPRequestHandler`` subclass that enforces the §4 endpoint contract.
+    """Build the ``BaseHTTPRequestHandler`` subclass that enforces the endpoint contract.
     Factored out of ``run_http`` so the contract is unit-testable against a real loopback
     ``ThreadingHTTPServer`` on an ephemeral port (``run_http`` only binds + serve_forever).
     The Part S belts are keyword-only and defaulted OFF/generous (``limiter=None`` ⇒ no
     429 path exists; AC6). ``limiter.check`` runs under the SAME global lock as ``verify``
-    — the limiter has no internal locking by contract. The RULE-2 mutations (skip the
+    — the limiter has no internal locking by contract. The deliberate mutations (skip the
     ``verify``-None → 401 guard; drop the 413/429 guards) live in ``do_POST``."""
 
     class _Handler(BaseHTTPRequestHandler):
@@ -114,7 +114,7 @@ def _build_handler(server: HiveMCPServer,
                 # is read into memory and before verify/parse — the cheapest flood dies
                 # first. The unread body makes the connection unreusable, so the client
                 # is told to close (send_header('Connection','close') also flags the
-                # server side). ← dropping this return is a RULE-2 mutation.
+                # server side). ← dropping this return is a deliberate mutation.
                 if self._declared_length() > max_body_bytes:
                     return self._json(413, {"error": "payload_too_large"},
                                       extra={"Connection": "close"})
@@ -129,10 +129,10 @@ def _build_handler(server: HiveMCPServer,
                     # (2b) per-token throttle (429, AC4): POST-auth, keyed on the verified
                     # label (D3 — no forwarded-IP trust), under the same lock (the limiter
                     # has no internal locking). Never consulted for an invalid token —
-                    # that path 401s below. ← dropping this guard is a RULE-2 mutation.
+                    # that path 401s below. ← dropping this guard is a deliberate mutation.
                     rl = (limiter.check(label)
                           if (limiter is not None and label is not None) else None)
-                if label is None:                              # ← skipping this guard is the RULE-2 mut
+                if label is None:                              # ← skipping this guard is the mutation
                     return self._json(401, {"error": "unauthorized"})
                 if rl is not None and not rl.allowed:
                     return self._json(429, {"error": "rate_limited"},
@@ -184,7 +184,7 @@ def run_http(server: HiveMCPServer, *, host: str, port: int,
              lock: threading.Lock,
              limiter: Optional[TokenBucketLimiter] = None,
              max_body_bytes: int = _DEFAULT_MAX_BODY) -> None:  # pragma: no cover — blocking serve
-    """Bind a ``ThreadingHTTPServer`` on ``(host, port)`` and serve the §4 contract forever.
+    """Bind a ``ThreadingHTTPServer`` on ``(host, port)`` and serve the endpoint contract forever.
     The blocking serve loop is the (uncovered) transport wrapper; the contract itself lives in
     ``_build_handler``, exercised on a real loopback server in the tests. The Part S belts
     (``limiter`` / ``max_body_bytes``) thread through defaulted-off (AC6)."""

@@ -2,7 +2,7 @@
 PASS lands APPROVED + recallable, REDACT lands APPROVED with MASKED text (no raw secret
 bytes, hash over post-redaction text), REFUSE writes NOTHING (0 rows). The secret scan
 is the SOLE always-on gate now that the approval queue is gone — a planted credential is
-refused on the direct path exactly as before (the chunk's RULE-2 pin)."""
+refused on the direct path exactly as before (the chunk's mutation pin)."""
 from __future__ import annotations
 
 from hive.domain.models import content_hash

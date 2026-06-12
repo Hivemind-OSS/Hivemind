@@ -9,7 +9,7 @@ downstream of `mass` is byte-identical to the reference: `top_margin`, `n_eff`,
 entropy_norm > h_frac_max`, and the fail-closed `except → (True, 1.0, 0.0)`.
 
 These tests pin: β is actually applied (not dead); both reference fallbacks; and
-the abstain comparison direction (the RULE-2 invert mutation lives in the build).
+the abstain comparison direction (the invert mutation lives in the build).
 """
 from __future__ import annotations
 

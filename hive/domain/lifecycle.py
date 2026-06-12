@@ -135,7 +135,7 @@ class DemandRule:
     Pure, total, never raises; ANY non-finite input ⇒ promote=False (fail-closed,
     NaN/inf in any position).  // O(|misses|·d).
 
-    Solo mode (§3.5, operator-consented): a single-seat fleet structurally cannot
+    Solo mode (operator-consented): a single-seat fleet structurally cannot
     produce identity diversity, so with ``solo_mode`` the diversity clause SWAPS —
     distinct identity → elapsed-span demand: ``max(ts) − min(ts)`` over the matched
     misses must be ≥ ``solo_min_span_days``·86400 (the SurvivalRule span idiom — a

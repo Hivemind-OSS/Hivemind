@@ -1,4 +1,4 @@
-"""CV6 — task_outcomes v2: the settled-credit ledger (CONVERGENCE §8.2 shape).
+"""CV6 — task_outcomes v2: the settled-credit ledger.
 
 `record_outcome` upserts keyed (commit_sha, episode_id) — INSERT OR IGNORE is the
 idempotency contract that makes full-history re-scans free (double credit is

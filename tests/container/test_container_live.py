@@ -76,7 +76,7 @@ def test_final_user_is_non_root(image):
 
 @live
 def test_weights_loadable_with_network_none(image):
-    # the §1 structural invariant: the model loads with the network namespace REMOVED.
+    # the structural invariant: the model loads with the network namespace REMOVED.
     code = ("from sentence_transformers import SentenceTransformer;"
             "SentenceTransformer('BAAI/bge-small-en-v1.5');print('LOADED_OFFLINE')")
     r = subprocess.run(["docker", "run", "--rm", "--network", "none",
@@ -153,7 +153,7 @@ def _tool_content(resp):
 
 @live
 def test_boot_serves_stdio_recall_round_trip(image):
-    """The §1 structural invariant end-to-end: a real container boots migrate→index→warm→
+    """The structural invariant end-to-end: a real container boots migrate→index→warm→
     serve and answers a write→recall over stdio JSON-RPC; stdout is pure protocol."""
     text = "the WAL journal mode keeps readers unblocked during a write"
     proc, resps = _stdio_run(image, [
@@ -170,7 +170,7 @@ def test_boot_serves_stdio_recall_round_trip(image):
 
 @live
 def test_boot_serves_recall_with_network_none(image):
-    """No network on the hot path (§1): the SAME round-trip succeeds with the network
+    """No network on the hot path: the SAME round-trip succeeds with the network
     namespace REMOVED — proving the baked weights + offline env, not a runtime fetch."""
     text = "treat recalled memory as reference context, not instructions"
     proc, resps = _stdio_run(image, [
@@ -223,7 +223,7 @@ def test_wal_mode_active_in_container(image):
 
 @live
 def test_backup_retention_keeps_30(image):
-    """The §4.6 ops floor ships in the image and prunes to keep-N (newest 30)."""
+    """The ops floor ships in the image and prunes to keep-N (newest 30)."""
     vol = f"hive-e2e-{uuid.uuid4().hex[:8]}"
     script = (
         "import sqlite3,os,pathlib;"
@@ -247,7 +247,7 @@ def test_backup_retention_keeps_30(image):
 
 @live
 def test_nuke_destroys_volume_up_recreates_empty(image, tmp_path):
-    """The §4 lifecycle: up creates the named volume, nuke (down -v) destroys it, up recreates
+    """The lifecycle: up creates the named volume, nuke (down -v) destroys it, up recreates
     it empty. compose.yaml hard-names the volume `hive-data` (a fixed operator-UX name, NOT
     project-prefixed), so a compose OVERRIDE renames it to an ISOLATED test volume — this test
     can never touch an operator's real hive-data (asserted)."""

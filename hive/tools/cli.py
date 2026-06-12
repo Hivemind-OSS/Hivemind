@@ -170,7 +170,7 @@ def _down(args, *, run: Run, out: TextIO, env: Mapping[str, str], ask) -> int:
     return _rc(run(_compose("down"), env, capture=False))      # PRESERVES the volume
 
 
-# the CONVERGENCE §3.4 seat contract, surfaced at every provisioning touchpoint
+# the seat contract, surfaced at every provisioning touchpoint
 _SEAT_HINT = "mint one token per seat (`hive token <seat>`) — never share across agents"
 
 

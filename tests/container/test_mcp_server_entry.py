@@ -1,4 +1,4 @@
-"""P0 (HOOK-RELOCATION-PLAN v3 §6) — the PER-SESSION MCP server entrypoint
+"""P0 — the PER-SESSION MCP server entrypoint
 ``python -m hive.app.mcp_server``, the Tier-0 transport an IDE execs INSIDE the warm
 container. Pins the boot ORDER (config→build_container→migrate→build_index→warm→
 make_server→serve), the fail-fast sysexits codes, the embedder-resident gate, and — THE
@@ -103,7 +103,7 @@ def test_boot_order_then_serves():
 # ── THE P0 invariant: marker-INERT (neither stamps nor clears) ────────────────
 def test_serve_does_not_stamp_readiness_markers():
     # The whole point of P0: a per-session exec'd server must NOT write the PID-1 liveness
-    # markers. Adding a _mark_ready-equivalent call to main() turns this RED (RULE-2).
+    # markers. Adding a _mark_ready-equivalent call to main() turns this RED (the deliberate mutation).
     calls: list = []
     store = _MetaStore()
     container = _RecordingContainer(calls, store=store)

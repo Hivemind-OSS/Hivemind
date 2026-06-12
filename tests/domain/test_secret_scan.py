@@ -1,10 +1,11 @@
-"""P1.4 — M05 secret floor: the §9 pattern set + Shannon-entropy catch-all, and the
-ScanVerdict-cannot-lie invariants. The single most security-critical domain unit:
-a credential must never survive the scan into a staged row/blob/log.
+"""P1.4 — M05 secret floor: the named-credential pattern set + Shannon-entropy
+catch-all, and the ScanVerdict-cannot-lie invariants. The single most
+security-critical domain unit: a credential must never survive the scan into a
+staged row/blob/log.
 
 Each per-rule test asserts the SPECIFIC rule fired (not merely action==refuse) — so
 deleting that one regex turns the test red even though the entropy catch-all would
-still refuse the token (the RULE-2 per-family coverage the design review demanded).
+still refuse the token (the per-family mutation coverage the design review demanded).
 """
 from __future__ import annotations
 
@@ -21,7 +22,7 @@ def _rules(v: ScanVerdict) -> set[str]:
     return {f.rule for f in v.findings}
 
 
-# ── one test per §9 rule family (delete-the-regex ⟹ this test red) ────────────
+# ── one test per named-rule family (delete-the-regex ⟹ this test red) ─────────
 def test_aws_akia_refused():
     v = scan("aws key AKIAIOSFODNN7EXAMPLE here")
     assert v.action == REFUSE and "aws_akia" in _rules(v)
@@ -72,7 +73,7 @@ def test_low_entropy_residual_is_deliberately_clean():
     # limited-alphabet tokens are NOT a credential format and a detector broad
     # enough to catch them refuses benign separators/bit-masks/placeholders. The
     # floor targets high-entropy accidental pastes; this is an accepted, conscious
-    # gap (spec §9 out-of-scope), NOT an oversight — if you add a detector, update
+    # gap (out-of-scope for the secret floor), NOT an oversight — if you add a detector, update
     # the secret_scan residual note and flip these expectations deliberately.
     for benign in ("--------------------", "====================",
                    "0b1010101010101010", "XXXXXXXXXXXXXXXXXXXX"):

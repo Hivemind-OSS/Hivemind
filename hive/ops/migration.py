@@ -6,7 +6,7 @@ Two DISTINCT paths with a deliberate asymmetry in the secret floor:
     run through the ``SecretScanner`` BEFORE it is staged — refuse → drop (+n_refused),
     redact → stage the masked body (hash re-derived over the redaction), clean → stage
     the raw text. Rows land ``status='pending'`` under ``proposed_by='import-admin'``
-    (value NULL, structurally unrecallable) — §6.1#5b extended to the import boundary.
+    (value NULL, structurally unrecallable) — the unrecallable-pending rule extended to the import boundary.
     The reference's scan-LESS ``put(fresh)`` is NOT ported: a credential in an old-store
     row must never reach an episodes row, a blob, the content_hash, or a log line.
 
@@ -142,7 +142,7 @@ def reembed_from_text(store: Any, *, embedder: Any, scanner: Any = None) -> int:
 def _read_old_rows(old_db_path: str, table: str = "episodes") -> list[dict]:
     """Best-effort reader for the archived old store. Pulls ``text`` (+ optional
     ``weight``/``source``/``tags`` when present) — the bi-temporal / supersession
-    columns are DROPPED on the way in (§12 one-time import). Untested/unexecuted in
+    columns are DROPPED on the way in (one-time import). Untested/unexecuted in
     v-min; the secret floor in ``import_corpus`` is what the test contract pins."""
     conn = sqlite3.connect(old_db_path)
     conn.row_factory = sqlite3.Row
@@ -176,7 +176,7 @@ def _cli(argv: list[str]) -> int:
 
         if not args.scan_secrets:                    # the floor is not optional on untrusted import
             _log.error("import.refusing_unscanned_import: --scan-secrets is mandatory [B4]")
-            print("refusing to import without --scan-secrets (the §9 floor is mandatory)",
+            print("refusing to import without --scan-secrets (the no-secret-in-any-layer floor is mandatory)",
                   file=sys.stderr)
             return 2
         rows = _read_old_rows(args.old_db, table=args.old_table)

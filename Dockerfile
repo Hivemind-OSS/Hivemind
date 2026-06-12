@@ -9,7 +9,7 @@ COPY pyproject.toml ./
 RUN python -m venv /opt/venv
 ENV PATH="/opt/venv/bin:$PATH"
 # CPU-ONLY torch, pinned BEFORE sentence-transformers pulls its default (CUDA) wheel — the
-# runtime is CPU (§1) and the CUDA build is multi-GB; this keeps the image lean and the build
+# runtime is CPU and the CUDA build is multi-GB; this keeps the image lean and the build
 # disk-safe. sentence-transformers then sees torch already satisfied.
 RUN pip install --no-cache-dir torch --index-url https://download.pytorch.org/whl/cpu
 RUN pip install --no-cache-dir ".[embed]"

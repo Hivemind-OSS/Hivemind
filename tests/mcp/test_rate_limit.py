@@ -1,11 +1,11 @@
-"""REMOTE-ACCESS-PLAN Part S — TokenBucketLimiter (the per-token throttle contract).
+"""Part S — TokenBucketLimiter (the per-token throttle contract).
 
 Pure-unit contract for the one genuinely new module: continuous-refill math (N allowed,
 N+1 denied with a positive ceil'd Retry-After, a full window re-allows, a partial window
 accrues exactly its floor of tokens), the `limit<=0` DISABLED sentinel (the AC4
 `HIVE_HTTP_RATE_LIMIT=0` path), per-key independence (AC4 — one flooding device never
 throttles another), and the BOUNDED LRU map (attacker-varied keys cannot grow memory).
-Deterministic via an injected clock — no sleeps, no wall time. The RULE-2 mutations
+Deterministic via an injected clock — no sleeps, no wall time. The mutations
 (always-allow; `tokens > 0` → `>= 0`; LRU→MRU eviction flip) live in `check`/`_touch`.
 """
 from __future__ import annotations

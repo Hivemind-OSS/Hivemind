@@ -1,4 +1,4 @@
-"""§6.1 #4 acceptance — the geometry re-embed round-trip end-to-end: a W_version bump
+"""The geometry re-embed acceptance — the round-trip end-to-end: a W_version bump
 re-projects every approved row from its blob text through a FRESH (different) PCA head,
 rewrites ``value``, rebuilds the index, and REPRODUCES recall — with the text and
 content_hash untouched. Uses two real bge geometries (W_version 1 vs 2)."""

@@ -6,7 +6,7 @@ observe the server's in-RAM embedder directly. The contract — *healthy ≡ emb
 resident* — is therefore made structural via a readiness marker the entrypoint persists
 to the shared `/data` DB at `serve.ready`: this process reads that marker (and verifies
 the recorded serve PID is still alive, same PID namespace) instead of trusting that "the
-model is probably loaded by now". The whole point (M12 §2, "define errors out of
+model is probably loaded by now". The whole point (M12, "define errors out of
 existence"): an orchestrator / `./hive up` gates on health, so an unloaded server is
 structurally invisible as "ready" — it can never be routed a recall.
 
@@ -125,15 +125,15 @@ def _as_int(raw: Any) -> int:
 def main(argv: Optional[list[str]] = None, *, env: Optional[Mapping[str, str]] = None,
          probe: Optional[Callable[[Mapping[str, str]], dict[str, Any]]] = None) -> int:
     """Exit 0 IFF `ok` AND `embedder_loaded`. The conjunction IS the contract: dropping the
-    `embedder_loaded` term (RULE-2 mutation) lets a cold server report healthy. // O(1)."""
+    `embedder_loaded` term (deliberate mutation) lets a cold server report healthy. // O(1)."""
     env = os.environ if env is None else env
     probe = probe or _default_probe
     snap = probe(env)
     ok = snap.get("ok") is True
     embedder_loaded = snap.get("embedder_loaded") is True
-    if ok and embedder_loaded:                          # ← dropping the 2nd term is RULE-2 mut #1
+    if ok and embedder_loaded:                          # ← dropping the 2nd term is mutation #1
         return HEALTHY
-    # warn WHICH conjunct failed (the §6 boundary log) — db_path is an identifier, not a secret
+    # warn WHICH conjunct failed (the boundary log) — db_path is an identifier, not a secret
     _log.warning("healthcheck.unhealthy ok=%s embedder_loaded=%s db_path=%s",
                  ok, embedder_loaded, snap.get("db_path"))
     return UNHEALTHY

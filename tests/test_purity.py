@@ -1,7 +1,7 @@
 """AST import-linter (P0.0). A blocking gate:
   - hive/domain/** may not import any I/O module (sqlite3|torch|subprocess|os|git|time).
   - hive/domain|adapters|app/** may not import hive.research (dev-time only).
-The gate has teeth: the RULE-2 mutation (add `import sqlite3` to a domain file)
+The gate has teeth: the mutation (add `import sqlite3` to a domain file)
 must turn test_domain_imports_no_io red.
 """
 from __future__ import annotations

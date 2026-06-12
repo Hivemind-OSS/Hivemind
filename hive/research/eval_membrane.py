@@ -17,7 +17,7 @@ Two surfaces:
    (gate OFF — measures "is the gold in top-k") and the **abstention pass** (gate
    ON at the production floor — measures the EMPTY refusal). **[C2]**: every scored
    AND abstention question also emits a continuous confidence ``1 - H/ln(N_eff)``
-   plus its ``is_miss`` event, so the §6.1 #2 AUROC gate is proven end-to-end on
+   plus its ``is_miss`` event, so the AUROC gate is proven end-to-end on
    *oracle output*, not a hand-built fixture.
 
 2. ``export_baseline`` / ``replay`` / ``admit`` — capture each query's retrieved
@@ -29,7 +29,7 @@ Two surfaces:
    **fails CLOSED on zero signal** (``n==0 ⇒ False``).
 
 The Selective-Forgetting scorer and the LongMemEval ability rollup are DROPPED
-(§10: supersession/prune and the LME-paper ability map are out of the episodic MVP).
+(supersession/prune and the LME-paper ability map are out of the episodic MVP).
 """
 from __future__ import annotations
 
@@ -65,7 +65,7 @@ log = logging.getLogger("hive.research.eval_membrane")
 # h_frac_max=1.0 ⇒ suppress iff entropy_norm > 1.0, impossible after the [0,1] clamp.
 _RANKER_H_FRAC_MAX = 1.0
 
-# The abstention pass runs the gate ENABLED at the production floor (§6.1 #2/#3).
+# The abstention pass runs the gate ENABLED at the production floor.
 _ABSTENTION_TYPE = "abstention"
 _DEFAULT_ABSTENTION_H_FRAC_MAX = 0.5
 
@@ -76,7 +76,7 @@ _LOCOMO_CATEGORY_TYPE: dict = {
     4: "single-session-user", 5: _ABSTENTION_TYPE,
 }
 
-# The stamp trailers the §6.3 de-confounding rail strips (the prior eval-artifact
+# The stamp trailers the de-confounding rail strips (the prior eval-artifact
 # label leak (a)). BOTH generations strip by default — replayed history carries v1
 # Hive-Trace stamps next to v2 Hive-Credit stamps, and either leaks.
 _DEFAULT_TRAILER_KEY = "Hive-Credit"
@@ -282,7 +282,7 @@ def _question_from_obj(obj: dict, lineno: int) -> Optional[LMEQuestion]:
 def load_longmemeval(dataset_path: str) -> list[LMEQuestion]:
     """Load a JSONL LongMemEval(-shaped) dataset, tolerant of key aliases. Skips
     blank lines and entries with no question or no haystack; an unparseable line is
-    a WARN-and-continue, never an abort (§6 boundary logging)."""
+    a WARN-and-continue, never an abort (boundary logging)."""
     questions: list[LMEQuestion] = []
     with open(dataset_path, "r", encoding="utf-8") as f:
         for lineno, line in enumerate(f, start=1):
@@ -521,7 +521,7 @@ def load_locomo(path: str) -> list[dict]:
     return out
 
 
-# ── §6.3 de-confounding rails (BUILD-NEW) ────────────────────────────────────
+# ── de-confounding rails (BUILD-NEW) ─────────────────────────────────────────
 
 def strip_stamped_tokens(text: str, *, trailer_key: str = _DEFAULT_TRAILER_KEY) -> str:
     """Remove the commit-stamp label leak (eval artifact (a)): every stamped trailer
@@ -552,7 +552,7 @@ def assert_clean_store(svc: _EvalService) -> None:
 
 
 def assert_exact_path(index) -> None:
-    """Guard the §4.3 ``approx_threshold`` trap (eval artifact (a)): refuse to
+    """Guard the ``approx_threshold`` silent-ANN-fallback trap (eval artifact (a)): refuse to
     measure on a non-authoritative (ANN) index, where recall can silently → 0 once
     N crosses a threshold. RAISES ``ValueError`` naming the backend if it is not
     authoritative-exhaustive."""
@@ -577,7 +577,7 @@ def export_baseline(out_path: str, queries: list[str], svc: _EvalService, *,
                     k: int = 5, ctx: Optional[AgentContext] = None) -> None:
     """Capture, per query, its top-k retrieved content-hash list + latency to NDJSON.
     A dev/CI artifact that DOES carry query text (for replayability) — distinct from
-    the §6 text-free telemetry sink. ``query_hash`` is a stable label."""
+    the text-free telemetry sink. ``query_hash`` is a stable label."""
     import os
     parent = os.path.dirname(out_path)
     if parent:
