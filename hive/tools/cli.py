@@ -151,7 +151,7 @@ def _status(args, *, run: Run, out: TextIO, env: Mapping[str, str], ask) -> int:
         tunnel = f"on — https://{domain}/mcp" if domain else "on"
     else:
         tunnel = "off (loopback only)"
-    tok = run(_compose("exec", "-T", SERVICE, *AUTHCTL, "list"), env)
+    tok = _exec_authctl(run, env, "list")
     if tok.returncode == 0:
         seats = str(len([ln for ln in (tok.stdout or "").splitlines() if ln.strip()]))
     else:
@@ -162,6 +162,58 @@ def _status(args, *, run: Run, out: TextIO, env: Mapping[str, str], ask) -> int:
 
 def _down(args, *, run: Run, out: TextIO, env: Mapping[str, str], ask) -> int:
     return _rc(run(_compose("down"), env, capture=False))      # PRESERVES the volume
+
+
+# the CONVERGENCE §3.4 seat contract, surfaced at every provisioning touchpoint
+_SEAT_HINT = "mint one token per seat (`hive token <seat>`) — never share across agents"
+
+
+def _exec_authctl(run: Run, env: Mapping[str, str], *args: str) -> subprocess.CompletedProcess:
+    """All token verbs ride the in-container authctl — crypto + schema stay there.
+    `-T` (no TTY) keeps the child's stdout a clean pipe for the credential."""
+    return run(_compose("exec", "-T", SERVICE, *AUTHCTL, *args), env)
+
+
+def _token(args, *, run: Run, out: TextIO, env: Mapping[str, str], ask) -> int:
+    child = _exec_authctl(run, env, "create", args.seat)
+    if child.returncode != 0:
+        sys.stderr.write(child.stderr or "")
+        return child.returncode                        # authctl already speaks sysexits
+    print((child.stdout or "").strip(), file=out)      # the credential — stdout ONLY
+    print(f"hive: token for seat {args.seat!r} shown once above — hand it over via a "
+          f"secret manager; {_SEAT_HINT}", file=sys.stderr)
+    return EX_OK
+
+
+def _revoke(args, *, run: Run, out: TextIO, env: Mapping[str, str], ask) -> int:
+    child = _exec_authctl(run, env, "revoke", args.seat)
+    sys.stderr.write(child.stderr or "")
+    return child.returncode if child.returncode != 0 else EX_OK
+
+
+def _tokens(args, *, run: Run, out: TextIO, env: Mapping[str, str], ask) -> int:
+    child = _exec_authctl(run, env, "list")
+    if child.returncode != 0:
+        sys.stderr.write(child.stderr or "")
+        return child.returncode
+    out.write(child.stdout or "")                      # seat labels, one per line, verbatim
+    return EX_OK
+
+
+def _connect(args, *, run: Run, out: TextIO, env: Mapping[str, str], ask) -> int:
+    """Print the teammate's transport-registration one-liner. Transport ONLY: the
+    per-repo handshake (hive_init) stays agent-driven over MCP."""
+    domain = (env.get("NGROK_DOMAIN") or "").strip()
+    if domain:
+        url = f"https://{domain}/mcp"
+    else:
+        url = f"http://localhost:{HTTP_PORT}/mcp"
+        print("hive: NGROK_DOMAIN not set — printed the local-loopback line "
+              "(`hive up --tunnel` + NGROK_DOMAIN gives the public one)", file=sys.stderr)
+    print(f'claude mcp add --transport http hive {url} '
+          '--header "Authorization: Bearer ${HIVE_TOKEN}"', file=out)
+    print(f"hive: the teammate exports HIVE_TOKEN first; {_SEAT_HINT}", file=sys.stderr)
+    return EX_OK
 
 
 def _logs(args, *, run: Run, out: TextIO, env: Mapping[str, str], ask) -> int:
@@ -175,10 +227,14 @@ _HANDLERS: dict[str, Callable[..., int]] = {
     "logs": _logs,
     "nuke": _nuke,
     "status": _status,
+    "token": _token,
+    "revoke": _revoke,
+    "tokens": _tokens,
+    "connect": _connect,
 }
 
 # Verbs that never touch compose (pure local prints) skip the tenant gate.
-_LOCAL_VERBS: frozenset[str] = frozenset()
+_LOCAL_VERBS: frozenset[str] = frozenset({"connect"})
 
 
 def _ask_stderr(prompt: str) -> str:
@@ -215,6 +271,12 @@ def main(argv: Optional[list[str]] = None, *, run: Optional[Run] = None,
                         help=f"compose service (e.g. {SERVICE}, ngrok)")
     sub.add_parser("nuke", help="DESTROY the stack incl. the data volume (asks to confirm)")
     sub.add_parser("status", help="server health, tunnel state + URL, seat count")
+    p_token = sub.add_parser("token", help="mint a per-seat token (printed ONCE to stdout)")
+    p_token.add_argument("seat", help="agent-seat identity, e.g. alice-laptop (one per seat)")
+    p_revoke = sub.add_parser("revoke", help="revoke a seat's token (next request → 401)")
+    p_revoke.add_argument("seat", help="the seat label to revoke")
+    sub.add_parser("tokens", help="list provisioned seat labels (never the tokens)")
+    sub.add_parser("connect", help="print the teammate's `claude mcp add` line (transport only)")
     args = parser.parse_args(argv)
 
     # Every compose-touching verb needs the tenant id — compose interpolation

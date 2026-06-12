@@ -191,3 +191,73 @@ def test_status_down_server_short_circuits():
     assert rc == cli.EX_UNAVAILABLE
     assert "down" in out.getvalue()
     assert not any(seq_in(c, "exec") for c in fake.calls)   # no exec against a down stack
+
+
+# ── provisioning: token / revoke / tokens shell to the in-container authctl ─────
+
+
+def test_token_builds_authctl_create(capsys):
+    fake = FakeRun(script=[(lambda a: seq_in(a, "create"), proc(stdout="hive_abc123\n"))])
+    out = io.StringIO()
+    rc = cli.main(["token", "alice-laptop"], run=fake, out=out, env=ENV)
+    assert rc == cli.EX_OK
+    assert any(seq_in(c, "exec", "-T", "hive-server", "python", "-m",
+                      "hive.tools.authctl", "create", "alice-laptop") for c in fake.calls)
+    assert out.getvalue() == "hive_abc123\n"          # the credential: child stdout ONLY
+    err = capsys.readouterr().err                      # the AC7 seat-contract handoff hint
+    assert "one token per seat" in err and "never share across agents" in err
+    assert "hive_abc123" not in err                    # the token is never echoed elsewhere
+
+
+def test_token_child_failure_forwards_sysexits(capsys):
+    fake = FakeRun(script=[(lambda a: seq_in(a, "create"),
+                            proc(rc=70, stderr="authctl: a token already exists\n"))])
+    out = io.StringIO()
+    rc = cli.main(["token", "dup"], run=fake, out=out, env=ENV)
+    assert rc == 70                                    # authctl already speaks sysexits
+    assert out.getvalue() == ""                        # no token line on failure
+    assert "already exists" in capsys.readouterr().err
+
+
+def test_revoke_builds_authctl_revoke():
+    fake = FakeRun()
+    rc = cli.main(["revoke", "alice-laptop"], run=fake, out=io.StringIO(), env=ENV)
+    assert rc == cli.EX_OK
+    assert any(seq_in(c, "exec", "-T", "hive-server", "python", "-m",
+                      "hive.tools.authctl", "revoke", "alice-laptop") for c in fake.calls)
+
+
+def test_tokens_builds_authctl_list():
+    fake = FakeRun(script=[(lambda a: seq_in(a, "list"), proc(stdout="alice\nbob\n"))])
+    out = io.StringIO()
+    rc = cli.main(["tokens"], run=fake, out=out, env=ENV)
+    assert rc == cli.EX_OK
+    assert any(seq_in(c, "exec", "-T", "hive-server", "python", "-m",
+                      "hive.tools.authctl", "list") for c in fake.calls)
+    assert out.getvalue() == "alice\nbob\n"            # labels forwarded verbatim
+
+
+# ── connect: transport registration line only — never the handshake ────────────
+
+
+def test_connect_renders_mcp_add_line(capsys):
+    fake = FakeRun()
+    out = io.StringIO()
+    rc = cli.main(["connect"], run=fake, out=out,
+                  env={"NGROK_DOMAIN": "brain.ngrok.app"})    # no tenant needed: local verb
+    assert rc == cli.EX_OK
+    assert fake.calls == []                            # purely local — nothing is run
+    text = out.getvalue()
+    assert ('claude mcp add --transport http hive https://brain.ngrok.app/mcp '
+            '--header "Authorization: Bearer ${HIVE_TOKEN}"') in text
+    err = capsys.readouterr().err
+    assert "hive token <seat>" in err                  # AC7: the inline seat hint
+    assert "hive_init" not in text + err               # M11/M12: no handshake here
+
+
+def test_connect_without_domain_prints_loopback_line(capsys):
+    out = io.StringIO()
+    rc = cli.main(["connect"], run=FakeRun(), out=out, env={})
+    assert rc == cli.EX_OK
+    assert "http://localhost:8765/mcp" in out.getvalue()
+    assert "NGROK_DOMAIN" in capsys.readouterr().err   # says why it fell back to loopback
