@@ -168,6 +168,26 @@ def _paged(fetch: Fetch, url_base: str, headers: Mapping[str, str]
         page += 1
 
 
+def _headers(token: Optional[str]) -> dict[str, str]:
+    headers = {
+        "Accept": "application/vnd.github+json",
+        "User-Agent": "hive-origin",
+        "X-GitHub-Api-Version": "2022-11-28",
+    }
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+    return headers
+
+
+def probe_repo(repo: str, *, token: Optional[str],
+               fetch: Optional[Fetch] = None) -> None:
+    """The link verb's access validation: GET ``/repos/{owner}/{repo}`` and raise
+    ``GithubApiError`` on any non-200. 404 means missing OR private-without-scope
+    (GitHub deliberately conflates them) — the caller owns the PAT hint. // O(1)."""
+    fetch = fetch or _default_fetch
+    _get_json(fetch, f"{API_BASE}/repos/{repo}", _headers(token))
+
+
 def _win_row(sha: str, ts: int, repo: str,
              groups: Sequence[tuple[str, list[int]]]) -> dict:
     return {"kind": "win", "commit_sha": sha, "commit_ts": int(ts), "repo": repo,
@@ -186,13 +206,7 @@ def scan_github(repo: str, *, token: Optional[str], now: int,
     // O(PRs + commits in window) API pages."""
     fetch = fetch or _default_fetch
     cutoff = int(now) - int(lookback_days) * _DAY_S
-    headers: dict[str, str] = {
-        "Accept": "application/vnd.github+json",
-        "User-Agent": "hive-origin",
-        "X-GitHub-Api-Version": "2022-11-28",
-    }
-    if token:
-        headers["Authorization"] = f"Bearer {token}"
+    headers = _headers(token)
 
     wins: list[dict] = []
     losses: list[dict] = []

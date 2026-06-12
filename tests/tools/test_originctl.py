@@ -313,6 +313,15 @@ def test_scan_raises_loud_on_api_error_status():
     assert ei.value.status == 404
 
 
+def test_probe_repo_passes_on_200_raises_on_denial():
+    ok = FakeFetch({f"{originctl.API_BASE}/repos/o/r": {"private": False}})
+    originctl.probe_repo("o/r", token=None, fetch=ok)        # no raise
+    denied = FakeFetch({f"{originctl.API_BASE}/repos/o/r": (404, {"message": "nf"})})
+    with pytest.raises(originctl.GithubApiError) as ei:
+        originctl.probe_repo("o/r", token=None, fetch=denied)
+    assert ei.value.status == 404
+
+
 # ── ingest: claimed ∩ served, idempotent, monotone under rescans ────────────────
 
 
