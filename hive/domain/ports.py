@@ -74,10 +74,11 @@ class EpisodeReader(Protocol):
 
 @runtime_checkable
 class EpisodeStore(Protocol):
-    """The durable single-writer store. The trace↔outcome state-machine methods
-    (exposure + task_outcomes) were removed with the producer; the dormant tables
-    survive but nothing drives them. The slice contract is now the transaction lane
-    + the meta kv; episode CRUD / admission live on the concrete adapter (Phase 1)."""
+    """The durable single-writer store. The Phase-0 trace↔outcome state machine was
+    removed with the producer; its tables now have new drivers — exposure via the
+    recall side-channel, task_outcomes via the host-side credit ingest (one settled
+    win/loss row per (commit_sha, episode_id)). The slice contract is the transaction
+    lane + the meta kv; episode CRUD / admission live on the concrete adapter."""
     def transaction(self): ...                              # contextmanager: the single-writer tick lane
     # meta kv (watermark / link records / readiness markers)
     def meta_get(self, key: str) -> Optional[str]: ...
@@ -96,10 +97,10 @@ class UtilityStore(Protocol):
     def isolation_episode_ids(self) -> set[int]: ...
     def zero_utility_layer(self) -> None: ...
     # The settled stream the PredictionBiasMonitor (guardrail-3, A6) reads. In the
-    # single-DB design the posteriors and task_outcomes are co-located, so the
-    # producer tick "passes outcomes in" by persisting them here; the monitor reads
-    # them back, windowed. settle_ts ≥ since_ts (settled rows are always ≤ now), O(k)
-    # via idx_task_outcomes_settle in the SQLite adapter.
+    # single-DB design the posteriors and task_outcomes are co-located: the credit
+    # ingest persists settled win/loss rows there and the monitor reads them back,
+    # windowed. settle_ts ≥ since_ts (settled rows are always ≤ now), O(k) via
+    # idx_task_outcomes_settle in the SQLite adapter.
     def settled_exposures_since(
         self, family_scope: str, since_ts: int
     ) -> Sequence[SettledExposure]: ...

@@ -83,15 +83,16 @@ from hive.adapters.store_sqlite import SqliteEpisodeStore          # noqa: E402
 from hive.domain.models import SettledExposure                     # noqa: E402
 from hive.domain.ports import UtilityStore                          # noqa: E402
 
-# The producer-side ledger WRITE methods (record_exposure / link_task) were removed with the
-# producer; the exposure / task_outcomes tables remain as DORMANT schema. These tests pin the
-# KEPT read path (SqliteUtilityStore.settled_exposures_since — which the readiness
-# PredictionBiasMonitor consumes) by seeding those tables DIRECTLY via SQL.
+# These tests pin the read path (SqliteUtilityStore.settled_exposures_since — which the
+# readiness PredictionBiasMonitor consumes) by seeding the credit-regime task_outcomes
+# directly via SQL: one settled row per (commit_sha, episode_id), repo as the family
+# carrier — exactly what the credit ingest persists.
 _EXPOSURE_SQL = ("INSERT OR REPLACE INTO exposure(trace_id, episode_id, recall_margin, "
                  "task_ref, injected_ts) VALUES(?,?,?,NULL,?)")
-_OUTCOME_SQL = ("INSERT INTO task_outcomes(task_ref, trace_id, family_scope, repo, "
-                "files_touched, introduced_lines, state, reward, merge_ts, settle_at) "
-                "VALUES(?,?,?,?,?,?,?,?,?,?)")
+_OUTCOME_SQL = ("INSERT INTO task_outcomes(commit_sha, episode_id, trace_id, repo, "
+                "outcome, recall_margin, commit_ts, ingested_ts) "
+                "VALUES(?,?,?,?,?,?,?,?)")
+_STATE_TO_OUTCOME = {"settled_pos": "win", "clawed_back": "loss"}
 
 
 def _wired():
@@ -101,13 +102,13 @@ def _wired():
 
 
 def _settle(ledger, *, task_ref, trace_id, family, state, settle_at, exposed):
-    """Seed an exposure + a settled task_outcome for the trace DIRECTLY via SQL (the removed
-    producer used to do this through record_exposure / link_task)."""
+    """Seed exposure + settled credit rows for the trace DIRECTLY via SQL (what the
+    credit ingest persists: one outcome row per credited episode, keyed (sha, eid))."""
     for eid in exposed:
         ledger.conn.execute(_EXPOSURE_SQL, (trace_id, int(eid), 0.5, settle_at - 1))
-    ledger.conn.execute(_OUTCOME_SQL, (
-        task_ref, trace_id, family, "", "", "", state,
-        (1.0 if state == "settled_pos" else -1.0), settle_at - 1, settle_at))
+        ledger.conn.execute(_OUTCOME_SQL, (
+            task_ref, int(eid), trace_id, family,
+            _STATE_TO_OUTCOME[state], 0.5, settle_at - 1, settle_at))
 
 
 def test_sqlite_utility_store_conforms_to_port():
@@ -162,9 +163,12 @@ def test_settled_exposures_excludes_provisional():
     ledger, util = _wired()
     _settle(ledger, task_ref="k1", trace_id="t1", family=FAM,
             state="clawed_back", settle_at=1000, exposed=(1,))
-    # a provisional (un-settled) outcome must NOT appear — reality hasn't landed yet.
-    ledger.conn.execute(_EXPOSURE_SQL, ("t2", 2, 0.5, 999))
-    ledger.conn.execute(_OUTCOME_SQL, ("k2", "t2", FAM, "", "", "", "provisional", 0.2, 999, 1000))
+    # an un-settled outcome is UNCONSTRUCTABLE in the credit regime: the ingest never
+    # emits one, and the CHECK(outcome IN win|loss) refuses it at the table boundary —
+    # the stream can only ever see settled reality.
+    import sqlite3
+    with pytest.raises(sqlite3.IntegrityError):
+        ledger.conn.execute(_OUTCOME_SQL, ("k2", 2, "t2", FAM, "provisional", 0.2, 999, 1000))
     rows = util.settled_exposures_since(FAM, 0)
     assert {r.exposed[0] for r in rows} == {1}
 

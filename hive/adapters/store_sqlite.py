@@ -2,9 +2,12 @@
 ``transaction()`` is the single BEGIN IMMEDIATE lane; the utility store shares this
 connection so its credit writes commit/rollback atomically.
 
-The Phase-0 trace↔outcome state machine (exposure + task_outcomes) was removed with
-the producer; the two tables survive as DORMANT schema (kept for forward-compat, never
-written) but their accessor methods are gone. Episode-CRUD / admission is below.
+The Phase-0 trace↔outcome state machine was removed with the producer. Its two tables
+live on with new drivers: ``exposure`` is written by the recall side-channel
+(``record_exposure``), and ``task_outcomes`` is the settled-credit ledger the host-side
+trailer scan feeds (one win/loss row per (commit_sha, episode_id) via
+``record_outcome`` — the Phase-0 clawback shape is refused at construction).
+Episode-CRUD / admission is below.
 """
 from __future__ import annotations
 
@@ -78,12 +81,17 @@ CREATE TABLE IF NOT EXISTS exposure(
   task_ref TEXT, injected_ts INTEGER NOT NULL, agent_id TEXT,
   PRIMARY KEY(trace_id, episode_id));
 CREATE TABLE IF NOT EXISTS task_outcomes(
-  task_ref TEXT NOT NULL, trace_id TEXT NOT NULL, family_scope TEXT NOT NULL, repo TEXT,
-  files_touched TEXT, introduced_lines TEXT,
-  state TEXT NOT NULL CHECK(state IN ('provisional','settled_pos','clawed_back')),
-  reward REAL NOT NULL, merge_ts INTEGER NOT NULL, settle_at INTEGER NOT NULL,
-  PRIMARY KEY(task_ref, trace_id));
-CREATE INDEX IF NOT EXISTS idx_task_outcomes_settle ON task_outcomes(state, settle_at);
+  commit_sha TEXT NOT NULL,                -- the settled artifact (main-side sha)
+  episode_id INTEGER NOT NULL,             -- the credited memory
+  trace_id TEXT NOT NULL,                  -- the recall envelope that exposed it
+  repo TEXT,                               -- scope carrier (family in the credit regime)
+  outcome TEXT NOT NULL CHECK(outcome IN ('win','loss')),
+  recall_margin REAL NOT NULL,
+  commit_ts INTEGER NOT NULL,
+  ingested_ts INTEGER NOT NULL,            -- the settle clock (stable: first landing wins)
+  PRIMARY KEY(commit_sha, episode_id));
+CREATE INDEX IF NOT EXISTS idx_task_outcomes_settle ON task_outcomes(repo, ingested_ts);
+CREATE INDEX IF NOT EXISTS idx_task_outcomes_episode ON task_outcomes(episode_id, outcome);
 CREATE TABLE IF NOT EXISTS meta(key TEXT PRIMARY KEY, value TEXT);
 CREATE TABLE IF NOT EXISTS recall_misses(
   id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -119,6 +127,15 @@ class SqliteEpisodeStore:
             raise RuntimeError(
                 "episodes table predates the trust-lifecycle schema (no trust column); "
                 "this build has no migration — start from a clean store/volume")
+        # Same guard for the settled-credit ledger: a Phase-0 clawback-shaped
+        # task_outcomes (keyed task_ref/trace_id, no commit_sha) would silently
+        # survive CREATE IF NOT EXISTS and break the credit ingest's idempotency key.
+        tcols = {r["name"] for r in conn.execute("PRAGMA table_info(task_outcomes)")}
+        if tcols and "commit_sha" not in tcols:
+            _log.error("store.schema_predates_credit missing_column=commit_sha")
+            raise RuntimeError(
+                "task_outcomes table predates the settled-credit schema (no commit_sha "
+                "column); this build has no migration — start from a clean store/volume")
         conn.executescript(_SCHEMA)
         # Lexical mirror of the SERVABLE set (plain FTS5, NOT contentless — per-row
         # DELETE must work on every SQLite that has FTS5). Probed, never assumed: a
@@ -542,6 +559,43 @@ class SqliteEpisodeStore:
             for eid, _margin in items:
                 self.conn.execute(
                     "UPDATE episodes SET last_active_ts=? WHERE id=?", (ts, int(eid)))
+
+    def exposures_by_trace(self, trace_id: str) -> list[tuple[int, float]]:
+        """The credit set behind one recall envelope: the (episode_id, recall_margin)
+        rows this trace actually served. Empty ⇒ unknown trace (the credit ingest
+        reports it and writes nothing). // O(k) on the exposure PK."""
+        rows = self.conn.execute(
+            "SELECT episode_id, recall_margin FROM exposure WHERE trace_id=? "
+            "ORDER BY episode_id", (trace_id,)).fetchall()
+        return [(int(r["episode_id"]), float(r["recall_margin"])) for r in rows]
+
+    def record_outcome(self, *, commit_sha: str, episode_id: int, trace_id: str,
+                       repo: Optional[str], outcome: str, recall_margin: float,
+                       commit_ts: int, ingested_ts: int) -> bool:
+        """Upsert one settled credit row keyed (commit_sha, episode_id); True iff a NEW
+        row landed (False ⇒ already credited — full-history re-scans are free). The
+        conflict-ignore is scoped to the PK (ON CONFLICT … DO NOTHING) — NOT a blanket
+        OR IGNORE, which would also swallow the CHECK and let a bad outcome label
+        vanish silently; dropping the clause is the RULE-2 mutation the double-ingest
+        test catches. ``outcome`` stays CHECK-constrained loud at the table boundary.
+        // O(1)."""
+        with tx(self.conn):
+            cur = self.conn.execute(
+                "INSERT INTO task_outcomes(commit_sha, episode_id, trace_id, "
+                "repo, outcome, recall_margin, commit_ts, ingested_ts) "
+                "VALUES(?,?,?,?,?,?,?,?) "
+                "ON CONFLICT(commit_sha, episode_id) DO NOTHING",
+                (commit_sha, int(episode_id), trace_id, repo, outcome,
+                 float(recall_margin), int(commit_ts), int(ingested_ts)))
+            return cur.rowcount > 0
+
+    def outcome_totals(self) -> dict:
+        """Settled-credit totals for reports/status: row volume + distinct credited
+        memories (the two readiness floor inputs). // O(n) scan, report-time only."""
+        r = self.conn.execute(
+            "SELECT COUNT(*) AS n, COUNT(DISTINCT episode_id) AS m "
+            "FROM task_outcomes").fetchone()
+        return {"settled_rows": int(r["n"]), "distinct_episodes": int(r["m"])}
 
     def record_miss(self, query_text: str, query_vector: Optional[bytes],
                     agent_id: str, miss_type: str, *, ts: int) -> None:

@@ -13,8 +13,8 @@ from typing import Sequence
 from hive.domain.attribution import CreditDelta
 from hive.domain.models import SettledExposure, UtilityPosterior
 
-# task_outcomes.state → SettledExposure.reward_sign (settled_pos delivered, clawed_back regressed).
-_SETTLED_STATE_SIGN = {"settled_pos": 1, "clawed_back": -1}
+# task_outcomes.outcome → SettledExposure.reward_sign (win delivered, loss regressed).
+_SETTLED_STATE_SIGN = {"win": 1, "loss": -1}
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS utility(
@@ -88,34 +88,35 @@ class SqliteUtilityStore:
         return out
 
     def settled_exposures_since(self, family_scope: str, since_ts: int) -> list[SettledExposure]:
-        """Guardrail-3 (A6) settled stream the PredictionBiasMonitor reads: this family's
-        SETTLED task-outcomes with settle_at ≥ since_ts, each joined with the eids it
-        exposed. Reads task_outcomes ⋈ exposure on the SHARED single-DB connection
-        (settled_pos→+1, clawed_back→−1) via idx_task_outcomes_settle. Inclusive floor —
-        the SAME boundary semantics as FakeUtilityStore. O(k) for k settled pairs.
-        REQUIRES the ledger schema on self.conn (the production single-DB wiring); a
-        missing task_outcomes table fails LOUD rather than silently blinding the monitor
-        — a guardrail that returns 'no divergence' on a wiring fault is the phantom this
-        module exists to kill."""
-        grouped: dict[tuple[str, str], dict] = {}        # (task_ref, trace_id) → one outcome
+        """Guardrail-3 (A6) settled stream the PredictionBiasMonitor reads: this scope's
+        settled credit rows with ingested_ts ≥ since_ts. The credit-regime task_outcomes
+        carries episode_id per row (one row per (commit_sha, episode_id)), so the old
+        exposure join collapses — rows group by (commit_sha, trace_id) into one
+        SettledExposure each (win→+1, loss→−1; the settle clock is ingested_ts, stable
+        because re-scans never re-insert). ``repo`` is the family carrier. Inclusive
+        floor — the SAME boundary semantics as FakeUtilityStore. O(k) via
+        idx_task_outcomes_settle. REQUIRES the ledger schema on self.conn (the
+        production single-DB wiring); a missing task_outcomes table fails LOUD rather
+        than silently blinding the monitor — a guardrail that returns 'no divergence'
+        on a wiring fault is the phantom this module exists to kill."""
+        grouped: dict[tuple[str, str], dict] = {}        # (commit_sha, trace_id) → one outcome
         for r in self.conn.execute(
-            "SELECT t.task_ref, t.trace_id, t.state, t.settle_at, e.episode_id "
-            "FROM task_outcomes t JOIN exposure e ON e.trace_id = t.trace_id "
-            "WHERE t.family_scope = ? AND t.state IN ('settled_pos','clawed_back') "
-            "  AND t.settle_at >= ? "
-            "ORDER BY t.settle_at, t.task_ref, t.trace_id, e.episode_id",
+            "SELECT commit_sha, trace_id, outcome, ingested_ts, episode_id "
+            "FROM task_outcomes "
+            "WHERE repo = ? AND ingested_ts >= ? "
+            "ORDER BY ingested_ts, commit_sha, trace_id, episode_id",
             (family_scope, since_ts),
         ):
             slot = grouped.setdefault(
-                (r["task_ref"], r["trace_id"]),
-                {"state": r["state"], "settle_at": r["settle_at"], "eids": []})
+                (r["commit_sha"], r["trace_id"]),
+                {"outcome": r["outcome"], "ingested_ts": r["ingested_ts"], "eids": []})
             slot["eids"].append(int(r["episode_id"]))
         return [
             SettledExposure(
                 family_scope=family_scope,
-                reward_sign=_SETTLED_STATE_SIGN[s["state"]],
+                reward_sign=_SETTLED_STATE_SIGN[s["outcome"]],
                 exposed=tuple(s["eids"]),
-                settle_ts=int(s["settle_at"]),
+                settle_ts=int(s["ingested_ts"]),
             )
             for s in grouped.values()
         ]
