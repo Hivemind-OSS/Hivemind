@@ -80,6 +80,19 @@ def test_connect_fn_injection_uses_provided_conn():
     assert SqliteTokenStore(conn).verify(out.getvalue().strip()) == "dave"
 
 
+def test_list_prints_provisioned_labels(db):
+    out = io.StringIO()                                    # empty store → no output, EX_OK
+    rc = authctl.main(["list"], env={"HIVE_STORE__DB_PATH": db}, out=out)
+    assert rc == authctl.EX_OK
+    assert out.getvalue() == ""
+    authctl.main(["create", "bob"], env={"HIVE_STORE__DB_PATH": db}, out=io.StringIO())
+    authctl.main(["create", "alice"], env={"HIVE_STORE__DB_PATH": db}, out=io.StringIO())
+    out = io.StringIO()
+    rc = authctl.main(["list"], env={"HIVE_STORE__DB_PATH": db}, out=out)
+    assert rc == authctl.EX_OK
+    assert out.getvalue().splitlines() == ["alice", "bob"]  # one per line, sorted
+
+
 def test_create_emits_only_the_token_on_stdout(db):
     out = io.StringIO()
     authctl.main(["create", "erin"], env={"HIVE_STORE__DB_PATH": db}, out=out)

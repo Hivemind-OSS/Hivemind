@@ -74,3 +74,10 @@ class SqliteTokenStore:
         label). The device's next ``verify()`` then returns None. // O(1)."""
         cur = self.conn.execute("DELETE FROM access_tokens WHERE label=?", (label,))
         return cur.rowcount > 0
+
+    def labels(self) -> list[str]:
+        """All provisioned device labels, sorted — the operator's seat inventory. Labels
+        only, never hashes: safe to surface in status output. // O(n)."""
+        rows = self.conn.execute(
+            "SELECT label FROM access_tokens ORDER BY label").fetchall()
+        return [row["label"] for row in rows]

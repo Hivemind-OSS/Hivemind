@@ -80,6 +80,16 @@ def test_two_labels_verify_independently(store):
     assert store.verify(a) is None and store.verify(b) == "bob"   # revoking one spares the other
 
 
+def test_labels_returns_sorted(store):
+    assert store.labels() == []                       # empty store → empty list, not None
+    store.create("bob")
+    store.create("alice")
+    store.create("carol")
+    assert store.labels() == ["alice", "bob", "carol"]   # sorted, not insertion order
+    store.revoke("bob")
+    assert store.labels() == ["alice", "carol"]           # reflects revocation
+
+
 def test_helpers_new_token_unique_and_token_hash_is_sha256():
     assert new_token() != new_token()                 # CSPRNG — distinct each call
     assert new_token().startswith(TOKEN_PREFIX)

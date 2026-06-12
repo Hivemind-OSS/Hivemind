@@ -50,6 +50,7 @@ def main(argv: Optional[list[str]] = None, *, env: Optional[Mapping[str, str]] =
     p_create.add_argument("label", help="device identity → proposed_by, e.g. alice-laptop")
     p_revoke = sub.add_parser("revoke", help="delete a device's token (next request → 401)")
     p_revoke.add_argument("label", help="the device label to revoke")
+    sub.add_parser("list", help="print provisioned device labels, one per line (no hashes)")
     args = parser.parse_args(argv)
 
     db_path = (args.db or env.get("HIVE_STORE__DB_PATH") or "").strip()
@@ -69,6 +70,11 @@ def main(argv: Optional[list[str]] = None, *, env: Optional[Mapping[str, str]] =
         print(token, file=out)                      # the ONLY stdout line — the plaintext, shown once
         print(f"authctl: created token for {args.label!r} (shown once above; "
               "hand it over via a secret manager)", file=sys.stderr)
+        return EX_OK
+
+    if args.cmd == "list":
+        for label in store.labels():                # sorted by the adapter (single-sourced query)
+            print(label, file=out)
         return EX_OK
 
     # args.cmd == "revoke" (subparsers are required, so no other value reaches here)
