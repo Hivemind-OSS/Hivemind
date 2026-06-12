@@ -297,9 +297,10 @@ verifying. Audit trail is a §12 add-back.
 
 ## 10. User flow
 
-**Admin — once per teammate-device** (run where the DB lives):
+**Admin — once per teammate-device** (run where the DB lives; `hive` is the operator
+CLI — uninstalled: `python -m hive.tools.cli`; it shells to the in-container authctl):
 ```
-docker compose exec hive-server python -m hive.tools.authctl create alice-laptop
+hive token alice-laptop
 → hive_9f3c…            # shown ONCE; hand over via a secret manager
 ```
 
@@ -316,7 +317,7 @@ to it and its recalls log under it — no per-agent setup. Other IDEs: paste the
 
 **Offboard:**
 ```
-docker compose exec hive-server python -m hive.tools.authctl revoke alice-laptop
+hive revoke alice-laptop
 → that device's next request returns 401
 ```
 
@@ -324,7 +325,7 @@ docker compose exec hive-server python -m hive.tools.authctl revoke alice-laptop
 operator starts the opt-in tunnel (needs `NGROK_AUTHTOKEN` + `NGROK_DOMAIN`, see
 `.env.example`; a plain `up` never exposes anything):
 ```
-docker compose --profile tunnel up -d
+hive up --tunnel
 ```
 The teammate runs the same one-liner against the stable HTTPS URL instead of localhost:
 ```

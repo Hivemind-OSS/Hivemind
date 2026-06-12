@@ -6,6 +6,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 ### Added
+- `hive` operator CLI (`hive/tools/cli.py`, stdlib-only, `[project.scripts]` entry
+  point; uninstalled: `python -m hive.tools.cli`): `up [--tunnel]` (bounded
+  health-wait; tunnel secrets fail-fast), `down`, `logs`, `nuke` (typed confirm),
+  `status` (health + tunnel + seat count), `token`/`revoke`/`tokens` (shell to the
+  in-container authctl — crypto + schema stay single-sourced), `connect` (teammate
+  MCP registration line; transport only, never `hive_init`).
+- `authctl list` subcommand + `SqliteTokenStore.labels()` — seat inventory, labels
+  only, never hashes.
 - Mechanical memory lifecycle (AUTONOMY-PLAN v2): `hive_capture` lands insights
   quarantined (embedded, structurally unservable); measured recall-miss demand from
   ≥1 non-writer identity auto-promotes to `provisional`, served WITH its trust label;
@@ -26,5 +34,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Boot order: decay sweep runs before the index rebuild.
 ### Fixed
 ### Removed
+- `hive.sh` — replaced by the `hive` CLI; its up-not-run-rm contract lives on as a
+  pytest argv assertion.
 - No migration/backfill path ships (clean-store start, human decision): an
   old-format `episodes` table is refused at store construction.

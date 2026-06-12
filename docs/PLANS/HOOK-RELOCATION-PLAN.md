@@ -21,7 +21,7 @@ producer strip; drops the pending/approve/reject machinery.
 
 **Two onboarding paths, then it runs itself:**
 
-1. **Setup agent (a team tasks one agent):** clone repo → `./hive.sh up` (container) →
+1. **Setup agent (a team tasks one agent):** clone repo → `hive up` (container) →
    register MCP → `hive_init` → materialize its native hooks → verify → done.
 2. **Every other agent (different device/project, not yet set up):** on **first touch with
    the server**, any tool call from an unlinked repo returns an *onboarding hint*; the agent
@@ -38,7 +38,7 @@ After that, the hooks run the loop with **no server-side queue**:
 
 | AC | Criterion | Owner |
 |---|---|---|
-| AC1 | One command to a warm, healthy server. | §5.1 `./hive.sh up` |
+| AC1 | One command to a warm, healthy server. | §5.1 `hive up` |
 | AC2 | Setup agent runs the bootstrap once. | §5.1 |
 | AC3 | Un-set-up agents are onboarded **by the server at first touch**. | §5.2 self-onboard |
 | AC4 | After setup, every agent's behavior is automatic, on any IDE, no skill re-read. | §4 bundle + §5.3 |
@@ -132,7 +132,7 @@ The bundle (`mcp_config_target` + rules block + provenance banner; +hook files o
 ## 5. Onboarding
 
 ### 5.1 The setup agent (first-run, once per server) — AC1, AC2
-`clone → HIVE_TENANT_ID=<team> ./hive.sh up (wait healthy) → write the hive MCP entry into
+`clone → HIVE_TENANT_ID=<team> hive up (wait healthy) → write the hive MCP entry into
 profile.mcp_config_target → hive_init(repo_path, harness)` (phase-1 returns rules block +
 hook bundle; agent writes them) `→ hive_init(..., confirm_hash)` (phase-2 links) → **verify
 (§6) → stamp provenance.** Provenance is stamped **last, only after verify passes.**

@@ -45,8 +45,7 @@ services:
     image: ngrok/ngrok:3
     profiles: ["tunnel"]
     # `:-` (not `:?`) so a non-tunnel `up` still parses; `hive up --tunnel` fail-fasts on
-    # these before invoking the tunnel profile (secrets-via-env at the front door — see
-    # ADMIN-CLI-PLAN.md §4). Until the CLI lands: docker compose --profile tunnel up -d.
+    # these before invoking the tunnel profile (secrets-via-env at the front door).
     environment:
       NGROK_AUTHTOKEN: "${NGROK_AUTHTOKEN:-}"
     # `--url` pins the account's (free) static domain so the teammate URL is STABLE across
