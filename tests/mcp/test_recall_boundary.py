@@ -5,7 +5,7 @@ key on hit AND abstain (the request_id→trace_id rename pinned)."""
 from __future__ import annotations
 
 from hive.domain.models import (
-    ABSTAIN, CONFIDENT, EMPTY_NO_DATA, RecallHit, RecallResult,
+    ABSTAIN, CONFIDENT, EMPTY_NO_DATA, RecallDraft, RecallHit, RecallResult,
 )
 from tests.fakes._fakes import FakeIndex
 from tests.mcp._helpers import build_real_server, content, tool_call, write_text
@@ -156,6 +156,68 @@ def test_recall_store_without_stats_method_omits_credit_field():
     hit = env["reference_context"][0]
     assert "credit" not in hit
     assert env["abstained"] is False                       # recall itself unharmed
+
+
+# ── self_quarantine: the self-resurfacing draft channel (separate envelope key) ─
+def test_recall_self_quarantine_serialized_with_quarantined_trust():
+    """A RecallResult carrying drafts serializes them under a SEPARATE envelope key
+    `self_quarantine`, each labeled trust='quarantined' — never mixed into
+    reference_context (the trusted channel)."""
+    server, _ = build_real_server()
+    server.recall = _StubRecall(RecallResult.abstain(
+        "T-d", 0.9, 0.0, (RecallDraft(7, "my own draft", 0.83, ts=11),)))
+    env = content(tool_call(server, "hive_recall", {"query": "q"}))
+    assert env["reference_context"] == []                  # trusted channel empty
+    assert env["self_quarantine"] == [
+        {"episode_id": 7, "text": "my own draft", "sim": 0.83,
+         "trust": "quarantined", "ts": 11}]
+
+
+def test_recall_abstained_true_unaffected_by_drafts():
+    """A populated self_quarantine on an abstained:true envelope is the contract —
+    `abstained` is computed from the TRUSTED hits only, never from drafts."""
+    server, _ = build_real_server()
+    server.recall = _StubRecall(RecallResult.abstain(
+        "T-d", 0.9, 0.0, (RecallDraft(7, "draft", 0.83),)))
+    env = content(tool_call(server, "hive_recall", {"query": "q"}))
+    assert env["abstained"] is True and env["self_quarantine"]
+
+
+def test_recall_self_quarantine_bypasses_servable_belt():
+    """Drafts skip the approved-only/servable belt that gates trusted hits: a row
+    that the belt WOULD drop (genuinely PENDING) still surfaces as a draft."""
+    server, _ = build_real_server()
+    eid, _ = server.store.stage(text="pending draft row", weight=1.0,
+                                source="", tags="", proposed_by="agent")
+    # same pending eid as a HIT would be belt-dropped (cf. approved-only test); as a
+    # DRAFT it bypasses the belt entirely (no get_episode / is_servable gate)
+    server.recall = _StubRecall(RecallResult.abstain(
+        "T-d", 0.9, 0.0, (RecallDraft(eid, "pending draft row", 0.9),)))
+    env = content(tool_call(server, "hive_recall", {"query": "q"}))
+    assert [d["episode_id"] for d in env["self_quarantine"]] == [eid]
+
+
+def test_recall_self_quarantine_absent_when_no_drafts():
+    """No drafts ⇒ the key is absent (the wire is byte-identical to pre-feature)."""
+    server, _ = build_real_server()
+    eid = write_text(server, "an approved memory")["id"]
+    server.recall = _StubRecall(_confident(eid, "an approved memory"))
+    env = content(tool_call(server, "hive_recall", {"query": "q"}))
+    assert "self_quarantine" not in env
+
+
+def test_recall_confident_carries_both_channels():
+    """CONFIDENT hits AND drafts coexist on distinct keys; drafts never enter
+    reference_context."""
+    server, _ = build_real_server()
+    eid = write_text(server, "a trusted memory")["id"]
+    server.recall = _StubRecall(RecallResult(
+        CONFIDENT, "T-d", (RecallHit(eid, "a trusted memory", 0.95),), 0.05, 0.5,
+        (RecallDraft(7, "my draft", 0.7),)))
+    env = content(tool_call(server, "hive_recall", {"query": "q"}))
+    assert [h["episode_id"] for h in env["reference_context"]] == [eid]
+    assert [d["episode_id"] for d in env["self_quarantine"]] == [7]
+    assert env["abstained"] is False
 
 
 def test_recall_stats_raising_logs_omits_field_recall_succeeds():
