@@ -261,6 +261,43 @@ def test_recall_hybrid_env_coercion():
     assert cfg.recall.hybrid is True
 
 
+def test_recall_drafts_defaults_off_and_is_tier_C():
+    # self-quarantine resurfacing ships OFF (a new read channel ships byte-inert);
+    # flipping it changes the read path ⇒ restart, never a hot swap.
+    cfg = Config.load(db_path=":memory:")
+    assert cfg.recall.drafts is False
+    from hive.app.config import RELOAD_TIER
+    assert RELOAD_TIER["recall.drafts"] == "C"
+    new = Config.load(db_path=":memory:", recall={"drafts": True})
+    assert new.recall.drafts is True
+    assert diff_tier(cfg, new) == "C"
+    with pytest.raises(TierViolation, match=r"recall\.drafts|tier C|restart"):
+        reload(cfg, new)
+
+
+def test_recall_draft_tau_default_and_hot_swappable():
+    # the relevance floor mirrors shadow_tau: default 0.6, tier B (hot-swap), so an
+    # operator can tune it live without a restart (and without a re-embed).
+    cfg = Config.load(db_path=":memory:")
+    assert cfg.recall.draft_tau == 0.6
+    from hive.app.config import RELOAD_TIER
+    assert RELOAD_TIER["recall.draft_tau"] == "B"
+    new = Config.load(db_path=":memory:", recall={"draft_tau": 0.8})
+    assert diff_tier(cfg, new) == "B"
+    assert reload(cfg, new) is new                         # tier B ⇒ accepted live
+
+
+def test_recall_draft_tau_validated_in_unit_interval():
+    for bad in (0.0, -0.1, 1.5, float("nan")):
+        with pytest.raises(ValueError, match=r"recall\.draft_tau"):
+            Config.load(recall={"draft_tau": bad})
+
+
+def test_recall_drafts_env_coercion():
+    cfg = Config.load(db_path=":memory:", env={"HIVE_RECALL__DRAFTS": "true"})
+    assert cfg.recall.drafts is True
+
+
 def test_diff_tier_no_change_is_A():
     old = Config.load(db_path=":memory:")
     new = Config.load(db_path=":memory:")

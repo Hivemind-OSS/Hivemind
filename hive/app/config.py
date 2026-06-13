@@ -102,11 +102,16 @@ class RecallConfig:
     hybrid: bool = False                  # lexical(FTS5)+RRF channel; flips only on channel_eval CI evidence
     shadow: bool = False                  # CV3 serve-time version shadowing; OFF ⇒ byte-identical (golden)
     shadow_tau: float = 0.95              # pairwise cosine at/above which the loser is hidden
+    drafts: bool = False                  # self-quarantine resurfacing read channel; OFF ⇒ byte-inert wire
+    draft_tau: float = 0.6                # query↔own-quarantined cosine floor to surface a draft
 
     def __post_init__(self) -> None:
         if not (math.isfinite(self.shadow_tau) and 0.0 < self.shadow_tau <= 1.0):
             raise ValueError(
                 f"recall.shadow_tau must be finite in (0, 1] (got {self.shadow_tau})")
+        if not (math.isfinite(self.draft_tau) and 0.0 < self.draft_tau <= 1.0):
+            raise ValueError(
+                f"recall.draft_tau must be finite in (0, 1] (got {self.draft_tau})")
         if not (0.0 < self.H_frac_max <= 1.0):
             raise ValueError(
                 f"recall.H_frac_max must be in (0.0, 1.0] (the never-hallucinate floor; "
@@ -430,6 +435,7 @@ RELOAD_TIER: dict[str, str] = {
     "autonomy.enabled": "C",        # flips tool behavior + trigger wiring → restart
     "recall.hybrid": "C",           # changes index wiring + the read path → restart
     "recall.shadow": "C",           # changes serve output of an existing store → restart
+    "recall.drafts": "C",           # adds the self-quarantine read channel → restart
     # B — hot-swappable live
     "autonomy.demand_m": "B",
     "autonomy.demand_window_days": "B",
@@ -444,6 +450,7 @@ RELOAD_TIER: dict[str, str] = {
     "autonomy.solo_min_span_days": "B",
     "autonomy.contested_tau": "B",
     "recall.shadow_tau": "B",
+    "recall.draft_tau": "B",        # the draft relevance floor — hot-swap like shadow_tau
     "recall.H_frac_max": "B",
     "recall.epsilon_explore": "B",
     "recall.softmax_beta": "B",
