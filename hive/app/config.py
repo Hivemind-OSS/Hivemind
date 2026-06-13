@@ -66,15 +66,13 @@ class GeometryConfig:
 
 @dataclass(frozen=True)
 class EmbeddingConfig:
+    # The projection head is FIXED to PCA — not a config knob. Random JL was measured
+    # worse at every d, so the decision is encoded in code (the local_st adapter builds
+    # PCA unconditionally), never offered as a choice an operator could mis-set.
     provider: str = "local_st"
     model: str = "BAAI/bge-small-en-v1.5"
-    st_projection_head: str = "pca"
 
     def __post_init__(self) -> None:
-        if self.st_projection_head != "pca":
-            raise ValueError(
-                f"embedding.st_projection_head must be 'pca' (random JL rejected — measured "
-                f"worse at every d); got {self.st_projection_head!r}")
         from hive.app.registry import EMBEDDING_PROVIDERS   # lazy — no torch at import
         if self.provider not in EMBEDDING_PROVIDERS:
             raise ValueError(
@@ -97,7 +95,7 @@ class IndexConfig:
 class RecallConfig:
     H_frac_max: float = 0.5
     recall_top_n: int = 10
-    epsilon_explore: float = 0.1          # [A4] guardrail-1 — the ONE validated ε (>0)
+    epsilon_explore: float = 0.1          # [A4] guardrail-1 ε (>0); INERT on the live path — the Phase-1 surfacer is enabled=False, so it's consumed only by the offline research/eval harnesses
     softmax_beta: float = 16.0            # gate mass temperature (β>0)
     hybrid: bool = False                  # lexical(FTS5)+RRF channel; flips only on channel_eval CI evidence
     shadow: bool = False                  # CV3 serve-time version shadowing; OFF ⇒ byte-identical (golden)
@@ -142,7 +140,9 @@ class UtilityConfig:
     isolation_frac: float = 0.05         # [A5] guardrail-2 held-out slice (tier A)
     prediction_bias_window_s: int = 604800
     prediction_bias_threshold: float = 0.25
-    f_min: float = 0.5                   # utility→weight factor bounds (surfacer; observed-only P1)
+    # utility→weight factor bounds — INERT on the live path (Phase-1 surfacer is
+    # enabled=False); consumed only by the offline research/eval harnesses.
+    f_min: float = 0.5
     f_max: float = 1.5
 
     def __post_init__(self) -> None:
@@ -426,7 +426,6 @@ RELOAD_TIER: dict[str, str] = {
     "geometry.d": "D",
     "geometry.W_version": "D",
     "embedding.model": "D",
-    "embedding.st_projection_head": "D",
     # C — safe only across a process restart
     "embedding.provider": "C",
     "index.backend": "C",

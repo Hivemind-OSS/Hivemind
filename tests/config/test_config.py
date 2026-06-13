@@ -25,7 +25,6 @@ def test_defaults_match_spec_geometry():
     assert cfg.geometry.d == 256
     assert cfg.recall.H_frac_max == 0.5
     assert cfg.recall.recall_top_n == 10
-    assert cfg.embedding.st_projection_head == "pca"
     assert cfg.embedding.model == "BAAI/bge-small-en-v1.5"
     assert cfg.index.backend == "exhaustive"
     assert cfg.retention.backup_keep == 30
@@ -156,11 +155,6 @@ def test_h_frac_max_bounds():
         Config.load(recall={"H_frac_max": 1.5})
     # the boundary 1.0 is legal (== fully permissive, gate still constructible)
     assert Config.load(recall={"H_frac_max": 1.0}).recall.H_frac_max == 1.0
-
-
-def test_projection_head_random_rejected():
-    with pytest.raises(ValueError, match=r"st_projection_head|pca"):
-        Config.load(embedding={"st_projection_head": "random"})
 
 
 def test_db_path_required():
