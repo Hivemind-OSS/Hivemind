@@ -29,11 +29,11 @@ from hive.domain.lifecycle import (
     ESTABLISHED, PROVISIONAL, _cosine, is_servable,
 )
 from hive.domain.models import (
-    CONFIDENT, AgentContext, Episode, RecallHit, RecallResult, Scored,
+    CONFIDENT, AgentContext, Episode, RecallDraft, RecallHit, RecallResult, Scored,
 )
 from hive.domain.ports import (
-    EmbeddingProvider, EpisodeReader, ExposureLedger, LexicalIndex, UtilityStore,
-    VectorIndex,
+    EmbeddingProvider, EpisodeReader, ExposureLedger, LexicalIndex,
+    QuarantineReader, UtilityStore, VectorIndex,
 )
 from hive.domain.secret_scan import REDACT, REFUSE
 from hive.domain.surfacer import UtilitySurfacer
@@ -214,6 +214,10 @@ class RecallPipeline:
         hybrid_enabled: bool = False,
         shadow_enabled: bool = False,
         shadow_tau: float = 0.95,
+        draft_reader: Optional[QuarantineReader] = None,
+        drafts_enabled: bool = False,
+        draft_tau: float = 0.6,
+        quarantine_ttl_s: int = 0,
     ) -> None:
         self.embedder = embedder
         self.index = index
@@ -247,6 +251,16 @@ class RecallPipeline:
         # upstream channels (dense / RRF / rerank) produced the shortlist.
         self.shadow_enabled = bool(shadow_enabled)
         self.shadow_tau = float(shadow_tau)
+        # the self-quarantine resurfacing channel: a seat's OWN unpromoted
+        # quarantined captures, returned as labeled drafts on a field STRICTLY
+        # separate from `hits`. OFF by default and byte-inert when off (the
+        # draft_reader is never touched). It only READS (quarantined_candidates +
+        # get_episode) — never records exposure / sets trust / promotes, so the
+        # quarantine TTL clock and the demand accounting are untouched.
+        self.draft_reader = draft_reader
+        self.drafts_enabled = bool(drafts_enabled)
+        self.draft_tau = float(draft_tau)
+        self.quarantine_ttl_s = int(quarantine_ttl_s)
 
     def recall(self, query: str, *, agent_id: str,
                agent_ctx: AgentContext) -> RecallResult:
@@ -255,6 +269,7 @@ class RecallPipeline:
 
         # encode → search (fail-closed: embedder/index/authority failure ⇒ EMPTY).
         value_q = None
+        drafts: tuple[RecallDraft, ...] = ()   # self-quarantine side-channel (off ⇒ ())
         try:
             if not self.index.is_authoritative():
                 _log.error("non-authoritative index rejected (never-flip guard) "
@@ -265,10 +280,14 @@ class RecallPipeline:
             # must still carry their query vector or demand can never accumulate
             # and no quarantined capture would ever promote (cold-start deadlock).
             value_q = self.embedder.encode(query)
+            # resurface the seat's OWN quarantined drafts off the SAME query vector,
+            # BEFORE the empty-index short-circuit so a cold store (only quarantined
+            # rows exist yet) still carries them. Computed once; rides every return.
+            drafts = self._resurface_drafts(value_q, agent_id)
             if self.index.size() == 0:
                 _log.debug("empty index → EMPTY_NO_DATA (agent_id=%s)", agent_id)
                 self._note_non_answer(query, value_q, agent_id, "no_match")
-                return RecallResult.empty(trace_id)
+                return RecallResult.empty(trace_id, drafts)
             # search the FULL approved set so the gate sees the whole distribution;
             # recall_top_n only truncates hits, NEVER the abstain decision.
             candidates = self.index.search(value_q, self.index.size())
@@ -279,7 +298,7 @@ class RecallPipeline:
             _log.error("recall encode/search failure (agent_id=%s): %r "
                        "→ EMPTY_NO_DATA", agent_id, exc)
             self._note_non_answer(query, value_q, agent_id, "no_match")
-            return RecallResult.empty(trace_id)
+            return RecallResult.empty(trace_id, drafts)
 
         # abstain gate (self-fail-closed to SUPPRESS). One-way: suppress returns here.
         suppress, entropy_norm, top_margin = self.gate.evaluate(sims)
@@ -287,7 +306,7 @@ class RecallPipeline:
             _log.info("ABSTAIN trace=%s h_norm=%.4f top_margin=%.4f n_cands=%d",
                       trace_id, entropy_norm, top_margin, len(sims))
             self._note_non_answer(query, value_q, agent_id, "abstained")
-            return RecallResult.abstain(trace_id, entropy_norm, top_margin)
+            return RecallResult.abstain(trace_id, entropy_norm, top_margin, drafts)
 
         # ── CONFIDENT path ────────────────────────────────────────────────────
         # The whole surface step (resolve → margins → surface) fails
@@ -353,7 +372,7 @@ class RecallPipeline:
                 _log.error("gate passed but 0 candidates resolved → EMPTY_NO_DATA "
                            "(fail-closed) trace=%s", trace_id)
                 self._note_non_answer(query, value_q, agent_id, "no_match")
-                return RecallResult.empty(trace_id)
+                return RecallResult.empty(trace_id, drafts)
 
             # CV3 shadowing — at RESOLVE, BEFORE margins/surfacing/exposure: a
             # shadowed row's liveness is never refreshed by the query that hid
@@ -400,7 +419,7 @@ class RecallPipeline:
             _log.error("recall surface failure (agent_id=%s): %r → EMPTY_NO_DATA",
                        agent_id, exc)
             self._note_non_answer(query, value_q, agent_id, "no_match")
-            return RecallResult.empty(trace_id)
+            return RecallResult.empty(trace_id, drafts)
 
         # exposure: WHO was served WHAT, with the per-hit margins, refreshing the
         # served rows' liveness — recorded post-resolve in surfaced order.
@@ -409,7 +428,45 @@ class RecallPipeline:
             agent_id)
         _log.debug("CONFIDENT trace=%s n_hits=%d top_sim=%.4f",
                    trace_id, len(hits), hits[0].sim)
-        return RecallResult(CONFIDENT, trace_id, hits, entropy_norm, top_margin)
+        return RecallResult(CONFIDENT, trace_id, hits, entropy_norm, top_margin, drafts)
+
+    # ── self-quarantine resurfacing (READ-ONLY; fail-open) ────────────────────
+    def _resurface_drafts(self, value_q, agent_id: str) -> tuple[RecallDraft, ...]:
+        """The asking seat's OWN live quarantined captures, scored against the live
+        query vector and returned as labeled drafts. READ-ONLY by design — no
+        exposure, no trust mutation, no promotion — so the quarantine TTL clock and
+        the demand/promotion accounting are untouched (recording exposure here would
+        refresh liveness and start survival credit, the learning-suppression this
+        must avoid). Seat-scoped to ``agent_id``: you only ever see your own drafts,
+        so this can neither pollute a teammate nor manufacture cross-seat demand.
+        Wrapped fail-open — ANY fault degrades to () and never breaks recall.
+        // O(|live-quarantined|·d); the TTL-bounded set is small."""
+        if not self.drafts_enabled or self.draft_reader is None:
+            return ()
+        try:
+            now = int(self.clock_now())
+            scored: list[tuple[int, float, int]] = []      # (eid, cosine, ts)
+            for eid, vec, writer, ts, _la in self.draft_reader.quarantined_candidates(
+                    now=now, quarantine_ttl_s=self.quarantine_ttl_s):
+                if writer != agent_id:                     # seat-scoping (the safety model)
+                    continue
+                c = _cosine(value_q, vec)                  # None ⇒ undecidable ⇒ drop
+                if c is None or c < self.draft_tau:        # relevance floor
+                    continue
+                scored.append((int(eid), float(c), int(ts)))
+            # strongest first; newer (higher ts) breaks a cosine tie
+            scored.sort(key=lambda t: (-t[1], -t[2]))
+            out: list[RecallDraft] = []
+            for eid, c, ts in scored[:self.recall_top_n]:
+                ep = self.reader.get_episode(eid)          # text resolution only
+                if ep is None:
+                    continue
+                out.append(RecallDraft(episode_id=eid, text=ep.text, sim=c, ts=ts))
+            return tuple(out)
+        except Exception as exc:                           # noqa: BLE001 — never break recall
+            _log.warning("self-quarantine resurface failed (agent=%s): %r — no drafts",
+                         agent_id, exc)
+            return ()
 
     # ── the recall side-channel (exposure + demand), fail-open for the read ───
     def _note_exposure(self, trace_id: str, items: list, agent_id: str) -> None:

@@ -161,6 +161,25 @@ class FakeEpisodeReader:
         return self._by_id.get(int(episode_id))
 
 
+class FakeQuarantineReader:
+    """QuarantineReader: the live-quarantined candidate scan the self-quarantine
+    resurfacing channel reads. Rows are ``(id, value, proposed_by, ts,
+    last_active_ts)`` — the SAME tuple the promotion scan consumes. ``calls`` counts
+    scans so an off-inert test can assert the channel NEVER touched it."""
+    def __init__(self) -> None:
+        self._rows: list[tuple[int, np.ndarray, str, int, int]] = []
+        self.calls = 0
+
+    def add(self, episode_id: int, value: np.ndarray, *, writer: str,
+            ts: int = 0, last_active_ts: int = 0) -> None:
+        self._rows.append((int(episode_id), np.asarray(value, dtype=np.float32),
+                           str(writer), int(ts), int(last_active_ts)))
+
+    def quarantined_candidates(self, *, now: int, quarantine_ttl_s: int):
+        self.calls += 1
+        return list(self._rows)
+
+
 class FakeStore:
     """EpisodeStore slice (transaction + meta kv), in-memory. The exposure /
     task_outcomes ledger methods were removed with the producer subsystem."""

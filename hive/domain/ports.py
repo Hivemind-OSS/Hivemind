@@ -73,6 +73,18 @@ class EpisodeReader(Protocol):
 
 
 @runtime_checkable
+class QuarantineReader(Protocol):
+    """The live (non-decayed) quarantined-row scan the self-quarantine resurfacing
+    channel reads — the SAME method the promotion scan drives, returning
+    ``(id, value, proposed_by, ts, last_active_ts)`` per row. A SEPARATE narrow port
+    (not a widening of ``EpisodeReader``) so existing narrow fakes stay conformant;
+    the SqliteEpisodeStore already satisfies it (no adapter change)."""
+    def quarantined_candidates(
+        self, *, now: int, quarantine_ttl_s: int
+    ) -> list[tuple[int, "np.ndarray", str, int, int]]: ...
+
+
+@runtime_checkable
 class EpisodeStore(Protocol):
     """The durable single-writer store. The Phase-0 trace↔outcome state machine was
     removed with the producer; its tables now have new drivers — exposure via the
