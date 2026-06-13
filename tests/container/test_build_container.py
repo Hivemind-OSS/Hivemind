@@ -173,6 +173,32 @@ def test_hybrid_wires_lexical_index_to_store():
     assert c.recall.hybrid_enabled is True
 
 
+# ── self-quarantine resurfacing wiring (draft channel = the store, behind recall.drafts) ──
+def test_drafts_off_wires_no_draft_reader():
+    c = _build()
+    assert c.recall.draft_reader is None
+    assert c.recall.drafts_enabled is False
+
+
+def test_drafts_wires_draft_reader_to_store():
+    # the store IS the QuarantineReader adapter (same reader=store/ledger=store idiom);
+    # the TTL is sourced from the autonomy knob so a draft never outlives quarantine.
+    c = _build(recall={"drafts": True})
+    assert c.recall.draft_reader is c.store
+    assert c.recall.drafts_enabled is True
+    assert c.recall.draft_tau == 0.6
+    assert c.recall.quarantine_ttl_s == c.cfg.autonomy.quarantine_ttl_days * 86_400
+
+
+def test_real_store_satisfies_quarantine_reader_port():
+    # conformance-test the REAL adapter against the new port (not just the fake): a
+    # runtime_checkable Protocol only checks name-presence, so a port that goes green
+    # with fake-backed tests alone can leave the real adapter incomplete.
+    from hive.domain.ports import QuarantineReader
+    c = _build()
+    assert isinstance(c.store, QuarantineReader)
+
+
 def test_hybrid_requires_fts5(monkeypatch):
     """hybrid=true on a stripped SQLite (no FTS5) fails FAST at boot; the same
     stripped build with hybrid off boots fine (silent degrade)."""

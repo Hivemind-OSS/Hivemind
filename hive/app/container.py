@@ -257,7 +257,14 @@ def build_container(cfg: Config, *, tenant_id: str, agent_id: str,
         lexical_index=store if cfg.recall.hybrid else None,
         hybrid_enabled=cfg.recall.hybrid,
         shadow_enabled=cfg.recall.shadow,
-        shadow_tau=cfg.recall.shadow_tau)
+        shadow_tau=cfg.recall.shadow_tau,
+        # self-quarantine resurfacing: the store IS the QuarantineReader (same
+        # reader=store/ledger=store idiom). OFF ⇒ no handle to the channel; the TTL
+        # is the autonomy quarantine clock so a draft never outlives quarantine.
+        draft_reader=store if cfg.recall.drafts else None,
+        drafts_enabled=cfg.recall.drafts,
+        draft_tau=cfg.recall.draft_tau,
+        quarantine_ttl_s=aut.quarantine_ttl_days * _DAY_S)
     admission = AdmissionService(store, scanner, embedder, now=clock.now,
                                  lifecycle=lifecycle, autonomy_enabled=aut.enabled)
 
