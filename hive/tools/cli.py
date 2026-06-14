@@ -475,10 +475,23 @@ def _logs(args, *, run: Run, out: TextIO, env: Mapping[str, str], ask) -> int:
     return _rc(run(_compose(*argv), env, capture=False))       # streams; Ctrl-C detaches
 
 
+def _trends(args, *, run: Run, out: TextIO, env: Mapping[str, str], ask) -> int:
+    """The convergence-KPI read (the agent-config-tuning observation surface): exec the
+    in-container trendsctl and forward its JSON verbatim — mirrors `status` execing the
+    healthcheck. Read-only; the warm daemon is untouched."""
+    child = run(_compose("exec", "-T", SERVICE, "python", "-m", "hive.tools.trendsctl"), env)
+    if child.returncode != 0:
+        sys.stderr.write(child.stderr or "")
+        return EX_UNAVAILABLE
+    out.write(child.stdout or "")                       # the trends JSON, verbatim
+    return EX_OK
+
+
 _HANDLERS: dict[str, Callable[..., int]] = {
     "up": _up,
     "down": _down,
     "logs": _logs,
+    "trends": _trends,
     "nuke": _nuke,
     "status": _status,
     "token": _token,
@@ -524,6 +537,7 @@ def main(argv: Optional[list[str]] = None, *, run: Optional[Run] = None,
                         help=f"compose service (e.g. {SERVICE}, ngrok)")
     sub.add_parser("nuke", help="DESTROY the stack incl. the data volume (asks to confirm)")
     sub.add_parser("status", help="server health, tunnel state + URL, seat count")
+    sub.add_parser("trends", help="convergence KPIs: current vs previous 14d window + deltas (JSON)")
     p_token = sub.add_parser("token", help="mint a per-seat token (printed ONCE to stdout)")
     p_token.add_argument("seat", help="agent-seat identity, e.g. alice-laptop (one per seat)")
     p_revoke = sub.add_parser("revoke", help="revoke a seat's token (next request → 401)")
