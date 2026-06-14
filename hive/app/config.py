@@ -517,3 +517,122 @@ def reload(old: Config, new: Config) -> Config:
         raise TierViolation(
             f"reload refused: {field_name} is tier {tier}; {remedy}")
     return new
+
+
+# ── agent-config-tuning contract ───────────────────────────────────────────────
+# Greppable pure data (sibling of RELOAD_TIER), keyed "<group>.<field>". The loader
+# NEVER reads these — they are the machine-readable envelope a trusted tuning agent
+# consults before editing the TOML layer. The completeness/consistency invariants are
+# enforced in tests/config/test_config_authority.py.
+
+# The safety guarantees an autonomous tuning agent must NEVER move. Each is env-pinned
+# in compose.yaml (HIVE_* layer 3), so a value the agent writes in the TOML (layer 2)
+# is silently overridden at boot — the firewall is the precedence stack, not new code.
+# The compose-pin set == this set is locked by tests/container/test_compose.py.
+GUARANTEE_KNOBS: frozenset[str] = frozenset({
+    "recall.H_frac_max",        # the never-hallucinate entropy floor
+    "recall.epsilon_explore",   # guardrail-1: novel-memory exposure ε
+    "utility.isolation_frac",   # guardrail-2: held-out evaluation slice
+    "autonomy.enabled",         # the whole memory-lifecycle on/off switch
+})
+
+# Who may set each field. "operator": guarantees + boot/re-embed/wiring structure +
+# operational policy (backup, logging) that moves no convergence KPI. "agent": the
+# KPI-linked behavioral knobs a tuning loop hill-climbs. EVERY field appears here
+# (completeness-tested) so a future field cannot be silently un-governed.
+CONFIG_AUTHORITY: dict[str, str] = {
+    # operator — structure, identity, re-embed (changing these is not a tuning action)
+    "runtime.db_path": "operator",
+    "runtime.tenant_id": "operator",
+    "geometry.d": "operator",
+    "geometry.W_version": "operator",
+    "embedding.provider": "operator",
+    "embedding.model": "operator",
+    "index.backend": "operator",
+    # operator — the four guarantees (env-pinned firewall)
+    "recall.H_frac_max": "operator",
+    "recall.epsilon_explore": "operator",
+    "utility.isolation_frac": "operator",
+    "autonomy.enabled": "operator",
+    # operator — channel wiring that ships OFF and flips on evidence/restart, not tuning
+    "recall.hybrid": "operator",
+    "recall.shadow": "operator",
+    "recall.drafts": "operator",
+    # operator — anti-gaming (operator-set by design) + credit grammar
+    "autonomy.solo_mode": "operator",
+    "producer.stamp_trailer": "operator",
+    # operator — operational policy (no convergence-KPI effect)
+    "retention.backup_keep": "operator",
+    "retention.backup_dir": "operator",
+    "obs.log_level": "operator",
+    "obs.log_max_bytes": "operator",
+    "obs.log_backup_count": "operator",
+    "obs.log_file": "operator",
+    # agent — the behavioral tuning surface
+    "recall.recall_top_n": "agent",
+    "recall.softmax_beta": "agent",
+    "recall.shadow_tau": "agent",
+    "recall.draft_tau": "agent",
+    "utility.prediction_bias_window_s": "agent",
+    "utility.prediction_bias_threshold": "agent",
+    "utility.f_min": "agent",
+    "utility.f_max": "agent",
+    "autonomy.demand_m": "agent",
+    "autonomy.demand_window_days": "agent",
+    "autonomy.demand_tau": "agent",
+    "autonomy.competitor_tau": "agent",
+    "autonomy.quarantine_ttl_days": "agent",
+    "autonomy.provisional_ttl_days": "agent",
+    "autonomy.survival_e": "agent",
+    "autonomy.survival_days": "agent",
+    "autonomy.survival_min_exposures": "agent",
+    "autonomy.solo_min_span_days": "agent",
+    "autonomy.contested_tau": "agent",
+}
+
+# Advisory tuning ranges — TIGHTER than each field's hard __post_init__ validator (the
+# real floor). No runtime enforcer: a trusted agent honors these; the hard validators +
+# the env-pin firewall are what actually protect the store. Provided ONLY for agent
+# knobs that are LIVE and worth tuning today; inert/operator-gated knobs are omitted on
+# purpose (see KPI_MOVED for why).
+SAFE_BOUNDS: dict[str, tuple[float, float]] = {
+    "recall.recall_top_n": (5, 20),
+    "recall.softmax_beta": (4.0, 32.0),
+    "autonomy.demand_m": (2, 6),
+    "autonomy.demand_window_days": (7, 28),
+    "autonomy.demand_tau": (0.60, 0.90),
+    "autonomy.competitor_tau": (0.75, 0.95),
+    "autonomy.quarantine_ttl_days": (7, 30),
+    "autonomy.provisional_ttl_days": (30, 90),
+    "autonomy.survival_e": (2, 5),
+    "autonomy.survival_days": (7, 28),
+    "autonomy.survival_min_exposures": (3, 12),
+    "autonomy.solo_min_span_days": (1, 7),
+    "autonomy.contested_tau": (0.70, 0.90),
+}
+
+# What each agent knob moves, in one line. TOTAL over the agent knobs (every one is
+# documented): live knobs name the trends KPI + direction; inert/gated knobs say so, so
+# the agent does not waste a window tuning a no-op. KPI *definitions* live in trends.py —
+# this only points at them, to stay un-stale.
+KPI_MOVED: dict[str, str] = {
+    "recall.recall_top_n": "est_tokens_served ↑ with n (more hits per confident recall); confident_rate ~flat above ~10",
+    "recall.softmax_beta": "confident_rate vs abstention sharpness: ↑β concentrates gate mass on the top hit (live recall gate)",
+    "recall.shadow_tau": "INERT unless operator sets recall.shadow=true (serve-time version shadowing, off by default)",
+    "recall.draft_tau": "INERT unless operator sets recall.drafts=true (self-quarantine resurfacing, off by default)",
+    "utility.prediction_bias_window_s": "INERT — no live consumer (the utility prediction-bias path is unwired)",
+    "utility.prediction_bias_threshold": "INERT — no live consumer (the utility prediction-bias path is unwired)",
+    "utility.f_min": "INERT on the live path (the Phase-1 utility surfacer is disabled)",
+    "utility.f_max": "INERT on the live path (the Phase-1 utility surfacer is disabled)",
+    "autonomy.demand_m": "n_promotions ↑ as m ↓ (fewer window misses required to promote)",
+    "autonomy.demand_window_days": "n_promotions: widens the miss-accrual window (also the demand-gap/trends window)",
+    "autonomy.demand_tau": "n_promotions ↑ as τ ↓ (looser miss↔candidate cosine match); too low → dead_capture_ratio ↑",
+    "autonomy.competitor_tau": "n_promotions ↓ as τ ↓ (a nearer servable row marks demand already answered, blocking promotion)",
+    "autonomy.quarantine_ttl_days": "dead_capture_ratio: a longer TTL gives captures more time to earn promotion before expiry",
+    "autonomy.provisional_ttl_days": "promotion durability: how long an established-but-unconfirmed row survives",
+    "autonomy.survival_e": "n_establishments ↓ as e ↑ (more distinct non-writer identities required)",
+    "autonomy.survival_days": "n_establishments ↓ as the required first-to-last exposure span grows",
+    "autonomy.survival_min_exposures": "n_establishments ↓ as more exposures are required to establish",
+    "autonomy.solo_min_span_days": "n_promotions in solo_mode ONLY (operator-gated): the elapsed-span demand threshold",
+    "autonomy.contested_tau": "tunes the contested-memory report (supersession-review queue) — not a convergence KPI directly",
+}
