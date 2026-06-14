@@ -57,6 +57,34 @@ def _env_pairs() -> dict[str, str]:
     return out
 
 
+def _resolve_interp(value: str) -> str:
+    """A compose ``${VAR:-default}`` interpolation resolves (host-side, var unset) to its
+    default — return that so the key↔field coercion check sees the real pinned value, not
+    the literal ``${...}`` expression. Non-interpolated values pass through unchanged."""
+    m = re.fullmatch(r"\$\{[^:}]+:-(.*)\}", value)
+    return m.group(1) if m else value
+
+
+def _key_to_field(key: str) -> str | None:
+    """``HIVE_<GROUP>__<FIELD>`` → canonical ``"group.field"`` (real field-name case), or
+    None if it is not a (group, field) env key. Mirrors the loader's case-fold matching."""
+    if not key.startswith("HIVE_"):
+        return None
+    group_tok, sep, field_tok = key[len("HIVE_"):].partition("__")
+    if not sep or group_tok.lower() not in C._GROUP_TYPES:
+        return None
+    fld = {f.name.lower(): f
+           for f in dataclasses.fields(C._GROUP_TYPES[group_tok.lower()])}.get(field_tok.lower())
+    return f"{group_tok.lower()}.{fld.name}" if fld else None
+
+
+def _pinned_config_fields() -> set[str]:
+    """Every compose env key that resolves to a real config (group, field), as canonical
+    ``group.field`` — excludes the entrypoint-owned aliases (bridged separately)."""
+    return {f for f in (_key_to_field(k) for k in _env_pairs()
+                        if k not in _ENTRYPOINT_OWNED) if f}
+
+
 def test_compose_exists():
     assert _COMPOSE.is_file()
 
@@ -119,7 +147,7 @@ def test_compose_env_keys_resolve():
             unresolved.append((key, f"unknown field {field_tok!r} on {group}"))
             continue
         try:
-            C._coerce(pairs[key], fld.type, fld.name)   # the value must actually coerce
+            C._coerce(_resolve_interp(pairs[key]), fld.type, fld.name)  # ${VAR:-default} → default
         except (ValueError, TypeError) as exc:
             unresolved.append((key, f"value {pairs[key]!r} not coercible: {exc}"))
     assert not unresolved, f"compose env keys that do not resolve to a live config field: {unresolved}"
@@ -130,6 +158,33 @@ def test_no_legacy_dead_keys():
     pairs = _env_pairs()
     assert "HIVE_EMBEDDING__MODEL_NAME" not in pairs
     assert "HIVE_OBSERVABILITY__LOG_LEVEL" not in pairs
+
+
+# ── the guarantee firewall (agent-config-tuning) ──────────────────────────────
+def test_guarantee_knobs_are_env_pinned():
+    # the four safety guarantees MUST be pinned at the env layer (3) so the agent's TOML
+    # (layer 2) cannot loosen them. SSOT is config.GUARANTEE_KNOBS — drift either way reds.
+    pinned = _pinned_config_fields()
+    missing = set(C.GUARANTEE_KNOBS) - pinned
+    assert not missing, f"guarantee knobs not env-pinned in compose: {sorted(missing)}"
+
+
+def test_no_agent_knob_is_env_pinned():
+    # pinning an AGENT-authority knob would silently override the agent's TOML edits and
+    # break the tuning loop — the firewall must freeze ONLY operator knobs.
+    agent_pinned = {f for f in _pinned_config_fields()
+                    if C.CONFIG_AUTHORITY.get(f) == "agent"}
+    assert not agent_pinned, \
+        f"agent knobs must NOT be env-pinned (defeats tuning): {sorted(agent_pinned)}"
+
+
+def test_config_toml_is_mounted_and_present():
+    # the agent-tunable layer: a git-tracked file bind-mounted read-only at the path the
+    # entrypoint's Config.load reads by default (/data/hive.toml). Shipping it git-tracked
+    # is what stops Docker turning a missing source into a silent directory.
+    assert re.search(r"\./hive\.config\.toml:/data/hive\.toml:ro", _text()), \
+        "compose must bind-mount ./hive.config.toml:/data/hive.toml:ro"
+    assert (_ROOT / "hive.config.toml").is_file(), "hive.config.toml must exist at repo root"
 
 
 # ── the opt-in public tunnel (Part A) ─────────────────────────────────────────

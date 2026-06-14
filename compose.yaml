@@ -15,10 +15,20 @@ services:
       HIVE_EMBEDDING__MODEL: "BAAI/bge-small-en-v1.5"
       HIVE_OBS__LOG_LEVEL: "20"            # 20 == logging.INFO (obs.log_level is an int level)
       HIVE_RETENTION__BACKUP_KEEP: "30"
+      # ── guarantee firewall (config.GUARANTEE_KNOBS) ──
+      # Pinned at layer 3 (env) so a value the tuning agent writes in /data/hive.toml
+      # (layer 2) is silently overridden — the agent structurally cannot loosen a safety
+      # guarantee. The ${VAR:-default} floor lives in git here (auditable); an operator
+      # MAY tighten via .env. The pin set == GUARANTEE_KNOBS is locked by test_compose.py.
+      HIVE_RECALL__H_FRAC_MAX: "${HIVE_RECALL__H_FRAC_MAX:-0.5}"
+      HIVE_RECALL__EPSILON_EXPLORE: "${HIVE_RECALL__EPSILON_EXPLORE:-0.1}"
+      HIVE_UTILITY__ISOLATION_FRAC: "${HIVE_UTILITY__ISOLATION_FRAC:-0.05}"
+      HIVE_AUTONOMY__ENABLED: "${HIVE_AUTONOMY__ENABLED:-true}"
       HF_HUB_OFFLINE: "1"
       TRANSFORMERS_OFFLINE: "1"
     volumes:
       - hive-data:/data
+      - ./hive.config.toml:/data/hive.toml:ro   # agent-tunable config layer (read-only into the container)
     # The warm daemon (PID 1) serves MCP over HTTP. The host mapping is LOOPBACK-ONLY: the
     # daemon binds 0.0.0.0 INSIDE the container (so the Docker port map can reach it), but the
     # host side is 127.0.0.1 only — never exposed beyond host-loopback (NOT "exposed to the
