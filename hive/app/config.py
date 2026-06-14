@@ -338,10 +338,19 @@ def _apply_toml(merged: dict[str, dict[str, Any]], toml_path: str) -> None:
     for group, vals in data.items():
         if group in merged and isinstance(vals, dict):
             known = {f.name for f in fields(_GROUP_TYPES[group])}
-            for k in vals:
+            for k, v in vals.items():
                 if k not in known:
                     _log.warning("config.toml_unknown_field field=%s.%s ignored", group, k)
-            merged[group].update(vals)
+                    continue
+                # The tuning file may set ONLY agent-authority knobs. An operator/guarantee
+                # knob here is ignored (set those via env) — this is what makes the firewall
+                # structural: the agent's file cannot express a guarantee knob, so there is no
+                # override for env to win, just a partition with one source per knob.
+                if CONFIG_AUTHORITY.get(f"{group}.{k}") != "agent":
+                    _log.warning("config.toml_rejects_operator_field field=%s.%s ignored "
+                                 "(operator knobs are set via env, not the tuning file)", group, k)
+                    continue
+                merged[group][k] = v
         else:
             _log.warning("config.toml_unknown_group group=%s ignored", group)
 
@@ -367,6 +376,13 @@ def _apply_env(merged: dict[str, dict[str, Any]], env: Mapping[str, str]) -> Non
         fld = field_by_upper.get(field_tok.upper())
         if fld is None:
             _log.warning("config.env_unknown_field key=%s ignored", raw_key)
+            continue
+        # env (.env / compose) may set ONLY operator-authority knobs. An agent tuning knob in
+        # env is ignored (tune those in hive.config.toml) — keeps env and toml sourcing
+        # DISJOINT knob sets, so no layer ever overrides another for the same knob.
+        if CONFIG_AUTHORITY.get(f"{group}.{fld.name}") != "operator":
+            _log.warning("config.env_rejects_agent_field key=%s ignored "
+                         "(agent knobs are tuned via hive.config.toml, not env)", raw_key)
             continue
         try:
             merged[group][fld.name] = _coerce(raw_val, fld.type, fld.name)

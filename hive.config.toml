@@ -7,8 +7,8 @@
 # Rules for a tuning agent:
 #   - Edit ONLY knobs whose CONFIG_AUTHORITY (hive/app/config.py) == "agent".
 #   - Stay inside SAFE_BOUNDS; consult KPI_MOVED for what each knob moves.
-#   - "operator" guarantee knobs written here are SILENTLY OVERRIDDEN by the compose
-#     env-pins (layer 3 > layer 2) — they will not take effect.
+#   - "operator" knobs written here are IGNORED by the loader (rejected at parse, logged
+#     config.toml_rejects_operator_field) — set those in .env. Only "agent" knobs take effect.
 #   - One knob per window: apply with `hive down && hive up`, then commit (git = audit log).
 #
 # Example (commented; uncomment + adjust one line to tune):

@@ -3,27 +3,18 @@ services:
   hive-server:
     build: { context: ., dockerfile: Dockerfile }
     image: hive:vmin
-    # ${VAR:?msg} → compose FAILS FAST if HIVE_TENANT_ID is unset (no silent default).
+    # ALL HIVE_* config is sourced from ONE file — .env (operator/startup knobs only; agent
+    # tuning knobs live in hive.config.toml). Disjoint by config.CONFIG_AUTHORITY: the loader
+    # applies operator knobs from env and agent knobs from the TOML, never both, so nothing is
+    # duplicated or overridden. HIVE_TENANT_ID is the one required var; everything else has a
+    # safe code default — set a key in .env only to override. `required: false` keeps compose
+    # parsing when .env is absent (the entrypoint then fail-fasts on the missing tenant). See
+    # .env.example.
+    env_file:
+      - path: .env
+        required: false
+    # Image invariants — NOT config knobs (the brain image is hermetically offline).
     environment:
-      HIVE_TENANT_ID: "${HIVE_TENANT_ID:?HIVE_TENANT_ID is required (single-tenant boundary)}"
-      HIVE_AGENT_ID: "${HIVE_AGENT_ID:-default-agent}"
-      # HIVE_TENANT_ID / HIVE_AGENT_ID / HIVE_STORE__DB_PATH are entrypoint-owned operator
-      # aliases (bridged into Config.load); the keys below route through M-config's
-      # HIVE_<GROUP>__<FIELD> namespace and MUST name a real (group, field) — see
-      # tests/container/test_compose.py::test_compose_env_keys_resolve.
-      HIVE_STORE__DB_PATH: "/data/shared.db"
-      HIVE_EMBEDDING__MODEL: "BAAI/bge-small-en-v1.5"
-      HIVE_OBS__LOG_LEVEL: "20"            # 20 == logging.INFO (obs.log_level is an int level)
-      HIVE_RETENTION__BACKUP_KEEP: "30"
-      # ── guarantee firewall (config.GUARANTEE_KNOBS) ──
-      # Pinned at layer 3 (env) so a value the tuning agent writes in /data/hive.toml
-      # (layer 2) is silently overridden — the agent structurally cannot loosen a safety
-      # guarantee. The ${VAR:-default} floor lives in git here (auditable); an operator
-      # MAY tighten via .env. The pin set == GUARANTEE_KNOBS is locked by test_compose.py.
-      HIVE_RECALL__H_FRAC_MAX: "${HIVE_RECALL__H_FRAC_MAX:-0.5}"
-      HIVE_RECALL__EPSILON_EXPLORE: "${HIVE_RECALL__EPSILON_EXPLORE:-0.1}"
-      HIVE_UTILITY__ISOLATION_FRAC: "${HIVE_UTILITY__ISOLATION_FRAC:-0.05}"
-      HIVE_AUTONOMY__ENABLED: "${HIVE_AUTONOMY__ENABLED:-true}"
       HF_HUB_OFFLINE: "1"
       TRANSFORMERS_OFFLINE: "1"
     volumes:

@@ -38,7 +38,7 @@ The only file you may edit is **`hive.config.toml`** (repo root). It is preceden
    ```
    Exit 0 ⇒ your values pass the hard validators. **Boundaries (read these):**
    - This reflects your edits to **agent** knobs accurately.
-   - It does **NOT** show the operator's runtime env-pins for **guarantee** knobs (you must not edit those anyway) — host-side it shows your TOML value, not the effective pinned value.
+   - It does **NOT** apply the operator's `.env` values for operator/guarantee knobs (a bare load reads only the TOML + code defaults) — and an operator knob written *in the TOML* is ignored by the loader anyway, so it can't take effect from here regardless.
    - A malformed-TOML *syntax* error or an *unknown-key typo* is **swallowed** (logged `config.toml_*`, falls back to defaults) — it does NOT fail this check. Your signal that a typo'd change didn't apply is the KPIs not moving (and the boot log).
 5. **Apply** — `hive down && hive up`. Warm boot (store + embeddings cached); the embedder reload is the pole, so expect tens of seconds, not instant.
 6. **Record** — commit, with the rationale. Git is the audit log and your memory across cycles:
@@ -50,18 +50,19 @@ The only file you may edit is **`hive.config.toml`** (repo root). It is preceden
 
 ## 2. The firewall (why some edits silently do nothing)
 
-The four **guarantee knobs** (`config.GUARANTEE_KNOBS`: `recall.H_frac_max`,
-`recall.epsilon_explore`, `utility.isolation_frac`, `autonomy.enabled`) are pinned by the
-operator at the env layer in `compose.yaml`. If you write one in `hive.config.toml`, the
-env-pin **silently overrides it at boot** — the change will not take effect, and `hive
-trends` will not move. The contract already tells you these are `operator`. Do not try to
+The config loader applies this file's TOML layer to **agent** knobs ONLY. An `operator`
+knob you write here — including the guarantees (`config.GUARANTEE_KNOBS`:
+`recall.H_frac_max`, `recall.epsilon_explore`, `utility.isolation_frac`,
+`autonomy.enabled`) — is **ignored at load** (rejected, logged
+`config.toml_rejects_operator_field`); it never reaches the running system, so `hive
+trends` will not move. Those are set by the operator in `.env`, not here. Do not try to
 earn `confident_rate` by loosening `H_frac_max`; earn it through demand/promotion tuning.
 
 ## 3. Do NOT touch
 
 - Any `operator`-authority knob (the contract names them).
-- **`compose.yaml` and `.env`** — the firewall lives there. Editing them is outside your
-  sanctioned action; that is the operator's job.
+- **`.env` and `compose.yaml`** — operator/startup config and infra. Editing them is
+  outside your sanctioned action; that is the operator's job.
 - If a value is out of the hard range, boot **fails loudly** (`hive up` exits non-zero) —
   downtime, never a silently-wrong guarantee.
 

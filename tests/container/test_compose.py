@@ -30,11 +30,6 @@ from hive.app import config as C
 _ROOT = Path(__file__).resolve().parents[2]
 _COMPOSE = _ROOT / "compose.yaml"
 
-# entrypoint-owned operator aliases (bridged into Config.load, NOT routed through HIVE_*__)
-_ENTRYPOINT_OWNED = {"HIVE_TENANT_ID", "HIVE_AGENT_ID", "HIVE_STORE__DB_PATH"}
-# pure process env (consumed by HF libs, not by Config) — not subject to the config map
-_RUNTIME_ENV = {"HF_HUB_OFFLINE", "TRANSFORMERS_OFFLINE"}
-
 
 def _text() -> str:
     return _COMPOSE.read_text()
@@ -57,14 +52,6 @@ def _env_pairs() -> dict[str, str]:
     return out
 
 
-def _resolve_interp(value: str) -> str:
-    """A compose ``${VAR:-default}`` interpolation resolves (host-side, var unset) to its
-    default — return that so the key↔field coercion check sees the real pinned value, not
-    the literal ``${...}`` expression. Non-interpolated values pass through unchanged."""
-    m = re.fullmatch(r"\$\{[^:}]+:-(.*)\}", value)
-    return m.group(1) if m else value
-
-
 def _key_to_field(key: str) -> str | None:
     """``HIVE_<GROUP>__<FIELD>`` → canonical ``"group.field"`` (real field-name case), or
     None if it is not a (group, field) env key. Mirrors the loader's case-fold matching."""
@@ -76,13 +63,6 @@ def _key_to_field(key: str) -> str | None:
     fld = {f.name.lower(): f
            for f in dataclasses.fields(C._GROUP_TYPES[group_tok.lower()])}.get(field_tok.lower())
     return f"{group_tok.lower()}.{fld.name}" if fld else None
-
-
-def _pinned_config_fields() -> set[str]:
-    """Every compose env key that resolves to a real config (group, field), as canonical
-    ``group.field`` — excludes the entrypoint-owned aliases (bridged separately)."""
-    return {f for f in (_key_to_field(k) for k in _env_pairs()
-                        if k not in _ENTRYPOINT_OWNED) if f}
 
 
 def test_compose_exists():
@@ -111,46 +91,25 @@ def test_compose_healthcheck_runs_healthcheck_module():
     assert re.search(r'test:\s*\["CMD",\s*"python",\s*"-m",\s*"hive\.tools\.healthcheck"\]', _text())
 
 
-def test_tenant_id_compose_level_failfast_literal():
-    # ${HIVE_TENANT_ID:?...} ⇒ compose itself errors if the var is unset (no silent default)
-    assert re.search(r"\$\{HIVE_TENANT_ID:\?", _text())
-
-
 def test_named_volume_persists():
     assert re.search(r"(?m)^\s+hive-data:\s*$", _text())
     assert re.search(r"name:\s*hive-data", _text())
 
 
-def test_compose_env_keys_resolve():
-    """Every HIVE_* env key is either entrypoint-owned OR names a REAL (group, field) in
-    Config and coerces — closing the dead-knob drift the verbatim keys had
-    (HIVE_EMBEDDING__MODEL_NAME / HIVE_OBSERVABILITY__LOG_LEVEL named nothing)."""
-    pairs = _env_pairs()
-    hive_keys = [k for k in pairs if k.startswith("HIVE_")]
-    assert hive_keys, "no HIVE_* env keys parsed from compose"
-    unresolved = []
-    for key in hive_keys:
-        if key in _ENTRYPOINT_OWNED:
-            continue
-        body = key[len("HIVE_"):]
-        group_tok, sep, field_tok = body.partition("__")
-        if not sep:
-            unresolved.append((key, "no __ separator and not entrypoint-owned"))
-            continue
-        group = group_tok.lower()
-        if group not in C._GROUP_TYPES:
-            unresolved.append((key, f"unknown group {group!r}"))
-            continue
-        typ = C._GROUP_TYPES[group]
-        fld = {f.name.lower(): f for f in dataclasses.fields(typ)}.get(field_tok.lower())
-        if fld is None:
-            unresolved.append((key, f"unknown field {field_tok!r} on {group}"))
-            continue
-        try:
-            C._coerce(_resolve_interp(pairs[key]), fld.type, fld.name)  # ${VAR:-default} → default
-        except (ValueError, TypeError) as exc:
-            unresolved.append((key, f"value {pairs[key]!r} not coercible: {exc}"))
-    assert not unresolved, f"compose env keys that do not resolve to a live config field: {unresolved}"
+def test_compose_uses_env_file():
+    # the single startup-config source: operator/startup knobs come from .env via env_file,
+    # not inline compose keys — so a knob is never stated in two files.
+    txt = _text()
+    assert re.search(r"env_file:", txt)
+    assert re.search(r"path:\s*\.env", txt)
+
+
+def test_compose_carries_no_config_env_keys():
+    # the no-duplication contract at the compose layer: NO HIVE_<group>__<field> config knob
+    # appears in compose — they all live in .env. compose's `environment:` holds only image
+    # invariants (the HF offline flags). A config key creeping back in reds here.
+    config_keys = sorted(k for k in _env_pairs() if _key_to_field(k) is not None)
+    assert not config_keys, f"compose must carry no config knobs (move to .env): {config_keys}"
 
 
 def test_no_legacy_dead_keys():
@@ -160,24 +119,7 @@ def test_no_legacy_dead_keys():
     assert "HIVE_OBSERVABILITY__LOG_LEVEL" not in pairs
 
 
-# ── the guarantee firewall (agent-config-tuning) ──────────────────────────────
-def test_guarantee_knobs_are_env_pinned():
-    # the four safety guarantees MUST be pinned at the env layer (3) so the agent's TOML
-    # (layer 2) cannot loosen them. SSOT is config.GUARANTEE_KNOBS — drift either way reds.
-    pinned = _pinned_config_fields()
-    missing = set(C.GUARANTEE_KNOBS) - pinned
-    assert not missing, f"guarantee knobs not env-pinned in compose: {sorted(missing)}"
-
-
-def test_no_agent_knob_is_env_pinned():
-    # pinning an AGENT-authority knob would silently override the agent's TOML edits and
-    # break the tuning loop — the firewall must freeze ONLY operator knobs.
-    agent_pinned = {f for f in _pinned_config_fields()
-                    if C.CONFIG_AUTHORITY.get(f) == "agent"}
-    assert not agent_pinned, \
-        f"agent knobs must NOT be env-pinned (defeats tuning): {sorted(agent_pinned)}"
-
-
+# ── agent-config-tuning: the tunable file ─────────────────────────────────────
 def test_config_toml_is_mounted_and_present():
     # the agent-tunable layer: a git-tracked file bind-mounted read-only at the path the
     # entrypoint's Config.load reads by default (/data/hive.toml). Shipping it git-tracked
@@ -270,12 +212,3 @@ def test_compose_config_valid():
     r = subprocess.run(["docker", "compose", "-f", str(_COMPOSE), "config"],
                        capture_output=True, text=True, env=env, timeout=60)
     assert r.returncode == 0, f"compose config failed: {r.stderr}"
-
-
-@_SKIP
-def test_tenant_id_required_fails_fast():
-    env = {k: v for k, v in os.environ.items() if k != "HIVE_TENANT_ID"}
-    r = subprocess.run(["docker", "compose", "-f", str(_COMPOSE), "config"],
-                       capture_output=True, text=True, env=env, timeout=60)
-    assert r.returncode != 0
-    assert "HIVE_TENANT_ID" in (r.stderr + r.stdout)

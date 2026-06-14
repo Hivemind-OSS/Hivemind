@@ -78,28 +78,40 @@ def test_env_noncoercible_value_skipped_with_warn(caplog):
 
 # ── 4-layer precedence ────────────────────────────────────────────────────────
 def test_layering_precedence(tmp_path):
+    # layer 4 (explicit) beats all; layers 2 and 3 cover DISJOINT knobs (agent↔toml,
+    # operator↔env), so no same-knob conflict can arise. recall_top_n is an AGENT knob set
+    # at toml + explicit; geometry.d is an OPERATOR knob set at env. Explicit wins over toml;
+    # the operator env value stands.
     toml = tmp_path / "hive.toml"
-    toml.write_text(
-        "[recall]\nrecall_top_n = 11\n"        # field set at layer 2 AND layers 3,4 below
-        "[retention]\nbackup_keep = 20\n"      # field set ONLY at layer 2 — must survive
-    )
-    env = {"HIVE_RECALL__RECALL_TOP_N": "12"}  # layer 3
+    toml.write_text("[recall]\nrecall_top_n = 11\n")        # agent knob, layer 2
+    env = {"HIVE_GEOMETRY__D": "384"}                       # operator knob, layer 3
     cfg = Config.load(
         db_path=":memory:", toml_path=str(toml), env=env,
-        recall={"recall_top_n": 13},           # layer 4 (explicit) — wins
+        recall={"recall_top_n": 13},                        # layer 4 (explicit) — wins over toml
     )
-    assert cfg.recall.recall_top_n == 13       # explicit override beats env beats toml beats default
-    assert cfg.retention.backup_keep == 20     # layer-2-only field survived layers 3/4 being unset
+    assert cfg.recall.recall_top_n == 13                    # explicit beats toml
+    assert cfg.geometry.d == 384                            # operator env value applied
 
 
-def test_env_beats_toml_no_override(tmp_path):
-    # the MIDDLE two layers' order must be pinned: a field set at toml AND env with NO explicit
-    # override must take the ENV value (env > toml). A toml<env inversion fails here.
+def test_toml_sets_only_agent_knobs_operator_ignored(tmp_path):
+    # the firewall, made structural by the layer partition: an OPERATOR/guarantee knob in
+    # the agent's tuning file is IGNORED (the agent's file cannot express it) — there is no
+    # override to resolve; the knob simply has no TOML source.
     toml = tmp_path / "hive.toml"
-    toml.write_text("[recall]\nrecall_top_n = 11\n")
-    env = {"HIVE_RECALL__RECALL_TOP_N": "12"}
-    cfg = Config.load(db_path=":memory:", toml_path=str(toml), env=env)
-    assert cfg.recall.recall_top_n == 12   # env (layer 3) beats toml (layer 2)
+    toml.write_text("[recall]\nrecall_top_n = 7\nH_frac_max = 0.9\n")
+    cfg = Config.load(db_path=":memory:", toml_path=str(toml))
+    assert cfg.recall.recall_top_n == 7      # agent knob took
+    assert cfg.recall.H_frac_max == 0.5      # guarantee untouched by the tuning file
+
+
+def test_env_sets_only_operator_knobs_agent_ignored():
+    # the inverse partition rule: an AGENT tuning knob in env is IGNORED (tune it in the
+    # TOML, not .env) — so env and toml never both source the same knob.
+    env = {"HIVE_RECALL__H_FRAC_MAX": "0.4",      # operator — applied
+           "HIVE_RECALL__RECALL_TOP_N": "12"}     # agent — ignored
+    cfg = Config.load(db_path=":memory:", env=env)
+    assert cfg.recall.H_frac_max == 0.4           # operator knob took
+    assert cfg.recall.recall_top_n == 10          # agent knob untouched by env (stays default)
 
 
 def test_provider_field_routes_to_embedding_group(tmp_path):
@@ -115,11 +127,13 @@ def test_unknown_override_field_raises():
         Config.load(recall={"H_frac_maxx": 0.4})
 
 
-def test_layer2_only_field_beats_default(tmp_path):
+def test_layer2_only_agent_field_beats_default(tmp_path):
+    # a TOML-only AGENT knob overrides its code default (geometry.d is operator and would be
+    # ignored in the tuning file — use an agent knob to exercise the layer-2 apply path).
     toml = tmp_path / "hive.toml"
-    toml.write_text("[geometry]\nd = 384\n")
+    toml.write_text("[recall]\nrecall_top_n = 7\n")
     cfg = Config.load(db_path=":memory:", toml_path=str(toml))
-    assert cfg.geometry.d == 384
+    assert cfg.recall.recall_top_n == 7
 
 
 def test_missing_toml_is_env_only(tmp_path):
