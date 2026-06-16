@@ -9,8 +9,8 @@ never grow memory past ``max_keys``.
 Pure and deterministic: the clock is injected (``now``), and there is NO internal lock —
 the transport calls ``check()`` under its existing global handler lock, so adding one
 here would only add a second concurrency surface. ``limit <= 0`` constructs the DISABLED
-sentinel (``check()`` always allows): the AC4 ``HIVE_HTTP_RATE_LIMIT=0`` escape hatch.
-Stdlib only (AC6 — zero new runtime dependency).
+sentinel (``check()`` always allows) — a caller-level capability; the operator HTTP belt
+is always on (no env knob disables it). Stdlib only (AC6 — zero new runtime dependency).
 """
 from __future__ import annotations
 

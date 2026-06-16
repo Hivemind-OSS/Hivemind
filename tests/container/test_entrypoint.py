@@ -3,14 +3,13 @@
 The strict order config→migrate→index→warm→serve, the fail-fast exit codes
 (78 EX_CONFIG / 70 EX_SOFTWARE / 69 EX_UNAVAILABLE), the embedder-resident gate, and the
 "serve is UNREACHABLE unless every prior step succeeded" invariant are pinned here against
-an injected fake boot — no Docker required. Three of the four deliberate mutations live in
-this module (missing-env guard, swallow-embedder-exception, migrate-failure return).
+an injected fake boot — no Docker required. Two deliberate mutations live in this module
+(swallow-embedder-exception, migrate-failure return).
 
-Part S adds the hardening knobs, resolved with the SAME discipline as
-`_resolve_port` (default / override / `0`-disables / malformed→EX_CONFIG before assembly,
-never a raise out of boot): `HIVE_HTTP_RATE_LIMIT`+`HIVE_HTTP_RATE_WINDOW_S` and
-`HIVE_HTTP_MAX_BODY_BYTES`. `_make_http_serve` must construct a real `TokenBucketLimiter`
-from the resolved values and thread `limiter=`/`max_body_bytes=` into `run_http`.
+Part S: the HTTP listen port (8765) and the rate-limit belt are FIXED; the one surviving
+boot knob is `HIVE_HTTP_MAX_BODY_BYTES` (malformed→EX_CONFIG before assembly, never a raise
+out of boot). `_make_http_serve` constructs a real `TokenBucketLimiter` from its fixed
+defaults and threads `limiter=`/`max_body_bytes=` into `run_http`.
 """
 from __future__ import annotations
 
@@ -296,57 +295,7 @@ def test_main_default_serve_is_http_with_default_port(monkeypatch):
     assert calls == ["migrate", "build_index", "warm", "make_server"]           # full boot, then HTTP serve
 
 
-def test_main_default_serve_uses_env_http_port(monkeypatch):
-    captured: dict = {}
-    monkeypatch.setattr(E, "_make_http_serve",
-                        lambda boot, port, **kw: (captured.update(port=port), lambda s: None)[1])
-    rc = E.main(env={"HIVE_TENANT_ID": "acme", "HIVE_HTTP_PORT": "9000"},
-                build_boot=_boot_factory(_RecordingBoot([])))
-    assert rc == E.EX_OK
-    assert captured["port"] == 9000
-
-
-@pytest.mark.parametrize("bad", ["not-a-port", "0", "70000", "-1"])
-def test_invalid_http_port_exits_config(bad):
-    # a malformed/out-of-range HIVE_HTTP_PORT FAILS FAST (EX_CONFIG) before assembly —
-    # never raises out of the boot path. Resolved before build_boot ⇒ never assembled/served.
-    calls: list = []
-    env = {"HIVE_TENANT_ID": "acme", "HIVE_HTTP_PORT": bad}
-    rc = E.main(env=env, build_boot=_boot_factory(_RecordingBoot(calls)),
-                serve=_serve_recorder(calls))
-    assert rc == E.EX_CONFIG
-    assert calls == []
-
-
-# ── Part S hardening knobs: resolved like _resolve_port ──
-def test_resolve_rate_limit_defaults():
-    assert E._resolve_rate_limit({}) == (120, 60.0)
-
-
-def test_resolve_rate_limit_overrides():
-    env = {"HIVE_HTTP_RATE_LIMIT": "30", "HIVE_HTTP_RATE_WINDOW_S": "10"}
-    assert E._resolve_rate_limit(env) == (30, 10.0)
-
-
-def test_resolve_rate_limit_zero_disables():
-    # `0` is a VALID operator choice (AC4): the limiter's disabled sentinel, not an error.
-    assert E._resolve_rate_limit({"HIVE_HTTP_RATE_LIMIT": "0"}) == (0, 60.0)
-
-
-@pytest.mark.parametrize("env", [
-    {"HIVE_HTTP_RATE_LIMIT": "abc"},
-    {"HIVE_HTTP_RATE_LIMIT": "-1"},
-    {"HIVE_HTTP_RATE_LIMIT": "1.5"},
-    {"HIVE_HTTP_RATE_WINDOW_S": "xyz"},
-    {"HIVE_HTTP_RATE_WINDOW_S": "0"},
-    {"HIVE_HTTP_RATE_WINDOW_S": "-2"},
-])
-def test_resolve_rate_limit_malformed_is_none(env):
-    # malformed/negative → None (the caller maps to EX_CONFIG) — never a raise, never a
-    # silent fallback to the default (a typo'd knob must not quietly weaken the belt).
-    assert E._resolve_rate_limit(env) is None
-
-
+# ── _resolve_max_body: the one surviving boot knob (port + rate are now fixed) ──
 def test_resolve_max_body_default_and_override():
     assert E._resolve_max_body({}) == 1 << 20
     assert E._resolve_max_body({"HIVE_HTTP_MAX_BODY_BYTES": "2048"}) == 2048
@@ -358,22 +307,19 @@ def test_resolve_max_body_malformed_is_none(bad):
     assert E._resolve_max_body({"HIVE_HTTP_MAX_BODY_BYTES": bad}) is None
 
 
-@pytest.mark.parametrize("env", [
-    {"HIVE_TENANT_ID": "acme", "HIVE_HTTP_RATE_LIMIT": "nope"},
-    {"HIVE_TENANT_ID": "acme", "HIVE_HTTP_RATE_WINDOW_S": "-3"},
-    {"HIVE_TENANT_ID": "acme", "HIVE_HTTP_MAX_BODY_BYTES": "nope"},
-])
-def test_invalid_hardening_env_exits_config_before_assembly(env):
+def test_invalid_max_body_exits_config_before_assembly():
+    # a malformed HIVE_HTTP_MAX_BODY_BYTES FAILS FAST (EX_CONFIG) before assembly.
     calls: list = []
-    rc = E.main(env=env, build_boot=_boot_factory(_RecordingBoot(calls)),
+    rc = E.main(env={"HIVE_HTTP_MAX_BODY_BYTES": "nope"},
+                build_boot=_boot_factory(_RecordingBoot(calls)),
                 serve=_serve_recorder(calls))
     assert rc == E.EX_CONFIG
-    assert calls == []                             # fail-fast BEFORE build_boot, like the port
+    assert calls == []                             # fail-fast BEFORE build_boot
 
 
-def test_main_default_serve_threads_resolved_hardening(monkeypatch):
-    """main() threads the RESOLVED env knobs into _make_http_serve — the operator's
-    values, not the defaults, reach the daemon."""
+def test_main_serve_fixed_port_and_threaded_max_body(monkeypatch):
+    """main() serves on the FIXED 8765 port and threads only the resolved max_body knob into
+    _make_http_serve — the rate-limit belt uses its fixed defaults (no operator knob)."""
     captured: dict = {}
 
     def fake_make_http_serve(boot, port, **kw):
@@ -381,10 +327,9 @@ def test_main_default_serve_threads_resolved_hardening(monkeypatch):
         return lambda s: None
 
     monkeypatch.setattr(E, "_make_http_serve", fake_make_http_serve)
-    rc = E.main(env={"HIVE_TENANT_ID": "acme", "HIVE_HTTP_RATE_LIMIT": "7",
-                     "HIVE_HTTP_RATE_WINDOW_S": "30", "HIVE_HTTP_MAX_BODY_BYTES": "4096"},
+    rc = E.main(env={"HIVE_HTTP_MAX_BODY_BYTES": "4096"},
                 build_boot=_boot_factory(_RecordingBoot([])))
     assert rc == E.EX_OK
-    assert captured["rate_limit"] == 7
-    assert captured["rate_window_s"] == 30.0
+    assert captured["port"] == 8765
     assert captured["max_body_bytes"] == 4096
+    assert "rate_limit" not in captured            # main() no longer threads rate knobs

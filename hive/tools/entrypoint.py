@@ -13,12 +13,13 @@ them and on the healthcheck — prose in a log cannot lie about an exit code:
     0  EX_OK           — clean serve (run_stdio returned)
     69 EX_UNAVAILABLE  — the embedder is dead / never became resident (no recall at cold)
     70 EX_SOFTWARE     — an internal boot step failed (migrate / index / assembly)
-    78 EX_CONFIG       — a required env var is missing OR Config validation failed
+    78 EX_CONFIG       — Config validation failed (or a malformed boot knob)
 
-Boundary: the entrypoint OWNS the operator-facing env contract for the three
-boot-critical values the ported server shape needs (`tenant_id` / `db_path` / `agent_id`,
-the compose keys `HIVE_TENANT_ID` / `HIVE_STORE__DB_PATH` / `HIVE_AGENT_ID`) and
-bridges them into `Config.load`; the rest of the config tree is M-config's `HIVE_*__`
+Boundary: the entrypoint OWNS the operator-facing env contract for the two
+boot-critical operator values (`tenant_id` / `db_path`, the compose keys
+`HIVE_TENANT_ID` / `HIVE_STORE__DB_PATH`) and bridges them into `Config.load`;
+`agent_id` carries a process default and is not operator-facing in the HTTP build
+(per-request attribution is token→label). The rest of the config tree is M-config's `HIVE_*__`
 namespace, which the entrypoint does NOT re-parse. The REAL adapter assembly (store +
 embedder + index + server) lands in P1.14 (`hive.app.container.build_container`) and is
 INJECTED here as `build_boot` — so the boot ORDER, the fail-fast exit codes and the
@@ -49,10 +50,10 @@ _DEFAULT_AGENT_ID = "default-agent"
 _DEFAULT_TENANT_ID = "default"
 _DEFAULT_LOG_LEVEL = logging.INFO
 _DEFAULT_HTTP_PORT = 8765
-# Part S hardening defaults: generous for a busy single agent,
-# `HIVE_HTTP_RATE_LIMIT=0` disables. The 1 MiB cap mirrors http_server._DEFAULT_MAX_BODY
-# (kept separate — the entrypoint owns the OPERATOR env contract; http_server stays
-# importable without it and is deliberately lazy-imported at serve time).
+# Part S hardening: the rate-limit belt is fixed (no operator knob — disabling a DoS belt
+# on a tunnel-reachable daemon is a footgun). The 1 MiB body cap mirrors
+# http_server._DEFAULT_MAX_BODY (kept separate so http_server stays importable without it
+# and is lazy-imported at serve time).
 _DEFAULT_RATE_LIMIT = 120
 _DEFAULT_RATE_WINDOW_S = 60.0
 _DEFAULT_MAX_BODY_BYTES = 1 << 20
@@ -153,52 +154,6 @@ def _make_http_serve(boot: Boot, port: int, *,
     return serve
 
 
-def _resolve_port(env: Mapping[str, str]) -> Optional[int]:
-    """Resolve the HTTP listen port: `$HIVE_HTTP_PORT` or the 8765 default. Returns None on a
-    malformed / out-of-range value (the caller maps that to EX_CONFIG) — a bad port must FAIL
-    FAST with an exit code, never raise out of the boot path (stdout is the protocol channel).
-    NEVER echoes the env value. // O(1)."""
-    raw = (env.get("HIVE_HTTP_PORT") or "").strip()
-    if not raw:
-        return _DEFAULT_HTTP_PORT
-    try:
-        port = int(raw)
-    except ValueError:
-        _log.error("entrypoint.invalid_http_port var=HIVE_HTTP_PORT code=%d", EX_CONFIG)
-        return None
-    if not 0 < port < 65536:
-        _log.error("entrypoint.http_port_out_of_range var=HIVE_HTTP_PORT code=%d", EX_CONFIG)
-        return None
-    return port
-
-
-def _resolve_rate_limit(env: Mapping[str, str]) -> Optional[tuple[int, float]]:
-    """Resolve the per-token throttle: `$HIVE_HTTP_RATE_LIMIT` requests (default 120;
-    `0` DISABLES — the AC4 escape hatch) per `$HIVE_HTTP_RATE_WINDOW_S` seconds (default
-    60). Returns None on a malformed/negative limit or a malformed/non-positive window
-    (the caller maps that to EX_CONFIG) — a typo'd knob must fail fast, never silently
-    weaken the belt. NEVER echoes the env value. // O(1)."""
-    raw_limit = (env.get("HIVE_HTTP_RATE_LIMIT") or "").strip()
-    try:
-        limit = int(raw_limit) if raw_limit else _DEFAULT_RATE_LIMIT
-    except ValueError:
-        _log.error("entrypoint.invalid_rate_limit var=HIVE_HTTP_RATE_LIMIT code=%d", EX_CONFIG)
-        return None
-    if limit < 0:
-        _log.error("entrypoint.invalid_rate_limit var=HIVE_HTTP_RATE_LIMIT code=%d", EX_CONFIG)
-        return None
-    raw_window = (env.get("HIVE_HTTP_RATE_WINDOW_S") or "").strip()
-    try:
-        window_s = float(raw_window) if raw_window else _DEFAULT_RATE_WINDOW_S
-    except ValueError:
-        _log.error("entrypoint.invalid_rate_window var=HIVE_HTTP_RATE_WINDOW_S code=%d", EX_CONFIG)
-        return None
-    if window_s <= 0:
-        _log.error("entrypoint.invalid_rate_window var=HIVE_HTTP_RATE_WINDOW_S code=%d", EX_CONFIG)
-        return None
-    return limit, window_s
-
-
 def _resolve_max_body(env: Mapping[str, str]) -> Optional[int]:
     """Resolve the request body cap: `$HIVE_HTTP_MAX_BODY_BYTES` (default 1 MiB). A
     zero/negative cap would reject EVERY body, so non-positive is malformed → None →
@@ -279,13 +234,6 @@ def main(argv: Optional[list[str]] = None, *, env: Optional[Mapping[str, str]] =
 
     # ── config.loaded (EX_CONFIG on Config validation failure) ──
     tenant_id, db_path, agent_id = _resolve_env(env)    # all default; tenant is a label, not required
-    port = _resolve_port(env)                           # malformed HIVE_HTTP_PORT → fail fast
-    if port is None:
-        return EX_CONFIG
-    rate = _resolve_rate_limit(env)                     # Part S knobs: same fail-fast discipline
-    if rate is None:
-        return EX_CONFIG
-    rate_limit, rate_window_s = rate
     max_body_bytes = _resolve_max_body(env)
     if max_body_bytes is None:
         return EX_CONFIG
@@ -304,10 +252,10 @@ def main(argv: Optional[list[str]] = None, *, env: Optional[Mapping[str, str]] =
         return EX_SOFTWARE
 
     # Default the serve step to the warm HTTP daemon (needs boot.token_store.verify, so it is
-    # built only after assembly). An injected `serve` (every unit test) takes precedence.
-    serve = serve or _make_http_serve(boot, port, rate_limit=rate_limit,
-                                      rate_window_s=rate_window_s,
-                                      max_body_bytes=max_body_bytes)
+    # built only after assembly). The listen port is fixed at 8765 (the compose host map, the
+    # ngrok forward, and `hive connect` all assume it); the rate-limit belt uses its fixed
+    # defaults. An injected `serve` (every unit test) takes precedence.
+    serve = serve or _make_http_serve(boot, _DEFAULT_HTTP_PORT, max_body_bytes=max_body_bytes)
 
     # Invalidate any STALE ready marker from a prior boot BEFORE migrate — a restarted
     # container (persistent volume + reused PID 1) must start red until THIS boot warms.
