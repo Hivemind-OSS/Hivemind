@@ -27,7 +27,7 @@ from tests.fakes._fakes import FakeWarmProvider
 def daemon(tmp_path):
     """(url, token, container). Process identity is 'process-default'; the token's label is
     'alice-laptop' — so attribution to the label (not the process default) is observable."""
-    cfg = Config.load(db_path=str(tmp_path / "shared.db"), toml_path=None)
+    cfg = Config.load(db_path=str(tmp_path / "shared.db"))
     c = build_container(cfg, tenant_id="default", agent_id="process-default",
                         embedder=FakeWarmProvider(d=256))
     c.warm_embedder()

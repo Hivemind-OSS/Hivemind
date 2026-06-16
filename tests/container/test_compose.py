@@ -119,16 +119,6 @@ def test_no_legacy_dead_keys():
     assert "HIVE_OBSERVABILITY__LOG_LEVEL" not in pairs
 
 
-# ── agent-config-tuning: the tunable file ─────────────────────────────────────
-def test_config_toml_is_mounted_and_present():
-    # the agent-tunable layer: a git-tracked file bind-mounted read-only at the path the
-    # entrypoint's Config.load reads by default (/data/hive.toml). Shipping it git-tracked
-    # is what stops Docker turning a missing source into a silent directory.
-    assert re.search(r"\./hive\.config\.toml:/data/hive\.toml:ro", _text()), \
-        "compose must bind-mount ./hive.config.toml:/data/hive.toml:ro"
-    assert (_ROOT / "hive.config.toml").is_file(), "hive.config.toml must exist at repo root"
-
-
 # ── the opt-in public tunnel (Part A) ─────────────────────────────────────────
 def _service_block(name: str) -> str:
     """The literal text of one 2-space-indented service block: from `  <name>:` until the

@@ -264,25 +264,3 @@ def test_default_run_forwards_stdin_input():
     # default_run forwards stdin to the child (the keyword-only `input=` seam)
     p = cli.default_run(["cat"], None, input="ndjson-line\n")
     assert p.returncode == 0 and p.stdout == "ndjson-line\n"
-
-
-# ── trends: the convergence-KPI read (exec → trendsctl, JSON forwarded) ──────────
-def test_trends_forwards_child_stdout():
-    report = '{"current": {"confident_rate": 0.5}, "previous": {}, "deltas": {}}\n'
-    fake = FakeRun(script=[(lambda a: seq_in(a, "python", "-m", "hive.tools.trendsctl"),
-                            proc(stdout=report))])
-    out = io.StringIO()
-    rc = cli.main(["trends"], run=fake, out=out, env=ENV)
-    assert rc == cli.EX_OK
-    assert out.getvalue() == report                          # JSON forwarded verbatim
-    assert any(seq_in(c, "exec", "-T", "hive-server", "python", "-m",
-                      "hive.tools.trendsctl") for c in fake.calls)   # exec'd in-container
-
-
-def test_trends_maps_child_failure_to_unavailable():
-    fake = FakeRun(script=[(lambda a: seq_in(a, "hive.tools.trendsctl"),
-                            proc(rc=1, stderr="boom"))])
-    out = io.StringIO()
-    rc = cli.main(["trends"], run=fake, out=out, env=ENV)
-    assert rc == cli.EX_UNAVAILABLE
-    assert out.getvalue() == ""                              # no JSON forwarded on failure

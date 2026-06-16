@@ -3,12 +3,10 @@ services:
   hive-server:
     build: { context: ., dockerfile: Dockerfile }
     image: hive:vmin
-    # ALL HIVE_* config is sourced from ONE file — .env (operator/startup knobs only; agent
-    # tuning knobs live in hive.config.toml). Disjoint by config.CONFIG_AUTHORITY: the loader
-    # applies operator knobs from env and agent knobs from the TOML, never both, so nothing is
-    # duplicated or overridden. Every key has a safe code default — set a key in .env only to
-    # override. `required: false` keeps compose parsing when .env is absent (the container then
-    # boots fully on defaults, tenant_id="default" included). See .env.example.
+    # ALL HIVE_* config is sourced from ONE file — .env. Every key has a safe code default
+    # (see hive/app/config.py), so .env carries only deliberate operator overrides.
+    # `required: false` keeps compose parsing when .env is absent (the container then boots
+    # fully on defaults, tenant_id="default" included). See .env.example.
     env_file:
       - path: .env
         required: false
@@ -18,7 +16,6 @@ services:
       TRANSFORMERS_OFFLINE: "1"
     volumes:
       - hive-data:/data
-      - ./hive.config.toml:/data/hive.toml:ro   # agent-tunable config layer (read-only into the container)
     # The warm daemon (PID 1) serves MCP over HTTP. The host mapping is LOOPBACK-ONLY: the
     # daemon binds 0.0.0.0 INSIDE the container (so the Docker port map can reach it), but the
     # host side is 127.0.0.1 only — never exposed beyond host-loopback (NOT "exposed to the

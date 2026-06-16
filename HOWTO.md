@@ -67,12 +67,10 @@ Offboard a seat any time: `hive revoke <seat>` → next request 401s.
 | Command | What it tells/does |
 |---|---|
 | `hive status` | server health, tunnel on/off + URL, seat count |
-| `hive trends` | convergence KPIs: current vs previous 14d window + deltas (JSON) |
 | `hive logs [svc]` | follow the daemon (or `ngrok`) logs |
 | `hive tokens` | provisioned seat labels (never the tokens) |
 | `hive revoke <seat>` | offboard a seat (next request → 401) |
 | `hive down` / `hive nuke` | stop (keep data) / destroy (typed confirm) |
 
-**Tuning the agent knobs:** `hive trends` is the observation surface for a config-tuning
-agent. The safe loop — which knobs are tunable, their bounds, and the guarantee firewall —
-is in [docs/TUNING-RUNBOOK.md](docs/TUNING-RUNBOOK.md).
+**Convergence KPIs:** call `hive_health(include_trends=true)` over MCP — current vs previous
+14d window + deltas, read-only off the warm store.

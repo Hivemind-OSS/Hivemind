@@ -1,9 +1,10 @@
 """M11 — the composition-root substrate: ONE frozen, fail-fast-validated Config
-resolved from a 4-layer precedence stack, plus the reload-tier state machine.
+resolved from a 3-layer precedence stack (group defaults < HIVE_* env < explicit overrides).
 
-The surface is narrow (`Config.load(...)` + `reload` + `diff_tier`); the depth is the
-whole layering + type-coercion + validation machine and the tier guard that refuses an
-unsafe hot-swap instead of silently corrupting a warm store.
+The surface is narrow (`Config.load(...)`); the depth is the whole layering +
+type-coercion + per-field validation machine. Config is applied only at boot (a full
+restart) — there is no live reload path. The hard per-field `__post_init__` validators are
+the guarantee floor: an out-of-range value still fails boot loudly.
 
 Boundary: this module WIRES, it does not COMPUTE. It depends on the registry only for
 *key membership* validation (lazy import — importing `config` never imports torch). It
@@ -25,17 +26,11 @@ import dataclasses
 import logging
 import math
 import os
-from dataclasses import dataclass, field, fields, is_dataclass
+from dataclasses import dataclass, fields
 from typing import Any, Mapping, Optional
-
-try:                                  # py311 stdlib; present per pyproject requires-python
-    import tomllib
-except ModuleNotFoundError:           # pragma: no cover - defensive
-    tomllib = None                    # type: ignore[assignment]
 
 _log = logging.getLogger("hive.config")
 
-_DEFAULT_TOML = "/data/hive.toml"
 _MEMORY_DB = ":memory:"
 _AUTHORITATIVE_BACKENDS = frozenset({"exhaustive"})
 
@@ -53,6 +48,8 @@ class RuntimeConfig:
 
 @dataclass(frozen=True)
 class GeometryConfig:
+    # Changing d or W_version needs a re-embed (reembed_from_text), not just a restart —
+    # the stored vectors were projected through the old geometry.
     d: int = 256
     W_version: int = 1
 
@@ -69,7 +66,7 @@ class EmbeddingConfig:
     # worse at every d, so the decision is encoded in code (the local_st adapter builds
     # PCA unconditionally), never offered as a choice an operator could mis-set.
     provider: str = "local_st"
-    model: str = "BAAI/bge-small-en-v1.5"
+    model: str = "BAAI/bge-small-en-v1.5"   # changing the model needs a re-embed, not just a restart
 
     def __post_init__(self) -> None:
         from hive.app.registry import EMBEDDING_PROVIDERS   # lazy — no torch at import
@@ -243,23 +240,19 @@ class Config:
         cls,
         db_path: str = _MEMORY_DB,
         *,
-        toml_path: Optional[str] = _DEFAULT_TOML,
         env: Optional[Mapping[str, str]] = None,
         **overrides: Mapping[str, Any],
     ) -> "Config":
-        """Resolve a frozen Config from group defaults < TOML < HIVE_*env < explicit overrides.
+        """Resolve a frozen Config from group defaults < HIVE_* env < explicit overrides.
 
         `db_path` (positional/kw) or `overrides["runtime"]["db_path"]` set the store path
-        (default `:memory:`). `toml_path=None` skips the file layer (used by tests).
-        Validation is fail-fast: the first illegal field raises `ValueError`.
+        (default `:memory:`). Validation is fail-fast: the first illegal field raises
+        `ValueError`.
         """
         env = os.environ if env is None else env
         # layer 1: per-group default kwargs
         merged: dict[str, dict[str, Any]] = {g: {} for g in _GROUP_TYPES}
-        # layer 2: TOML
-        if toml_path:
-            _apply_toml(merged, toml_path)
-        # layer 3: HIVE_<GROUP>__<FIELD> env
+        # layer 2: HIVE_<GROUP>__<FIELD> env
         _apply_env(merged, env)
         # layer 4: explicit overrides (per-group dicts). An unknown FIELD here is a typo in the
         # highest-precedence, most-explicit layer (e.g. recall={"H_frac_maxx": 0.4}) — fail fast
@@ -297,48 +290,9 @@ class Config:
 # ── load helpers ──────────────────────────────────────────────────────────────
 def _construct_group(group: str, vals: Mapping[str, Any]):
     typ = _GROUP_TYPES[group]
-    flds = {f.name: f for f in fields(typ)}
-    kwargs: dict[str, Any] = {}
-    for k, v in vals.items():
-        if k not in flds:
-            continue
-        # a TOML/override sequence (list) for a tuple-declared field is normalized to a tuple,
-        # so a frozen Config stays hashable and diff_tier compares like-for-like (env already
-        # coerces to tuple; this closes the TOML/override path).
-        if isinstance(v, list) and "tuple" in str(flds[k].type):
-            v = tuple(v)
-        kwargs[k] = v
+    flds = {f.name for f in fields(typ)}
+    kwargs = {k: v for k, v in vals.items() if k in flds}
     return typ(**kwargs)
-
-
-def _apply_toml(merged: dict[str, dict[str, Any]], toml_path: str) -> None:
-    if tomllib is None or not os.path.exists(toml_path):
-        _log.info("config.no_toml path=%s — env-only config", toml_path)
-        return
-    try:
-        with open(toml_path, "rb") as fh:
-            data = tomllib.load(fh)
-    except Exception as exc:                                  # noqa: BLE001 — never crash on bad TOML
-        _log.warning("config.toml_ignored path=%s reason=%s", toml_path, type(exc).__name__)
-        return
-    for group, vals in data.items():
-        if group in merged and isinstance(vals, dict):
-            known = {f.name for f in fields(_GROUP_TYPES[group])}
-            for k, v in vals.items():
-                if k not in known:
-                    _log.warning("config.toml_unknown_field field=%s.%s ignored", group, k)
-                    continue
-                # The tuning file may set ONLY agent-authority knobs. An operator/guarantee
-                # knob here is ignored (set those via env) — this is what makes the firewall
-                # structural: the agent's file cannot express a guarantee knob, so there is no
-                # override for env to win, just a partition with one source per knob.
-                if CONFIG_AUTHORITY.get(f"{group}.{k}") != "agent":
-                    _log.warning("config.toml_rejects_operator_field field=%s.%s ignored "
-                                 "(operator knobs are set via env, not the tuning file)", group, k)
-                    continue
-                merged[group][k] = v
-        else:
-            _log.warning("config.toml_unknown_group group=%s ignored", group)
 
 
 def _apply_env(merged: dict[str, dict[str, Any]], env: Mapping[str, str]) -> None:
@@ -362,13 +316,6 @@ def _apply_env(merged: dict[str, dict[str, Any]], env: Mapping[str, str]) -> Non
         fld = field_by_upper.get(field_tok.upper())
         if fld is None:
             _log.warning("config.env_unknown_field key=%s ignored", raw_key)
-            continue
-        # env (.env / compose) may set ONLY operator-authority knobs. An agent tuning knob in
-        # env is ignored (tune those in hive.config.toml) — keeps env and toml sourcing
-        # DISJOINT knob sets, so no layer ever overrides another for the same knob.
-        if CONFIG_AUTHORITY.get(f"{group}.{fld.name}") != "operator":
-            _log.warning("config.env_rejects_agent_field key=%s ignored "
-                         "(agent knobs are tuned via hive.config.toml, not env)", raw_key)
             continue
         try:
             merged[group][fld.name] = _coerce(raw_val, fld.type, fld.name)
@@ -396,243 +343,18 @@ def _coerce(value: str, decl: Any, field_name: str) -> Any:
         return int(value)
     if t is float:
         return float(value)
-    if t is tuple:                       # comma-separated list → tuple[str,...]
-        return tuple(s for s in (p.strip() for p in value.split(",")) if s)
     return value                         # str / Optional[str] / unknown → leave as string
 
 
 def _annotation_base(decl: Any) -> Any:
     """Resolve a string/forward annotation to a coercion base type (best-effort)."""
     s = str(decl)
-    if "int" in s and "tuple" not in s:
+    if "int" in s:
         return int
     if "float" in s:
         return float
     if "bool" in s:
         return bool
-    if "tuple" in s:
-        return tuple
     return str
 
 
-# ── reload tier state machine ─────────────────────────────────────────────────
-class TierViolation(RuntimeError):
-    """A reload that changes a tier-C (restart) or tier-D (re-embed/migration) field is
-    refused — applying it live would corrupt a warm store or silently diverge the index."""
-
-
-# RELOAD_TIER: "<group>.<field>" -> "A".."D". Greppable pure data. D=re-embed/migration,
-# C=restart, B=hot-swap, A=next-run. Strictest changed field governs.
-RELOAD_TIER: dict[str, str] = {
-    # D — changing these requires a re-embed / store migration
-    "geometry.d": "D",
-    "geometry.W_version": "D",
-    "embedding.model": "D",
-    # C — safe only across a process restart
-    "embedding.provider": "C",
-    "index.backend": "C",
-    "runtime.db_path": "C",
-    "runtime.tenant_id": "C",
-    "autonomy.enabled": "C",        # flips tool behavior + trigger wiring → restart
-    "recall.hybrid": "C",           # changes index wiring + the read path → restart
-    "recall.shadow": "C",           # changes serve output of an existing store → restart
-    "recall.drafts": "C",           # adds the self-quarantine read channel → restart
-    # B — hot-swappable live
-    "autonomy.demand_m": "B",
-    "autonomy.demand_window_days": "B",
-    "autonomy.demand_tau": "B",
-    "autonomy.competitor_tau": "B",
-    "autonomy.quarantine_ttl_days": "B",
-    "autonomy.provisional_ttl_days": "B",
-    "autonomy.survival_e": "B",
-    "autonomy.survival_days": "B",
-    "autonomy.survival_min_exposures": "B",
-    "autonomy.solo_mode": "B",
-    "autonomy.solo_min_span_days": "B",
-    "autonomy.contested_tau": "B",
-    "recall.shadow_tau": "B",
-    "recall.draft_tau": "B",        # the draft relevance floor — hot-swap like shadow_tau
-    "recall.H_frac_max": "B",
-    "recall.epsilon_explore": "B",
-    "recall.softmax_beta": "B",
-    "utility.f_min": "B",
-    "utility.f_max": "B",
-    # A — applied on next run (no restart, no migration)
-    "recall.recall_top_n": "A",
-    "utility.isolation_frac": "A",            # tier A
-    "utility.prediction_bias_window_s": "A",
-    "utility.prediction_bias_threshold": "A",
-    "retention.backup_keep": "A",
-    "retention.backup_dir": "A",
-    "obs.log_level": "A",
-    "obs.log_max_bytes": "A",
-    "obs.log_backup_count": "A",
-    "obs.log_file": "A",
-}
-
-_TIER_RANK = {"A": 0, "B": 1, "C": 2, "D": 3}
-_TIER_REMEDY = {
-    "C": "restart the server to apply this change",
-    "D": "bump geometry.W_version and run the re-embed migration",
-}
-
-
-def _flatten(cfg: Config) -> dict[str, Any]:
-    out: dict[str, Any] = {}
-    for f in fields(cfg):
-        group = getattr(cfg, f.name)
-        if is_dataclass(group):
-            for gf in fields(group):
-                out[f"{f.name}.{gf.name}"] = getattr(group, gf.name)
-    return out
-
-
-def diff_tier(old: Config, new: Config) -> str:
-    """The strictest reload tier among all changed fields. No change ⇒ "A" (loosest).
-    An unknown changed field is treated as "D" (conservative — refuse). // O(#fields)."""
-    of, nf = _flatten(old), _flatten(new)
-    strictest = "A"
-    for key in set(of) | set(nf):
-        if of.get(key) != nf.get(key):
-            tier = RELOAD_TIER.get(key, "D")
-            if _TIER_RANK[tier] > _TIER_RANK[strictest]:
-                strictest = tier
-    return strictest
-
-
-def reload(old: Config, new: Config) -> Config:
-    """Apply `new` iff every changed field is tier A/B (hot-swap/next-run safe); else raise
-    `TierViolation` naming the field, its tier, and the exact remediation."""
-    of, nf = _flatten(old), _flatten(new)
-    offenders: list[tuple[str, str]] = []
-    for key in set(of) | set(nf):
-        if of.get(key) != nf.get(key):
-            tier = RELOAD_TIER.get(key, "D")
-            if tier in ("C", "D"):
-                offenders.append((key, tier))
-    if offenders:
-        field_name, tier = sorted(offenders, key=lambda kv: -_TIER_RANK[kv[1]])[0]
-        remedy = _TIER_REMEDY[tier]
-        _log.warning("config.reload_refused field=%s tier=%s remedy=%s",
-                     field_name, tier, remedy)
-        raise TierViolation(
-            f"reload refused: {field_name} is tier {tier}; {remedy}")
-    return new
-
-
-# ── agent-config-tuning contract ───────────────────────────────────────────────
-# Greppable pure data (sibling of RELOAD_TIER), keyed "<group>.<field>". The loader
-# NEVER reads these — they are the machine-readable envelope a trusted tuning agent
-# consults before editing the TOML layer. The completeness/consistency invariants are
-# enforced in tests/config/test_config_authority.py.
-
-# The safety guarantees an autonomous tuning agent must NEVER move. Each is env-pinned
-# in compose.yaml (HIVE_* layer 3), so a value the agent writes in the TOML (layer 2)
-# is silently overridden at boot — the firewall is the precedence stack, not new code.
-# The compose-pin set == this set is locked by tests/container/test_compose.py.
-GUARANTEE_KNOBS: frozenset[str] = frozenset({
-    "recall.H_frac_max",        # the never-hallucinate entropy floor
-    "recall.epsilon_explore",   # guardrail-1: novel-memory exposure ε
-    "utility.isolation_frac",   # guardrail-2: held-out evaluation slice
-    "autonomy.enabled",         # the whole memory-lifecycle on/off switch
-})
-
-# Who may set each field. "operator": guarantees + boot/re-embed/wiring structure +
-# operational policy (backup, logging) that moves no convergence KPI. "agent": the
-# KPI-linked behavioral knobs a tuning loop hill-climbs. EVERY field appears here
-# (completeness-tested) so a future field cannot be silently un-governed.
-CONFIG_AUTHORITY: dict[str, str] = {
-    # operator — structure, identity, re-embed (changing these is not a tuning action)
-    "runtime.db_path": "operator",
-    "runtime.tenant_id": "operator",
-    "geometry.d": "operator",
-    "geometry.W_version": "operator",
-    "embedding.provider": "operator",
-    "embedding.model": "operator",
-    "index.backend": "operator",
-    # operator — the four guarantees (env-pinned firewall)
-    "recall.H_frac_max": "operator",
-    "recall.epsilon_explore": "operator",
-    "utility.isolation_frac": "operator",
-    "autonomy.enabled": "operator",
-    # operator — channel wiring that ships OFF and flips on evidence/restart, not tuning
-    "recall.hybrid": "operator",
-    "recall.shadow": "operator",
-    "recall.drafts": "operator",
-    # operator — anti-gaming (operator-set by design)
-    "autonomy.solo_mode": "operator",
-    # operator — operational policy (no convergence-KPI effect)
-    "retention.backup_keep": "operator",
-    "retention.backup_dir": "operator",
-    "obs.log_level": "operator",
-    "obs.log_max_bytes": "operator",
-    "obs.log_backup_count": "operator",
-    "obs.log_file": "operator",
-    # agent — the behavioral tuning surface
-    "recall.recall_top_n": "agent",
-    "recall.softmax_beta": "agent",
-    "recall.shadow_tau": "agent",
-    "recall.draft_tau": "agent",
-    "utility.prediction_bias_window_s": "agent",
-    "utility.prediction_bias_threshold": "agent",
-    "utility.f_min": "agent",
-    "utility.f_max": "agent",
-    "autonomy.demand_m": "agent",
-    "autonomy.demand_window_days": "agent",
-    "autonomy.demand_tau": "agent",
-    "autonomy.competitor_tau": "agent",
-    "autonomy.quarantine_ttl_days": "agent",
-    "autonomy.provisional_ttl_days": "agent",
-    "autonomy.survival_e": "agent",
-    "autonomy.survival_days": "agent",
-    "autonomy.survival_min_exposures": "agent",
-    "autonomy.solo_min_span_days": "agent",
-    "autonomy.contested_tau": "agent",
-}
-
-# Advisory tuning ranges — TIGHTER than each field's hard __post_init__ validator (the
-# real floor). No runtime enforcer: a trusted agent honors these; the hard validators +
-# the env-pin firewall are what actually protect the store. Provided ONLY for agent
-# knobs that are LIVE and worth tuning today; inert/operator-gated knobs are omitted on
-# purpose (see KPI_MOVED for why).
-SAFE_BOUNDS: dict[str, tuple[float, float]] = {
-    "recall.recall_top_n": (5, 20),
-    "recall.softmax_beta": (4.0, 32.0),
-    "autonomy.demand_m": (2, 6),
-    "autonomy.demand_window_days": (7, 28),
-    "autonomy.demand_tau": (0.60, 0.90),
-    "autonomy.competitor_tau": (0.75, 0.95),
-    "autonomy.quarantine_ttl_days": (7, 30),
-    "autonomy.provisional_ttl_days": (30, 90),
-    "autonomy.survival_e": (2, 5),
-    "autonomy.survival_days": (7, 28),
-    "autonomy.survival_min_exposures": (3, 12),
-    "autonomy.solo_min_span_days": (1, 7),
-    "autonomy.contested_tau": (0.70, 0.90),
-}
-
-# What each agent knob moves, in one line. TOTAL over the agent knobs (every one is
-# documented): live knobs name the trends KPI + direction; inert/gated knobs say so, so
-# the agent does not waste a window tuning a no-op. KPI *definitions* live in trends.py —
-# this only points at them, to stay un-stale.
-KPI_MOVED: dict[str, str] = {
-    "recall.recall_top_n": "est_tokens_served ↑ with n (more hits per confident recall); confident_rate ~flat above ~10",
-    "recall.softmax_beta": "confident_rate vs abstention sharpness: ↑β concentrates gate mass on the top hit (live recall gate)",
-    "recall.shadow_tau": "INERT unless operator sets recall.shadow=true (serve-time version shadowing, off by default)",
-    "recall.draft_tau": "INERT unless operator sets recall.drafts=true (self-quarantine resurfacing, off by default)",
-    "utility.prediction_bias_window_s": "INERT — no live consumer (the utility prediction-bias path is unwired)",
-    "utility.prediction_bias_threshold": "INERT — no live consumer (the utility prediction-bias path is unwired)",
-    "utility.f_min": "INERT on the live path (the Phase-1 utility surfacer is disabled)",
-    "utility.f_max": "INERT on the live path (the Phase-1 utility surfacer is disabled)",
-    "autonomy.demand_m": "n_promotions ↑ as m ↓ (fewer window misses required to promote)",
-    "autonomy.demand_window_days": "n_promotions: widens the miss-accrual window (also the demand-gap/trends window)",
-    "autonomy.demand_tau": "n_promotions ↑ as τ ↓ (looser miss↔candidate cosine match); too low → dead_capture_ratio ↑",
-    "autonomy.competitor_tau": "n_promotions ↓ as τ ↓ (a nearer servable row marks demand already answered, blocking promotion)",
-    "autonomy.quarantine_ttl_days": "dead_capture_ratio: a longer TTL gives captures more time to earn promotion before expiry",
-    "autonomy.provisional_ttl_days": "promotion durability: how long an established-but-unconfirmed row survives",
-    "autonomy.survival_e": "n_establishments ↓ as e ↑ (more distinct non-writer identities required)",
-    "autonomy.survival_days": "n_establishments ↓ as the required first-to-last exposure span grows",
-    "autonomy.survival_min_exposures": "n_establishments ↓ as more exposures are required to establish",
-    "autonomy.solo_min_span_days": "n_promotions in solo_mode ONLY (operator-gated): the elapsed-span demand threshold",
-    "autonomy.contested_tau": "tunes the contested-memory report (supersession-review queue) — not a convergence KPI directly",
-}

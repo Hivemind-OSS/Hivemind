@@ -1,14 +1,13 @@
-"""P1.9 — M11 Config: frozen 4-layer Config.load + fail-fast validation + env
-namespacing + reload-tier state machine.
+"""P1.9 — M11 Config: frozen Config.load (3-layer precedence) + fail-fast
+validation + env namespacing.
 
-Locked assertions for the config contract.
+Config is applied only at boot (a full restart) — there is no live reload path.
 
 Grounded deviations (built-decision-wins, documented in the deliverable):
 - ``db_path`` defaults to ``":memory:"`` (ephemeral, cannot corrupt a warm store) so a
-  no-db_path ``Config.load(...)`` succeeds; an EMPTY
-  string is the fail-fast trigger for ``test_db_path_required``. The "no silent default"
-  prose guards against silently corrupting a persistent store — ``":memory:"`` cannot.
-- ``utility.isolation_frac`` is tier **A**, not B.
+  no-db_path ``Config.load(...)`` succeeds; an EMPTY string is the fail-fast trigger for
+  ``test_db_path_required``. The "no silent default" prose guards a persistent store —
+  ``":memory:"`` cannot.
 """
 from __future__ import annotations
 
@@ -16,7 +15,7 @@ import dataclasses
 
 import pytest
 
-from hive.app.config import Config, TierViolation, diff_tier, reload
+from hive.app.config import Config
 
 
 # ── happy path / defaults ─────────────────────────────────────────────────────
@@ -41,7 +40,6 @@ def test_recall_epsilon_negative_rejected():
         Config.load(recall={"epsilon_explore": -0.1})
 
 
-# ── [A5] isolation fraction default ───────────────────────────────────────────
 def test_isolation_frac_default():
     cfg = Config.load(db_path=":memory:")
     assert cfg.utility.isolation_frac == 0.05
@@ -68,47 +66,27 @@ def test_env_noncoercible_value_skipped_with_warn(caplog):
     assert cfg.geometry.d == 256
 
 
-# ── 4-layer precedence ────────────────────────────────────────────────────────
-def test_layering_precedence(tmp_path):
-    # layer 4 (explicit) beats all; layers 2 and 3 cover DISJOINT knobs (agent↔toml,
-    # operator↔env), so no same-knob conflict can arise. recall_top_n is an AGENT knob set
-    # at toml + explicit; geometry.d is an OPERATOR knob set at env. Explicit wins over toml;
-    # the operator env value stands.
-    toml = tmp_path / "hive.toml"
-    toml.write_text("[recall]\nrecall_top_n = 11\n")        # agent knob, layer 2
-    env = {"HIVE_GEOMETRY__D": "384"}                       # operator knob, layer 3
-    cfg = Config.load(
-        db_path=":memory:", toml_path=str(toml), env=env,
-        recall={"recall_top_n": 13},                        # layer 4 (explicit) — wins over toml
-    )
-    assert cfg.recall.recall_top_n == 13                    # explicit beats toml
-    assert cfg.geometry.d == 384                            # operator env value applied
+# ── 3-layer precedence: defaults < HIVE_* env < explicit overrides ────────────
+def test_layering_precedence():
+    # explicit beats env; env beats the default.
+    env = {"HIVE_GEOMETRY__D": "384", "HIVE_RECALL__RECALL_TOP_N": "11"}
+    cfg = Config.load(db_path=":memory:", env=env, recall={"recall_top_n": 13})
+    assert cfg.recall.recall_top_n == 13   # explicit override beats env
+    assert cfg.geometry.d == 384           # env value applied (no explicit override)
 
 
-def test_toml_sets_only_agent_knobs_operator_ignored(tmp_path):
-    # the firewall, made structural by the layer partition: an OPERATOR/guarantee knob in
-    # the agent's tuning file is IGNORED (the agent's file cannot express it) — there is no
-    # override to resolve; the knob simply has no TOML source.
-    toml = tmp_path / "hive.toml"
-    toml.write_text("[recall]\nrecall_top_n = 7\nH_frac_max = 0.9\n")
-    cfg = Config.load(db_path=":memory:", toml_path=str(toml))
-    assert cfg.recall.recall_top_n == 7      # agent knob took
-    assert cfg.recall.H_frac_max == 0.5      # guarantee untouched by the tuning file
-
-
-def test_env_sets_only_operator_knobs_agent_ignored():
-    # the inverse partition rule: an AGENT tuning knob in env is IGNORED (tune it in the
-    # TOML, not .env) — so env and toml never both source the same knob.
-    env = {"HIVE_RECALL__H_FRAC_MAX": "0.4",      # operator — applied
-           "HIVE_RECALL__RECALL_TOP_N": "12"}     # agent — ignored
+def test_env_applies_every_knob():
+    # one source per knob (env only): every HIVE_<group>__<field> applies — no authority
+    # partition silently dropping a "wrong-layer" knob.
+    env = {"HIVE_RECALL__H_FRAC_MAX": "0.4", "HIVE_RECALL__RECALL_TOP_N": "12"}
     cfg = Config.load(db_path=":memory:", env=env)
-    assert cfg.recall.H_frac_max == 0.4           # operator knob took
-    assert cfg.recall.recall_top_n == 10          # agent knob untouched by env (stays default)
+    assert cfg.recall.H_frac_max == 0.4
+    assert cfg.recall.recall_top_n == 12
 
 
-def test_provider_field_routes_to_embedding_group(tmp_path):
-    # `provider` now lives only in the embedding group (producer.provider went with the
-    # producer strip); pin that the group-scoped env matcher routes it there, not elsewhere.
+def test_provider_field_routes_to_embedding_group():
+    # `provider` lives only in the embedding group; pin that the group-scoped env matcher
+    # routes it there, not elsewhere.
     cfg = Config.load(db_path=":memory:", env={"HIVE_EMBEDDING__PROVIDER": "local_st"})
     assert cfg.embedding.provider == "local_st"
 
@@ -117,27 +95,6 @@ def test_unknown_override_field_raises():
     # a typo in the highest-precedence layer must fail fast, not silently leave the floor default
     with pytest.raises(ValueError, match=r"H_frac_maxx|unknown config override"):
         Config.load(recall={"H_frac_maxx": 0.4})
-
-
-def test_layer2_only_agent_field_beats_default(tmp_path):
-    # a TOML-only AGENT knob overrides its code default (geometry.d is operator and would be
-    # ignored in the tuning file — use an agent knob to exercise the layer-2 apply path).
-    toml = tmp_path / "hive.toml"
-    toml.write_text("[recall]\nrecall_top_n = 7\n")
-    cfg = Config.load(db_path=":memory:", toml_path=str(toml))
-    assert cfg.recall.recall_top_n == 7
-
-
-def test_missing_toml_is_env_only(tmp_path):
-    cfg = Config.load(db_path=":memory:", toml_path=str(tmp_path / "absent.toml"))
-    assert cfg.geometry.d == 256  # no crash; defaults stand
-
-
-def test_malformed_toml_ignored_with_warn(tmp_path):
-    toml = tmp_path / "hive.toml"
-    toml.write_text("this is = = not valid toml [[[")
-    cfg = Config.load(db_path=":memory:", toml_path=str(toml))  # must not raise
-    assert cfg.geometry.d == 256
 
 
 # ── frozen on root AND nested groups ──────────────────────────────────────────
@@ -183,123 +140,19 @@ def test_backup_keep_at_least_one():
         Config.load(retention={"backup_keep": 0})
 
 
-# ── reload tier state machine ─────────────────────────────────────────────────
-def test_tier_A_hot_swap_allowed():
-    old = Config.load(db_path=":memory:")
-    new = Config.load(db_path=":memory:", retention={"backup_keep": 15})  # tier A
-    assert reload(old, new) is new
+# ── channel flags ship OFF by construction; env-coercible to ON ───────────────
+def test_recall_hybrid_defaults_off_env_coercible():
+    assert Config.load(db_path=":memory:").recall.hybrid is False
+    assert Config.load(db_path=":memory:", env={"HIVE_RECALL__HYBRID": "true"}).recall.hybrid is True
 
 
-def test_tier_B_hot_swap_allowed():
-    old = Config.load(db_path=":memory:")
-    new = Config.load(db_path=":memory:", recall={"H_frac_max": 0.4})     # tier B
-    assert reload(old, new) is new
+def test_recall_drafts_defaults_off_env_coercible():
+    assert Config.load(db_path=":memory:").recall.drafts is False
+    assert Config.load(db_path=":memory:", env={"HIVE_RECALL__DRAFTS": "true"}).recall.drafts is True
 
 
-def test_tier_C_restart_refused():
-    old = Config.load(db_path=":memory:")
-    # runtime.tenant_id is tier C (restart) — a live swap must be refused
-    newc = Config.load(db_path=":memory:", runtime={"tenant_id": "other"})
-    with pytest.raises(TierViolation, match=r"restart|tier C|tenant_id"):
-        reload(old, newc)
-
-
-def test_tier_D_migration_refused():
-    old = Config.load(db_path=":memory:")
-    newd = Config.load(db_path=":memory:", geometry={"d": 384})  # tier D
-    with pytest.raises(TierViolation, match=r"re-embed|migration|tier D|geometry\.d"):
-        reload(old, newd)
-
-
-def test_diff_tier_strictest_governs():
-    old = Config.load(db_path=":memory:")
-    # one tier-A change (backup_keep) AND one tier-D change (geometry.d)
-    new = Config.load(db_path=":memory:", retention={"backup_keep": 15}, geometry={"d": 384})
-    assert diff_tier(old, new) == "D"
-    # the SURFACED remediation must be the strictest offender's (tier-D re-embed), not the
-    # looser one — pins reload()'s offender-selection sort sign.
-    with pytest.raises(TierViolation, match=r"geometry\.d|re-embed|migration"):
-        reload(old, new)
-
-
-def test_mixed_C_and_D_surfaces_D_remedy():
-    old = Config.load(db_path=":memory:")
-    new = Config.load(db_path=":memory:", runtime={"tenant_id": "x"}, geometry={"d": 384})
-    assert diff_tier(old, new) == "D"
-    with pytest.raises(TierViolation, match=r"geometry\.d|re-embed|migration"):
-        reload(old, new)
-
-
-def test_isolation_frac_is_tier_A():
-    # [A5] locked: utility.isolation_frac is tier A (a B/C/D mistake would change reload semantics)
-    from hive.app.config import RELOAD_TIER
-    assert RELOAD_TIER["utility.isolation_frac"] == "A"
-    old = Config.load(db_path=":memory:")
-    new = Config.load(db_path=":memory:", utility={"isolation_frac": 0.10})
-    assert diff_tier(old, new) == "A"
-    assert reload(old, new) is new   # tier A ⇒ accepted
-
-
-def test_recall_hybrid_defaults_off_and_is_tier_C():
-    # hybrid ships OFF by construction — flipping the default is the live-risk
-    # mutation (the lexical channel must never activate without the CI evidence).
-    cfg = Config.load(db_path=":memory:")
-    assert cfg.recall.hybrid is False
-    # tier C: changes index wiring + the read path ⇒ restart, never a hot swap
-    from hive.app.config import RELOAD_TIER
-    assert RELOAD_TIER["recall.hybrid"] == "C"
-    new = Config.load(db_path=":memory:", recall={"hybrid": True})
-    assert new.recall.hybrid is True
-    assert diff_tier(cfg, new) == "C"
-    with pytest.raises(TierViolation, match=r"recall\.hybrid|tier C|restart"):
-        reload(cfg, new)
-
-
-def test_recall_hybrid_env_coercion():
-    # the operational activation path: HIVE_RECALL__HYBRID=true + restart
-    cfg = Config.load(db_path=":memory:", env={"HIVE_RECALL__HYBRID": "true"})
-    assert cfg.recall.hybrid is True
-
-
-def test_recall_drafts_defaults_off_and_is_tier_C():
-    # self-quarantine resurfacing ships OFF (a new read channel ships byte-inert);
-    # flipping it changes the read path ⇒ restart, never a hot swap.
-    cfg = Config.load(db_path=":memory:")
-    assert cfg.recall.drafts is False
-    from hive.app.config import RELOAD_TIER
-    assert RELOAD_TIER["recall.drafts"] == "C"
-    new = Config.load(db_path=":memory:", recall={"drafts": True})
-    assert new.recall.drafts is True
-    assert diff_tier(cfg, new) == "C"
-    with pytest.raises(TierViolation, match=r"recall\.drafts|tier C|restart"):
-        reload(cfg, new)
-
-
-def test_recall_draft_tau_default_and_hot_swappable():
-    # the relevance floor mirrors shadow_tau: default 0.6, tier B (hot-swap), so an
-    # operator can tune it live without a restart (and without a re-embed).
-    cfg = Config.load(db_path=":memory:")
-    assert cfg.recall.draft_tau == 0.6
-    from hive.app.config import RELOAD_TIER
-    assert RELOAD_TIER["recall.draft_tau"] == "B"
-    new = Config.load(db_path=":memory:", recall={"draft_tau": 0.8})
-    assert diff_tier(cfg, new) == "B"
-    assert reload(cfg, new) is new                         # tier B ⇒ accepted live
-
-
-def test_recall_draft_tau_validated_in_unit_interval():
+def test_recall_draft_tau_default_and_validated():
+    assert Config.load(db_path=":memory:").recall.draft_tau == 0.6
     for bad in (0.0, -0.1, 1.5, float("nan")):
         with pytest.raises(ValueError, match=r"recall\.draft_tau"):
             Config.load(recall={"draft_tau": bad})
-
-
-def test_recall_drafts_env_coercion():
-    cfg = Config.load(db_path=":memory:", env={"HIVE_RECALL__DRAFTS": "true"})
-    assert cfg.recall.drafts is True
-
-
-def test_diff_tier_no_change_is_A():
-    old = Config.load(db_path=":memory:")
-    new = Config.load(db_path=":memory:")
-    assert diff_tier(old, new) == "A"   # nothing changed ⇒ loosest ⇒ trivially reloadable
-    assert reload(old, new) is new

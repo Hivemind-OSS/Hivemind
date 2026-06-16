@@ -9,7 +9,7 @@ import math
 
 import pytest
 
-from hive.app.config import RELOAD_TIER, AutonomyConfig
+from hive.app.config import AutonomyConfig
 from hive.app.mcp_server import MCPRequest, ServerIdentity
 from hive.app.onboard import HOOK_MANIFEST, ONBOARDING_MANIFEST_VERSION
 from hive.app.tool_defs import TOOL_NAMES
@@ -239,7 +239,3 @@ def test_autonomy_config_validation_and_tiers():
         AutonomyConfig(demand_tau=math.nan)
     with pytest.raises(ValueError):
         AutonomyConfig(provisional_ttl_days=0)
-    assert RELOAD_TIER["autonomy.enabled"] == "C"   # flips wiring ⇒ restart
-    for f in ("demand_m", "demand_window_days", "demand_tau", "competitor_tau",
-              "quarantine_ttl_days", "provisional_ttl_days"):
-        assert RELOAD_TIER[f"autonomy.{f}"] == "B"  # hot-swappable knobs

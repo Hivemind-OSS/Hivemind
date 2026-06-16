@@ -20,7 +20,7 @@ from tests.fakes._fakes import FakeWarmProvider
 
 def _cfg(tmp_path=None, **over) -> Config:
     db = str(tmp_path / "shared.db") if tmp_path is not None else ":memory:"
-    return Config.load(db_path=db, toml_path=None, **over)
+    return Config.load(db_path=db, **over)
 
 
 def _build(tmp_path=None, *, embedder=None, **over) -> Container:

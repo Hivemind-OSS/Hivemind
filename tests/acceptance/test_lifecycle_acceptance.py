@@ -31,7 +31,7 @@ T0 = 10_000_000
 
 
 def _build(*, enabled: bool = True, t0: int = T0):
-    cfg = Config.load(db_path=":memory:", toml_path=None, env={},
+    cfg = Config.load(db_path=":memory:", env={},
                       geometry={"d": D},
                       autonomy={"enabled": enabled, "demand_m": 3,
                                 "demand_window_days": 14, "demand_tau": 0.75,

@@ -27,7 +27,7 @@ class _Embedder:
 
 
 def _cfg():
-    return Config.load(toml_path=None)
+    return Config.load()
 
 
 def test_health_snapshot_has_embedder_loaded_key():

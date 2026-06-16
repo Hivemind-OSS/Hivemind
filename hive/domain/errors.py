@@ -45,9 +45,5 @@ class ReembedError(HiveError):
     """A re-embed migration could not round-trip the store."""
 
 
-class TierViolation(HiveError):
-    """A config field was changed at a reload tier that forbids it."""
-
-
 class SqliteBusyExhausted(HiveError):
     """BEGIN IMMEDIATE retries were exhausted under contention."""

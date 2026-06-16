@@ -80,7 +80,7 @@ def build_acc(embedder, *, db_path: str = ":memory:", clock=None,
               warm: bool = True, **overrides) -> "object":
     """Build + boot a container on a fresh store with the REAL embedder injected. Returns the
     Container; ``migrate → build_index → warm_embedder`` already run when ``warm`` is True."""
-    cfg = Config.load(db_path=db_path, toml_path=None, **overrides)
+    cfg = Config.load(db_path=db_path, **overrides)
     c = build_container(cfg, tenant_id="acc-tenant", agent_id="acc-agent",
                         embedder=embedder, clock=clock)
     if warm:
