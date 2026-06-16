@@ -134,7 +134,7 @@ class _EvalService:
     runtime surfacer — it ranks arms itself)."""
 
     def __init__(self, *, embedder, d: int, h_frac_max: float, beta: float,
-                 recall_top_n: int, tenant: str = "lme", isolation_frac: float = 0.0,
+                 recall_top_n: int, tenant: str = "lme",
                  surfacer_enabled: bool = False, epsilon_explore: float = 0.1,
                  f_min: float = 0.5, f_max: float = 1.5, db_path: str = ":memory:") -> None:
         import random
@@ -142,9 +142,9 @@ class _EvalService:
         self._conn = conn
         self.tenant = str(tenant)
         self.embedder = embedder
-        self.util = SqliteUtilityStore(conn)                       # FIRST (isolation stamp seam)
+        self.util = SqliteUtilityStore(conn)
         self.index = ExhaustiveCosineIndex(int(d))
-        self.store = SqliteEpisodeStore(conn, self.index, isolation_frac=isolation_frac)
+        self.store = SqliteEpisodeStore(conn, self.index)
         gate = NormalizedEntropyGate(float(h_frac_max), float(beta))
         surfacer = UtilitySurfacer(
             enabled=surfacer_enabled, epsilon_explore=epsilon_explore,

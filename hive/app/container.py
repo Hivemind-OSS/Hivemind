@@ -15,11 +15,6 @@ The ``Boot`` contract (consumed by ``hive.tools.entrypoint``):
     build_index()       — warm the in-RAM index from the store's approved-only rows
     warm_embedder()     — load the model + freeze the head (resident) — EX_UNAVAILABLE
     make_server()       — assemble the HiveMCPServer (embedder resident)
-
-Critical ordering (made structural here, not hoped-for): ``SqliteUtilityStore(conn)`` is
-constructed BEFORE ``SqliteEpisodeStore(conn, isolation_frac=...)`` because the episode
-store fails fast if the co-located ``utility`` table is absent when guardrail-2 is on
-(the held-out slice must be stampable atomically at approve()).
 """
 from __future__ import annotations
 
@@ -196,10 +191,9 @@ def build_container(cfg: Config, *, tenant_id: str, agent_id: str,
     deferred to ``warm_embedder``; here we only open the DB, apply schema, and wire."""
     conn = connect(cfg.db_path, check_same_thread=False)   # shared across HTTP handler threads (lock-serialized)
     index = registry.build_index(cfg)
-    # ORDER: utility store first (creates the `utility` table) so the episode store's
-    # guardrail-2 fail-fast (isolation_frac > 0 requires that table) is satisfied.
+    # the utility store creates the `utility` table the Phase-1-disabled surfacer reads.
     utility_store = SqliteUtilityStore(conn)
-    store = SqliteEpisodeStore(conn, index=index, isolation_frac=cfg.utility.isolation_frac)
+    store = SqliteEpisodeStore(conn, index=index)
     # hybrid recall needs the store's FTS5 mirror: a stripped SQLite degrades
     # silently while hybrid is off, but with hybrid ON it must fail at boot —
     # never serve dense-only while claiming the lexical channel is live.

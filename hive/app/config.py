@@ -122,7 +122,6 @@ class RecallConfig:
 
 @dataclass(frozen=True)
 class UtilityConfig:
-    isolation_frac: float = 0.05         # [A5] guardrail-2 held-out slice (tier A)
     prediction_bias_window_s: int = 604800
     prediction_bias_threshold: float = 0.25
     # utility→weight factor bounds — INERT on the live path (Phase-1 surfacer is
@@ -131,9 +130,6 @@ class UtilityConfig:
     f_max: float = 1.5
 
     def __post_init__(self) -> None:
-        if not (0.0 <= self.isolation_frac < 1.0):
-            raise ValueError(
-                f"utility.isolation_frac must be in [0.0, 1.0) (got {self.isolation_frac})")
         if self.prediction_bias_window_s <= 0:
             raise ValueError(
                 f"utility.prediction_bias_window_s must be > 0 (got {self.prediction_bias_window_s})")

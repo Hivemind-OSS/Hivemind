@@ -11,7 +11,6 @@ Episode-CRUD / admission is below.
 """
 from __future__ import annotations
 
-import hashlib
 import json
 import logging
 import re
@@ -40,24 +39,6 @@ _RECALL_PREDICATE = "status='approved' AND value IS NOT NULL"
 # "no clock" sentinel for the fail-closed scan_approved() alias: with now pushed to
 # the far future, a provisional row can never prove freshness ⇒ established-only.
 _FAR_FUTURE = 1 << 62
-
-# Sentinel family for episode-level held-out membership (guardrail-2, A5). Isolation
-# is per-EPISODE, but the utility table is keyed (episode_id, family_scope); we stamp
-# under "*" — a value no real family ("repo|lang|workflow") can collide with, so
-# utility_map(<real family>) never sees it while isolation_episode_ids() (WHERE
-# isolation=1, family-agnostic) does.
-_ISOLATION_FAMILY = "*"
-
-
-def _is_isolation(episode_id: int, isolation_frac: float) -> bool:
-    """The SINGLE deterministic held-out predicate (guardrail-2, A5): a hash-stable
-    ~isolation_frac slice of episode ids. Idempotent (same boolean every call — no RNG),
-    stable across restarts (pure function of the id), O(1). digest()[:7] = 56 bits ⇒
-    h/2^56 ∈ [0,1); the slice never reweights, so the loop can't self-confirm on it."""
-    if isolation_frac <= 0.0:
-        return False
-    h = int.from_bytes(hashlib.sha256(str(episode_id).encode()).digest()[:7], "big")
-    return (h / float(1 << 56)) < isolation_frac
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS blobs(
@@ -112,11 +93,9 @@ CREATE INDEX IF NOT EXISTS idx_evidence_episode ON evidence_events(episode_id, k
 
 
 class SqliteEpisodeStore:
-    def __init__(self, conn: sqlite3.Connection, index=None, *,
-                 isolation_frac: float = 0.0) -> None:
+    def __init__(self, conn: sqlite3.Connection, index=None) -> None:
         self.conn = conn
         self.index = index            # MutableVectorIndex (warm cache); None in ledger-only tests
-        self._isolation_frac = isolation_frac   # guardrail-2 (A5) held-out slice; 0.0 ⇒ off
         # No in-place migration path exists — this build starts from a clean, empty
         # store (prior-format memories are not carried over). CREATE IF NOT EXISTS
         # would leave an old-format episodes table untouched (and the trust-index DDL
@@ -149,22 +128,6 @@ class SqliteEpisodeStore:
         except sqlite3.OperationalError:
             _log.warning("store.fts5_unavailable — lexical channel disabled")
             self.fts_enabled = False
-        if isolation_frac > 0.0:
-            # guardrail-2 (A5) stamps held-out membership into the co-located utility
-            # table at approve(); that table is owned by SqliteUtilityStore. FAIL FAST +
-            # LOUD here if it is absent (construct SqliteUtilityStore(conn) FIRST), rather
-            # than letting the first held-out approval crash on a cryptic OperationalError
-            # — a silent stamp failure would leave the held-out slice UNWRITTEN and credit
-            # episodes the guardrail is meant to hold out (the guardrail broken invisibly).
-            if conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='utility'"
-                            ).fetchone() is None:
-                _log.error("store.isolation_misconfigured: isolation_frac=%s but no utility "
-                           "table on this connection", isolation_frac)
-                raise ValueError(
-                    f"isolation_frac={isolation_frac} requires the utility table on this "
-                    "connection — construct SqliteUtilityStore(conn) before "
-                    "SqliteEpisodeStore(conn, isolation_frac=...) so guardrail-2 membership "
-                    "can be stamped atomically at approve().")
 
     @contextmanager
     def transaction(self) -> Iterator[None]:
@@ -216,15 +179,6 @@ class SqliteEpisodeStore:
                 "WHERE id=? AND version=? AND status='pending'",
                 (approver, approved_ts, vbytes, trust, last_active_ts,
                  episode_id, expected_version)).rowcount
-            if n == 1 and _is_isolation(episode_id, self._isolation_frac):
-                # guardrail-2 (A5): the SINGLE writer of isolation membership. Stamp the
-                # held-out flag ATOMICALLY with the materialization flip — same tx,
-                # co-located utility table [A7] — so a materialized episode can never be
-                # left un-stamped (the held-out slice is decided exactly once).
-                self.conn.execute(
-                    "INSERT INTO utility(episode_id, family_scope, isolation) VALUES(?,?,1) "
-                    "ON CONFLICT(episode_id, family_scope) DO UPDATE SET isolation=1",
-                    (episode_id, _ISOLATION_FAMILY))
             # lexical mirror, same tx as the flip (unlike the best-effort dense cache,
             # the FTS rows are durable — they must move with the trust state or never):
             # a quarantined complete stays absent, exactly like the dense index.

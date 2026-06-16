@@ -40,11 +40,6 @@ def test_recall_epsilon_negative_rejected():
         Config.load(recall={"epsilon_explore": -0.1})
 
 
-def test_isolation_frac_default():
-    cfg = Config.load(db_path=":memory:")
-    assert cfg.utility.isolation_frac == 0.05
-
-
 # ── env namespacing closes the CORTEX_D collision ─────────────────────────────
 def test_env_namespacing_no_collision():
     env = {"HIVE_RECALL__H_FRAC_MAX": "0.4", "HIVE_GEOMETRY__D": "384"}
@@ -95,6 +90,12 @@ def test_unknown_override_field_raises():
     # a typo in the highest-precedence layer must fail fast, not silently leave the floor default
     with pytest.raises(ValueError, match=r"H_frac_maxx|unknown config override"):
         Config.load(recall={"H_frac_maxx": 0.4})
+
+
+def test_isolation_frac_is_cut():
+    # the held-out-eval slice (guardrail-2) was cut: utility.isolation_frac no longer exists.
+    with pytest.raises(ValueError, match=r"isolation_frac|unknown config override"):
+        Config.load(utility={"isolation_frac": 0.05})
 
 
 # ── frozen on root AND nested groups ──────────────────────────────────────────

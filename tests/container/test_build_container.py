@@ -139,16 +139,6 @@ def test_make_server_round_trips_write_recall():
     assert any(h["text"] == text for h in r["reference_context"])
 
 
-# ── the load-bearing ctor ORDER (guardrail-2 isolation table) ─────────────────
-def test_isolation_frac_on_builds_clean_utility_table_first():
-    """isolation_frac > 0 requires the `utility` table to exist when SqliteEpisodeStore is
-    constructed; build_container builds SqliteUtilityStore FIRST, so this must NOT raise.
-    Swapping the order (deliberate mutation) makes this red with the guardrail-2 fail-fast."""
-    c = build_container(_cfg(utility={"isolation_frac": 0.5}),
-                        tenant_id="t1", agent_id="a1", embedder=FakeWarmProvider(d=256))
-    assert c.store._isolation_frac == 0.5
-
-
 def test_d_mismatch_fails_fast():
     """An embedder whose projection dim disagrees with geometry.d is a wiring error caught
     at construction, never a garbage search at first recall."""
