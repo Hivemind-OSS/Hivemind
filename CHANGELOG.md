@@ -33,7 +33,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   refresh the served rows' liveness clock in the same transaction.
 - Recall hits carry `trust` + `ts`; `hive_health` adds `trust_counts`, `n_misses_7d`,
   and `include_gaps` (clustered demand-gap report).
-- `autonomy` config group (`enabled` restart-tier; demand/TTL knobs hot-swappable).
+- `autonomy` config group (`enabled` + demand / TTL / survival / solo knobs); like all
+  config it is resolved at boot — there is no live reload (tune via `.env` then `hive up`).
 ### Changed
 - Convergence KPI window narrowed 14d → 7d (`trends.WINDOW_DAYS`): current vs previous
   one-week windows over the warm store.
