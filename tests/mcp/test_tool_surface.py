@@ -54,6 +54,19 @@ def test_health_description_carries_onboarding_reference():
     assert pong.result == {} and pong.error is None
 
 
+def test_initialize_carries_server_instructions():
+    """The foolproof delivery channel: the MCP ``initialize`` result carries the usage
+    contract in ``instructions`` (the spec field every client surfaces at connect), so a
+    connecting agent learns how to use the memory WITHOUT calling any tool. Dropping the
+    field strands every agent that doesn't read tool descriptions."""
+    server, _ = build_real_server()
+    instr = server.handle(MCPRequest(1, "initialize", {})).result.get("instructions", "")
+    assert isinstance(instr, str) and instr                      # present + non-empty
+    # the three load-bearing verbs + the human-approval gate reach the agent up front
+    assert "hive_recall" in instr and "hive_capture" in instr and "hive_write" in instr
+    assert "approved_by" in instr
+
+
 def test_unknown_method_is_jsonrpc_error():
     server, _ = build_real_server()
     resp = server.handle(MCPRequest(1, "frobnicate", {}))

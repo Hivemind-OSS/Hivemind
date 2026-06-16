@@ -38,6 +38,7 @@ from dataclasses import dataclass
 from typing import Any, Callable, Mapping, Optional
 
 from hive.app.gaps import cluster_misses, contested_misses
+from hive.app.onboard_ref import SERVER_INSTRUCTIONS
 from hive.app.trends import compute_trends
 from hive.app.tool_defs import TOOL_DEFINITIONS
 from hive.domain.errors import SecretRefused
@@ -207,7 +208,9 @@ class HiveMCPServer:
             return MCPResponse(id=req.id, result={
                 "protocolVersion": MCP_VERSION,
                 "capabilities": {"tools": {"listChanged": False}},
-                "serverInfo": {"name": SERVER_NAME, "version": SERVER_VERSION}})
+                "serverInfo": {"name": SERVER_NAME, "version": SERVER_VERSION},
+                # the spec-canonical usage contract every client surfaces at connect (M2 channel)
+                "instructions": SERVER_INSTRUCTIONS})
         if req.method == "tools/list":
             return MCPResponse(id=req.id, result={"tools": TOOL_DEFINITIONS})
         if req.method == "tools/call":
