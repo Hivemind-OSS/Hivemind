@@ -326,3 +326,23 @@ def test_backup_maps_child_failure_to_unavailable():
                             proc(rc=1, stderr="boom"))])
     rc = cli.main(["backup"], run=fake, out=io.StringIO(), env=ENV)
     assert rc == cli.EX_UNAVAILABLE
+
+
+# ── health: KPI trends off the warm store (exec → healthcheck --trends) ─────────
+def test_health_execs_healthcheck_trends():
+    report = '{"ok": true, "trends": {"current": {}, "previous": {}, "deltas": {}}}\n'
+    fake = FakeRun(script=[(lambda a: seq_in(a, "python", "-m", "hive.tools.healthcheck",
+                                             "--trends"), proc(stdout=report))])
+    out = io.StringIO()
+    rc = cli.main(["health"], run=fake, out=out, env=ENV)
+    assert rc == cli.EX_OK
+    assert out.getvalue() == report                          # KPI JSON forwarded verbatim
+    assert any(seq_in(c, "exec", "-T", "hive-server", "python", "-m",
+                      "hive.tools.healthcheck", "--trends") for c in fake.calls)
+
+
+def test_health_maps_child_failure_to_unavailable():
+    fake = FakeRun(script=[(lambda a: seq_in(a, "hive.tools.healthcheck"),
+                            proc(rc=1, stderr="boom"))])
+    rc = cli.main(["health"], run=fake, out=io.StringIO(), env=ENV)
+    assert rc == cli.EX_UNAVAILABLE

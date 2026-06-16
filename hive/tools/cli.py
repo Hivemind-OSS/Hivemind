@@ -266,11 +266,26 @@ def _backup(args, *, run: Run, out: TextIO, env: Mapping[str, str], ask) -> int:
     return EX_OK
 
 
+def _health(args, *, run: Run, out: TextIO, env: Mapping[str, str], ask) -> int:
+    """Print the convergence KPI snapshot (+ trends) off the warm store — exec the
+    in-container healthcheck in report mode and forward its JSON. Read-only and needs no
+    MCP seat. Gaps/contested stay on hive_health over MCP (they need the live servable
+    index, which a read-only host-side read cannot build)."""
+    child = run(_compose("exec", "-T", SERVICE, "python", "-m",
+                         "hive.tools.healthcheck", "--trends"), env)
+    if child.returncode != 0:
+        sys.stderr.write(child.stderr or "")
+        return EX_UNAVAILABLE
+    out.write(child.stdout or "")                       # the KPI JSON, verbatim
+    return EX_OK
+
+
 _HANDLERS: dict[str, Callable[..., int]] = {
     "up": _up,
     "down": _down,
     "logs": _logs,
     "backup": _backup,
+    "health": _health,
     "nuke": _nuke,
     "status": _status,
     "token": _token,
@@ -313,6 +328,8 @@ def main(argv: Optional[list[str]] = None, *, run: Optional[Run] = None,
                         help=f"compose service (e.g. {SERVICE}, ngrok)")
     sub.add_parser("nuke", help="DESTROY the stack incl. the data volume (asks to confirm)")
     sub.add_parser("backup", help="snapshot the store now (manual; keeps the backup_keep most-recent you take)")
+    sub.add_parser("health", help="convergence KPI trends off the warm store "
+                                  "(gaps/contested: hive_health over MCP)")
     sub.add_parser("status", help="server health, tunnel state + URL, seat count")
     p_token = sub.add_parser("token", help="mint a per-seat token (printed ONCE to stdout)")
     p_token.add_argument("seat", help="agent-seat identity, e.g. alice-laptop (one per seat)")
