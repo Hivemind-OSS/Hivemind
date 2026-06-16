@@ -66,6 +66,20 @@ def test_windows_partition_correctly():
     assert total == 3                                         # nothing dropped/doubled
 
 
+def test_window_is_one_week():
+    # the KPI window is ONE week: current (now−7d, now], previous (now−14d, now−7d].
+    # literal day offsets pin the 7-day semantics (a revert to 14 reds this — the
+    # −8d miss would fall into `current` and the −15d miss into `previous`).
+    s = _store()
+    s.record_miss("recent", U.tobytes(), "a", "no_match", ts=NOW - 6 * DAY)   # → current
+    s.record_miss("prior", U.tobytes(), "a", "no_match", ts=NOW - 8 * DAY)    # → previous
+    s.record_miss("stale", U.tobytes(), "a", "no_match", ts=NOW - 15 * DAY)   # → neither
+    out = _trends(s)
+    assert out["current"]["misses_no_match"] == 1
+    assert out["previous"]["misses_no_match"] == 1
+    assert out["current"]["misses_no_match"] + out["previous"]["misses_no_match"] == 2
+
+
 # ── the demand-entropy KPI ─────────────────────────────────────────────────────
 def test_demand_entropy_bounds():
     assert demand_entropy([]) == 0.0                          # no clusters

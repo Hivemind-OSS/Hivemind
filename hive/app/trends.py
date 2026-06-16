@@ -1,7 +1,7 @@
 """Convergence trends for ``hive_health(include_trends=true)`` — CV4.
 
 Lazy SQL over the EXISTING tables (exposure, recall_misses, episodes,
-evidence_events), two fixed windows (current 14d vs previous 14d), computed at
+evidence_events), two fixed windows (current 7d vs previous 7d), computed at
 report time only: no new table, no scheduler, no write-path change. App-side
 like ``gaps.py``; the store's connection is read directly (this module is the
 one consumer of cross-table windowed aggregates — pushing six one-off methods
@@ -14,7 +14,7 @@ writing junk). These are COVERAGE proxies — outcome ground truth is the credit
 scan's job (CV6), not this report's.
 
 Window semantics: half-open ``(lo, hi]`` — an event exactly at the boundary
-``now − 14d`` belongs to the PREVIOUS window, so the two windows partition.
+``now − 7d`` belongs to the PREVIOUS window, so the two windows partition.
 """
 from __future__ import annotations
 
@@ -27,7 +27,7 @@ from typing import Callable, Optional, Sequence
 import numpy as np
 
 _DAY_S = 86_400
-WINDOW_DAYS = 14
+WINDOW_DAYS = 7
 
 
 @dataclass(frozen=True)
@@ -63,8 +63,8 @@ def demand_entropy(cluster_masses: Sequence[int]) -> float:
 
 def compute_trends(store, gaps_clusterer: Callable[[list], list[dict]], *,
                    now: int) -> dict:
-    """``{"current", "previous", "deltas"}`` — current ``(now−14d, now]`` vs
-    previous ``(now−28d, now−14d]``. ``gaps_clusterer`` is the existing miss
+    """``{"current", "previous", "deltas"}`` — current ``(now−7d, now]`` vs
+    previous ``(now−14d, now−7d]``. ``gaps_clusterer`` is the existing miss
     clustering (rows → cluster dicts with ``miss_count``), injected so the
     entropy composes the SAME neighborhoods the gap report and the demand rule
     see (window caps reused — the clusterer's top-N is the entropy's support).

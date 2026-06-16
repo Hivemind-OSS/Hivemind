@@ -54,7 +54,7 @@ TOOL_DEFINITIONS: list[dict] = [
                     "include_gaps=true adds the clustered demand-gap report + the "
                     "contested-memory report (servable rows recent misses cluster "
                     "against — the supersession-review queue). include_trends=true "
-                    "adds current-vs-previous 14d convergence trends (confident "
+                    "adds current-vs-previous 7d convergence trends (confident "
                     "rate, demand entropy, promotions, dead-capture ratio). "
                     "embedder_loaded reports whether this process's embedder is resident "
                     "(the container HEALTHCHECK is a separate process reading boot markers)."

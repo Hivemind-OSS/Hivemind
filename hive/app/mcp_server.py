@@ -426,7 +426,7 @@ class HiveMCPServer:
             return []
 
     def _trends_report(self) -> dict:
-        """CV4: current-vs-previous 14d windows over existing tables — the
+        """CV4: current-vs-previous 7d windows over existing tables — the
         convergence KPI (confident_rate ↑, demand_entropy ↓, dead_capture_ratio
         bounded). Composes the gaps clustering; degrades to {} on a fault."""
         try:

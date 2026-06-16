@@ -79,4 +79,5 @@ Offboard a seat any time: `hive revoke <seat>` → next request 401s.
 | `hive down` / `hive nuke` | stop (keep data) / destroy (typed confirm) |
 
 **Convergence KPIs:** call `hive_health(include_trends=true)` over MCP — current vs previous
-14d window + deltas, read-only off the warm store.
+7d window + deltas, read-only off the warm store. Host-side: `hive health` prints the same
+trends off the warm store (no MCP seat needed).
