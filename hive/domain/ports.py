@@ -2,9 +2,8 @@
 axis is an adapter behind one of these. runtime_checkable so fakes can be
 isinstance-checked in tests. Method bodies are ``...`` — contracts only.
 
-Slice scope (Phase 0): the methods the trace↔outcome join touches are pinned
-here; episode-CRUD/admission methods are ADDED to EpisodeStore in Phase 1
-(the Protocol grows; the swap seam does not move).
+Episode-CRUD/admission methods live on the concrete EpisodeStore adapter; this port
+pins the swap-seam contract only (the swap seam does not move as the adapter grows).
 """
 from __future__ import annotations
 
@@ -86,11 +85,10 @@ class QuarantineReader(Protocol):
 
 @runtime_checkable
 class EpisodeStore(Protocol):
-    """The durable single-writer store. The Phase-0 trace↔outcome state machine was
-    removed with the producer; its tables now have new drivers — exposure via the
-    recall side-channel, task_outcomes via the host-side credit ingest (one settled
-    win/loss row per (commit_sha, episode_id)). The slice contract is the transaction
-    lane + the meta kv; episode CRUD / admission live on the concrete adapter."""
+    """The durable single-writer store. The exposure table is the recall side-channel
+    (record_exposure / record_miss) — the demand signal that drives promotion. The slice
+    contract is the transaction lane + the meta kv; episode CRUD / admission live on the
+    concrete adapter."""
     def transaction(self): ...                              # contextmanager: the single-writer tick lane
     # meta kv (watermark / link records / readiness markers)
     def meta_get(self, key: str) -> Optional[str]: ...

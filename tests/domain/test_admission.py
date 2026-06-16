@@ -178,7 +178,10 @@ def test_admission_touches_no_loop_tables():
     _write(svc, "boundary check")
     _write(svc, "second boundary check")
     assert _count(store, "exposure") == 0
-    assert _count(store, "task_outcomes") == 0
+    # task_outcomes was dropped with the credit subsystem — the table no longer exists
+    assert store.conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='task_outcomes'"
+    ).fetchone() is None
 
 
 # ═══ autonomous capture (quarantine path) + human supersession ═════════════════

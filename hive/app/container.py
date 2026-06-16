@@ -47,7 +47,7 @@ _HEAD_WVER_KEY = "embedding:head:w_version"
 # The tables migrate() asserts are present — a missing one is a botched migration (EX_SOFTWARE),
 # caught at boot rather than at first recall.
 _REQUIRED_TABLES = frozenset({
-    "blobs", "episodes", "exposure", "task_outcomes", "meta",
+    "blobs", "episodes", "exposure", "meta",
     "recall_misses", "evidence_events",
 })
 
