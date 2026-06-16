@@ -152,8 +152,7 @@ class Container:
             admission=self.admission, recall=self.recall, store=self.store,
             embedder=self.embedder, install_planner=self.install_planner,
             identity=self.identity, now=self.clock.now, started_ts=self.started_ts,
-            db_path=db_path, trailer_key=self.cfg.producer.stamp_trailer,
-            autonomy=self.cfg.autonomy)
+            db_path=db_path, autonomy=self.cfg.autonomy)
 
     # ── convenience surfaces (health probe + clean shutdown) ──────────────────────
     def health(self, *, repo_path: Optional[str] = None):
@@ -268,8 +267,7 @@ def build_container(cfg: Config, *, tenant_id: str, agent_id: str,
     admission = AdmissionService(store, scanner, embedder, now=clock.now,
                                  lifecycle=lifecycle, autonomy_enabled=aut.enabled)
 
-    install_planner = InstallPlanner(
-        store, stamp_trailer=cfg.producer.stamp_trailer, block_version=2)
+    install_planner = InstallPlanner(store, block_version=2)
     identity = ServerIdentity(tenant_id=tenant_id, agent_id=agent_id)
 
     _log.info("container.assembled tenant_id=%s db_path=%s d=%d backend=%s provider=%s "

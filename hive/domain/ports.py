@@ -141,8 +141,7 @@ class SecretScanner(Protocol):
 @runtime_checkable
 class InstallPlanner(Protocol):
     """The M07 hive_init handshake the MCP surface drives. ``plan`` is phase-1
-    (zero writes — renders the rules block, sources ``trailer_key`` single-origin
-    from ``producer.stamp_trailer``); ``confirm`` is the phase-2 hash-verified link.
+    (zero writes — renders the rules block); ``confirm`` is the phase-2 hash-verified link.
     M06 depends only on this port; the concrete InstallPlanner adapter is M07 [B10]."""
     def plan(self, repo_path: str, harness: str,
              rules_file: "Optional[str]" = None) -> "InstallPlanLike": ...

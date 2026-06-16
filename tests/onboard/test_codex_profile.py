@@ -12,7 +12,7 @@ from hive.domain.models import TIER_RULES
 
 def test_codex_profile_round_trips(tmp_path):
     store = SqliteEpisodeStore(connect(":memory:"))
-    planner = InstallPlanner(store, stamp_trailer="Hive-Trace")
+    planner = InstallPlanner(store)
     plan = planner.plan(str(tmp_path), "codex")               # phase 1
     assert plan.harness == "codex"
     assert plan.rules_file == "AGENTS.md"                     # codex create-default

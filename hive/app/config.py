@@ -10,8 +10,7 @@ Boundary: this module WIRES, it does not COMPUTE. It depends on the registry onl
 never reaches into `core/` domain logic.
 
 Grounded deviations (built-decision-wins):
-- `recall.epsilon_explore > 0` is THE validated guardrail-1 floor [A4]; the reference's
-  misplaced `producer.epsilon_explore` is DELETED (producer has no such field).
+- `recall.epsilon_explore > 0` is THE validated guardrail-1 floor [A4].
 - `db_path` defaults to `":memory:"` (ephemeral — cannot corrupt a persistent store) so a
   no-db_path `Config.load(...)` resolves; an EMPTY string is the fail-fast trigger. The
   "no silent default" prose guards a *persistent* store; `:memory:` is not one.
@@ -125,17 +124,6 @@ class RecallConfig:
 
 
 @dataclass(frozen=True)
-class ProducerConfig:
-    """Vestigial after the producer strip: only ``stamp_trailer`` survives — the git
-    trailer key the origin credit scan keys on (v2 grammar: 32-hex trace + episode
-    ids), and the single source for the onboarding rules block's ``<TRAILER_KEY>``.
-    The old ``Hive-Trace`` key is inert-but-counted by the scanner (the re-onboard
-    nudge). An empty trailer is rejected downstream (onboard.render_rules_block /
-    RulesBlock), where it would actually cause harm."""
-    stamp_trailer: str = "Hive-Credit"
-
-
-@dataclass(frozen=True)
 class UtilityConfig:
     isolation_frac: float = 0.05         # [A5] guardrail-2 held-out slice (tier A)
     prediction_bias_window_s: int = 604800
@@ -223,7 +211,6 @@ _GROUP_TYPES: dict[str, type] = {
     "embedding": EmbeddingConfig,
     "index": IndexConfig,
     "recall": RecallConfig,
-    "producer": ProducerConfig,
     "utility": UtilityConfig,
     "autonomy": AutonomyConfig,
     "retention": RetentionConfig,
@@ -232,7 +219,7 @@ _GROUP_TYPES: dict[str, type] = {
 # field-groups constructed (and thus validated) BEFORE runtime, so a field-level error
 # (e.g. recall.epsilon_explore) surfaces ahead of the db_path-required check.
 _FIELD_GROUP_ORDER = ("geometry", "embedding", "index", "recall",
-                      "producer", "utility", "autonomy", "retention", "obs")
+                      "utility", "autonomy", "retention", "obs")
 
 
 @dataclass(frozen=True)
@@ -242,7 +229,6 @@ class Config:
     embedding: EmbeddingConfig
     index: IndexConfig
     recall: RecallConfig
-    producer: ProducerConfig
     utility: UtilityConfig
     autonomy: AutonomyConfig
     retention: RetentionConfig
@@ -471,7 +457,6 @@ RELOAD_TIER: dict[str, str] = {
     "recall.softmax_beta": "B",
     "utility.f_min": "B",
     "utility.f_max": "B",
-    "producer.stamp_trailer": "B",
     # A — applied on next run (no restart, no migration)
     "recall.recall_top_n": "A",
     "utility.isolation_frac": "A",            # tier A
@@ -574,9 +559,8 @@ CONFIG_AUTHORITY: dict[str, str] = {
     "recall.hybrid": "operator",
     "recall.shadow": "operator",
     "recall.drafts": "operator",
-    # operator — anti-gaming (operator-set by design) + credit grammar
+    # operator — anti-gaming (operator-set by design)
     "autonomy.solo_mode": "operator",
-    "producer.stamp_trailer": "operator",
     # operator — operational policy (no convergence-KPI effect)
     "retention.backup_keep": "operator",
     "retention.backup_dir": "operator",

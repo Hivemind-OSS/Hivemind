@@ -106,3 +106,26 @@ TODO 1  (record_miss table + RecallPipeline instrumentation)
 ```
 
 TODOs 2, 3, and 4 all depend on the `recall_misses` table from TODO 1. Implement TODO 1 first.
+
+---
+
+## TODO 5 — Strip commit-stamp trailers when cutting outcome-credit — ✅ LANDED 2026-06-16
+
+LANDED with the minimization producer cut (plan §D1, step 2): the rendered rules block
+carries no `Hive-Credit` trailer text (`test_rules_block_has_no_credit_trailer`), the
+`HOOK_MANIFEST` `commit` hook + `ProducerConfig`/`stamp_trailer` + the `trailer_key`
+echoes (`_handle_init` / `hive_health` / `RulesBlock`) are deleted, and the hive_init
+phase-1→2 handshake still confirms on the recomputed block hash. Original notes below.
+
+Part of the credit/origin subsystem removal (`docs/PLANS/MINIMIZATION-PLAN.md` §D1). The credit loop has two halves: a **consumer** (the GitHub scanner that harvests trailers → wins/losses, removed with `originctl`) and a **producer** (agents are instructed to stamp `Hive-Credit: <trace_id> <episode_id>…` git trailers on commits a recalled memory shaped). Removing only the consumer leaves agents writing dead trailers nothing reads — the stamps that *link commits to memories* must go too.
+
+**Files / what to strip (producer side):**
+- `hive/app/onboard.py` — the "Credit your work" section + `<TRAILER_KEY>` interpolation in `_BLOCK_TEMPLATE` (~:229-260); the `HOOK_MANIFEST` `commit` trailer-stamp hook (~:124-127); the `InstallPlanner` / `render_rules_block` empty-trailer fail-fast (~:271-275, :296-300).
+- `hive/app/config.py` — `ProducerConfig.stamp_trailer` (:127-135) + its `CONFIG_AUTHORITY` / `RELOAD_TIER` entries.
+- `hive/app/mcp_server.py` — the `trailer_key` field echoed by `_handle_init` (phase-1) and `hive_health`; verify no other reader (`client.py`).
+
+**Coupling:** if the onboarding cut (plan §B1) is taken, the rules-block + manifest pieces disappear with `onboard.py` — but `ProducerConfig` still must be removed here. If credit is CUT but onboarding KEPT, the rules block survives minus its credit section, so the `<TRAILER_KEY>` interpolation and the empty-trailer fail-fast must be removed *together* (an empty trailer otherwise raises by design).
+
+**Mutations to verify:** a rendered rules block contains no `Hive-Credit`/trailer text after the strip; `hive_init` phase-1→phase-2 still round-trips on the recomputed block hash with the trailer removed; boot does not fail-fast on a missing `stamp_trailer`.
+
+**Note:** only relevant if the credit subsystem is cut (a live product decision — see plan §5 T3). If credit is kept, this TODO is void.

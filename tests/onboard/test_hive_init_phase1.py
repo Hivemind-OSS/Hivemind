@@ -15,8 +15,8 @@ def _store():
     return SqliteEpisodeStore(connect(":memory:"))
 
 
-def _planner(store=None, *, trailer="Hive-Trace"):
-    return InstallPlanner(store or _store(), stamp_trailer=trailer)
+def _planner(store=None):
+    return InstallPlanner(store or _store())
 
 
 def test_planner_conforms_to_port():
@@ -60,11 +60,6 @@ def test_phase1_explicit_rules_file_overrides(tmp_path):
 def test_phase1_not_a_dir_fails_fast(tmp_path):
     with pytest.raises(ValueError):
         _planner().plan(str(tmp_path / "does-not-exist"), "generic")
-
-
-def test_phase1_empty_trailer_fails_fast():
-    with pytest.raises(ValueError):
-        InstallPlanner(_store(), stamp_trailer="")       # no silent empty trailer
 
 
 def test_phase1_plan_carries_manifest_and_recipe(tmp_path):

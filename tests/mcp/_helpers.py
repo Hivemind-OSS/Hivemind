@@ -27,7 +27,7 @@ _DAY_S = 86_400
 
 
 def build_real_server(*, d: int = 64, h: float = 0.5, beta: float = 16.0,
-                      top_n: int = 10, t0: int = 1000, trailer: str = "Hive-Trace",
+                      top_n: int = 10, t0: int = 1000,
                       scanner=None, planner=None, autonomy=None):
     """Return (server, clock). ``clock`` is mutable so tests can stamp distinct ts.
     The FULL trust-lifecycle is wired (real DemandRule + LifecycleService on the
@@ -67,12 +67,11 @@ def build_real_server(*, d: int = 64, h: float = 0.5, beta: float = 16.0,
         ledger=store, clock_now=clock.now, scanner=scanner,
         provisional_ttl_s=aut.provisional_ttl_days * _DAY_S,
         lifecycle=lifecycle, autonomy_enabled=aut.enabled)
-    planner = planner or FakeInstallPlanner(stamp_trailer=trailer)
+    planner = planner or FakeInstallPlanner()
     server = HiveMCPServer(
         admission=admission, recall=recall, store=store, embedder=embedder,
         install_planner=planner, identity=ServerIdentity("default", "agent"),
-        now=clock.now, started_ts=t0, db_path="", trailer_key=trailer,
-        autonomy=aut)
+        now=clock.now, started_ts=t0, db_path="", autonomy=aut)
     return server, clock
 
 

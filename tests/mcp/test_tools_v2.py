@@ -208,7 +208,6 @@ def test_manifest_v2_wording_and_outdated_hint():
     assert "hive_capture" in by_event["turn-end"].directive
     assert "no need to ask" in by_event["turn-end"].directive
     assert "replaces" in by_event["correction"].directive    # the human-correction hook
-    assert "hive_capture" in by_event["commit"].directive
     assert "trust" in by_event["task-start"].directive
 
     class _V1Planner:

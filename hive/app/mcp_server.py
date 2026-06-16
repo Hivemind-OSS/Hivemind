@@ -201,8 +201,7 @@ class HiveMCPServer:
 
     def __init__(self, *, admission, recall, store, embedder, install_planner,
                  identity: ServerIdentity, now: Callable[[], int],
-                 started_ts: int = 0, db_path: str = "",
-                 trailer_key: str = "Hive-Credit", autonomy=None) -> None:
+                 started_ts: int = 0, db_path: str = "", autonomy=None) -> None:
         self.admission = admission          # AdmissionService: write + capture
         self.recall = recall                # RecallPipeline: recall(query,*,agent_id,agent_ctx)
         self.store = store                  # EpisodeStore: get_episode (belt) / fetch / counts
@@ -212,7 +211,6 @@ class HiveMCPServer:
         self.now = now
         self.started_ts = int(started_ts)
         self.db_path = db_path
-        self.trailer_key = trailer_key
         # the lifecycle knob group (duck-typed AutonomyConfig); None ⇒ defaults.
         # The recall belt's per-hit is_servable re-check reads provisional_ttl off
         # it; the gap report reads demand_window/demand_tau.
@@ -436,7 +434,6 @@ class HiveMCPServer:
         block = plan.rules_block
         return {"phase": 1, "rules_file": plan.rules_file, "harness": plan.harness,
                 "rules_block": block.rendered_text,
-                "trailer_key": block.trailer_key,           # == producer.stamp_trailer (single source)
                 "block_version": block.block_version,
                 "expected_confirm_hash": plan.expected_confirm_hash.hex(),
                 "manifest": _manifest_report(plan.manifest),
@@ -460,8 +457,7 @@ class HiveMCPServer:
                 "W_version": int(getattr(self.embedder, "w_version", 0)),
                 "d": int(getattr(self.embedder, "d", 0)),
                 "index_authoritative": bool(self.recall.index.is_authoritative()),
-                "uptime_s": max(0, int(self.now()) - self.started_ts),
-                "trailer_key": self.trailer_key}
+                "uptime_s": max(0, int(self.now()) - self.started_ts)}
             snap["hooks_seen"] = self._hooks_seen()          # V4: last-seen tick per capture verb
             # trust-lifecycle telemetry: quarantine pile-up must be visible, never
             # silent. Best-effort — an older store double (tests) may lack these.

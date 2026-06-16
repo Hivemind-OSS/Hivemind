@@ -42,7 +42,7 @@ def test_banner_appended_outside_block_preserves_confirm_hash():
     extracts EXACTLY the rendered block, whose sha256 still equals block_hash — so a
     server recomputing the canonical hash (or extracting+hashing) confirms unchanged.
     Mutating the banner to embed a block marker (the deliberate fault) breaks this."""
-    block = render_rules_block("Hive-Trace", 1)
+    block = render_rules_block(1)
     banner = provenance_banner("claude-code", 2)
     file_contents = f"{block.rendered_text}\n\n{banner}\n"
 

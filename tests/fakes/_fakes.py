@@ -296,12 +296,10 @@ class FakeLedger:
 
 
 class FakeInstallPlanner:
-    """InstallPlanner double for the MCP surface. ``trailer_key`` is single-sourced
-    from the injected ``stamp_trailer`` (the CONFIG_DRIFT guard the MCP layer
-    must surface verbatim); ``plan`` does zero writes; ``confirm`` links on a matching
-    hash (lie-proof); ``link_status`` backs the additive hive_health link field."""
-    def __init__(self, *, stamp_trailer: str = "Hive-Trace", block_version: int = 1) -> None:
-        self.stamp_trailer = str(stamp_trailer)
+    """InstallPlanner double for the MCP surface. ``plan`` does zero writes; ``confirm``
+    links on a matching hash (lie-proof); ``link_status`` backs the additive hive_health
+    link field."""
+    def __init__(self, *, block_version: int = 1) -> None:
         self.block_version = int(block_version)
         self.linked: dict[str, bytes] = {}
         self._expected: dict[str, bytes] = {}        # repo_path -> canonical block_hash from plan()
@@ -311,10 +309,9 @@ class FakeInstallPlanner:
                 f"{rules_block_version_marker(self.block_version)}\n"
                 f"repo={repo_path} harness={harness} "
                 f"rules_file={rules_file or 'CLAUDE.md'}\n"
-                f"On a durable insight, call hive_write(text=...). "
-                f"Stamp commits with {self.stamp_trailer}: <trace_id>.\n"
+                f"On a durable insight, call hive_write(text=...).\n"
                 f"{RULES_BLOCK_END}")
-        return RulesBlock(rendered_text=body, trailer_key=self.stamp_trailer,
+        return RulesBlock(rendered_text=body,
                           block_version=self.block_version,
                           block_hash=hashlib.sha256(body.encode("utf-8")).digest())
 

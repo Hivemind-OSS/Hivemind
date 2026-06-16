@@ -4,8 +4,8 @@ namespacing + reload-tier state machine.
 Locked assertions for the config contract.
 
 Grounded deviations (built-decision-wins, documented in the deliverable):
-- ``db_path`` defaults to ``":memory:"`` (ephemeral, cannot corrupt a warm store) so the
-  locked ``Config.load(producer={...}) succeeds`` assertion holds with no db_path; an EMPTY
+- ``db_path`` defaults to ``":memory:"`` (ephemeral, cannot corrupt a warm store) so a
+  no-db_path ``Config.load(...)`` succeeds; an EMPTY
   string is the fail-fast trigger for ``test_db_path_required``. The "no silent default"
   prose guards against silently corrupting a persistent store — ``":memory:"`` cannot.
 - ``utility.isolation_frac`` is tier **A**, not B.
@@ -30,18 +30,10 @@ def test_defaults_match_spec_geometry():
     assert cfg.retention.backup_keep == 30
 
 
-def test_producer_stamp_trailer_defaults_to_credit_v2():
-    # The trailer convention v2: agents stamp Hive-Credit (trace + episode ids);
-    # the old Hive-Trace key is inert-but-counted by the origin scanner.
-    assert Config.load(toml_path=None, env={}).producer.stamp_trailer == "Hive-Credit"
-
-
-# ── [A4] ε relocation: recall.epsilon_explore validated, producer has none ─────
+# ── [A4] ε is validated on recall ──────────────────────────────────────────────
 def test_recall_epsilon_validated_positive():
     with pytest.raises(ValueError, match=r"recall\.epsilon_explore"):
         Config.load(recall={"epsilon_explore": 0.0})
-    # ε lives ONLY on recall — the slimmed producer group never had epsilon_explore ([A4])
-    assert hasattr(Config.load().producer, "epsilon_explore") is False
 
 
 def test_recall_epsilon_negative_rejected():

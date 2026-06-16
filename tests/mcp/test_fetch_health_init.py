@@ -1,6 +1,6 @@
 """M06 hive_fetch (clean-miss contract), hive_health (happy snapshot + fail-closed
-{ok,error,db_path}-only subset + no-secret invariant), hive_init (trailer_key
-single-sourced from the producer ★, 2-phase confirm, unsupported-harness rejected)."""
+{ok,error,db_path}-only subset + no-secret invariant), hive_init (2-phase confirm,
+unsupported-harness rejected)."""
 from __future__ import annotations
 
 import json
@@ -38,7 +38,6 @@ def test_health_happy_snapshot():
     assert snap["index_authoritative"] is True
     assert snap["embedder_loaded"] is True
     assert snap["d"] == 64 and snap["W_version"] == 1
-    assert snap["trailer_key"] == "Hive-Trace"
     assert snap["uptime_s"] >= 0
     assert "linked" not in snap                             # no repo_path given
     assert "onboarding" not in snap                         # ...so no first-touch hint either
@@ -94,12 +93,11 @@ def test_health_linked_repo_has_no_onboarding_hint():
 
 
 # ── hive_init ───────────────────────────────────────────────────────────────────
-def test_init_trailer_key_sourced_from_producer():
-    server, _ = build_real_server(trailer="Hive-Trace-XYZ")
+def test_init_phase1_returns_block_and_hash():
+    server, _ = build_real_server()
     plan = content(tool_call(server, "hive_init",
                              {"repo_path": "/tmp/r", "harness": "claude-code"}))
     assert plan["phase"] == 1
-    assert plan["trailer_key"] == "Hive-Trace-XYZ"         # == producer.stamp_trailer
     assert plan["rules_block"]
     assert plan["expected_confirm_hash"]                   # hex
 

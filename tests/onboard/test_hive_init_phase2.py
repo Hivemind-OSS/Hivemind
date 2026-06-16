@@ -15,8 +15,8 @@ def _store():
     return SqliteEpisodeStore(connect(":memory:"))
 
 
-def _planner(store, *, trailer="Hive-Trace"):
-    return InstallPlanner(store, stamp_trailer=trailer)
+def _planner(store):
+    return InstallPlanner(store)
 
 
 def _link_key(repo):
@@ -30,7 +30,6 @@ def test_phase2_good_hash_links(tmp_path):
     res = p.confirm(str(tmp_path), plan.expected_confirm_hash)
     assert res["linked"] is True
     assert res["link"]["block_hash"] == plan.expected_confirm_hash.hex()
-    assert res["link"]["trailer_key"] == "Hive-Trace"
     # persisted as ONE namespaced kv blob (no new table)
     assert store.meta_get(_link_key(tmp_path)) is not None
     tables = {r["name"] for r in store.conn.execute(

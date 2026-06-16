@@ -229,14 +229,9 @@ def rules_block_version_marker(version: int) -> str:
 class RulesBlock:
     """The marker-delimited rules-file block hive_init renders. Self-asserting: an
     ill-formed block — missing the start/end markers, missing the version embed for
-    its own ``block_version``, a ``trailer_key`` that does not appear in the body, or
-    a hash that does not bind that body — is UNCONSTRUCTABLE, so the recorded link
-    cannot lie about what was installed. ``trailer_key`` is ALWAYS sourced from
-    ``producer.stamp_trailer`` (never literal); requiring it to appear in the body
-    kills the CONFIG_DRIFT silent-join-failure at construction time — a
-    hard-coded template literal that diverges from ``trailer_key`` cannot be built."""
+    its own ``block_version``, or a hash that does not bind that body — is
+    UNCONSTRUCTABLE, so the recorded link cannot lie about what was installed."""
     rendered_text: str
-    trailer_key: str
     block_version: int
     block_hash: bytes                       # sha256(rendered_text)
 
@@ -247,10 +242,6 @@ class RulesBlock:
         if rules_block_version_marker(self.block_version) not in self.rendered_text:
             raise ValueError(
                 f"rules block missing version embed for block_version={self.block_version}")
-        if self.trailer_key not in self.rendered_text:
-            raise ValueError(
-                "trailer_key must appear in rendered_text (single-source guard — a "
-                "template literal that diverges from producer.stamp_trailer is rejected)")
         if self.block_hash != hashlib.sha256(self.rendered_text.encode("utf-8")).digest():
             raise ValueError("block_hash does not bind rendered_text")
 

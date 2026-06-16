@@ -54,7 +54,7 @@ def test_health_unlinked_byte_identical():
 
 def test_health_reports_link():
     def link_status(repo_path):
-        return True, {"block_version": 1, "block_hash": "abc123", "trailer_key": "Hive-Trace"}
+        return True, {"block_version": 1, "block_hash": "abc123"}
 
     snap = health(_cfg(), _FakeStore(), _FakeEmbedder(),
                   repo_path="/r", link_status=link_status)
