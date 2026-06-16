@@ -222,7 +222,6 @@ class HiveMCPServer:
             "hive_write": self._handle_write,
             "hive_capture": self._handle_capture,
             "hive_recall": self._handle_recall,
-            "hive_fetch": self._handle_fetch,
             "hive_init": self._handle_init,
             "hive_health": self._handle_health,
         }
@@ -304,8 +303,7 @@ class HiveMCPServer:
                              "n_findings": e.n_findings}}
         # CLEAN/REDACT both land APPROVED + recallable in one call (client-gated).
         out: dict = {"status": res.status, "id": res.episode_id,
-                     "content_hash": res.content_hash, "scan": _scan_report(res.scan),
-                     "approved_by": approved_by}
+                     "scan": _scan_report(res.scan), "approved_by": approved_by}
         if res.superseded is not None:           # the vouched correction retired its target
             out["superseded"] = res.superseded
         if res.status == "redacted" and res.scan.redacted_text is not None:
@@ -324,8 +322,7 @@ class HiveMCPServer:
         if res.status == "disabled":             # autonomy off — nothing written
             return {"status": "disabled"}
         return {"status": res.status, "id": res.episode_id,
-                "content_hash": res.content_hash, "scan": _scan_report(res.scan),
-                "deduped": res.deduped}
+                "scan": _scan_report(res.scan), "deduped": res.deduped}
 
     def _handle_recall(self, args: dict, identity: ServerIdentity) -> dict:
         query = args.get("query") or ""
@@ -350,8 +347,7 @@ class HiveMCPServer:
                              "trace_id": result.trace_id, "episode_id": h.episode_id})
                 continue
             hits.append({"episode_id": h.episode_id, "text": h.text,
-                         "sim": float(h.sim), "content_hash": ep.content_hash,
-                         "trust": h.trust, "ts": h.ts})
+                         "sim": float(h.sim), "trust": h.trust, "ts": h.ts})
         # credit annotation: the outcome ledger's (wins, losses) per surviving hit.
         # A getattr feature-probe — absent on fakes/older stores ⇒ no field; present
         # but raising ⇒ log + omit the field on EVERY hit (the try wraps only the
@@ -391,26 +387,6 @@ class HiveMCPServer:
                  "trust": d.trust, "ts": d.ts}
                 for d in result.drafts]
         return env
-
-    def _handle_fetch(self, args: dict, identity: ServerIdentity) -> dict:
-        h = args.get("content_hash") or ""
-        text = self.store.fetch(h)                           # clean miss → None, never raises
-        out: dict = {"found": text is not None, "text": text}
-        if text is not None:
-            # supersession annotation: a fetched-but-superseded row names its
-            # TERMINAL successor as {episode_id, content_hash} (hash because fetch
-            # is hash-keyed — a bare id would be unfollowable). Best-effort: an
-            # annotation fault never breaks the fetch.
-            try:
-                eid = self.store.episode_id_by_hash(h)
-                succ = self.store.terminal_successor(eid) if eid is not None else None
-                if succ is not None:
-                    out["superseded_by"] = {"episode_id": succ[0],
-                                            "content_hash": succ[1]}
-            except Exception:                                # noqa: BLE001 — annotation only
-                _log.warning("mcp.fetch_successor_probe_failed", extra={
-                    "event": "mcp.fetch_successor_probe_failed"}, exc_info=True)
-        return out
 
     def _handle_init(self, args: dict, identity: ServerIdentity) -> dict:
         repo_path = args.get("repo_path") or ""

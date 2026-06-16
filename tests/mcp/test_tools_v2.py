@@ -34,10 +34,11 @@ def _count(server, table: str) -> int:
 
 
 # ── surface ────────────────────────────────────────────────────────────────────
-def test_tool_list_is_exactly_6():
+def test_tool_list_is_exactly_5():
     assert TOOL_NAMES == {"hive_write", "hive_capture", "hive_recall",
-                          "hive_fetch", "hive_init", "hive_health"}
+                          "hive_init", "hive_health"}
     assert "hive_evidence" not in TOOL_NAMES        # no client-fed evidence exists
+    assert "hive_fetch" not in TOOL_NAMES           # fetch dropped (recall inlines verbatim text)
 
 
 def test_fake_ledger_conforms_to_port():
@@ -148,21 +149,13 @@ def test_recall_belt_drops_lapsed_provisional():
     assert stale["abstained"] is True and stale["reference_context"] == []
 
 
-# ── fetch supersession annotation ──────────────────────────────────────────────
-def test_fetch_annotates_terminal_successor():
+# ── supersession (replaces=) — the SOLE retirement path ────────────────────────
+def test_write_replaces_retires_target():
     server, _ = build_real_server()
     a = content(tool_call(server, "hive_write", {"text": "v one", "approved_by": "h"}))
     b = content(tool_call(server, "hive_write", {"text": "v two", "approved_by": "h",
                                                  "replaces": a["id"]}))
     assert b["superseded"] == a["id"]
-    c = content(tool_call(server, "hive_write", {"text": "v three", "approved_by": "h",
-                                                 "replaces": b["id"]}))
-    got = content(tool_call(server, "hive_fetch", {"content_hash": a["content_hash"]}))
-    assert got["found"] is True
-    assert got["superseded_by"] == {"episode_id": c["id"],
-                                    "content_hash": c["content_hash"]}
-    tip = content(tool_call(server, "hive_fetch", {"content_hash": c["content_hash"]}))
-    assert tip["found"] is True and "superseded_by" not in tip
 
 
 def test_write_replaces_unknown_target_is_tool_error():

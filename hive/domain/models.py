@@ -17,7 +17,7 @@ from hive.domain.lifecycle import ESTABLISHED, PROVISIONAL, QUARANTINED, TRUST_S
 
 
 def content_hash(text: str) -> str:
-    """sha256(text) hex — the fetch key + dedup key that binds a memory to its text."""
+    """sha256(text) hex — the dedup/PK key that binds a memory to its text."""
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
 

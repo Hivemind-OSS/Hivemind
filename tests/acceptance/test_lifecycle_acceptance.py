@@ -152,6 +152,3 @@ def test_acceptance_supersession_through_tools():
               {"query": "deploy with ship.sh since the migration"})
     assert r["reference_context"][0]["episode_id"] == new["id"]
     assert r["reference_context"][0]["trust"] == "established"
-    # fetch of the OLD text names the terminal successor
-    got = _call(server, "agent-B", "hive_fetch", {"content_hash": old["content_hash"]})
-    assert got["superseded_by"]["episode_id"] == new["id"]

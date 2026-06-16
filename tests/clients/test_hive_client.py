@@ -76,7 +76,7 @@ def _canned(body: bytes, *, ctype: str = "application/json", status: int = 200):
 
 
 # ── the round-trip against the real stack ★ ────────────────────────────────────
-def test_client_recall_capture_write_fetch_health(live):
+def test_client_recall_capture_write_health(live):
     url, token, _server = live
     c = HiveClient(url, token)
 
@@ -94,11 +94,6 @@ def test_client_recall_capture_write_fetch_health(live):
     assert hits and hits[0]["text"].startswith("the deploy needs DEPLOY_KEY")
     assert hits[0]["trust"] == "established"                  # envelope verbatim
 
-    f = c.fetch(w["content_hash"])
-    assert f["found"] is True and f["text"] == ("the deploy needs DEPLOY_KEY "
-                                                "set in the environment")
-    assert c.fetch("0" * 64)["found"] is False                # clean miss, no raise
-
     # 401 BEFORE the tool layer: a bad token raises, carrying the HTTP status
     bad = HiveClient(url, "not-a-real-token")
     with pytest.raises(HiveError) as ei:
@@ -112,9 +107,7 @@ def test_client_write_supersedes_via_replaces(live):
     old = c.write("use port 8080 for the dev server", approved_by="alice")
     new = c.write("use port 9090 for the dev server (8080 is taken)",
                   approved_by="alice", replaces=old["id"])
-    assert new["superseded"] == old["id"]
-    f = c.fetch(old["content_hash"])                          # retired row annotates
-    assert f["superseded_by"]["episode_id"] == new["id"]
+    assert new["superseded"] == old["id"]                     # the SOLE retirement path
 
 
 # ── never-partial on any failure layer ─────────────────────────────────────────
@@ -157,7 +150,7 @@ def test_client_never_partial_on_transport_error(live):
         {"jsonrpc": "2.0", "id": 1, "result": {"weird": True}}).encode())
     try:
         with pytest.raises(HiveError):
-            HiveClient(url5, token).fetch("aa")
+            HiveClient(url5, token).recall("aa")
     finally:
         stop5()
 

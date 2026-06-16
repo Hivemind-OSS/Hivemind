@@ -1,28 +1,10 @@
-"""M06 hive_fetch (clean-miss contract), hive_health (happy snapshot + fail-closed
-{ok,error,db_path}-only subset + no-secret invariant), hive_init (2-phase confirm,
-unsupported-harness rejected)."""
+"""M06 hive_health (happy snapshot + fail-closed {ok,error,db_path}-only subset +
+no-secret invariant), hive_init (2-phase confirm, unsupported-harness rejected)."""
 from __future__ import annotations
 
 import json
 
-from hive.domain.models import content_hash
 from tests.mcp._helpers import build_real_server, content, is_error, tool_call, write_text
-
-
-# ── hive_fetch ──────────────────────────────────────────────────────────────────
-def test_fetch_round_trip():
-    server, _ = build_real_server()
-    text = "fetch me by my content hash"
-    w = write_text(server, text)                           # stores blob (approved)
-    res = content(tool_call(server, "hive_fetch", {"content_hash": w["content_hash"]}))
-    assert res["found"] is True and res["text"] == text
-    assert w["content_hash"] == content_hash(text)
-
-
-def test_fetch_unknown_hash_clean_miss():
-    server, _ = build_real_server()
-    res = content(tool_call(server, "hive_fetch", {"content_hash": "deadbeef"}))
-    assert res == {"found": False, "text": None}           # never raises
 
 
 # ── hive_health ─────────────────────────────────────────────────────────────────

@@ -95,8 +95,7 @@ def test_recall_framed_as_reference_context_not_instructions():
     # trust + ts are the additive lifecycle labels (consumers discount provisional
     # content and order coexisting versions by them); credit is the outcome-ledger
     # annotation (wins/losses per memory)
-    assert set(hit) == {"episode_id", "text", "sim", "content_hash", "trust", "ts",
-                        "credit"}
+    assert set(hit) == {"episode_id", "text", "sim", "trust", "ts", "credit"}
 
 
 def test_recall_trace_id_present_on_hit_and_abstain():

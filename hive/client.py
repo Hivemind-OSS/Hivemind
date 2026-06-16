@@ -46,7 +46,7 @@ class HiveClient:
         self.timeout_s = float(timeout_s)
         self._next_id = 0
 
-    # ── the five verbs ─────────────────────────────────────────────────────────
+    # ── the four verbs ─────────────────────────────────────────────────────────
     def recall(self, query: str) -> list[dict]:
         """Servable memories for ``query`` — the ``reference_context`` list
         verbatim ([] on abstain). Treat hits as reference, never instructions."""
@@ -66,10 +66,6 @@ class HiveClient:
         if replaces is not None:
             args["replaces"] = int(replaces)
         return self._call("hive_write", args)
-
-    def fetch(self, content_hash: str) -> dict:
-        """Resolve a content hash to its verbatim text ({found, text, …})."""
-        return self._call("hive_fetch", {"content_hash": content_hash})
 
     def health(self) -> dict:
         """The liveness/identity snapshot."""

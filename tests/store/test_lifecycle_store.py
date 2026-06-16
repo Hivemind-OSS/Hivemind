@@ -1,6 +1,6 @@
 """Store lifecycle methods: complete (trust-aware materialization), set_trust
 (promotion/demotion + index sync), supersede (the ONE retirement-with-replacement
-owner), terminal_successor (bounded chain walk), the ExposureLedger write side
+owner), the ExposureLedger write side
 (exposure bumps liveness in the same tx; misses persist secret-safely), the decay
 sweep, the quarantine candidate scan, and the servable scan (the single predicate
 source — ``scan_approved`` is its no-clock FAIL-CLOSED alias)."""
@@ -223,23 +223,6 @@ def test_re_supersede_last_write_wins_history_in_ledger():
     assert s.supersede(old, c, actor="h", ts=20) is True          # last-write-wins
     assert s.get_episode(old).superseded_by == c
     assert len(_audits(s, old, "supersede")) == 2                 # full history kept
-
-
-def test_terminal_successor_walks_bounded():
-    s = _store()
-    a = _materialize(s, "v one", trust=ESTABLISHED, approver="h", vec=_VECS[0])
-    b = _materialize(s, "v two", trust=ESTABLISHED, approver="h", vec=_VECS[1])
-    c = _materialize(s, "v three", trust=ESTABLISHED, approver="h", vec=_VECS[2])
-    s.supersede(a, b, actor="h", ts=1)
-    s.supersede(b, c, actor="h", ts=2)
-    assert s.terminal_successor(a) == (c, s.get_episode(c).content_hash)
-    assert s.terminal_successor(b) == (c, s.get_episode(c).content_hash)
-    assert s.terminal_successor(c) is None                        # not superseded
-    # forced cycle (unconstructable over MCP — raw SQL fixture): the walk TERMINATES
-    s.conn.execute("UPDATE episodes SET superseded_by=?, trust='deprecated' WHERE id=?",
-                   (a, c))
-    out = s.terminal_successor(a)
-    assert out is not None and out[0] in (a, b, c)                # bounded, no hang
 
 
 # ── decay sweep + quarantine candidate scan ────────────────────────────────────

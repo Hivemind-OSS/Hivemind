@@ -80,7 +80,8 @@ def test_acceptance_secret_write_refused_and_never_recallable(embedder_v1):
     ids, r = _topk_ids(c, secret_topic, 5)            # query its EXACT text
     assert ids == []                                  # nothing written ⇒ nothing recallable
     assert r.state != CONFIDENT
-    assert c.store.fetch(content_hash(secret_topic)) is None      # no blob either
+    assert c.store.conn.execute(                                  # no blob either
+        "SELECT 1 FROM blobs WHERE content_hash=?", (content_hash(secret_topic),)).fetchone() is None
 
 
 # ── #5c — recalled text is reference_context, never instructions ──────────────

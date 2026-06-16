@@ -85,8 +85,8 @@ def test_all_five_tools_answer_over_http(daemon, tmp_path):
     assert s_h == 200 and h["ok"] is True
     s_w, w = _call(url, "hive_write", {"text": "a durable insight about retries", "approved_by": "u"}, token)
     assert s_w == 200 and w["status"] == "approved"
-    s_f, f = _call(url, "hive_fetch", {"content_hash": w["content_hash"]}, token)
-    assert s_f == 200 and f["found"] is True
+    s_c, c = _call(url, "hive_capture", {"text": "a quarantined note about caching"}, token)
+    assert s_c == 200 and c["status"] == "quarantined"
     s_r, r = _call(url, "hive_recall", {"query": "a durable insight about retries"}, token)
     assert s_r == 200
     s_i, i = _call(url, "hive_init", {"repo_path": str(tmp_path), "harness": "generic"}, token)

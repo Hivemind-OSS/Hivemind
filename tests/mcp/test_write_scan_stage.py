@@ -20,7 +20,6 @@ def test_write_clean_lands_approved():
     assert out["status"] == "approved"
     assert isinstance(out["id"], int)
     assert out["approved_by"] == "u"
-    assert out["content_hash"] == content_hash("a clean durable insight")
     assert out["scan"]["action"] == "clean"
     assert server.store.counts() == (1, 0)                 # 1 approved, 0 pending
 
@@ -33,8 +32,8 @@ def test_write_redact_stores_masked_text_no_raw_secret():
     stored = server.store.get_episode(out["id"]).text
     assert "sk-ABCDEFGHIJKLMNOPQRSTUVWXYZ012345" not in stored
     assert "[REDACTED]" in stored
-    # content_hash binds the POST-redaction text
-    assert out["content_hash"] == content_hash(stored)
+    # the stored row's content_hash binds the POST-redaction text (over the mask, not the secret)
+    assert server.store.get_episode(out["id"]).content_hash == content_hash(stored)
     # the raw secret appears nowhere in the envelope
     assert "sk-ABCDEFGHIJKLMNOPQRSTUVWXYZ012345" not in out["redacted_preview"]
     assert out["scan"]["action"] == "redact"
@@ -51,7 +50,8 @@ def test_write_planted_secret_refused_before_write():
     assert out["scan"]["n_findings"] >= 1
     # NOTHING written: 0 rows, and the secret is in no blob
     assert server.store.counts() == (0, 0)
-    assert server.store.fetch(content_hash(_SECRET)) is None
+    assert server.store.conn.execute(
+        "SELECT 1 FROM blobs WHERE content_hash=?", (content_hash(_SECRET),)).fetchone() is None
 
 
 def test_refused_envelope_carries_no_secret_bytes():

@@ -46,9 +46,8 @@ def test_write_refuses_on_secret():
     with pytest.raises(SecretRefused):
         _write(svc, f"my key {SECRET}")
     assert _count(store, "episodes") == 0          # nothing written
-    assert _count(store, "blobs") == 0             # no blob written
+    assert _count(store, "blobs") == 0             # no blob written (the secret reached no layer)
     assert store.index.size() == 0
-    assert store.fetch(content_hash(f"my key {SECRET}")) is None
 
 
 def test_refuse_calls_store_stage_zero_times(monkeypatch):
@@ -111,8 +110,10 @@ def test_redact_stores_masked_text_no_raw_secret():
     assert r.content_hash == content_hash(stored)               # hash over redacted text
     assert r.content_hash != content_hash(text)
     # the raw secret reached neither the episodes row nor the blob
-    assert store.fetch(r.content_hash) == stored
-    assert SECRET not in (store.fetch(r.content_hash) or "")
+    blob = store.conn.execute("SELECT text FROM blobs WHERE content_hash=?",
+                              (r.content_hash,)).fetchone()
+    assert blob is not None and blob["text"] == stored          # the blob holds the redacted text
+    assert SECRET not in blob["text"]
     # a redacted write is ALSO approved + recallable (no pending state survives)
     assert store.get_episode(r.episode_id).status == "approved"
     assert store.index.size() == 1

@@ -61,7 +61,9 @@ def test_stage_never_indexes():
     ep = s.get_episode(eid)
     assert ep.status == "pending" and ep.version == 0 and ep.value is None
     assert s.index.size() == 0                  # NOT indexed while pending
-    assert s.fetch(content_hash("db pool exhausted")) == "db pool exhausted"
+    blob = s.conn.execute("SELECT text FROM blobs WHERE content_hash=?",
+                          (content_hash("db pool exhausted"),)).fetchone()
+    assert blob is not None and blob["text"] == "db pool exhausted"   # staged blob present
 
 
 def test_stage_dedup_same_text():

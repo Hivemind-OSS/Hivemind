@@ -312,11 +312,6 @@ class SqliteEpisodeStore:
             trust=r["trust"], superseded_by=r["superseded_by"],
             last_active_ts=r["last_active_ts"])
 
-    def fetch(self, content_hash_hex: str) -> Optional[str]:
-        r = self.conn.execute(
-            "SELECT text FROM blobs WHERE content_hash=?", (content_hash_hex,)).fetchone()
-        return r["text"] if r else None
-
     def counts(self) -> tuple[int, int]:
         """(n_approved, n_pending) for hive_health — one grouped scan.  // O(N) time."""
         approved = pending = 0
@@ -411,31 +406,6 @@ class SqliteEpisodeStore:
                   target_id, replacement_id, actor)
         return True
 
-    def terminal_successor(self, episode_id: int, *,
-                           max_depth: int = 10) -> Optional[tuple[int, str]]:
-        """Walk the ``superseded_by`` chain to its terminal row and return
-        ``(episode_id, content_hash)`` — hash because fetch is hash-keyed. None if
-        the row is not superseded (or unknown). Depth-capped + visited-set-bounded
-        so a (raw-SQL-only) cycle terminates instead of hanging.  // O(depth)."""
-        seen = {episode_id}
-        cur = episode_id
-        moved = False
-        for _ in range(max_depth):
-            r = self.conn.execute(
-                "SELECT superseded_by FROM episodes WHERE id=?", (cur,)).fetchone()
-            if r is None or r["superseded_by"] is None:
-                break
-            nxt = int(r["superseded_by"])
-            if nxt in seen:                        # cycle: stop at the last new node
-                break
-            seen.add(nxt)
-            cur = nxt
-            moved = True
-        if not moved:
-            return None
-        h = self.conn.execute(
-            "SELECT content_hash FROM episodes WHERE id=?", (cur,)).fetchone()
-        return (cur, h["content_hash"]) if h is not None else None
 
     def sweep_decayed(self, *, now: int, q_ttl_s: int, p_ttl_s: int) -> dict:
         """Materialize the lazy ``lifecycle.decayed`` rule: TTL-lapsed quarantined/
@@ -643,13 +613,6 @@ class SqliteEpisodeStore:
                 "miss_type, ts) VALUES(?,?,?,?,?)",
                 (query_text, query_vector, agent_id, miss_type, ts))
 
-    def episode_id_by_hash(self, content_hash_hex: str) -> Optional[int]:
-        """Resolve a content hash to its episode id (fetch is hash-keyed; the
-        supersession annotation needs the row behind the hash)."""
-        r = self.conn.execute(
-            "SELECT id FROM episodes WHERE content_hash=? LIMIT 1",
-            (content_hash_hex,)).fetchone()
-        return int(r["id"]) if r is not None else None
 
     def miss_count_since(self, since_ts: int) -> int:
         """Misses recorded strictly after ``since_ts`` (hive_health telemetry)."""
