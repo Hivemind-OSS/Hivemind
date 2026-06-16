@@ -66,6 +66,35 @@ def _compose(*args: str, profile: Optional[str] = None) -> list[str]:
     return head + list(args)
 
 
+_DOTENV = ".env"            # repo-root operator config; the SAME file compose auto-loads (cwd-relative)
+
+
+def _load_dotenv(path: str, base: Mapping[str, str]) -> dict:
+    """Merge ``KEY=VALUE`` lines from a dotenv file UNDER ``base`` so the CLI's own env
+    sees the operator's ``.env`` — the single source compose already reads — and a verb's
+    pre-flight check (e.g. ``up --tunnel``'s NGROK secret gate) cannot disagree with what
+    compose will interpolate. ``base`` (the shell environment) WINS on conflict, mirroring
+    docker compose precedence; a missing/unreadable file leaves ``base`` untouched (returned
+    as a fresh dict). Blank lines, ``#`` comments, and lines with no ``=`` are skipped; the
+    value is taken verbatim after the first ``=`` (surrounding whitespace trimmed, an inline
+    ``#`` is NOT a comment — matching compose). // O(lines)."""
+    merged = dict(base)
+    try:
+        with open(path, encoding="utf-8") as fh:
+            raw_lines = fh.readlines()
+    except OSError:
+        return merged
+    for raw in raw_lines:
+        line = raw.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, _, value = line.partition("=")
+        key = key.strip()
+        if key and key not in merged:        # shell env wins; never override a real var
+            merged[key] = value.strip()
+    return merged
+
+
 def _rc(proc: subprocess.CompletedProcess) -> int:
     """Map a compose child's exit to sysexits: the docker layer failing is a service
     problem (EX_UNAVAILABLE), not a usage one. // O(1)."""
@@ -263,7 +292,9 @@ def main(argv: Optional[list[str]] = None, *, run: Optional[Run] = None,
     wrapper), `out`, `env`, and `ask` are injection seams — every verb is unit-testable
     without Docker. // O(1) + the child's work."""
     argv = sys.argv[1:] if argv is None else argv
-    env = os.environ if env is None else env
+    # prod path: fold the repo-root .env UNDER the shell env so the CLI and compose read
+    # ONE source. An explicit env (tests) is taken verbatim — no .env side-load.
+    env = _load_dotenv(_DOTENV, os.environ) if env is None else env
     run = run or default_run
     out = out if out is not None else sys.stdout
     ask = ask or _ask_stderr

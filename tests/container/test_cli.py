@@ -116,6 +116,48 @@ def test_up_tunnel_sets_profile():
     assert seq_in(fake.calls[0], "up", "-d", "--build")
 
 
+# ── .env folded UNDER the shell env: ONE source for the CLI gate and compose ─────
+def test_load_dotenv_adds_keys_absent_from_shell(tmp_path):
+    p = tmp_path / ".env"
+    p.write_text("NGROK_AUTHTOKEN=tok\nNGROK_DOMAIN=you.ngrok.app\n")
+    merged = cli._load_dotenv(str(p), {"HIVE_TENANT_ID": "acme"})
+    assert merged["NGROK_AUTHTOKEN"] == "tok"
+    assert merged["NGROK_DOMAIN"] == "you.ngrok.app"
+    assert merged["HIVE_TENANT_ID"] == "acme"            # base preserved
+
+
+def test_load_dotenv_shell_env_wins(tmp_path):
+    # compose precedence: a var already set in the shell is NEVER overridden by .env
+    p = tmp_path / ".env"
+    p.write_text("NGROK_DOMAIN=from-dotenv\n")
+    merged = cli._load_dotenv(str(p), {"NGROK_DOMAIN": "from-shell"})
+    assert merged["NGROK_DOMAIN"] == "from-shell"
+
+
+def test_load_dotenv_skips_comments_blanks_and_malformed(tmp_path):
+    p = tmp_path / ".env"
+    p.write_text("# a comment\n\n   \nNOEQUALS\nNGROK_AUTHTOKEN=tok\n  # indented\n")
+    assert cli._load_dotenv(str(p), {}) == {"NGROK_AUTHTOKEN": "tok"}
+
+
+def test_load_dotenv_missing_file_returns_base_copy():
+    base = {"HIVE_TENANT_ID": "acme"}
+    merged = cli._load_dotenv("/no/such/.env", base)
+    assert merged == base and merged is not base         # equal, but a fresh dict
+
+
+def test_main_folds_dotenv_into_tunnel_check(tmp_path, monkeypatch):
+    """The fix, end-to-end: with the NGROK secrets ONLY in the repo-root .env (absent from
+    the shell env), `up --tunnel` no longer fail-fasts — main() folds .env in first."""
+    (tmp_path / ".env").write_text("NGROK_AUTHTOKEN=tok\nNGROK_DOMAIN=you.ngrok.app\n")
+    monkeypatch.chdir(tmp_path)                           # _DOTENV is cwd-relative, like compose
+    monkeypatch.setattr(cli.os, "environ", {"HIVE_TENANT_ID": "acme"})   # clean shell: no NGROK
+    fake = FakeRun(script=list(_HEALTHY))
+    rc = cli.main(["up", "--tunnel"], run=fake, out=io.StringIO())       # env=None → prod path
+    assert rc == cli.EX_OK
+    assert seq_in(fake.calls[0], "--profile", "tunnel")  # .env alone satisfied the secret gate
+
+
 def test_up_health_timeout_dumps_logs_exits_unavailable():
     # a daemon stuck in `starting` → bounded wait → dump logs → EX_UNAVAILABLE
     # (HIVE_HEALTH_TIMEOUT=0 makes the bound immediate — no sleeps in tests).
