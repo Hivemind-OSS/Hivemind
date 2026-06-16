@@ -39,7 +39,8 @@ claude mcp add --transport http hive http://localhost:8765/mcp \
   --header "Authorization: Bearer ${HIVE_TOKEN}"
 ```
 
-`hive connect` prints that line ready-made (with the public URL when the tunnel is up).
+`hive connect` prints that line ready-made — the public `https://…` URL when
+`NGROK_DOMAIN` is set on the host, the `http://localhost:8765` loopback URL otherwise.
 From there onboarding is self-serve: the `hive_health` tool description carries the
 rules block, so a connected agent writes it into its primary rules file (CLAUDE.md /
 AGENTS.md / …) and skips re-touch when the marker is already present. No skill, no
@@ -54,9 +55,12 @@ demand-promotion swaps its identity-diversity clause for an elapsed-span rule. H
 Loopback never leaves the host, so open exactly one door:
 
 - **Tunnel (recommended)**: free ngrok account → set `NGROK_AUTHTOKEN` +
-  `NGROK_DOMAIN` in `.env` → `hive up --tunnel` (fail-fasts if the secrets are
-  missing; a plain `hive up` never exposes anything). Teammates use
-  `https://<your-domain>/mcp` with their seat token — `hive connect` prints it.
+  `NGROK_DOMAIN` in `.env` → `hive up --tunnel`. This starts the ngrok sidecar
+  (compose `tunnel` profile) beside the daemon and forwards `https://<your-domain>/mcp`
+  to its loopback port; TLS terminates at the ngrok edge, so the seat token is
+  encrypted in transit. It fail-fasts if either secret is missing — a plain `hive up`
+  never exposes anything. Teammates register the `https://<your-domain>/mcp` line
+  `hive connect` prints, with their seat token. Works from any network, no SSH.
 - **SSH (zero extra accounts)**: `ssh -NL 8765:localhost:8765 you@host`, then the
   localhost line above works as-is.
 
