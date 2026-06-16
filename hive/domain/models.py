@@ -7,7 +7,6 @@ numpy is permitted but deliberately not imported here (these carriers are scalar
 from __future__ import annotations
 
 import hashlib
-import math
 from dataclasses import dataclass
 from typing import Optional
 
@@ -115,30 +114,6 @@ class RecallResult:
             raise ValueError("CONFIDENT must carry ≥1 hit (CONFIDENT<->has-hits biconditional)")
         if not (0.0 <= self.entropy_norm <= 1.0):
             raise ValueError("entropy_norm must be in [0,1]")
-
-
-# ── dormant credit carrier ───────────────────────────────────────────────────
-# The producer that fed these (associate→settle→clawback→drain) was removed; only
-# SettledExposure survives — the unit the utility store + PredictionBiasMonitor read
-# back (observed-not-applied in Phase 1). Nothing constructs it at runtime now.
-
-@dataclass(frozen=True, slots=True)
-class SettledExposure:
-    """One settled task-outcome joined with the eids it exposed — the unit the
-    PredictionBiasMonitor scores (guardrail-3 / readiness instrument, A6).
-    ``reward_sign`` is ±1 (settled_pos → +1, clawed_back → −1); realized maps +1→1,
-    −1→0 "like the mean". ``exposed`` is the recalled eids credited at recall time;
-    ``settle_ts`` is when reality landed (the window key). An unconstrainable
-    reward_sign (a CI-green ~0 event) is not a settled credit signal."""
-    family_scope: str
-    reward_sign: int
-    exposed: tuple[int, ...]
-    settle_ts: int
-
-    def __post_init__(self) -> None:
-        if self.reward_sign not in (-1, 1):
-            raise ValueError(
-                f"reward_sign must be ±1 (verifiable-credit-only); got {self.reward_sign!r}")
 
 
 # ── episode (the recall substrate) ───────────────────────────────────────────
@@ -341,42 +316,3 @@ class InstallPlan:
                 f"({self.recipe.manifest_version} != {self.manifest.manifest_version})")
 
 
-# ── utility posterior (Beta-Bernoulli) ───────────────────────────────────────
-
-# Pinned in Cluster D2: uniform prior Beta(1,1),
-# normal-approx CI, confident iff the (1 - 2·(1-ci_level)) interval excludes 0.5.
-PRIOR_A: float = 1.0
-PRIOR_B: float = 1.0
-_Z_FOR_CI = {0.90: 1.645, 0.95: 1.960, 0.99: 2.576}
-
-
-@dataclass(frozen=True, slots=True)
-class UtilityPosterior:
-    """A Beta-Bernoulli utility posterior keyed (episode_id, family_scope).
-    Separate from and never entangled with episode.weight (guardrail-4)."""
-    episode_id: int
-    family_scope: str
-    wins: float = 0.0
-    losses: float = 0.0
-    n_sources: int = 0
-    version: int = 1
-    isolation: bool = False
-
-    def mean(self) -> float:
-        """Beta posterior mean = a/(a+b) with priors folded (∈ (0,1); fresh ⇒ 0.5)."""
-        a = PRIOR_A + self.wins
-        b = PRIOR_B + self.losses
-        return a / (a + b)
-
-    def _sd(self) -> float:
-        a = PRIOR_A + self.wins
-        b = PRIOR_B + self.losses
-        u = a / (a + b)
-        return math.sqrt(u * (1.0 - u) / (a + b + 1.0))
-
-    def ci_excludes_half(self, ci_level: float = 0.90) -> bool:
-        """True iff the normal-approx CI excludes the no-signal point u₀=0.5 [D2].
-        confident ⇔ |mean − 0.5| > Z·sd  (the gate that keeps un-confident utility
-        from ever moving ranking — an invariant)."""
-        z = _Z_FOR_CI.get(round(ci_level, 2), 1.645)
-        return abs(self.mean() - 0.5) > z * self._sd()

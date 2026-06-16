@@ -11,8 +11,7 @@ import numpy as np
 
 from hive.domain.models import (
     RULES_BLOCK_END, RULES_BLOCK_START,
-    Episode, InstallPlan, RulesBlock, SettledExposure,
-    UtilityPosterior, content_hash, rules_block_version_marker,
+    Episode, InstallPlan, RulesBlock, content_hash, rules_block_version_marker,
 )
 from hive.domain.secret_scan import REFUSE, ScanVerdict
 from hive.domain.secret_scan import scan as _scan
@@ -195,76 +194,6 @@ class FakeStore:
 
     def meta_set(self, key: str, value: str) -> None:
         self._meta[key] = value
-
-
-class FakeUtilityStore:
-    """Beta-Bernoulli posterior, dict-backed; same Protocol as the SQLite adapter.
-    Deliberately exposes NO weight setter and NO episodes handle [A3]."""
-    def __init__(self, isolation: Optional[set[int]] = None) -> None:
-        self._post: dict[tuple[int, str], dict] = {}
-        self._sources: dict[tuple[int, str], set[str]] = {}
-        self._isolation: set[int] = set(isolation or ())
-        self._layer_version = 1
-        self._settled: list[SettledExposure] = []   # the guardrail-3 settled stream (A6)
-
-    def apply_credit(self, deltas: Sequence) -> None:
-        for d in deltas:
-            key = (int(d.episode_id), d.family_scope)
-            p = self._post.setdefault(key, {"wins": 0.0, "losses": 0.0, "version": 1})
-            p["wins"] += float(d.d_wins)
-            p["losses"] += float(d.d_losses)
-            p["version"] += 1
-            if getattr(d, "source_agent", ""):
-                self._sources.setdefault(key, set()).add(d.source_agent)
-
-    def posterior(self, episode_id: int, family_scope: str) -> UtilityPosterior:
-        key = (int(episode_id), family_scope)
-        p = self._post.get(key, {"wins": 0.0, "losses": 0.0, "version": 1})
-        return UtilityPosterior(
-            episode_id=int(episode_id), family_scope=family_scope,
-            wins=p["wins"], losses=p["losses"],
-            n_sources=len(self._sources.get(key, set())),
-            version=p["version"], isolation=int(episode_id) in self._isolation,
-        )
-
-    def utility_map(self, family_scope: str, *, confident_only: bool = True) -> dict[int, float]:
-        out: dict[int, float] = {}
-        for (eid, fam), p in self._post.items():
-            if fam != family_scope:
-                continue
-            post = self.posterior(eid, fam)
-            if confident_only and not post.ci_excludes_half():
-                continue
-            out[eid] = post.mean()
-        return out
-
-    def isolation_episode_ids(self) -> set[int]:
-        return set(self._isolation)
-
-    # ── guardrail-3 settled stream (A6) ──────────────────────────────────────────
-    def plant_settled(self, family_scope: str, *, reward_sign: int,
-                      exposed, settle_ts: int) -> None:
-        """Test helper: stage one settled outcome joined with the eids it exposed.
-        Stands in for what the producer tick persists when it settles a task."""
-        self._settled.append(SettledExposure(
-            family_scope=family_scope, reward_sign=int(reward_sign),
-            exposed=tuple(int(e) for e in exposed), settle_ts=int(settle_ts)))
-
-    def settled_exposures_since(self, family_scope: str, since_ts: int):
-        """Windowed read: this family's settled outcomes with settle_ts ≥ since_ts.
-        The SQLite adapter does this with idx_task_outcomes_settle ⋈ exposures; the
-        list scan here is O(k) at test scale."""
-        return [s for s in self._settled
-                if s.family_scope == family_scope and s.settle_ts >= since_ts]
-
-    def mark_isolation(self, episode_id: int) -> None:
-        self._isolation.add(int(episode_id))
-
-    def zero_utility_layer(self) -> None:
-        self._layer_version += 1
-        for p in self._post.values():
-            p["wins"] = 0.0
-            p["losses"] = 0.0
 
 
 class FakeScanner:

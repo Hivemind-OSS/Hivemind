@@ -15,7 +15,7 @@ from typing import (
 import numpy as np  # permitted in domain (not in the forbidden I/O set)
 
 from hive.domain.models import (
-    Episode, SettledExposure, UtilityPosterior,
+    Episode,
 )
 
 
@@ -98,27 +98,6 @@ class EpisodeStore(Protocol):
 
 
 @runtime_checkable
-class UtilityStore(Protocol):
-    """Beta-Bernoulli utility posterior, separate + versioned. NO weight setter
-    and NO episodes handle — the loop never writes episode.weight [A3]."""
-    def apply_credit(self, deltas: Sequence["CreditDeltaLike"]) -> None: ...
-    def posterior(self, episode_id: int, family_scope: str) -> UtilityPosterior: ...
-    def utility_map(
-        self, family_scope: str, *, confident_only: bool = True
-    ) -> dict[int, float]: ...
-    def isolation_episode_ids(self) -> set[int]: ...
-    def zero_utility_layer(self) -> None: ...
-    # The settled stream the PredictionBiasMonitor (guardrail-3, A6) reads. In the
-    # single-DB design the posteriors and task_outcomes are co-located: the credit
-    # ingest persists settled win/loss rows there and the monitor reads them back,
-    # windowed. settle_ts ≥ since_ts (settled rows are always ≤ now), O(k) via
-    # idx_task_outcomes_settle in the SQLite adapter.
-    def settled_exposures_since(
-        self, family_scope: str, since_ts: int
-    ) -> Sequence[SettledExposure]: ...
-
-
-@runtime_checkable
 class ExposureLedger(Protocol):
     """The recall side-channel writer: WHO was served WHAT (exposure, refreshing the
     served rows' liveness clocks in the same tx) and which queries got NO answer
@@ -150,8 +129,7 @@ class InstallPlanner(Protocol):
 
 
 # ── structural type aliases (forward refs to carriers defined in sibling modules)
-# These are typing-only names; the concrete classes live in models.py /
-# attribution.py. Using strings keeps ports.py free of import cycles.
-CreditDeltaLike = "hive.domain.attribution.CreditDelta"
+# Typing-only names; the concrete classes live in models.py / secret_scan.py. Using
+# strings keeps ports.py free of import cycles.
 ScanVerdictLike = "hive.domain.secret_scan.ScanVerdict"
 InstallPlanLike = "hive.domain.models.InstallPlan"

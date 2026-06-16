@@ -1,6 +1,6 @@
 """SqliteTokenStore — per-device bearer-token identity, hashed at rest.
 
-The whole token lifecycle in one cohesive adapter (mirrors ``utility_store_sqlite.py``): it
+The whole token lifecycle in one cohesive adapter: it
 owns its ``access_tokens`` table via ``executescript(_SCHEMA)`` on the shared WAL conn. Only
 ``sha256(token)`` is stored — the 256-bit plaintext is returned ONCE at ``create()`` and
 never persisted, so a DB leak yields no usable token. ``verify`` maps a presented plaintext
