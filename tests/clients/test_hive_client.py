@@ -83,7 +83,7 @@ def test_client_recall_capture_write_fetch_health(live):
     assert c.health()["ok"] is True
     assert c.recall("anything at all") == []                  # empty store ⇒ []
 
-    cap = c.capture("dead-end: the flag --fast corrupts the cache", tags=["gotcha"])
+    cap = c.capture("dead-end: the flag --fast corrupts the cache")
     assert cap["status"] == "quarantined" and isinstance(cap["id"], int)
 
     w = c.write("the deploy needs DEPLOY_KEY set in the environment",

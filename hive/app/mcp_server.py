@@ -290,17 +290,13 @@ class HiveMCPServer:
     def _handle_write(self, args: dict, identity: ServerIdentity) -> dict:
         text = args.get("text")
         approved_by = args.get("approved_by") or ""   # required by the schema belt
-        source = args.get("source") or ""
-        tags = args.get("tags") or []
-        tags_str = ",".join(str(t) for t in tags) if isinstance(tags, list) else str(tags)
         # proposed_by is ALWAYS the authenticated caller — INV-2: no client field to assert it
         # (``proposed_by`` is gone from the write schema). Deliberate mutation: read self.identity here.
         proposed_by = identity.agent_id
         replaces = args.get("replaces")           # human-vouched supersession target
         try:
             res = self.admission.write(text, approved_by=approved_by,
-                                       proposed_by=proposed_by, source=source,
-                                       tags=tags_str, replaces=replaces)
+                                       proposed_by=proposed_by, replaces=replaces)
         except SecretRefused as e:
             # REFUSE: nothing written (0 rows). Envelope carries rule NAMES, never bytes.
             return {"status": "refused", "reason": str(e),
@@ -318,12 +314,8 @@ class HiveMCPServer:
 
     def _handle_capture(self, args: dict, identity: ServerIdentity) -> dict:
         text = args.get("text")
-        source = args.get("source") or ""
-        tags = args.get("tags") or []
-        tags_str = ",".join(str(t) for t in tags) if isinstance(tags, list) else str(tags)
         try:
-            res = self.admission.capture(text, proposed_by=identity.agent_id,
-                                         source=source, tags=tags_str)
+            res = self.admission.capture(text, proposed_by=identity.agent_id)
         except SecretRefused as e:
             # REFUSE: nothing written (0 rows). Envelope carries rule NAMES, never bytes.
             return {"status": "refused", "reason": str(e),

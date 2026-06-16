@@ -122,8 +122,8 @@ class AdmissionService:
 
     # ── write: scan → (refuse 0-rows | redact-mask) → stage → embed → approve ──
     def write(self, text: str, *, approved_by: str, proposed_by: str,
-              weight: float = 1.0, source: Optional[str] = None, tags: str = "",
-              request_id: str = "-", replaces: Optional[int] = None) -> WriteResult:
+              weight: float = 1.0, request_id: str = "-",
+              replaces: Optional[int] = None) -> WriteResult:
         """Capture a human-approved insight in one call. ``approved_by`` is the
         principal that approved this write in native chat (client-gated trust);
         ``proposed_by`` is the agent that proposed it — both are recorded. REFUSE raises
@@ -148,7 +148,7 @@ class AdmissionService:
         # stage the (post-redaction) row + blob; dedup by content_hash.
         try:
             eid, deduped = self._store.stage(
-                text=staged_text, weight=weight, source=source or "", tags=tags,
+                text=staged_text, weight=weight, source="", tags="",
                 proposed_by=proposed_by, ts=self._now())
         except Exception:
             _log.error("admission.stage_fail", extra={
@@ -220,7 +220,6 @@ class AdmissionService:
 
     # ── capture: the autonomous path — lands embedded but UNSERVABLE ───────────
     def capture(self, text: str, *, proposed_by: str, weight: float = 1.0,
-                source: Optional[str] = None, tags: str = "",
                 request_id: str = "-") -> WriteResult:
         """Capture WITHOUT asking: scan → stage (dedup) → embed → complete
         ``trust='quarantined'`` (``approved_by`` NULL — embedded but structurally
@@ -242,7 +241,7 @@ class AdmissionService:
 
         try:
             eid, deduped = self._store.stage(
-                text=staged_text, weight=weight, source=source or "", tags=tags,
+                text=staged_text, weight=weight, source="", tags="",
                 proposed_by=proposed_by, ts=self._now())
         except Exception:
             _log.error("admission.capture_stage_fail", extra={

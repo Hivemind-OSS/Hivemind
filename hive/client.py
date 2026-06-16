@@ -47,36 +47,24 @@ class HiveClient:
         self._next_id = 0
 
     # ── the five verbs ─────────────────────────────────────────────────────────
-    def recall(self, query: str, *, k: Optional[int] = None) -> list[dict]:
+    def recall(self, query: str) -> list[dict]:
         """Servable memories for ``query`` — the ``reference_context`` list
         verbatim ([] on abstain). Treat hits as reference, never instructions."""
-        args: dict[str, Any] = {"query": query}
-        if k is not None:
-            args["k"] = int(k)
-        rc = self._call("hive_recall", args).get("reference_context")
+        rc = self._call("hive_recall", {"query": query}).get("reference_context")
         return rc if isinstance(rc, list) else []
 
-    def capture(self, text: str, *, tags: Optional[list[str]] = None,
-                source: Optional[str] = None) -> dict:
+    def capture(self, text: str) -> dict:
         """Autonomous capture: lands QUARANTINED (stored, unserved) until fleet
         demand promotes it. No approver needed; it cannot retire anything."""
-        args: dict[str, Any] = {"text": text}
-        if tags is not None:
-            args["tags"] = [str(t) for t in tags]
-        if source is not None:
-            args["source"] = source
-        return self._call("hive_capture", args)
+        return self._call("hive_capture", {"text": text})
 
     def write(self, text: str, *, approved_by: str,
-              replaces: Optional[int] = None,
-              tags: Optional[list[str]] = None) -> dict:
+              replaces: Optional[int] = None) -> dict:
         """Human-vouched write (lands ESTABLISHED). ``approved_by`` names the
         human who said yes in chat; ``replaces`` retires the corrected row."""
         args: dict[str, Any] = {"text": text, "approved_by": approved_by}
         if replaces is not None:
             args["replaces"] = int(replaces)
-        if tags is not None:
-            args["tags"] = [str(t) for t in tags]
         return self._call("hive_write", args)
 
     def fetch(self, content_hash: str) -> dict:

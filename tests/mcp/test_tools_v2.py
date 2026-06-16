@@ -72,7 +72,7 @@ def test_capture_tool_secret_refused():
 
 def test_capture_requires_text_via_schema_belt():
     server, _ = build_real_server()
-    assert is_error(tool_call(server, "hive_capture", {"tags": ["x"]}))
+    assert is_error(tool_call(server, "hive_capture", {}))   # text is required
 
 
 # ── exposure + miss recording on the recall path ───────────────────────────────
