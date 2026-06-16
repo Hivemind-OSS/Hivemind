@@ -70,6 +70,7 @@ Offboard a seat any time: `hive revoke <seat>` → next request 401s.
 | `hive logs [svc]` | follow the daemon (or `ngrok`) logs |
 | `hive tokens` | provisioned seat labels (never the tokens) |
 | `hive revoke <seat>` | offboard a seat (next request → 401) |
+| `hive backup` | snapshot the store now — manual (no scheduler); keeps the `backup_keep` most-recent you take |
 | `hive down` / `hive nuke` | stop (keep data) / destroy (typed confirm) |
 
 **Convergence KPIs:** call `hive_health(include_trends=true)` over MCP — current vs previous

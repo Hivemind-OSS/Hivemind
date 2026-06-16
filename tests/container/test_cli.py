@@ -264,3 +264,23 @@ def test_default_run_forwards_stdin_input():
     # default_run forwards stdin to the child (the keyword-only `input=` seam)
     p = cli.default_run(["cat"], None, input="ndjson-line\n")
     assert p.returncode == 0 and p.stdout == "ndjson-line\n"
+
+
+# ── backup: one-shot snapshot (exec → backupctl, dest path forwarded) ──────────
+def test_backup_forwards_child_stdout():
+    path = "/data/backups/hive-20260616-000000.db\n"
+    fake = FakeRun(script=[(lambda a: seq_in(a, "python", "-m", "hive.tools.backupctl"),
+                            proc(stdout=path))])
+    out = io.StringIO()
+    rc = cli.main(["backup"], run=fake, out=out, env=ENV)
+    assert rc == cli.EX_OK
+    assert out.getvalue() == path                            # snapshot path forwarded verbatim
+    assert any(seq_in(c, "exec", "-T", "hive-server", "python", "-m",
+                      "hive.tools.backupctl") for c in fake.calls)   # exec'd in-container
+
+
+def test_backup_maps_child_failure_to_unavailable():
+    fake = FakeRun(script=[(lambda a: seq_in(a, "hive.tools.backupctl"),
+                            proc(rc=1, stderr="boom"))])
+    rc = cli.main(["backup"], run=fake, out=io.StringIO(), env=ENV)
+    assert rc == cli.EX_UNAVAILABLE

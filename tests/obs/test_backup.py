@@ -80,6 +80,18 @@ def test_run_daily_backup_snapshots_and_prunes(tmp_path):
     assert len(list((tmp_path / "bk").glob("*.db"))) == 1
 
 
+def test_backupctl_main_prints_dest_path(tmp_path, capsys):
+    # the in-container `hive backup` entry: resolve db_path from env → snapshot → print path.
+    from hive.tools import backupctl
+    db = str(tmp_path / "shared.db")
+    _make_db(db, rows=2)
+    rc = backupctl.main(env={"HIVE_STORE__DB_PATH": db})
+    assert rc == 0
+    dest = capsys.readouterr().out.strip()
+    assert dest.endswith(".db") and os.path.exists(dest)      # snapshot written + path printed
+    assert dest.startswith(str(tmp_path / "backups"))         # default backup_dir = <db_dir>/backups
+
+
 def test_prune_keeps_n_most_recent(tmp_path):
     # create 6 backup files with strictly increasing mtimes
     d = tmp_path / "backups"
