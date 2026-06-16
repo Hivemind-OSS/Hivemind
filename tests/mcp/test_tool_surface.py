@@ -86,8 +86,8 @@ def test_malformed_call_rejected_before_port_touched():
 
 def test_bad_enum_rejected_by_schema():
     server, _ = build_real_server()
-    # workflow not in {bugfix,dep-upgrade,general}
-    r = tool_call(server, "hive_recall", {"query": "x", "workflow": "emacs"})
+    # harness not in the hive_init enum {claude-code, cursor, windsurf, ...}
+    r = tool_call(server, "hive_init", {"repo_path": "/tmp/x", "harness": "emacs"})
     assert is_error(r)
 
 

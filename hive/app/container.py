@@ -5,9 +5,8 @@ as a ``Boot``.
 This is the single swap-point switch (hexagonal): the registry selects the embedder /
 index adapters by config key; this root constructs the rest and threads the runtime deps.
 It owns the assembly ORDER (the one wiring fact tests can't get from the adapters) and the
-Phase-1 policy: **utility is OBSERVED-NOT-APPLIED** — ``surfacer.enabled=False``
-(byte-identical recall passthrough). The credit-producer that fed the posteriors was
-removed; the utility/exposure tables remain DORMANT (observed, never applied to ranking).
+Recall serves the dense+gate order as-is — there is no utility rerank (the surfacer and
+the utility store were removed). Reinforcement is demand/exposure-only.
 
 The ``Boot`` contract (consumed by ``hive.tools.entrypoint``):
     store               — the durable store (the entrypoint stamps readiness markers on it)
@@ -19,7 +18,6 @@ The ``Boot`` contract (consumed by ``hive.tools.entrypoint``):
 from __future__ import annotations
 
 import logging
-import random
 from typing import Any, Optional
 
 from hive.adapters.auth_store_sqlite import SqliteTokenStore
@@ -27,7 +25,6 @@ from hive.adapters.clock_system import SystemClock
 from hive.adapters.scanner_regex import DefaultSecretScanner
 from hive.adapters.sqlite_db import connect
 from hive.adapters.store_sqlite import SqliteEpisodeStore
-from hive.adapters.utility_store_sqlite import SqliteUtilityStore
 from hive.app import registry
 from hive.app.config import Config
 from hive.app.health import health
@@ -36,17 +33,11 @@ from hive.app.onboard import InstallPlanner
 from hive.domain.admission import AdmissionService
 from hive.domain.lifecycle import DemandRule, LifecycleService, SurvivalRule
 from hive.domain.recall import RecallPipeline
-from hive.domain.surfacer import UtilitySurfacer
 
 _log = logging.getLogger("hive.container")
 
 _MEMORY_DB = ":memory:"
 _DAY_S = 86_400
-
-# Deterministic RNG seed: the surfacer ε-explore is seeded from a fixed constant so a
-# container build is reproducible (a test can assert a stable recall order; the Phase-1
-# surfacer is inert anyway).
-_SURFACER_SEED = 1
 
 # Persisted PCA geometry (so a restart reuses the SAME basis ⇒ byte-stable recall). Stored
 # in the episode store's meta kv under the strict-prefix discipline.
@@ -57,7 +48,6 @@ _HEAD_WVER_KEY = "embedding:head:w_version"
 # caught at boot rather than at first recall.
 _REQUIRED_TABLES = frozenset({
     "blobs", "episodes", "exposure", "task_outcomes", "meta",
-    "utility", "utility_sources", "utility_layer",
     "recall_misses", "evidence_events",
 })
 
@@ -68,8 +58,8 @@ class Container:
     (write→approve→recall, re-embed) without re-deriving the wiring."""
 
     def __init__(
-        self, *, cfg: Config, conn, index, store, utility_store, token_store, embedder, scanner,
-        clock, gate, surfacer, recall,
+        self, *, cfg: Config, conn, index, store, token_store, embedder, scanner,
+        clock, gate, recall,
         admission, install_planner, identity: ServerIdentity, started_ts: int,
         lifecycle=None,
     ) -> None:
@@ -77,13 +67,11 @@ class Container:
         self.conn = conn
         self.index = index
         self.store = store                  # Boot.store — the entrypoint stamps markers here
-        self.utility_store = utility_store
         self.token_store = token_store      # Boot.token_store — the HTTP daemon's verify seam
         self.embedder = embedder
         self.scanner = scanner
         self.clock = clock
         self.gate = gate
-        self.surfacer = surfacer
         self.recall = recall
         self.admission = admission
         self.install_planner = install_planner
@@ -191,8 +179,6 @@ def build_container(cfg: Config, *, tenant_id: str, agent_id: str,
     deferred to ``warm_embedder``; here we only open the DB, apply schema, and wire."""
     conn = connect(cfg.db_path, check_same_thread=False)   # shared across HTTP handler threads (lock-serialized)
     index = registry.build_index(cfg)
-    # the utility store creates the `utility` table the Phase-1-disabled surfacer reads.
-    utility_store = SqliteUtilityStore(conn)
     store = SqliteEpisodeStore(conn, index=index)
     # hybrid recall needs the store's FTS5 mirror: a stripped SQLite degrades
     # silently while hybrid is off, but with hybrid ON it must fail at boot —
@@ -201,8 +187,7 @@ def build_container(cfg: Config, *, tenant_id: str, agent_id: str,
         raise RuntimeError(
             "recall.hybrid=true but this SQLite build lacks FTS5 — use an "
             "FTS5-enabled SQLite or set recall.hybrid=false (HIVE_RECALL__HYBRID)")
-    # Auth token store: owns its own `access_tokens` table; independent of the utility/episode
-    # ORDER constraint above (no cross-table dependency), so it can be built anywhere after conn.
+    # Auth token store: owns its own `access_tokens` table — built anywhere after conn.
     token_store = SqliteTokenStore(conn)
     scanner = DefaultSecretScanner()
     clock = clock or SystemClock()
@@ -216,11 +201,6 @@ def build_container(cfg: Config, *, tenant_id: str, agent_id: str,
             "— the index/store dim and the embedder projection must agree")
 
     gate = registry.build_gate(cfg)
-    # Phase-1 INERT surfacer: enabled=False ⇒ byte-identical passthrough (utility observed,
-    # not applied). Flipping this default to True is the deliberate mutation the acceptance tests catch.
-    surfacer = UtilitySurfacer(
-        enabled=False, epsilon_explore=cfg.recall.epsilon_explore,
-        f_min=cfg.utility.f_min, f_max=cfg.utility.f_max, rng=random.Random(_SURFACER_SEED))
     # The mechanical lifecycle: pure DemandRule + the trigger service, wired into
     # admission (capture trigger + sweep piggyback) and recall (miss trigger).
     aut = cfg.autonomy
@@ -239,8 +219,8 @@ def build_container(cfg: Config, *, tenant_id: str, agent_id: str,
             survival_e=aut.survival_e, survival_days=aut.survival_days,
             survival_min_exposures=aut.survival_min_exposures))
     recall = RecallPipeline(
-        embedder=embedder, index=index, gate=gate, surfacer=surfacer,
-        reader=store, utility_store=utility_store,
+        embedder=embedder, index=index, gate=gate,
+        reader=store,
         recall_top_n=cfg.recall.recall_top_n,
         ledger=store, clock_now=clock.now, scanner=scanner,
         provisional_ttl_s=aut.provisional_ttl_days * _DAY_S,
@@ -268,8 +248,7 @@ def build_container(cfg: Config, *, tenant_id: str, agent_id: str,
               "autonomy=%s", tenant_id, cfg.db_path, cfg.geometry.d, cfg.index.backend,
               cfg.embedding.provider, aut.enabled)
     return Container(
-        cfg=cfg, conn=conn, index=index, store=store, utility_store=utility_store,
-        token_store=token_store,
-        embedder=embedder, scanner=scanner, clock=clock, gate=gate, surfacer=surfacer,
+        cfg=cfg, conn=conn, index=index, store=store, token_store=token_store,
+        embedder=embedder, scanner=scanner, clock=clock, gate=gate,
         recall=recall, admission=admission, install_planner=install_planner,
         identity=identity, started_ts=int(clock.now()), lifecycle=lifecycle)

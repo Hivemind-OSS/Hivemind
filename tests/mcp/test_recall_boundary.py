@@ -19,7 +19,7 @@ class _StubRecall:
     def __init__(self, result):
         self._result = result
 
-    def recall(self, query, *, agent_id, agent_ctx):
+    def recall(self, query, *, agent_id):
         return self._result
 
 

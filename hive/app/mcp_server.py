@@ -45,7 +45,7 @@ from hive.app.onboard import (
 from hive.app.tool_defs import TOOL_DEFINITIONS
 from hive.domain.errors import SecretRefused
 from hive.domain.lifecycle import is_servable
-from hive.domain.models import CONFIDENT, AgentContext
+from hive.domain.models import CONFIDENT
 
 _log = logging.getLogger("hive.app.mcp_server")
 
@@ -326,10 +326,7 @@ class HiveMCPServer:
 
     def _handle_recall(self, args: dict, identity: ServerIdentity) -> dict:
         query = args.get("query") or ""
-        ctx = AgentContext(repo_remote=args.get("repo_remote") or "",
-                           language=args.get("language") or "",
-                           workflow=args.get("workflow") or "general")
-        result = self.recall.recall(query, agent_id=identity.agent_id, agent_ctx=ctx)
+        result = self.recall.recall(query, agent_id=identity.agent_id)
         # ── BELT 2: servable-only re-filter, independent of the index (mut #2).
         # The per-hit is_servable re-check is the AUTHORITATIVE freshness layer: a
         # TTL-lapsed provisional row still sitting in the warm index is dropped HERE

@@ -10,20 +10,17 @@ Any lexical fault degrades to dense — never to EMPTY.
 """
 from __future__ import annotations
 
-import random
 
 import numpy as np
 import pytest
 
-from hive.domain.models import ABSTAIN, CONFIDENT, AgentContext
+from hive.domain.models import ABSTAIN, CONFIDENT
 from hive.domain.recall import NormalizedEntropyGate, RecallPipeline
-from hive.domain.surfacer import UtilitySurfacer
 from tests.fakes._fakes import (
-    FakeEpisodeReader, FakeIndex, FakeLedger, FakeScanner, FakeUtilityStore,
+    FakeEpisodeReader, FakeIndex, FakeLedger, FakeScanner,
 )
 
 D = 16
-CTX = AgentContext("github.com/acme/web", "python", "bugfix")
 
 
 def _e(i: int, d: int = D) -> np.ndarray:
@@ -91,9 +88,7 @@ def _pipe(*, index, reader, query_vec, ledger, lifecycle=None, recall_top_n=10,
     return RecallPipeline(
         embedder=_StubProvider(query_vec), index=index,
         gate=NormalizedEntropyGate(0.5, 16.0),
-        surfacer=UtilitySurfacer(enabled=False, epsilon_explore=0.1,
-                                 f_min=0.5, f_max=1.5, rng=random.Random(0)),
-        reader=reader, utility_store=FakeUtilityStore(),
+        reader=reader,
         recall_top_n=recall_top_n, ledger=ledger, clock_now=lambda: 0,
         scanner=FakeScanner(), provisional_ttl_s=10**9,
         lifecycle=lifecycle, **feature_kwargs)
@@ -138,10 +133,10 @@ def test_hybrid_off_is_byte_identical_and_lexical_untouched():
     index, reader = _confident_world()
     led_base, led_off = FakeLedger(), FakeLedger()
     r_base = _pipe(index=index, reader=reader, query_vec=_e(0),
-                   ledger=led_base).recall("q", agent_id="A", agent_ctx=CTX)
+                   ledger=led_base).recall("q", agent_id="A")
     r_off = _pipe(index=index, reader=reader, query_vec=_e(0), ledger=led_off,
                   lexical_index=spy, hybrid_enabled=False,
-                  ).recall("q", agent_id="A", agent_ctx=CTX)
+                  ).recall("q", agent_id="A")
     assert _obs(r_off) == _obs(r_base)
     assert _exposures_obs(led_off) == _exposures_obs(led_base)
     assert led_off.misses == led_base.misses == []
@@ -151,10 +146,10 @@ def test_hybrid_off_is_byte_identical_and_lexical_untouched():
     led_b2, led_o2 = FakeLedger(), FakeLedger()
     life_b, life_o = _SpyLifecycle(), _SpyLifecycle()
     rb = _pipe(index=aindex, reader=areader, query_vec=_e(0), ledger=led_b2,
-               lifecycle=life_b).recall("q2", agent_id="A", agent_ctx=CTX)
+               lifecycle=life_b).recall("q2", agent_id="A")
     ro = _pipe(index=aindex, reader=areader, query_vec=_e(0), ledger=led_o2,
                lifecycle=life_o, lexical_index=spy, hybrid_enabled=False,
-               ).recall("q2", agent_id="A", agent_ctx=CTX)
+               ).recall("q2", agent_id="A")
     assert _obs(ro) == _obs(rb) and ro.state == ABSTAIN
     assert led_o2.misses == led_b2.misses and len(led_o2.misses) == 1
     assert life_o.on_miss_agents == life_b.on_miss_agents == ["A"]
@@ -168,10 +163,10 @@ def test_gate_abstains_before_lexical_io():
     index, reader = _abstain_world()
     base_led, led = FakeLedger(), FakeLedger()
     r_base = _pipe(index=index, reader=reader, query_vec=_e(0),
-                   ledger=base_led).recall("q", agent_id="A", agent_ctx=CTX)
+                   ledger=base_led).recall("q", agent_id="A")
     r = _pipe(index=index, reader=reader, query_vec=_e(0), ledger=led,
               lexical_index=spy, hybrid_enabled=True,
-              ).recall("q", agent_id="A", agent_ctx=CTX)
+              ).recall("q", agent_id="A")
     assert r.state == ABSTAIN and r.hits == ()
     assert _obs(r) == _obs(r_base)         # abstain identical with hybrid ON
     assert led.misses == base_led.misses
@@ -185,15 +180,14 @@ def test_lexical_only_hit_surfaces_confident():
     led = FakeLedger()
     r = _pipe(index=index, reader=reader, query_vec=_e(0), ledger=led,
               recall_top_n=2, lexical_index=lex, hybrid_enabled=True,
-              ).recall("exact identifier q", agent_id="A", agent_ctx=CTX)
+              ).recall("exact identifier q", agent_id="A")
     assert r.state == CONFIDENT
     ids = [h.episode_id for h in r.hits]
     assert 3 in ids and 1 in ids           # the lexical resurfacing AND the dense top
     assert lex.calls == [("exact identifier q", 2)]
     # dense-only control: without hybrid, eid 3 cannot make the top-2 shortlist
     r_dense = _pipe(index=index, reader=reader, query_vec=_e(0), ledger=FakeLedger(),
-                    recall_top_n=2).recall("exact identifier q", agent_id="A",
-                                           agent_ctx=CTX)
+                    recall_top_n=2).recall("exact identifier q", agent_id="A")
     assert 3 not in [h.episode_id for h in r_dense.hits]
     # the surfaced sim stays the HONEST dense cosine, never the lexical score
     assert {h.episode_id: pytest.approx(h.sim, abs=1e-6) for h in r.hits}[3] == 0.1
@@ -207,10 +201,10 @@ def test_lexical_fault_degrades_to_dense():
 
     index, reader = _confident_world()
     r_dense = _pipe(index=index, reader=reader, query_vec=_e(0),
-                    ledger=FakeLedger()).recall("q", agent_id="A", agent_ctx=CTX)
+                    ledger=FakeLedger()).recall("q", agent_id="A")
     r = _pipe(index=index, reader=reader, query_vec=_e(0), ledger=FakeLedger(),
               lexical_index=_BoomLexical(), hybrid_enabled=True,
-              ).recall("q", agent_id="A", agent_ctx=CTX)
+              ).recall("q", agent_id="A")
     assert r.state == CONFIDENT
     assert _obs(r) == _obs(r_dense)        # degraded TO DENSE, not to empty
 
@@ -224,7 +218,7 @@ def test_fused_id_without_dense_mass_dropped():
     lex = _StubLexical([(99, 9.9)])
     r = _pipe(index=index, reader=reader, query_vec=_e(0), ledger=FakeLedger(),
               lexical_index=lex, hybrid_enabled=True,
-              ).recall("q", agent_id="A", agent_ctx=CTX)
+              ).recall("q", agent_id="A")
     assert r.state == CONFIDENT
     assert [h.episode_id for h in r.hits] == [1, 2]         # 99 dropped at resolve
     assert all(h.episode_id != 99 for h in r.hits)
@@ -238,7 +232,7 @@ def test_margins_nonnegative_under_fusion():
     led = FakeLedger()
     r = _pipe(index=index, reader=reader, query_vec=_e(0), ledger=led,
               recall_top_n=2, lexical_index=lex, hybrid_enabled=True,
-              ).recall("q", agent_id="A", agent_ctx=CTX)
+              ).recall("q", agent_id="A")
     assert r.state == CONFIDENT
     assert [h.episode_id for h in r.hits] == [3, 1]         # fused, mass-NON-monotone
     items = led.exposures[0]["items"]
@@ -253,7 +247,7 @@ def test_margins_nonnegative_under_fusion():
     led_off, led_base = FakeLedger(), FakeLedger()
     _pipe(index=index, reader=reader, query_vec=_e(0), ledger=led_off,
           recall_top_n=2, lexical_index=_StubLexical([(3, 5.0)]),
-          hybrid_enabled=False).recall("q", agent_id="A", agent_ctx=CTX)
+          hybrid_enabled=False).recall("q", agent_id="A")
     _pipe(index=index, reader=reader, query_vec=_e(0), ledger=led_base,
-          recall_top_n=2).recall("q", agent_id="A", agent_ctx=CTX)
+          recall_top_n=2).recall("q", agent_id="A")
     assert _exposures_obs(led_off) == _exposures_obs(led_base)

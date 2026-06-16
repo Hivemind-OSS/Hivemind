@@ -8,7 +8,6 @@ onto the built server per test.
 from __future__ import annotations
 
 import json
-import random
 
 from hive.adapters.index_exhaustive import ExhaustiveCosineIndex
 from hive.adapters.sqlite_db import connect
@@ -18,9 +17,8 @@ from hive.app.mcp_server import HiveMCPServer, MCPRequest, ServerIdentity
 from hive.domain.admission import AdmissionService
 from hive.domain.lifecycle import DemandRule, LifecycleService, SurvivalRule
 from hive.domain.recall import NormalizedEntropyGate, RecallPipeline
-from hive.domain.surfacer import UtilitySurfacer
 from tests.fakes._fakes import (
-    FakeClock, FakeInstallPlanner, FakeProvider, FakeScanner, FakeUtilityStore,
+    FakeClock, FakeInstallPlanner, FakeProvider, FakeScanner,
 )
 
 _DAY_S = 86_400
@@ -60,9 +58,7 @@ def build_real_server(*, d: int = 64, h: float = 0.5, beta: float = 16.0,
                                  lifecycle=lifecycle, autonomy_enabled=aut.enabled)
     recall = RecallPipeline(
         embedder=embedder, index=index, gate=NormalizedEntropyGate(h, beta),
-        surfacer=UtilitySurfacer(enabled=False, epsilon_explore=0.0, f_min=0.5,
-                                 f_max=1.5, rng=random.Random(0)),
-        reader=store, utility_store=FakeUtilityStore(),
+        reader=store,
         recall_top_n=top_n,
         ledger=store, clock_now=clock.now, scanner=scanner,
         provisional_ttl_s=aut.provisional_ttl_days * _DAY_S,

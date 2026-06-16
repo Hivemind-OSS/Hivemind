@@ -93,8 +93,8 @@ def test_unknown_override_field_raises():
 
 
 def test_isolation_frac_is_cut():
-    # the held-out-eval slice (guardrail-2) was cut: utility.isolation_frac no longer exists.
-    with pytest.raises(ValueError, match=r"isolation_frac|unknown config override"):
+    # the held-out-eval slice (guardrail-2) was cut: the whole utility config group is gone.
+    with pytest.raises(ValueError, match=r"isolation_frac|unknown config"):
         Config.load(utility={"isolation_frac": 0.05})
 
 

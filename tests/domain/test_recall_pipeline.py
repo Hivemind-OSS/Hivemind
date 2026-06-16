@@ -5,30 +5,22 @@ happy path, every failure mode (embedder raise / index raise / empty /
 non-authoritative), every invariant (abstain⟹empty, abstain-no-resurrect
 STRUCTURAL, EMPTY vs ABSTAIN distinct, entropy∈[0,1], unique trace, top_n
 size-only, approved-only honest half), the D1 per-hit recall_margin value (a pure
-unit pin), the A2 family spy + cross-family isolation, and the swap-seam (a 2nd index
+unit pin), and the swap-seam (a 2nd index
 adapter ⟹ identical result). The move-#6 exposure ledger was removed with the
 producer, so recall no longer records what it surfaced — those tests are gone.
 """
 from __future__ import annotations
 
-import random
-
 import numpy as np
 import pytest
 
-from hive.domain.models import ABSTAIN, CONFIDENT, EMPTY_NO_DATA, AgentContext, Scored
-from hive.domain.recall import (
-    NormalizedEntropyGate, RecallPipeline, _recall_margins,
-    _resolve_query_family, _softmax_mass_from_sims,
-)
-from hive.domain.surfacer import UtilitySurfacer
+from hive.domain.models import ABSTAIN, CONFIDENT, EMPTY_NO_DATA
+from hive.domain.recall import NormalizedEntropyGate, RecallPipeline, _recall_margins
 from tests.fakes._fakes import (
-    FakeEpisodeReader, FakeIndex, FakeLedger, FakeScanner, FakeUtilityStore,
+    FakeEpisodeReader, FakeIndex, FakeLedger, FakeScanner,
 )
 
 D = 16
-CTX = AgentContext("github.com/acme/web", "python", "bugfix")
-FAM = "github.com/acme/web|python|bugfix"
 
 
 # ── vector helpers (controlled cosines to e0, the query direction) ────────────
@@ -96,27 +88,13 @@ class _ListIndex:
         return len(self._rows)
 
 
-class _SpyUtil(FakeUtilityStore):
-    def __init__(self, *a, **k) -> None:
-        super().__init__(*a, **k)
-        self.families: list[str] = []
-
-    def utility_map(self, family_scope, *, confident_only=True):
-        self.families.append(family_scope)
-        return super().utility_map(family_scope, confident_only=confident_only)
-
-
-def _pipe(*, index, reader, query_vec, util=None, surfacer=None,
+def _pipe(*, index, reader, query_vec,
           recall_top_n=10, h=0.5, beta=16.0, embedder=None, ledger=None):
     return RecallPipeline(
         embedder=embedder or _StubProvider(query_vec),
         index=index,
         gate=NormalizedEntropyGate(h, beta),
-        surfacer=surfacer or UtilitySurfacer(
-            enabled=False, epsilon_explore=0.1, f_min=0.5, f_max=1.5,
-            rng=random.Random(0)),
         reader=reader,
-        utility_store=util or FakeUtilityStore(),
         recall_top_n=recall_top_n,
         ledger=ledger if ledger is not None else FakeLedger(),
         clock_now=lambda: 0,
@@ -125,7 +103,7 @@ def _pipe(*, index, reader, query_vec, util=None, surfacer=None,
     )
 
 
-def _confident_setup(top_n=10, util=None, surfacer=None):
+def _confident_setup(top_n=10):
     """gold(cos1) + two weak distractors ⟹ peaked ⟹ CONFIDENT."""
     index, reader = FakeIndex(), FakeEpisodeReader()
     for eid, vec, text in ((1, _e(0), "the gold memory"),
@@ -133,8 +111,7 @@ def _confident_setup(top_n=10, util=None, surfacer=None):
                            (3, _cos_vec(0.05), "distractor b")):
         index.add(eid, vec)
         reader.add(eid, text, weight=1.0)
-    return _pipe(index=index, reader=reader, query_vec=_e(0),
-                 util=util, surfacer=surfacer, recall_top_n=top_n)
+    return _pipe(index=index, reader=reader, query_vec=_e(0), recall_top_n=top_n)
 
 
 # ── D1: per-hit recall_margin is the softmax-mass gap (pure pin + mutation target)
@@ -147,7 +124,7 @@ def test_recall_margins_are_mass_gaps():
 
 # ── happy path ────────────────────────────────────────────────────────────────
 def test_happy_path_returns_confident_hits():
-    r = _confident_setup().recall("q", agent_id="A", agent_ctx=CTX)
+    r = _confident_setup().recall("q", agent_id="A")
     assert r.state == CONFIDENT
     assert r.hits[0].episode_id == 1 and r.hits[0].text == "the gold memory"
     assert 0.0 <= r.entropy_norm <= 1.0
@@ -163,7 +140,7 @@ def test_recall_at_5_over_held_out_pairs_meets_floor():
     hit_at5 = 0
     for eid, (vec, _text) in enumerate(golds):
         r = _pipe(index=index, reader=reader, query_vec=vec).recall(
-            "q", agent_id="A", agent_ctx=CTX)
+            "q", agent_id="A")
         if r.state == CONFIDENT and eid in {h.episode_id for h in r.hits[:5]}:
             hit_at5 += 1
     assert hit_at5 / len(golds) >= 0.33   # recall@5 floor
@@ -177,7 +154,7 @@ def test_abstain_returns_empty_hits():
         index.add(eid, _cos_vec(0.0))   # all cos 0 with query e0
         reader.add(eid, f"t{eid}")
     r = _pipe(index=index, reader=reader, query_vec=_e(0)).recall(
-        "q", agent_id="A", agent_ctx=CTX)
+        "q", agent_id="A")
     assert r.state == ABSTAIN and r.hits == ()
 
 
@@ -190,13 +167,13 @@ def test_abstain_no_resurrect():
         index.add(eid, _cos_vec(0.0))
         reader.add(eid, f"t{eid}")
     r = _pipe(index=index, reader=reader, query_vec=_e(0)).recall(
-        "q", agent_id="A", agent_ctx=CTX)
+        "q", agent_id="A")
     assert r.state == ABSTAIN and r.hits == ()
 
 
 def test_empty_index_is_empty_no_data():
     r = _pipe(index=FakeIndex(), reader=FakeEpisodeReader(), query_vec=_e(0)).recall(
-        "q", agent_id="A", agent_ctx=CTX)
+        "q", agent_id="A")
     assert r.state == EMPTY_NO_DATA and r.hits == () and r.entropy_norm == 0.0
 
 
@@ -217,28 +194,28 @@ def test_authoritative_index_required():
     idx = _NonAuthIndex()
     idx.add(1, _e(0))
     r = _pipe(index=idx, reader=FakeEpisodeReader(), query_vec=_e(0)).recall(
-        "q", agent_id="A", agent_ctx=CTX)
+        "q", agent_id="A")
     assert r.state == EMPTY_NO_DATA and r.hits == ()   # never silently flips to ANN
 
 
 # ── trace id ──────────────────────────────────────────────────────────────────
 def test_trace_id_emitted_and_unique():
     p = _confident_setup()
-    a = p.recall("q", agent_id="A", agent_ctx=CTX)
-    b = p.recall("q", agent_id="A", agent_ctx=CTX)
+    a = p.recall("q", agent_id="A")
+    b = p.recall("q", agent_id="A")
     assert a.trace_id and b.trace_id and a.trace_id != b.trace_id
     # present on abstain too
     idx, rdr = FakeIndex(), FakeEpisodeReader()
     for eid in (1, 2, 3):
         idx.add(eid, _cos_vec(0.0)); rdr.add(eid, "t")
     assert _pipe(index=idx, reader=rdr, query_vec=_e(0)).recall(
-        "q", agent_id="A", agent_ctx=CTX).trace_id
+        "q", agent_id="A").trace_id
 
 
 # ── top_n is hits-length only, never the abstain decision ─────────────────────
 def test_recall_top_n_size_only():
-    r1 = _confident_setup(top_n=1).recall("q", agent_id="A", agent_ctx=CTX)
-    r5 = _confident_setup(top_n=5).recall("q", agent_id="A", agent_ctx=CTX)
+    r1 = _confident_setup(top_n=1).recall("q", agent_id="A")
+    r5 = _confident_setup(top_n=5).recall("q", agent_id="A")
     assert r1.state == CONFIDENT and r5.state == CONFIDENT   # same gate decision
     assert len(r1.hits) == 1 and len(r5.hits) == 3           # only hits length changes
     assert r1.entropy_norm == pytest.approx(r5.entropy_norm)
@@ -249,7 +226,7 @@ def test_embedder_failure_is_empty_no_data():
     idx, rdr = FakeIndex(), FakeEpisodeReader()
     idx.add(1, _e(0)); rdr.add(1, "gold")
     r = _pipe(index=idx, reader=rdr, query_vec=_e(0),
-              embedder=_RaisingProvider(_e(0))).recall("q", agent_id="A", agent_ctx=CTX)
+              embedder=_RaisingProvider(_e(0))).recall("q", agent_id="A")
     assert r.state == EMPTY_NO_DATA and r.hits == ()   # never raises into the caller
 
 
@@ -257,7 +234,7 @@ def test_index_search_raise_is_empty_no_data():
     idx = _RaisingSearchIndex()
     idx.add(1, _e(0))
     r = _pipe(index=idx, reader=FakeEpisodeReader(), query_vec=_e(0)).recall(
-        "q", agent_id="A", agent_ctx=CTX)
+        "q", agent_id="A")
     assert r.state == EMPTY_NO_DATA
 
 
@@ -268,55 +245,10 @@ def test_recall_against_alternate_index_adapter():
         for eid, vec, text in ((1, _e(0), "gold"), (2, _cos_vec(0.1), "d")):
             idx.add(eid, vec); rdr.add(eid, text)
         r = _pipe(index=idx, reader=rdr, query_vec=_e(0)).recall(
-            "q", agent_id="A", agent_ctx=CTX)
+            "q", agent_id="A")
         return (r.state, tuple((h.episode_id, h.text, round(h.sim, 6)) for h in r.hits),
                 round(r.entropy_norm, 9), round(r.top_margin, 9))
     assert run(FakeIndex) == run(_ListIndex)   # internal repr differs; result identical
-
-
-# ── A2: family spy + cross-family isolation (pipeline-level) ──────────────────
-def test_recall_queries_utility_map_with_resolved_family():
-    spy = _SpyUtil()
-    _confident_setup(util=spy).recall("q", agent_id="A", agent_ctx=CTX)
-    assert spy.families == [FAM]   # exactly the resolved family, no cross-family fold
-
-
-def _ab_reorder_setup(util, *, surfacer):
-    index, reader = FakeIndex(), FakeEpisodeReader()
-    index.add(1, _e(0)); reader.add(1, "A", weight=1.0)          # sim 1.0 (base rank 0)
-    index.add(2, _cos_vec(0.5)); reader.add(2, "B", weight=1.0)  # sim 0.5 (base rank 1)
-    return _pipe(index=index, reader=reader, query_vec=_e(0), util=util,
-                 surfacer=surfacer)
-
-
-def test_cross_family_posterior_does_not_reorder():
-    surf = UtilitySurfacer(enabled=True, epsilon_explore=0.0, f_min=0.5, f_max=1.5,
-                           rng=random.Random(0))
-    from hive.domain.attribution import CreditDelta
-    # confident posterior on B, but under a DIFFERENT family than the query's
-    other = FakeUtilityStore()
-    other.apply_credit([CreditDelta(episode_id=2, family_scope="other|fam|x",
-                                    d_wins=8.0, d_losses=0.0, source_agent="s")])
-    r = _ab_reorder_setup(other, surfacer=surf).recall("q", agent_id="A", agent_ctx=CTX)
-    assert [h.episode_id for h in r.hits] == [1, 2]   # NOT reordered (family mismatch)
-    # positive control: same posterior under the QUERY's family ⟹ B promoted
-    same = FakeUtilityStore()
-    same.apply_credit([CreditDelta(episode_id=2, family_scope=FAM,
-                                   d_wins=8.0, d_losses=0.0, source_agent="s")])
-    r2 = _ab_reorder_setup(same, surfacer=surf).recall("q", agent_id="A", agent_ctx=CTX)
-    assert [h.episode_id for h in r2.hits] == [2, 1]   # B promoted by confident utility
-
-
-# ── Phase-1 surfacer inertness through the pipeline ───────────────────────────
-def test_surfacer_disabled_is_passthrough_through_pipeline():
-    from hive.domain.attribution import CreditDelta
-    util = FakeUtilityStore()
-    util.apply_credit([CreditDelta(episode_id=2, family_scope=FAM,
-                                   d_wins=8.0, d_losses=0.0, source_agent="s")])
-    surf = UtilitySurfacer(enabled=False, epsilon_explore=0.0, f_min=0.5, f_max=1.5,
-                           rng=random.Random(0))
-    r = _ab_reorder_setup(util, surfacer=surf).recall("q", agent_id="A", agent_ctx=CTX)
-    assert [h.episode_id for h in r.hits] == [1, 2]   # sim order, utility ignored (Phase-1)
 
 
 # ── CONFIDENT iff boundary (gate-pass + ≥1 hit) + resolve-away fail-closed ────
@@ -324,7 +256,7 @@ def test_single_candidate_passes_to_confident_with_that_hit():
     idx, rdr = FakeIndex(), FakeEpisodeReader()
     idx.add(7, _e(0)); rdr.add(7, "only")
     r = _pipe(index=idx, reader=rdr, query_vec=_e(0)).recall(
-        "q", agent_id="A", agent_ctx=CTX)
+        "q", agent_id="A")
     assert r.state == CONFIDENT and len(r.hits) == 1 and r.hits[0].episode_id == 7
 
 
@@ -339,19 +271,8 @@ def test_malformed_search_result_is_empty_no_data():
     idx = _BadSimIndex()
     idx.add(1, _e(0))
     r = _pipe(index=idx, reader=FakeEpisodeReader(), query_vec=_e(0)).recall(
-        "q", agent_id="A", agent_ctx=CTX)
+        "q", agent_id="A")
     assert r.state == EMPTY_NO_DATA
-
-
-def test_raising_surfacer_is_empty_no_data():
-    # #C: a raising surfacer (a Phase-2 collaborator) must degrade to EMPTY, not raise.
-    class _BoomSurfacer:
-        def order(self, scored, utility_map, *, family_scope):
-            raise RuntimeError("surfacer boom")
-
-    r = _confident_setup(surfacer=_BoomSurfacer()).recall(
-        "q", agent_id="A", agent_ctx=CTX)
-    assert r.state == EMPTY_NO_DATA and r.hits == ()
 
 
 def test_nan_sim_index_never_confident():
@@ -367,7 +288,7 @@ def test_nan_sim_index_never_confident():
     reader = FakeEpisodeReader()
     reader.add(1, "real gold"); reader.add(2, "corrupted")   # resolvable ⇒ would surface but for the gate
     r = _pipe(index=idx, reader=reader, query_vec=_e(0)).recall(
-        "q", agent_id="A", agent_ctx=CTX)
+        "q", agent_id="A")
     assert r.state != CONFIDENT
     assert all(h.sim == h.sim for h in r.hits)   # no NaN sim surfaced (NaN != NaN)
 
@@ -384,5 +305,5 @@ def test_gate_passes_but_all_resolve_away_is_empty_no_data():
     idx = FakeIndex()
     idx.add(7, _e(0))                       # gate will pass (single peaked candidate)
     r = _pipe(index=idx, reader=FakeEpisodeReader(), query_vec=_e(0)).recall(
-        "q", agent_id="A", agent_ctx=CTX)
+        "q", agent_id="A")
     assert r.state == EMPTY_NO_DATA and r.hits == ()  # fail-closed

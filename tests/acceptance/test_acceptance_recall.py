@@ -10,17 +10,16 @@ import pytest
 
 from hive.app.mcp_server import MCPRequest
 from hive.domain.errors import SecretRefused
-from hive.domain.models import CONFIDENT, AgentContext, content_hash
+from hive.domain.models import CONFIDENT, content_hash
 from hive.research.metrics_ir import abstention_auroc, recall_at_k
 from tests.acceptance.conftest import (
     CORPUS, HIT_QUERIES, MISS_QUERIES, build_acc, seed_corpus,
 )
 
-_CTX = AgentContext(workflow="general")
 
 
 def _topk_ids(container, query, k=5):
-    r = container.recall.recall(query, agent_id="acc", agent_ctx=_CTX)
+    r = container.recall.recall(query, agent_id="acc")
     return [h.episode_id for h in r.hits][:k], r
 
 

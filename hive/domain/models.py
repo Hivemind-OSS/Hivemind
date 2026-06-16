@@ -24,19 +24,6 @@ def content_hash(text: str) -> str:
 # ── recall-side carriers ─────────────────────────────────────────────────────
 
 @dataclass(frozen=True, slots=True)
-class AgentContext:
-    """The agent-declared context that pins the live query's family_scope [A2].
-
-    Built with the SAME three-axis grammar the producer derives at link time
-    (git-remote | language | coarse-workflow) so query-side and credit-side
-    families are byte-comparable.
-    """
-    repo_remote: str = ""
-    language: str = ""
-    workflow: str = "general"
-
-
-@dataclass(frozen=True, slots=True)
 class Scored:
     """A gate-passed recall candidate. ``weight`` is the immutable capture
     salience — the surfacer's base multiplier (NEVER ``sim``/``alpha``) [A1].

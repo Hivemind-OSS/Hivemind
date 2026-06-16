@@ -5,21 +5,18 @@ RESOLVE, BEFORE exposure — a shadowed row's liveness is never refreshed by the
 query that hid it (the resurrection-ordering pin)."""
 from __future__ import annotations
 
-import random
 
 import numpy as np
 
 from hive.domain.lifecycle import ESTABLISHED, PROVISIONAL
-from hive.domain.models import CONFIDENT, AgentContext
+from hive.domain.models import CONFIDENT
 from hive.domain.recall import NormalizedEntropyGate, RecallPipeline, shadow_filter
-from hive.domain.surfacer import UtilitySurfacer
 from tests.fakes._fakes import (
-    FakeEpisodeReader, FakeIndex, FakeLedger, FakeScanner, FakeUtilityStore,
+    FakeEpisodeReader, FakeIndex, FakeLedger, FakeScanner,
     make_episode,
 )
 
 D = 8
-CTX = AgentContext("github.com/acme/web", "python", "general")
 
 
 def _unit(*xs) -> np.ndarray:
@@ -116,9 +113,7 @@ def _pipe(index, reader, ledger, **feature_kwargs):
     return RecallPipeline(
         embedder=_StubProvider(A_VEC), index=index,
         gate=NormalizedEntropyGate(1.0, 16.0),
-        surfacer=UtilitySurfacer(enabled=False, epsilon_explore=0.1,
-                                 f_min=0.5, f_max=1.5, rng=random.Random(0)),
-        reader=reader, utility_store=FakeUtilityStore(),
+        reader=reader,
         recall_top_n=10, ledger=ledger, clock_now=lambda: 0,
         scanner=FakeScanner(), provisional_ttl_s=10**18,
         lifecycle=None, **feature_kwargs)
@@ -129,9 +124,9 @@ def test_shadow_off_is_byte_identical():
     # a pipeline built before the feature existed
     index, reader = _fixture()
     led_base, led_off = FakeLedger(), FakeLedger()
-    base = _pipe(index, reader, led_base).recall("q", agent_id="a", agent_ctx=CTX)
+    base = _pipe(index, reader, led_base).recall("q", agent_id="a")
     off = _pipe(index, reader, led_off, shadow_enabled=False,
-                shadow_tau=0.95).recall("q", agent_id="a", agent_ctx=CTX)
+                shadow_tau=0.95).recall("q", agent_id="a")
     assert off.state == base.state == CONFIDENT
     assert off.hits == base.hits                              # both near-dups served
     assert {h.episode_id for h in off.hits} == {1, 2, 3}
@@ -142,7 +137,7 @@ def test_shadow_off_is_byte_identical():
 def test_shadow_on_serves_winner_only():
     index, reader = _fixture()
     res = _pipe(index, reader, FakeLedger(), shadow_enabled=True,
-                shadow_tau=0.95).recall("q", agent_id="a", agent_ctx=CTX)
+                shadow_tau=0.95).recall("q", agent_id="a")
     assert res.state == CONFIDENT
     ids = [h.episode_id for h in res.hits]
     assert 1 in ids and 3 in ids and 2 not in ids             # vouched row wins
@@ -153,7 +148,7 @@ def test_shadowed_row_gets_no_exposure():
     index, reader = _fixture()
     ledger = FakeLedger()
     _pipe(index, reader, ledger, shadow_enabled=True,
-          shadow_tau=0.95).recall("q", agent_id="a", agent_ctx=CTX)
+          shadow_tau=0.95).recall("q", agent_id="a")
     assert len(ledger.exposures) == 1
     exposed = {eid for eid, _m in ledger.exposures[0]["items"]}
     assert exposed == {1, 3}                                  # 2 was hidden ⇒ no refresh
@@ -165,5 +160,5 @@ def test_shadow_on_nonfinite_serves_both_in_pipeline():
     reader.add(2, "memory 2", trust=PROVISIONAL, ts=99,
                last_active_ts=10**9, value=nan_vec)           # poisoned carrier
     res = _pipe(index, reader, FakeLedger(), shadow_enabled=True,
-                shadow_tau=0.95).recall("q", agent_id="a", agent_ctx=CTX)
+                shadow_tau=0.95).recall("q", agent_id="a")
     assert {h.episode_id for h in res.hits} == {1, 2, 3}      # fail-open: both serve

@@ -6,15 +6,13 @@ from __future__ import annotations
 
 import numpy as np
 
-from hive.domain.models import AgentContext
 from hive.ops.migration import reembed_from_text
 from tests.acceptance.conftest import HIT_QUERIES, build_acc, seed_corpus
 
-_CTX = AgentContext(workflow="general")
 
 
 def _topk(container, query, k=5):
-    r = container.recall.recall(query, agent_id="acc", agent_ctx=_CTX)
+    r = container.recall.recall(query, agent_id="acc")
     return [h.episode_id for h in r.hits][:k]
 
 

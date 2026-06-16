@@ -20,26 +20,22 @@ SQLite/torch/clock):
 """
 from __future__ import annotations
 
-import random
 
 import numpy as np
 import pytest
 
 from hive.domain.lifecycle import QUARANTINED
 from hive.domain.models import (
-    ABSTAIN, CONFIDENT, EMPTY_NO_DATA, AgentContext, RecallDraft, RecallHit,
+    ABSTAIN, CONFIDENT, EMPTY_NO_DATA, RecallDraft, RecallHit,
     RecallResult,
 )
 from hive.domain.recall import NormalizedEntropyGate, RecallPipeline
-from hive.domain.surfacer import UtilitySurfacer
 from tests.fakes._fakes import (
     FakeEpisodeReader, FakeIndex, FakeLedger, FakeQuarantineReader, FakeScanner,
-    FakeUtilityStore,
 )
 
 D = 16
 AGENT = "seat-A"
-CTX = AgentContext("github.com/acme/web", "python", "bugfix")
 
 
 # ── vector helpers (controlled cosines to e0, the query direction) ────────────
@@ -77,9 +73,7 @@ def _pipe(*, index, reader, query_vec=None, draft_reader=None,
     return RecallPipeline(
         embedder=_StubProvider(_e(0) if query_vec is None else query_vec),
         index=index, gate=NormalizedEntropyGate(h, beta),
-        surfacer=UtilitySurfacer(enabled=False, epsilon_explore=0.1, f_min=0.5,
-                                 f_max=1.5, rng=random.Random(0)),
-        reader=reader, utility_store=FakeUtilityStore(), recall_top_n=recall_top_n,
+        reader=reader, recall_top_n=recall_top_n,
         ledger=ledger if ledger is not None else FakeLedger(),
         clock_now=clock_now or (lambda: 0), scanner=FakeScanner(),
         provisional_ttl_s=10**9,
@@ -125,7 +119,7 @@ def test_drafts_off_by_default_reader_never_called():
     _add_quarantined(qr, reader, 10, cos=1.0, writer=AGENT)
     # drafts_enabled defaults False even though a draft_reader is wired
     r = _pipe(index=index, reader=reader, draft_reader=qr).recall(
-        "q", agent_id=AGENT, agent_ctx=CTX)
+        "q", agent_id=AGENT)
     assert r.state == CONFIDENT and r.drafts == ()
     assert qr.calls == 0                                   # never scanned
 
@@ -133,7 +127,7 @@ def test_drafts_off_by_default_reader_never_called():
 def test_drafts_inert_when_reader_none_even_if_enabled():
     index, reader = _confident_index()
     r = _pipe(index=index, reader=reader, drafts_enabled=True,
-              draft_reader=None).recall("q", agent_id=AGENT, agent_ctx=CTX)
+              draft_reader=None).recall("q", agent_id=AGENT)
     assert r.state == CONFIDENT and r.drafts == ()
 
 
@@ -143,7 +137,7 @@ def test_abstain_resurfaces_drafts_and_still_records_miss():
     index, reader = _abstain_index()
     _add_quarantined(qr, reader, 10, cos=0.95, writer=AGENT, text="my own draft")
     r = _pipe(index=index, reader=reader, draft_reader=qr, drafts_enabled=True,
-              ledger=ledger).recall("q", agent_id=AGENT, agent_ctx=CTX)
+              ledger=ledger).recall("q", agent_id=AGENT)
     # trusted channel: refused exactly as today
     assert r.state == ABSTAIN and r.hits == ()
     # draft channel: the seat's own quarantined capture comes back, labeled
@@ -161,7 +155,7 @@ def test_seat_scoping_excludes_other_writers():
     _add_quarantined(qr, reader, 10, cos=0.95, writer=AGENT)          # mine
     _add_quarantined(qr, reader, 11, cos=0.99, writer="seat-B")       # teammate's
     r = _pipe(index=index, reader=reader, draft_reader=qr,
-              drafts_enabled=True).recall("q", agent_id=AGENT, agent_ctx=CTX)
+              drafts_enabled=True).recall("q", agent_id=AGENT)
     assert [d.episode_id for d in r.drafts] == [10]    # the teammate row is invisible
 
 
@@ -172,7 +166,7 @@ def test_draft_tau_floor_drops_weak_matches():
     _add_quarantined(qr, reader, 10, cos=0.90, writer=AGENT)   # above tau
     _add_quarantined(qr, reader, 11, cos=0.50, writer=AGENT)   # below tau=0.6
     r = _pipe(index=index, reader=reader, draft_reader=qr, drafts_enabled=True,
-              draft_tau=0.6).recall("q", agent_id=AGENT, agent_ctx=CTX)
+              draft_tau=0.6).recall("q", agent_id=AGENT)
     assert [d.episode_id for d in r.drafts] == [10]
 
 
@@ -185,7 +179,7 @@ def test_undecidable_cosine_never_surfaces():
     qr.add(20, bad, writer=AGENT)
     reader.add(20, "nan draft", trust=QUARANTINED)
     r = _pipe(index=index, reader=reader, draft_reader=qr,
-              drafts_enabled=True).recall("q", agent_id=AGENT, agent_ctx=CTX)
+              drafts_enabled=True).recall("q", agent_id=AGENT)
     assert r.drafts == ()
 
 
@@ -196,7 +190,7 @@ def test_cold_empty_index_resurfaces_drafts_and_records_miss():
     _add_quarantined(qr, reader, 10, cos=0.95, writer=AGENT, text="cold draft")
     r = _pipe(index=FakeIndex(), reader=reader, draft_reader=qr,
               drafts_enabled=True, ledger=ledger).recall(
-        "q", agent_id=AGENT, agent_ctx=CTX)
+        "q", agent_id=AGENT)
     assert r.state == EMPTY_NO_DATA and r.hits == ()
     assert [d.episode_id for d in r.drafts] == [10]
     assert [m["miss_type"] for m in ledger.misses] == ["no_match"]
@@ -208,7 +202,7 @@ def test_confident_carries_hits_and_drafts_without_exposing_drafts():
     index, reader = _confident_index()
     _add_quarantined(qr, reader, 10, cos=0.97, writer=AGENT, text="my draft")
     r = _pipe(index=index, reader=reader, draft_reader=qr, drafts_enabled=True,
-              ledger=ledger).recall("q", agent_id=AGENT, agent_ctx=CTX)
+              ledger=ledger).recall("q", agent_id=AGENT)
     assert r.state == CONFIDENT
     # the gold leads the trusted hits; the draft eid never enters the hits channel
     hit_ids = [h.episode_id for h in r.hits]
@@ -223,11 +217,11 @@ def test_confident_carries_hits_and_drafts_without_exposing_drafts():
 def test_confident_hits_byte_identical_with_and_without_drafts():
     index, reader = _confident_index()
     base = _pipe(index=index, reader=reader).recall(
-        "q", agent_id=AGENT, agent_ctx=CTX)
+        "q", agent_id=AGENT)
     qr = FakeQuarantineReader()
     _add_quarantined(qr, reader, 10, cos=0.97, writer=AGENT)
     withd = _pipe(index=index, reader=reader, draft_reader=qr,
-                  drafts_enabled=True).recall("q", agent_id=AGENT, agent_ctx=CTX)
+                  drafts_enabled=True).recall("q", agent_id=AGENT)
     assert base.hits == withd.hits                         # hits untouched by drafts
     assert base.drafts == () and withd.drafts != ()
 
@@ -241,7 +235,7 @@ class _RaisingQReader:
 def test_draft_reader_raise_is_fail_open():
     index, reader = _confident_index()
     r = _pipe(index=index, reader=reader, draft_reader=_RaisingQReader(),
-              drafts_enabled=True).recall("q", agent_id=AGENT, agent_ctx=CTX)
+              drafts_enabled=True).recall("q", agent_id=AGENT)
     assert r.state == CONFIDENT and r.hits[0].episode_id == 1
     assert r.drafts == ()                                  # degraded to none, not a crash
 
@@ -254,7 +248,7 @@ def test_drafts_capped_at_recall_top_n():
     for eid, cos in ((10, 0.99), (11, 0.95), (12, 0.90), (13, 0.85), (14, 0.80)):
         _add_quarantined(qr, reader, eid, cos=cos, writer=AGENT)
     r = _pipe(index=index, reader=reader, draft_reader=qr, drafts_enabled=True,
-              recall_top_n=2).recall("q", agent_id=AGENT, agent_ctx=CTX)
+              recall_top_n=2).recall("q", agent_id=AGENT)
     assert [d.episode_id for d in r.drafts] == [10, 11]
 
 
@@ -265,7 +259,7 @@ def test_drafts_sorted_cosine_desc():
     _add_quarantined(qr, reader, 11, cos=0.99, writer=AGENT)
     _add_quarantined(qr, reader, 12, cos=0.90, writer=AGENT)
     r = _pipe(index=index, reader=reader, draft_reader=qr,
-              drafts_enabled=True).recall("q", agent_id=AGENT, agent_ctx=CTX)
+              drafts_enabled=True).recall("q", agent_id=AGENT)
     assert [d.episode_id for d in r.drafts] == [11, 12, 10]
 
 

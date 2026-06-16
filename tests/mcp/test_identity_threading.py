@@ -45,9 +45,9 @@ def test_recall_logs_under_passed_identity():
     seen: dict[str, str] = {}
     real_recall = server.recall.recall
 
-    def spy(query, *, agent_id, agent_ctx):
+    def spy(query, *, agent_id):
         seen["agent_id"] = agent_id
-        return real_recall(query, agent_id=agent_id, agent_ctx=agent_ctx)
+        return real_recall(query, agent_id=agent_id)
 
     server.recall.recall = spy  # type: ignore[assignment]
     ident = ServerIdentity(tenant_id="default", agent_id="bob-desktop")
@@ -62,9 +62,9 @@ def test_recall_falls_back_to_process_identity_when_no_identity():
     seen: dict[str, str] = {}
     real_recall = server.recall.recall
 
-    def spy(query, *, agent_id, agent_ctx):
+    def spy(query, *, agent_id):
         seen["agent_id"] = agent_id
-        return real_recall(query, agent_id=agent_id, agent_ctx=agent_ctx)
+        return real_recall(query, agent_id=agent_id)
 
     server.recall.recall = spy  # type: ignore[assignment]
     server.handle(MCPRequest(3, "tools/call",

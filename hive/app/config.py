@@ -11,7 +11,7 @@ Boundary: this module WIRES, it does not COMPUTE. It depends on the registry onl
 never reaches into `core/` domain logic.
 
 Grounded deviations (built-decision-wins):
-- `recall.epsilon_explore > 0` is THE validated guardrail-1 floor [A4].
+- `recall.epsilon_explore > 0` is validated (the hive.research eval harnesses assume a positive ε).
 - `db_path` defaults to `":memory:"` (ephemeral — cannot corrupt a persistent store) so a
   no-db_path `Config.load(...)` resolves; an EMPTY string is the fail-fast trigger. The
   "no silent default" prose guards a *persistent* store; `:memory:` is not one.
@@ -91,7 +91,7 @@ class IndexConfig:
 class RecallConfig:
     H_frac_max: float = 0.5
     recall_top_n: int = 10
-    epsilon_explore: float = 0.1          # [A4] guardrail-1 ε (>0); INERT on the live path — the Phase-1 surfacer is enabled=False, so it's consumed only by the offline research/eval harnesses
+    epsilon_explore: float = 0.1          # consumed ONLY by the hive.research eval harnesses (no live consumer — the surfacer was removed); validated > 0 because they assume a positive ε
     softmax_beta: float = 16.0            # gate mass temperature (β>0)
     hybrid: bool = False                  # lexical(FTS5)+RRF channel; flips only on channel_eval CI evidence
     shadow: bool = False                  # CV3 serve-time version shadowing; OFF ⇒ byte-identical (golden)
@@ -114,30 +114,10 @@ class RecallConfig:
             raise ValueError(f"recall.recall_top_n must be >= 1 (got {self.recall_top_n})")
         if not self.epsilon_explore > 0.0:
             raise ValueError(
-                f"recall.epsilon_explore must be > 0 (guardrail-1 — a 0 starves novel "
-                f"memories of exposure); got {self.epsilon_explore}")
+                f"recall.epsilon_explore must be > 0 (the hive.research eval harnesses "
+                f"assume a positive ε); got {self.epsilon_explore}")
         if not self.softmax_beta > 0.0:
             raise ValueError(f"recall.softmax_beta must be > 0 (got {self.softmax_beta})")
-
-
-@dataclass(frozen=True)
-class UtilityConfig:
-    prediction_bias_window_s: int = 604800
-    prediction_bias_threshold: float = 0.25
-    # utility→weight factor bounds — INERT on the live path (Phase-1 surfacer is
-    # enabled=False); consumed only by the offline research/eval harnesses.
-    f_min: float = 0.5
-    f_max: float = 1.5
-
-    def __post_init__(self) -> None:
-        if self.prediction_bias_window_s <= 0:
-            raise ValueError(
-                f"utility.prediction_bias_window_s must be > 0 (got {self.prediction_bias_window_s})")
-        if not (0.0 < self.prediction_bias_threshold):
-            raise ValueError(
-                f"utility.prediction_bias_threshold must be > 0 (got {self.prediction_bias_threshold})")
-        if not (self.f_min <= self.f_max):
-            raise ValueError(f"utility.f_min ({self.f_min}) must be <= f_max ({self.f_max})")
 
 
 @dataclass(frozen=True)
@@ -204,7 +184,6 @@ _GROUP_TYPES: dict[str, type] = {
     "embedding": EmbeddingConfig,
     "index": IndexConfig,
     "recall": RecallConfig,
-    "utility": UtilityConfig,
     "autonomy": AutonomyConfig,
     "retention": RetentionConfig,
     "obs": ObservabilityConfig,
@@ -212,7 +191,7 @@ _GROUP_TYPES: dict[str, type] = {
 # field-groups constructed (and thus validated) BEFORE runtime, so a field-level error
 # (e.g. recall.epsilon_explore) surfaces ahead of the db_path-required check.
 _FIELD_GROUP_ORDER = ("geometry", "embedding", "index", "recall",
-                      "utility", "autonomy", "retention", "obs")
+                      "autonomy", "retention", "obs")
 
 
 @dataclass(frozen=True)
@@ -222,7 +201,6 @@ class Config:
     embedding: EmbeddingConfig
     index: IndexConfig
     recall: RecallConfig
-    utility: UtilityConfig
     autonomy: AutonomyConfig
     retention: RetentionConfig
     obs: ObservabilityConfig

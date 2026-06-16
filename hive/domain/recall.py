@@ -1,12 +1,12 @@
 """M04 — the read half of the pure domain core: the never-hallucinate
 enforcement point.
 
-`RecallPipeline.recall(query, *, agent_id, agent_ctx) -> RecallResult` hides the
-whole encode → dense-cosine search → normalized-entropy abstain → utility-surface
-flow behind one narrow surface. It owns NO I/O: it composes injected ports
-(`EmbeddingProvider`, `VectorIndex`, `EpisodeReader`, `UtilityStore`) and two pure
-stage objects (`NormalizedEntropyGate`, `UtilitySurfacer`). The move-#6 exposure
-ledger was removed with the producer — recall no longer records who it surfaced.
+`RecallPipeline.recall(query, *, agent_id) -> RecallResult` hides the whole
+encode → dense-cosine search → normalized-entropy abstain flow behind one narrow
+surface. It owns NO I/O: it composes injected ports (`EmbeddingProvider`,
+`VectorIndex`, `EpisodeReader`) and the pure `NormalizedEntropyGate` stage. The
+dense+gate order is served as-is — there is no utility rerank (reinforcement is
+demand/exposure-only).
 
 PURE: stdlib `math` + `uuid` only. The purity gate (tests/test_purity.py) forbids
 sqlite3 | torch | subprocess | os | git | time here — so the whole read path is
@@ -29,14 +29,13 @@ from hive.domain.lifecycle import (
     ESTABLISHED, PROVISIONAL, _cosine, is_servable,
 )
 from hive.domain.models import (
-    CONFIDENT, AgentContext, Episode, RecallDraft, RecallHit, RecallResult, Scored,
+    CONFIDENT, Episode, RecallDraft, RecallHit, RecallResult, Scored,
 )
 from hive.domain.ports import (
     EmbeddingProvider, EpisodeReader, ExposureLedger, LexicalIndex,
-    QuarantineReader, UtilityStore, VectorIndex,
+    QuarantineReader, VectorIndex,
 )
 from hive.domain.secret_scan import REDACT, REFUSE
-from hive.domain.surfacer import UtilitySurfacer
 
 _log = logging.getLogger("hive.recall")
 
@@ -185,15 +184,6 @@ def shadow_filter(episodes: Sequence[Episode], *,
     return [ep for i, ep in enumerate(episodes) if i in keep]
 
 
-# ── query → family (A2): the SOLE owner of the live query's family_scope ──────
-def _resolve_query_family(ctx: AgentContext) -> str:
-    """Byte-identical grammar to the producer's link-time family_scope:
-    "<remote>|<lang>|<workflow>".  // O(1). Empty axes collapse to "*"/"general"
-    so an unscoped query selects the cross-repo aggregate slice that nothing
-    credits ⇒ utility_map returns {} ⇒ surfacer is identity (safe degradation)."""
-    return f"{ctx.repo_remote or '*'}|{ctx.language or '*'}|{ctx.workflow or 'general'}"
-
-
 class RecallPipeline:
     """The one deep module that answers-or-abstains. Composes injected ports +
     the two pure stages. NEVER raises into the caller: any internal failure is
@@ -205,8 +195,8 @@ class RecallPipeline:
 
     def __init__(
         self, *, embedder: EmbeddingProvider, index: VectorIndex,
-        gate: NormalizedEntropyGate, surfacer: UtilitySurfacer,
-        reader: EpisodeReader, utility_store: UtilityStore,
+        gate: NormalizedEntropyGate,
+        reader: EpisodeReader,
         recall_top_n: int, ledger: ExposureLedger, clock_now: Callable[[], int],
         scanner, provisional_ttl_s: int, lifecycle=None,
         autonomy_enabled: bool = True,
@@ -222,9 +212,7 @@ class RecallPipeline:
         self.embedder = embedder
         self.index = index
         self.gate = gate
-        self.surfacer = surfacer
         self.reader = reader
-        self.utility_store = utility_store
         self.recall_top_n = int(recall_top_n)
         # the recall side-channel (REQUIRED, never silently absent): exposure on
         # CONFIDENT, a recorded miss on every non-answer. Writes are fail-open for
@@ -262,10 +250,8 @@ class RecallPipeline:
         self.draft_tau = float(draft_tau)
         self.quarantine_ttl_s = int(quarantine_ttl_s)
 
-    def recall(self, query: str, *, agent_id: str,
-               agent_ctx: AgentContext) -> RecallResult:
+    def recall(self, query: str, *, agent_id: str) -> RecallResult:
         trace_id = uuid.uuid4().hex
-        fam = _resolve_query_family(agent_ctx)
 
         # encode → search (fail-closed: embedder/index/authority failure ⇒ EMPTY).
         value_q = None
@@ -317,7 +303,6 @@ class RecallPipeline:
         # under recall_top_n truncation (AUDIT #B).
         try:
             full_masses = _softmax_mass_from_sims(sims, self.gate.beta)
-            utility_map = self._utility_map(fam)
 
             # the gate's masses + the honest dense cosine, keyed by eid — the ONLY
             # mass/sim source for the resolve step. The dense search spans the full
@@ -407,14 +392,15 @@ class RecallPipeline:
                       for j, (s, _fm, ep) in enumerate(resolved)}
             scored = [s for s, _fm, _e in resolved]
 
-            ordered = self.surfacer.order(scored, utility_map, family_scope=fam)
-            # every served hit carries its trust label + creation ts so the consumer
-            # can discount provisional content and order coexisting versions.
+            # reinforcement is demand/exposure-ONLY by design — there is no utility rerank:
+            # the dense+gate order is served as-is. Every served hit carries its trust label
+            # + creation ts so the consumer can discount provisional content and order
+            # coexisting versions.
             hits = tuple(
                 RecallHit(s.episode_id, by_eid[s.episode_id][1].text, s.sim,
                           trust=by_eid[s.episode_id][1].trust,
                           ts=by_eid[s.episode_id][1].ts)
-                for s in ordered)
+                for s in scored)
         except Exception as exc:                       # noqa: BLE001 — fail closed
             _log.error("recall surface failure (agent_id=%s): %r → EMPTY_NO_DATA",
                        agent_id, exc)
@@ -424,7 +410,7 @@ class RecallPipeline:
         # exposure: WHO was served WHAT, with the per-hit margins, refreshing the
         # served rows' liveness — recorded post-resolve in surfaced order.
         self._note_exposure(
-            trace_id, [(s.episode_id, by_eid[s.episode_id][0]) for s in ordered],
+            trace_id, [(s.episode_id, by_eid[s.episode_id][0]) for s in scored],
             agent_id)
         _log.debug("CONFIDENT trace=%s n_hits=%d top_sim=%.4f",
                    trace_id, len(hits), hits[0].sim)
@@ -510,10 +496,3 @@ class RecallPipeline:
             _log.warning("miss record failed (agent=%s): %r — recall unaffected",
                          agent_id, exc)
 
-    def _utility_map(self, fam: str) -> dict:
-        """utility_map for the live family; a store failure degrades to identity ({})."""
-        try:
-            return self.utility_store.utility_map(family_scope=fam, confident_only=True)
-        except Exception as exc:                       # noqa: BLE001
-            _log.warning("utility_map failure (fam=%s): %r → identity", fam, exc)
-            return {}

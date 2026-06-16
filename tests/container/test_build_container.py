@@ -65,12 +65,6 @@ def test_token_store_wired_create_verify_end_to_end():
     assert c.token_store.verify(tok) is None
 
 
-def test_phase1_surfacer_is_inert():
-    """Utility OBSERVED-NOT-APPLIED: the surfacer is disabled (byte-identical passthrough).
-    Flipping this default to True is the deliberate mutation the acceptance tests catch."""
-    assert _build().surfacer.enabled is False
-
-
 def test_gate_floor_is_wired_by_identity():
     """The frozen cfg.recall object is handed to the gate BY IDENTITY (CONFIG_DRIFT killed
     structurally) — not a copied float."""
@@ -108,7 +102,7 @@ def test_migrate_raises_on_missing_table(tmp_path):
     """A botched migration (a required table absent) fails LOUD at boot (→ EX_SOFTWARE),
     never a silent serve over a half-built store."""
     c = _build(tmp_path)
-    c.conn.execute("DROP TABLE utility_sources")
+    c.conn.execute("DROP TABLE exposure")
     with pytest.raises(RuntimeError, match="migration incomplete"):
         c.migrate()
 
