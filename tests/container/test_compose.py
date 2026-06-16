@@ -2,7 +2,7 @@
 
 Two layers: (1) daemon-free TEXT assertions on the long-lived-warm-server transport
 decision (restart: unless-stopped, stdin attach — NOT `run --rm` cold-warm-per-restart),
-the compose-level tenant fail-fast, and the env-key↔config alignment (the corrected
+and the env-key↔config alignment (the corrected
 HIVE_EMBEDDING__MODEL / HIVE_OBS__LOG_LEVEL keys must name a REAL config field, else they
 are dead operator knobs); (2) `docker compose config` validity, skip-guarded on the CLI.
 
@@ -182,10 +182,9 @@ def test_hive_image_has_no_tunnel_baked_in():
 
 
 def test_env_example_documents_tunnel_vars():
-    # the operator front door: tenant id live, tunnel credentials present but COMMENTED —
-    # the example must never ship a real value (secrets stay out of git).
+    # the operator front door: tunnel credentials present but COMMENTED — the example must
+    # never ship a real value (secrets stay out of git).
     env_ex = (_ROOT / ".env.example").read_text()
-    assert "HIVE_TENANT_ID" in env_ex
     assert "NGROK_AUTHTOKEN" in env_ex and "NGROK_DOMAIN" in env_ex
     for ln in env_ex.splitlines():
         if "NGROK_AUTHTOKEN" in ln:

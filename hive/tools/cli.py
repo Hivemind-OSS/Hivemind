@@ -501,10 +501,6 @@ _HANDLERS: dict[str, Callable[..., int]] = {
     "origin": _origin,
 }
 
-# Verbs that never touch compose (pure local prints) skip the tenant gate.
-_LOCAL_VERBS: frozenset[str] = frozenset({"connect"})
-
-
 def _ask_stderr(prompt: str) -> str:
     """Default `ask`: prompt on STDERR (stdout stays machine-parseable), read stdin."""
     print(prompt, end="", file=sys.stderr, flush=True)
@@ -563,14 +559,6 @@ def main(argv: Optional[list[str]] = None, *, run: Optional[Run] = None,
     p_origin.add_argument("--no-cron", action="store_true",
                           help="skip installing the hourly cron line")
     args = parser.parse_args(argv)
-
-    # Every compose-touching verb needs the tenant id — compose interpolation
-    # fail-fasts on it; surface the config error HERE, before any child call.
-    if args.cmd not in _LOCAL_VERBS and not (env.get("HIVE_TENANT_ID") or "").strip():
-        print("hive: HIVE_TENANT_ID is required (set it in .env or the environment)",
-              file=sys.stderr)
-        return EX_CONFIG
-
     return _HANDLERS[args.cmd](args, run=run, out=out, env=env, ask=ask)
 
 

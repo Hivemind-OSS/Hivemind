@@ -153,15 +153,19 @@ def test_tenant_and_defaults_from_env():
 
 
 @pytest.mark.parametrize("env", [{}, {"HIVE_TENANT_ID": ""}, {"HIVE_TENANT_ID": "   "}])
-def test_missing_tenant_exits_config(env):
+def test_missing_tenant_defaults_and_boots(env):
+    # tenant_id is a constant label, not required: absent/blank ⇒ "default", boot proceeds.
     calls: list = []
-    rc = M.main(argv=[], env=env, build_container_fn=_build_factory(_RecordingContainer(calls)),
+    captured: dict = {}
+    rc = M.main(argv=[], env=env,
+                build_container_fn=_build_factory(_RecordingContainer(calls), captured),
                 serve=_serve_recorder(calls))
-    assert rc == M.EX_CONFIG == 78
-    assert calls == []                            # never assembled, never served
+    assert rc == M.EX_OK == 0
+    assert captured["tenant_id"] == "default"
+    assert calls == ["migrate", "build_index", "warm", "make_server", "serve"]
 
 
-def test_missing_tenant_does_not_pollute_stdout(capsys):
+def test_empty_env_boot_does_not_pollute_stdout(capsys):
     M.main(argv=[], env={}, build_container_fn=_build_factory(_RecordingContainer([])),
            serve=lambda s: None)
     assert capsys.readouterr().out == ""          # stdout is the JSON-RPC channel

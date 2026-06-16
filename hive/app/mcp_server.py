@@ -702,6 +702,7 @@ EX_CONFIG = 78
 
 _DEFAULT_DB_PATH = "/data/shared.db"
 _DEFAULT_AGENT_ID = "default-agent"
+_DEFAULT_TENANT_ID = "default"
 
 
 def _configure_logging(level: int = logging.INFO) -> None:
@@ -715,17 +716,12 @@ def _configure_logging(level: int = logging.INFO) -> None:
 
 
 def _resolve_identity(tenant: Optional[str], db: Optional[str], agent: Optional[str],
-                      env: Mapping[str, str]) -> Optional[tuple[str, str, str]]:
+                      env: Mapping[str, str]) -> tuple[str, str, str]:
     """Resolve ``(tenant_id, db_path, agent_id)`` — CLI arg takes precedence, then env, then a
-    safe default for db/agent. ``tenant_id`` is the one HARD-required value (the single-tenant
-    boundary, mirroring ``entrypoint._resolve_env``); returns None iff it is absent in BOTH the
-    arg and env (the caller maps that to EX_CONFIG). NEVER echoes an env *value* (secret-safe).
-    // O(1)."""
-    tenant_id = (tenant or env.get("HIVE_TENANT_ID") or "").strip()
-    if not tenant_id:
-        _log.error("mcp_server.missing_required arg/var=tenant (pass --tenant or HIVE_TENANT_ID) "
-                   "code=%d", EX_CONFIG)
-        return None
+    safe default for all three. ``tenant_id`` is a constant label (never a query filter — the
+    single-tenant boundary), defaulting to ``"default"`` when unset so the server boots
+    zero-config. NEVER echoes an env *value* (secret-safe). // O(1)."""
+    tenant_id = (tenant or env.get("HIVE_TENANT_ID") or "").strip() or _DEFAULT_TENANT_ID
     db_path = (db or env.get("HIVE_STORE__DB_PATH") or "").strip() or _DEFAULT_DB_PATH
     agent_id = (agent or env.get("HIVE_AGENT_ID") or "").strip() or _DEFAULT_AGENT_ID
     return tenant_id, db_path, agent_id
@@ -754,18 +750,15 @@ def main(argv: Optional[list[str]] = None, *, env: Optional[Mapping[str, str]] =
     parser.add_argument("--db", default=None,
                         help="shared SQLite store path (default: $HIVE_STORE__DB_PATH or /data/shared.db)")
     parser.add_argument("--tenant", default=None,
-                        help="tenant id — REQUIRED (default: $HIVE_TENANT_ID)")
+                        help="tenant id label (default: $HIVE_TENANT_ID or 'default')")
     parser.add_argument("--agent", default=None,
                         help="agent id, stamped as proposed_by (default: $HIVE_AGENT_ID or default-agent)")
     args = parser.parse_args(argv)
 
     _configure_logging()                          # JSON→stderr before anything can fail
 
-    # ── config.loaded (EX_CONFIG on missing-tenant OR validation failure) ──
-    resolved = _resolve_identity(args.tenant, args.db, args.agent, env)
-    if resolved is None:                          # ← removing this guard is the missing-tenant mutation
-        return EX_CONFIG
-    tenant_id, db_path, agent_id = resolved
+    # ── config.loaded (EX_CONFIG on Config validation failure) ──
+    tenant_id, db_path, agent_id = _resolve_identity(args.tenant, args.db, args.agent, env)
 
     # Lazy imports: ``container`` imports THIS module (HiveMCPServer/ServerIdentity), so a
     # module-level ``from hive.app.container import build_container`` would be a circular import.

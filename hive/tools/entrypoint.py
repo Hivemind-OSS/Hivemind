@@ -46,6 +46,7 @@ EX_CONFIG = 78
 
 _DEFAULT_DB_PATH = "/data/shared.db"
 _DEFAULT_AGENT_ID = "default-agent"
+_DEFAULT_TENANT_ID = "default"
 _DEFAULT_LOG_LEVEL = logging.INFO
 _DEFAULT_HTTP_PORT = 8765
 # Part S hardening defaults: generous for a busy single agent,
@@ -216,15 +217,12 @@ def _resolve_max_body(env: Mapping[str, str]) -> Optional[int]:
     return max_body
 
 
-def _resolve_env(env: Mapping[str, str]) -> Optional[tuple[str, str, str]]:
-    """Resolve the three boot-critical operator values. Returns None iff a REQUIRED var is
-    missing (the caller maps that to EX_CONFIG). `HIVE_TENANT_ID` is the one hard-required
-    var (the single-tenant boundary); db_path/agent_id have safe defaults."""
-    tenant_id = (env.get("HIVE_TENANT_ID") or "").strip()
-    if not tenant_id:
-        # error path: name the missing var + EX_CONFIG; NEVER echo any env *value* (secret-safe)
-        _log.error("entrypoint.missing_required_env var=HIVE_TENANT_ID code=%d", EX_CONFIG)
-        return None
+def _resolve_env(env: Mapping[str, str]) -> tuple[str, str, str]:
+    """Resolve the three boot-critical operator values, all with safe defaults so the
+    container boots zero-config. `tenant_id` is a constant label (never a query filter —
+    the single-tenant boundary), defaulting to `"default"` when unset; db_path/agent_id
+    likewise default. NEVER echoes an env *value* (secret-safe)."""
+    tenant_id = (env.get("HIVE_TENANT_ID") or "").strip() or _DEFAULT_TENANT_ID
     db_path = (env.get("HIVE_STORE__DB_PATH") or "").strip() or _DEFAULT_DB_PATH
     agent_id = (env.get("HIVE_AGENT_ID") or "").strip() or _DEFAULT_AGENT_ID
     return tenant_id, db_path, agent_id
@@ -279,11 +277,8 @@ def main(argv: Optional[list[str]] = None, *, env: Optional[Mapping[str, str]] =
     # error surfaces in the structured-JSON format (re-leveled to cfg.obs.log_level once config is known).
     _configure_logging(_DEFAULT_LOG_LEVEL)
 
-    # ── config.loaded (EX_CONFIG on missing-env OR validation failure) ──
-    resolved = _resolve_env(env)
-    if resolved is None:                                # ← removing this guard is mutation #2
-        return EX_CONFIG
-    tenant_id, db_path, agent_id = resolved
+    # ── config.loaded (EX_CONFIG on Config validation failure) ──
+    tenant_id, db_path, agent_id = _resolve_env(env)    # all default; tenant is a label, not required
     port = _resolve_port(env)                           # malformed HIVE_HTTP_PORT → fail fast
     if port is None:
         return EX_CONFIG

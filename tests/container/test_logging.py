@@ -70,12 +70,14 @@ def test_log_level_gates_info_checkpoints(capsys):
     assert "serve_ready" not in capsys.readouterr().err
 
 
-def test_missing_env_error_is_structured_json(capsys):
-    rc = E.main(env={}, build_boot=_build_boot, serve=lambda s: None)
+def test_config_invalid_error_is_structured_json(capsys):
+    # a bad config field (epsilon_explore=0 violates the guardrail-1 floor) ⇒ EX_CONFIG; the
+    # failure surfaces as a structured-JSON ERROR record on stderr (stdout stays clean).
+    rc = E.main(env={"HIVE_RECALL__EPSILON_EXPLORE": "0"}, build_boot=_build_boot,
+                serve=lambda s: None)
     assert rc == E.EX_CONFIG
     cap = capsys.readouterr()
     assert cap.out == ""
-    # the missing-env error surfaces as a JSON ERROR record (configured at default level first)
     err_records = []
     for l in cap.err.splitlines():
         l = l.strip()
@@ -84,5 +86,5 @@ def test_missing_env_error_is_structured_json(capsys):
                 err_records.append(json.loads(l))
             except json.JSONDecodeError:
                 pass
-    assert any(r.get("level") == "ERROR" and "missing_required_env" in r.get("message", "")
+    assert any(r.get("level") == "ERROR" and "config_invalid" in r.get("message", "")
                for r in err_records)

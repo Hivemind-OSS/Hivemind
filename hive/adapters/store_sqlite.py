@@ -64,7 +64,8 @@ CREATE TABLE IF NOT EXISTS blobs(
   content_hash TEXT PRIMARY KEY, text TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS episodes(
   id INTEGER PRIMARY KEY AUTOINCREMENT,
-  tenant_id TEXT NOT NULL, text TEXT NOT NULL, value BLOB,
+  tenant_id TEXT NOT NULL,   -- constant label, never a query filter (single-tenant)
+  text TEXT NOT NULL, value BLOB,
   weight REAL NOT NULL, ts INTEGER NOT NULL, source TEXT, tags TEXT,
   content_hash TEXT NOT NULL,
   status TEXT NOT NULL CHECK(status IN ('pending','approved')),

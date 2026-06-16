@@ -97,14 +97,17 @@ def _serve_recorder(calls, *, require_marker_store=None):
 _OK_ENV = {"HIVE_TENANT_ID": "acme"}
 
 
-# ── config.loaded / missing-env (EX_CONFIG = 78) ──────────────────────────────
+# ── config.loaded / zero-config tenant default (boots, EX_OK) ─────────────────
 @pytest.mark.parametrize("env", [{}, {"HIVE_TENANT_ID": ""}, {"HIVE_TENANT_ID": "   "}])
-def test_missing_required_env_exits_config(env):
+def test_missing_tenant_defaults_and_boots(env):
+    # tenant_id is a constant label, not a required var: absent/blank ⇒ "default", boot proceeds.
     calls: list = []
-    rc = E.main(env=env, build_boot=_boot_factory(_RecordingBoot(calls)),
+    captured: dict = {}
+    rc = E.main(env=env, build_boot=_boot_factory(_RecordingBoot(calls), captured),
                 serve=_serve_recorder(calls))
-    assert rc == E.EX_CONFIG == 78
-    assert calls == []                         # never assembled, never served
+    assert rc == E.EX_OK == 0
+    assert calls == ["migrate", "build_index", "warm", "make_server", "serve"]
+    assert captured["tenant_id"] == "default"
 
 
 def test_config_validation_failure_exits_config():
@@ -123,9 +126,9 @@ def test_config_validation_failure_exits_config():
     assert assembled == [] and calls == []
 
 
-def test_missing_env_does_not_pollute_stdout(capsys):
+def test_empty_env_boot_does_not_pollute_stdout(capsys):
     E.main(env={}, build_boot=_boot_factory(_RecordingBoot([])), serve=lambda s: None)
-    # stdout is the JSON-RPC channel — a boot failure must write NOTHING to it.
+    # stdout is the JSON-RPC channel — the zero-config boot must write NOTHING to it.
     assert capsys.readouterr().out == ""
 
 

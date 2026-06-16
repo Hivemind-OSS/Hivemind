@@ -7,9 +7,12 @@ command; uninstalled, `python -m hive.tools.cli` is identical).
 ## 1. First-time setup (server host, once)
 
 ```bash
-cp .env.example .env        # set HIVE_TENANT_ID=<team>  — everything fail-fasts without it
-hive up                     # build + start; blocks until the daemon is actually healthy
+hive up                     # build + start (zero-config); blocks until the daemon is healthy
 ```
+
+- Zero config required: `hive up` boots on safe code defaults. Only `cp .env.example .env`
+  and edit it if you need an operator override (a non-default DB path, log level, a guarantee
+  knob, or the `--tunnel` ngrok credentials).
 
 - The daemon serves MCP over HTTP on **127.0.0.1:8765 only**. Public exposure is never
   implicit — see section 3.

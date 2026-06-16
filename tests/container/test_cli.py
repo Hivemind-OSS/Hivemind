@@ -48,16 +48,7 @@ class FakeRun:
         return subprocess.CompletedProcess(argv, 0, stdout="", stderr="")
 
 
-# ── skeleton: tenant gate + the run() seam ──────────────────────────────────────
-
-
-def test_missing_tenant_fails_fast():
-    # compose interpolation requires HIVE_TENANT_ID; the CLI owns the fail-fast and
-    # must return EX_CONFIG BEFORE any child invocation.
-    fake = FakeRun()
-    rc = cli.main(["down"], run=fake, out=io.StringIO(), env={})
-    assert rc == cli.EX_CONFIG
-    assert fake.calls == []
+# ── skeleton: the run() seam ─────────────────────────────────────────────────────
 
 
 def test_down_is_compose_down_never_volume_destroying():

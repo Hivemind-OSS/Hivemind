@@ -6,10 +6,9 @@ services:
     # ALL HIVE_* config is sourced from ONE file — .env (operator/startup knobs only; agent
     # tuning knobs live in hive.config.toml). Disjoint by config.CONFIG_AUTHORITY: the loader
     # applies operator knobs from env and agent knobs from the TOML, never both, so nothing is
-    # duplicated or overridden. HIVE_TENANT_ID is the one required var; everything else has a
-    # safe code default — set a key in .env only to override. `required: false` keeps compose
-    # parsing when .env is absent (the entrypoint then fail-fasts on the missing tenant). See
-    # .env.example.
+    # duplicated or overridden. Every key has a safe code default — set a key in .env only to
+    # override. `required: false` keeps compose parsing when .env is absent (the container then
+    # boots fully on defaults, tenant_id="default" included). See .env.example.
     env_file:
       - path: .env
         required: false
