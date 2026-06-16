@@ -79,7 +79,7 @@ def test_valid_token_write_attributed_to_label_then_recallable(daemon):
     assert any(h["text"] == text for h in r["reference_context"])
 
 
-def test_all_five_tools_answer_over_http(daemon, tmp_path):
+def test_all_four_tools_answer_over_http(daemon, tmp_path):
     url, token, _ = daemon
     s_h, h = _call(url, "hive_health", {}, token)
     assert s_h == 200 and h["ok"] is True
@@ -89,8 +89,6 @@ def test_all_five_tools_answer_over_http(daemon, tmp_path):
     assert s_c == 200 and c["status"] == "quarantined"
     s_r, r = _call(url, "hive_recall", {"query": "a durable insight about retries"}, token)
     assert s_r == 200
-    s_i, i = _call(url, "hive_init", {"repo_path": str(tmp_path), "harness": "generic"}, token)
-    assert s_i == 200 and i["phase"] == 1
 
 
 def test_bad_token_writes_nothing_to_the_real_store(daemon):

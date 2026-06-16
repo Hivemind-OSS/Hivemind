@@ -9,14 +9,9 @@ from typing import Iterator, Optional, Sequence
 
 import numpy as np
 
-from hive.domain.models import (
-    RULES_BLOCK_END, RULES_BLOCK_START,
-    Episode, InstallPlan, RulesBlock, content_hash, rules_block_version_marker,
-)
+from hive.domain.models import Episode, content_hash
 from hive.domain.secret_scan import REFUSE, ScanVerdict
 from hive.domain.secret_scan import scan as _scan
-
-from hive.app.onboard import HOOK_MANIFEST, build_recipe, resolve_profile
 
 
 class FakeClock:
@@ -222,50 +217,3 @@ class FakeLedger:
                     miss_type: str, *, ts: int) -> None:
         self.misses.append({"query_text": query_text, "query_vector": query_vector,
                             "agent_id": agent_id, "miss_type": miss_type, "ts": int(ts)})
-
-
-class FakeInstallPlanner:
-    """InstallPlanner double for the MCP surface. ``plan`` does zero writes; ``confirm``
-    links on a matching hash (lie-proof); ``link_status`` backs the additive hive_health
-    link field."""
-    def __init__(self, *, block_version: int = 1) -> None:
-        self.block_version = int(block_version)
-        self.linked: dict[str, bytes] = {}
-        self._expected: dict[str, bytes] = {}        # repo_path -> canonical block_hash from plan()
-
-    def _render(self, repo_path: str, harness: str, rules_file: Optional[str]) -> RulesBlock:
-        body = (f"{RULES_BLOCK_START}\n"
-                f"{rules_block_version_marker(self.block_version)}\n"
-                f"repo={repo_path} harness={harness} "
-                f"rules_file={rules_file or 'CLAUDE.md'}\n"
-                f"On a durable insight, call hive_write(text=...).\n"
-                f"{RULES_BLOCK_END}")
-        return RulesBlock(rendered_text=body,
-                          block_version=self.block_version,
-                          block_hash=hashlib.sha256(body.encode("utf-8")).digest())
-
-    def plan(self, repo_path: str, harness: str,
-             rules_file: Optional[str] = None) -> InstallPlan:
-        block = self._render(repo_path, harness, rules_file)
-        self._expected[repo_path] = block.block_hash      # remember what a faithful install hashes to
-        return InstallPlan(rules_file=rules_file or "CLAUDE.md", harness=harness,
-                           rules_block=block, expected_confirm_hash=block.block_hash,
-                           manifest=HOOK_MANIFEST, recipe=build_recipe(harness))
-
-    def confirm(self, repo_path: str, confirm_hash: bytes, harness: str = "generic") -> dict:
-        # LIE-PROOF (mirror the real adapter): link ONLY on an exact hash match; a stale or
-        # un-planned hash writes nothing and reports stale_or_wrong_block.
-        expected = self._expected.get(repo_path)
-        if expected is None or confirm_hash != expected:
-            return {"linked": False, "error": "stale_or_wrong_block",
-                    "expected": expected.hex() if expected is not None else None}
-        self.linked[repo_path] = confirm_hash
-        profile = resolve_profile(harness)               # mirror the real link record
-        return {"linked": True, "rules_file": "CLAUDE.md", "error": None,
-                "link": {"manifest_version": HOOK_MANIFEST.manifest_version,
-                         "harness": profile.harness, "tier": profile.max_tier}}
-
-    def link_status(self, repo_path: str):
-        if repo_path in self.linked:
-            return True, {"rules_file": "CLAUDE.md"}
-        return False, None

@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import asdict, dataclass
-from typing import TYPE_CHECKING, Any, Callable, Optional
+from typing import TYPE_CHECKING, Any, Optional
 
 if TYPE_CHECKING:
     from hive.app.config import Config
@@ -31,31 +31,13 @@ class HealthSnapshot:
     episodes_approved: int
     episodes_pending: int
     error: Optional[str] = None
-    # M07 additive link surfacing. ``linked`` is None UNTIL a repo_path is probed; in
-    # that state as_dict() OMITS both keys so the no-repo_path payload is byte-identical
-    # to the pre-M07 snapshot (the "tool count / no-token discipline").
-    linked: Optional[bool] = None
-    link: Optional[dict] = None
 
     def as_dict(self) -> dict[str, Any]:
-        d = asdict(self)
-        if self.linked is None:                    # unprobed → drop link keys (byte-identical)
-            d.pop("linked", None)
-            d.pop("link", None)
-        return d
+        return asdict(self)
 
 
-def health(cfg: "Config", store: Any, embedder: Any, *,
-           repo_path: Optional[str] = None,
-           link_status: Optional[Callable[[str], tuple[bool, Optional[dict]]]] = None,
-           ) -> HealthSnapshot:
-    """Probe the live components; fail-soft. // O(N) for the one grouped episode count.
-
-    M07: when ``repo_path`` is given, surface the onboarding link (``linked``/``link``)
-    via the injected ``link_status`` probe (the InstallPlanner's ``link_status``). With
-    NO ``repo_path`` the link keys are absent (``linked`` stays None) — the snapshot is
-    byte-identical to the pre-M07 payload. The link probe NEVER raises the snapshot to
-    ok=False (it is additive, fail-soft to unlinked)."""
+def health(cfg: "Config", store: Any, embedder: Any) -> HealthSnapshot:
+    """Probe the live components; fail-soft. // O(N) for the one grouped episode count."""
     db_path = _safe(lambda: cfg.runtime.db_path, "?")
     tenant_id = _safe(lambda: cfg.runtime.tenant_id, "default")
     index_authoritative = _safe(
@@ -76,19 +58,6 @@ def health(cfg: "Config", store: Any, embedder: Any, *,
         approved = pending = 0
         ok = False
 
-    linked: Optional[bool] = None
-    link: Optional[dict] = None
-    if repo_path is not None:                       # additive link probe; fail-soft to unlinked
-        try:
-            if link_status is not None:
-                probed, link = link_status(repo_path)
-                linked = bool(probed)
-            else:
-                linked, link = False, None
-        except Exception:                           # noqa: BLE001 — link probe never flips ok
-            _log.warning("health.link_probe_failed (reported unlinked)")
-            linked, link = False, None
-
     return HealthSnapshot(
         ok=ok,
         db_path=str(db_path),
@@ -99,8 +68,6 @@ def health(cfg: "Config", store: Any, embedder: Any, *,
         episodes_approved=int(approved),
         episodes_pending=int(pending),
         error=error,
-        linked=linked,
-        link=link,
     )
 
 

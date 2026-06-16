@@ -40,9 +40,10 @@ claude mcp add --transport http hive http://localhost:8765/mcp \
 ```
 
 `hive connect` prints that line ready-made (with the public URL when the tunnel is up).
-From there the system drives itself: the first `hive_*` call from an unlinked repo
-returns the onboarding hint, the agent runs `hive_init`, writes the rules block, and
-the verify gate confirms the loop end to end. No skill, no manual per-repo work.
+From there onboarding is self-serve: the `hive_health` tool description carries the
+rules block, so a connected agent writes it into its primary rules file (CLAUDE.md /
+AGENTS.md / …) and skips re-touch when the marker is already present. No skill, no
+handshake call, no manual per-repo work.
 
 **Solo (one dev, one identity)?** Set `HIVE_AUTONOMY__SOLO_MODE=true` on the server —
 demand-promotion swaps its identity-diversity clause for an elapsed-span rule. Human

@@ -1,8 +1,7 @@
-"""The trust-lifecycle MCP surface: the 6-tool set (no hive_evidence), the capture
+"""The trust-lifecycle MCP surface: the 4-tool set (no hive_evidence), the capture
 verb, exposure/miss recording on the recall path, trust+ts labels end-to-end, the
-per-hit servability belt (the authoritative freshness layer), the fetch supersession
-annotation, health telemetry (trust_counts / n_misses_7d / gaps / manifest_outdated),
-and the autonomy config knobs."""
+per-hit servability belt (the authoritative freshness layer), health telemetry
+(trust_counts / n_misses_7d / gaps), and the autonomy config knobs."""
 from __future__ import annotations
 
 import math
@@ -11,7 +10,6 @@ import pytest
 
 from hive.app.config import AutonomyConfig
 from hive.app.mcp_server import MCPRequest, ServerIdentity
-from hive.app.onboard import HOOK_MANIFEST, ONBOARDING_MANIFEST_VERSION
 from hive.app.tool_defs import TOOL_NAMES
 from hive.domain.lifecycle import PROVISIONAL
 from hive.domain.ports import ExposureLedger
@@ -34,10 +32,10 @@ def _count(server, table: str) -> int:
 
 
 # ── surface ────────────────────────────────────────────────────────────────────
-def test_tool_list_is_exactly_5():
-    assert TOOL_NAMES == {"hive_write", "hive_capture", "hive_recall",
-                          "hive_init", "hive_health"}
+def test_tool_list_is_exactly_4():
+    assert TOOL_NAMES == {"hive_write", "hive_capture", "hive_recall", "hive_health"}
     assert "hive_evidence" not in TOOL_NAMES        # no client-fed evidence exists
+    assert "hive_init" not in TOOL_NAMES            # onboarding is a static health-desc reference
     assert "hive_fetch" not in TOOL_NAMES           # fetch dropped (recall inlines verbatim text)
 
 
@@ -191,33 +189,6 @@ def test_health_trust_counts_misses_gaps():
                             "miss_types", "last_seen"}
     # gaps are opt-in: the plain snapshot has none
     assert "gaps" not in content(tool_call(server, "hive_health", {}))
-
-
-# ── manifest v2 + the outdated hint ────────────────────────────────────────────
-def test_manifest_v2_wording_and_outdated_hint():
-    assert ONBOARDING_MANIFEST_VERSION == 2
-    assert HOOK_MANIFEST.manifest_version == 2
-    by_event = {h.event: h for h in HOOK_MANIFEST.hooks}
-    assert "hive_capture" in by_event["turn-end"].directive
-    assert "no need to ask" in by_event["turn-end"].directive
-    assert "replaces" in by_event["correction"].directive    # the human-correction hook
-    assert "trust" in by_event["task-start"].directive
-
-    class _V1Planner:
-        def link_status(self, repo_path):
-            return True, {"manifest_version": 1}
-
-    server, _ = build_real_server(planner=_V1Planner())
-    snap = content(tool_call(server, "hive_health", {"repo_path": "/r"}))
-    assert snap["linked"] is True and snap["manifest_outdated"] is True
-
-    class _V2Planner:
-        def link_status(self, repo_path):
-            return True, {"manifest_version": ONBOARDING_MANIFEST_VERSION}
-
-    server2, _ = build_real_server(planner=_V2Planner())
-    snap2 = content(tool_call(server2, "hive_health", {"repo_path": "/r"}))
-    assert snap2["manifest_outdated"] is False
 
 
 # ── autonomy config knobs ──────────────────────────────────────────────────────

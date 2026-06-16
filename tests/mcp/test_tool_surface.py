@@ -1,8 +1,8 @@
-"""M06 protocol surface: exactly-5 tools, the dropped verbs absent (the AgentCortex-7,
-the removed approval queue hive_pending/approve/reject, AND no hive_evidence — client-fed
-evidence does not exist in this build), JSON-RPC error semantics, the schema-enforcement
-belt (malformed call never reaches a port — ★), and loop-survival on a raising handler
-(stack never returned to the agent)."""
+"""M06 protocol surface: exactly-4 tools, the dropped verbs absent (the AgentCortex-7,
+the removed approval queue hive_pending/approve/reject, the onboarding handshake hive_init,
+AND no hive_evidence — client-fed evidence does not exist in this build), JSON-RPC error
+semantics, the schema-enforcement belt (malformed call never reaches a port — ★), and
+loop-survival on a raising handler (stack never returned to the agent)."""
 from __future__ import annotations
 
 import io
@@ -17,24 +17,35 @@ from hive.domain.secret_scan import scan as _scan
 from tests.fakes._fakes import FakeIndex
 from tests.mcp._helpers import build_real_server, content, is_error, tool_call
 
-_FIVE = {"hive_write", "hive_capture", "hive_recall", "hive_init", "hive_health"}
-_DROPPED = {"hive_fetch", "hive_pending", "hive_approve", "hive_reject", "hive_evidence",
-            "hive_consolidate", "hive_schemas", "hive_recall_cold",
+_FOUR = {"hive_write", "hive_capture", "hive_recall", "hive_health"}
+_DROPPED = {"hive_init", "hive_fetch", "hive_pending", "hive_approve", "hive_reject",
+            "hive_evidence", "hive_consolidate", "hive_schemas", "hive_recall_cold",
             "hive_restore_cold", "hive_reconsolidate", "hive_audit", "hive_outcome"}
 
 
-def test_tool_list_is_exactly_5():
+def test_tool_list_is_exactly_4():
     server, _ = build_real_server()
     resp = server.handle(MCPRequest(1, "tools/list", {}))
     names = {t["name"] for t in resp.result["tools"]}
-    assert names == _FIVE
-    assert len(resp.result["tools"]) == 5
+    assert names == _FOUR
+    assert len(resp.result["tools"]) == 4
     assert names.isdisjoint(_DROPPED)
     # the static table and the live reply are the same source
-    assert {t["name"] for t in TOOL_DEFINITIONS} == _FIVE
+    assert {t["name"] for t in TOOL_DEFINITIONS} == _FOUR
 
 
-def test_initialize_and_ping():
+def test_health_description_carries_onboarding_reference():
+    """Onboarding option C: with hive_init gone, the static onboarding rules block is the
+    payload of the hive_health DESCRIPTION — the only discovery path a connected agent has.
+    Stripping it from the description leaves a fleet with no way to self-install."""
+    server, _ = build_real_server()
+    resp = server.handle(MCPRequest(1, "tools/list", {}))
+    health = next(t for t in resp.result["tools"] if t["name"] == "hive_health")
+    desc = health["description"]
+    # the marker-delimited block the agent writes into its rules file...
+    assert "<!-- hive-init:start -->" in desc and "<!-- hive-init:end -->" in desc
+    # ...and the load-bearing directives (capture-without-asking + recall-as-reference)
+    assert "hive_capture" in desc and "reference" in desc.lower()
     server, _ = build_real_server()
     init = server.handle(MCPRequest(1, "initialize", {}))
     assert init.result["serverInfo"]["name"] == "hive"
@@ -68,7 +79,7 @@ class _CountingAdmission:
 def _server_with(admission):
     return HiveMCPServer(
         admission=admission, recall=None, store=None, embedder=None,
-        install_planner=None, identity=ServerIdentity("t", "a"), now=lambda: 0)
+        identity=ServerIdentity("t", "a"), now=lambda: 0)
 
 
 def test_malformed_call_rejected_before_port_touched():
@@ -82,13 +93,6 @@ def test_malformed_call_rejected_before_port_touched():
     r2 = tool_call(server, "hive_write", {"text": "an insight"})
     assert is_error(r2)
     assert adm.write_calls == 0
-
-
-def test_bad_enum_rejected_by_schema():
-    server, _ = build_real_server()
-    # harness not in the hive_init enum {claude-code, cursor, windsurf, ...}
-    r = tool_call(server, "hive_init", {"repo_path": "/tmp/x", "harness": "emacs"})
-    assert is_error(r)
 
 
 def test_bad_type_rejected_by_schema():

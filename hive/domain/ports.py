@@ -115,19 +115,7 @@ class SecretScanner(Protocol):
     def scan(self, text: str) -> "ScanVerdictLike": ...
 
 
-@runtime_checkable
-class InstallPlanner(Protocol):
-    """The M07 hive_init handshake the MCP surface drives. ``plan`` is phase-1
-    (zero writes — renders the rules block); ``confirm`` is the phase-2 hash-verified link.
-    M06 depends only on this port; the concrete InstallPlanner adapter is M07 [B10]."""
-    def plan(self, repo_path: str, harness: str,
-             rules_file: "Optional[str]" = None) -> "InstallPlanLike": ...
-    def confirm(self, repo_path: str, confirm_hash: bytes,
-                harness: str = "generic") -> dict: ...
-
-
 # ── structural type aliases (forward refs to carriers defined in sibling modules)
 # Typing-only names; the concrete classes live in models.py / secret_scan.py. Using
 # strings keeps ports.py free of import cycles.
 ScanVerdictLike = "hive.domain.secret_scan.ScanVerdict"
-InstallPlanLike = "hive.domain.models.InstallPlan"

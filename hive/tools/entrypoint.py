@@ -71,8 +71,8 @@ def _configure_logging(level: int) -> None:
         _log.warning("entrypoint.log_config_failed kind=%s", type(exc).__name__)
 
 # Readiness markers the SEPARATE healthcheck process reads (same /data DB, same PID ns).
-# Namespaced per the strict-prefix store discipline so they never collide with producer
-# (`last_producer_tick_ts`) or onboarding (`hive_init:link:*`) meta keys.
+# Namespaced (`boot:`) per the strict-prefix store discipline so they never collide with
+# any other meta key family.
 MARK_EMBEDDER_LOADED = "boot:embedder_loaded"
 MARK_SERVE_PID = "boot:serve_pid"
 MARK_SERVE_STARTTIME = "boot:serve_starttime"

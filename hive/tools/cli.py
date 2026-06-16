@@ -8,8 +8,9 @@ the adapter), the tunnel is the compose `tunnel` profile. Exposed as `hive` via
 runtime — it runs on a host with nothing but the repo + Docker.
 
 Boundary (M11/M12): this CLI wires lifecycle + transport ONLY. `hive connect` prints
-the MCP registration line; the per-repo handshake (`hive_init`) stays agent-driven
-over MCP and never happens here.
+the MCP registration line; per-repo onboarding is agent-driven over MCP (the agent
+self-installs the rules block surfaced in the `hive_health` tool description) and never
+happens here.
 
 Injection seams (`run` / `out` / `env` / `ask`) keep every verb unit-testable without
 Docker — authctl's `connect_fn`/`out` idiom. `run` receives the FULL argv (program
@@ -204,8 +205,8 @@ def _tokens(args, *, run: Run, out: TextIO, env: Mapping[str, str], ask) -> int:
 
 
 def _connect(args, *, run: Run, out: TextIO, env: Mapping[str, str], ask) -> int:
-    """Print the teammate's transport-registration one-liner. Transport ONLY: the
-    per-repo handshake (hive_init) stays agent-driven over MCP."""
+    """Print the teammate's transport-registration one-liner. Transport ONLY:
+    per-repo onboarding is agent-driven over MCP (the rules block in hive_health)."""
     domain = (env.get("NGROK_DOMAIN") or "").strip()
     if domain:
         url = f"https://{domain}/mcp"

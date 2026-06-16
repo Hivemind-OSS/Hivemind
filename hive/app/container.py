@@ -29,7 +29,6 @@ from hive.app import registry
 from hive.app.config import Config
 from hive.app.health import health
 from hive.app.mcp_server import HiveMCPServer, ServerIdentity
-from hive.app.onboard import InstallPlanner
 from hive.domain.admission import AdmissionService
 from hive.domain.lifecycle import DemandRule, LifecycleService, SurvivalRule
 from hive.domain.recall import RecallPipeline
@@ -60,7 +59,7 @@ class Container:
     def __init__(
         self, *, cfg: Config, conn, index, store, token_store, embedder, scanner,
         clock, gate, recall,
-        admission, install_planner, identity: ServerIdentity, started_ts: int,
+        admission, identity: ServerIdentity, started_ts: int,
         lifecycle=None,
     ) -> None:
         self.cfg = cfg
@@ -74,7 +73,6 @@ class Container:
         self.gate = gate
         self.recall = recall
         self.admission = admission
-        self.install_planner = install_planner
         self.identity = identity
         self.started_ts = int(started_ts)
         self.lifecycle = lifecycle          # LifecycleService (boot sweep + triggers)
@@ -133,15 +131,13 @@ class Container:
         db_path = "" if self.cfg.db_path == _MEMORY_DB else self.cfg.db_path
         return HiveMCPServer(
             admission=self.admission, recall=self.recall, store=self.store,
-            embedder=self.embedder, install_planner=self.install_planner,
+            embedder=self.embedder,
             identity=self.identity, now=self.clock.now, started_ts=self.started_ts,
             db_path=db_path, autonomy=self.cfg.autonomy)
 
     # ── convenience surfaces (health probe + clean shutdown) ──────────────────────
-    def health(self, *, repo_path: Optional[str] = None):
-        return health(self.cfg, self.store, self.embedder,
-                      repo_path=repo_path,
-                      link_status=getattr(self.install_planner, "link_status", None))
+    def health(self):
+        return health(self.cfg, self.store, self.embedder)
 
     def close(self) -> None:
         try:
@@ -241,7 +237,6 @@ def build_container(cfg: Config, *, tenant_id: str, agent_id: str,
     admission = AdmissionService(store, scanner, embedder, now=clock.now,
                                  lifecycle=lifecycle, autonomy_enabled=aut.enabled)
 
-    install_planner = InstallPlanner(store, block_version=2)
     identity = ServerIdentity(tenant_id=tenant_id, agent_id=agent_id)
 
     _log.info("container.assembled tenant_id=%s db_path=%s d=%d backend=%s provider=%s "
@@ -250,5 +245,5 @@ def build_container(cfg: Config, *, tenant_id: str, agent_id: str,
     return Container(
         cfg=cfg, conn=conn, index=index, store=store, token_store=token_store,
         embedder=embedder, scanner=scanner, clock=clock, gate=gate,
-        recall=recall, admission=admission, install_planner=install_planner,
+        recall=recall, admission=admission,
         identity=identity, started_ts=int(clock.now()), lifecycle=lifecycle)

@@ -1,6 +1,6 @@
 """HiveMCPServer — the single MCP/JSON-RPC trust boundary (M06 / C7).
 
-A thin driving adapter (hexagonal): it maps five ``hive_*`` JSON-RPC verbs onto the
+A thin driving adapter (hexagonal): it maps four ``hive_*`` JSON-RPC verbs onto the
 already-built domain ports and owns NO data. PORT+EXTEND of the AgentCortex
 ``serving/mcp_server.py`` stdio loop — KEEP the MCPRequest/MCPResponse/_err envelopes,
 the dispatch table, ``tools/list = TOOL_DEFINITIONS``, and the
@@ -39,9 +39,6 @@ from typing import Any, Callable, Mapping, Optional
 
 from hive.app.gaps import cluster_misses, contested_misses
 from hive.app.trends import compute_trends
-from hive.app.onboard import (
-    ONBOARDING_MANIFEST_VERSION, onboarding_hint, provenance_banner,
-)
 from hive.app.tool_defs import TOOL_DEFINITIONS
 from hive.domain.errors import SecretRefused
 from hive.domain.lifecycle import is_servable
@@ -58,13 +55,6 @@ SERVER_VERSION = "1.0.0"
 _PREVIEW_LEN = 160
 # inputSchema by tool name — the single source for the pre-dispatch validation belt.
 _SCHEMA_BY_NAME: dict[str, dict] = {t["name"]: t["inputSchema"] for t in TOOL_DEFINITIONS}
-
-# V4 substrate: the capture verb(s) whose server-arrival is stamped as
-# meta[hook:last_seen:<tool>], so hive_health.hooks_seen lets the onboarding agent confirm a
-# Tier-2 OS hook actually reached the server. ONLY the capture verbs are stamped — recall/
-# health/init/fetch stay pure reads (no write-amplification on the read path).
-_HOOK_SEEN_PREFIX = "hook:last_seen:"
-_HOOK_SEEN_TOOLS: frozenset = frozenset({"hive_write", "hive_capture"})
 
 
 # ── JSON-RPC envelopes (PORT) ────────────────────────────────────────────────
@@ -171,24 +161,6 @@ def _scan_report(verdict) -> dict:
             "n_findings": len(verdict.findings)}
 
 
-def _manifest_report(m) -> dict:
-    """Serialize the abstract HookManifest (the harness-independent 'manifest JSON' the
-    generic profile self-applies). Explicit — _json_default would str() the dataclass."""
-    return {"manifest_version": m.manifest_version,
-            "hooks": [{"event": h.event, "action": h.action, "directive": h.directive}
-                      for h in m.hooks]}
-
-
-def _recipe_report(r) -> dict:
-    """Serialize the per-harness HarnessRecipe: resolved tier, the Tier-≥1 rules addendum,
-    the NL playbook, and (Tier-2 only) the hook files the agent materializes."""
-    return {"harness": r.harness, "resolved_tier": r.resolved_tier,
-            "manifest_version": r.manifest_version, "rules_addendum": r.rules_addendum,
-            "playbook": r.playbook,
-            "hook_files": [{"path": f.path, "content": f.content, "mechanism": f.mechanism}
-                           for f in r.hook_files]}
-
-
 def _abstain_note(state: str) -> str:
     """A neutral, non-instruction note for an empty/abstained recall."""
     if state == "EMPTY_NO_DATA":
@@ -199,14 +171,13 @@ def _abstain_note(state: str) -> str:
 class HiveMCPServer:
     """JSON-RPC 2.0 over stdio. One process == one ``ServerIdentity``."""
 
-    def __init__(self, *, admission, recall, store, embedder, install_planner,
+    def __init__(self, *, admission, recall, store, embedder,
                  identity: ServerIdentity, now: Callable[[], int],
                  started_ts: int = 0, db_path: str = "", autonomy=None) -> None:
         self.admission = admission          # AdmissionService: write + capture
-        self.recall = recall                # RecallPipeline: recall(query,*,agent_id,agent_ctx)
-        self.store = store                  # EpisodeStore: get_episode (belt) / fetch / counts
+        self.recall = recall                # RecallPipeline: recall(query, *, agent_id)
+        self.store = store                  # EpisodeStore: get_episode (belt) / counts
         self.embedder = embedder            # EmbeddingProvider: health probes (d, w_version, name)
-        self.install_planner = install_planner  # InstallPlanner: hive_init plan/confirm
         self.identity = identity
         self.now = now
         self.started_ts = int(started_ts)
@@ -222,7 +193,6 @@ class HiveMCPServer:
             "hive_write": self._handle_write,
             "hive_capture": self._handle_capture,
             "hive_recall": self._handle_recall,
-            "hive_init": self._handle_init,
             "hive_health": self._handle_health,
         }
 
@@ -271,7 +241,6 @@ class HiveMCPServer:
             return self._tool_error(req.id, f"invalid arguments: {verr}")
         try:
             content = handler(args, identity)        # per-request identity → the handler
-            self._note_hook_seen(name)               # V4: best-effort, never fails the call
             return self._tool_result(req.id, content, is_error=False)
         except SecretRefused:
             # only hive_write raises this and it returns its own refused envelope;
@@ -367,31 +336,7 @@ class HiveMCPServer:
                 for d in result.drafts]
         return env
 
-    def _handle_init(self, args: dict, identity: ServerIdentity) -> dict:
-        repo_path = args.get("repo_path") or ""
-        harness = args.get("harness") or "generic"
-        rules_file = args.get("rules_file")
-        confirm_hash = args.get("confirm_hash")
-        if confirm_hash:                                     # phase 2: hash-verified link
-            res = self.install_planner.confirm(repo_path, bytes.fromhex(confirm_hash), harness)
-            out = {"phase": 2}
-            out.update(res)
-            return out
-        plan = self.install_planner.plan(repo_path, harness, rules_file)
-        block = plan.rules_block
-        return {"phase": 1, "rules_file": plan.rules_file, "harness": plan.harness,
-                "rules_block": block.rendered_text,
-                "block_version": block.block_version,
-                "expected_confirm_hash": plan.expected_confirm_hash.hex(),
-                "manifest": _manifest_report(plan.manifest),
-                "recipe": _recipe_report(plan.recipe),
-                # the completion marker the agent stamps LAST (after the verify
-                # gate), OUTSIDE the hashed block — surfaced here so phase-1 hands over the
-                # whole bundle in one round-trip. NOT written by the server (no repo FS).
-                "provenance_banner": provenance_banner(plan.harness, plan.recipe.resolved_tier)}
-
     def _handle_health(self, args: dict, identity: ServerIdentity) -> dict:
-        repo_path = args.get("repo_path")
         try:
             n_episodes, n_pending = self.store.counts()      # probe: store + (below) embedder
             snap: dict = {
@@ -405,7 +350,6 @@ class HiveMCPServer:
                 "d": int(getattr(self.embedder, "d", 0)),
                 "index_authoritative": bool(self.recall.index.is_authoritative()),
                 "uptime_s": max(0, int(self.now()) - self.started_ts)}
-            snap["hooks_seen"] = self._hooks_seen()          # V4: last-seen tick per capture verb
             # trust-lifecycle telemetry: quarantine pile-up must be visible, never
             # silent. Best-effort — an older store double (tests) may lack these.
             try:
@@ -430,19 +374,6 @@ class HiveMCPServer:
                         "contradiction inside the store; repeated re-asks = the "
                         "served content isn't satisfying — review and resolve "
                         "with one hive_write(replaces=<episode_id>)")
-            if repo_path is not None:
-                linked, link = self._link_status(repo_path)
-                snap["linked"] = linked
-                snap["link"] = link
-                if not linked:                       # first-touch: hand the agent its next step
-                    snap["onboarding"] = onboarding_hint()
-                else:                                # re-touch: the bootstrap short-circuit
-                    snap["setup"] = {"complete": True, "next": None}
-                    # an old-manifest link drives re-init (the v2 hooks change the
-                    # capture contract from ask-first to capture-without-asking)
-                    snap["manifest_outdated"] = bool(
-                        int((link or {}).get("manifest_version", 1))
-                        < ONBOARDING_MANIFEST_VERSION)
             return snap
         except Exception as e:                               # fail-closed subset ONLY
             _log.error("mcp.health_probe_fail", extra={"event": "mcp.health_probe_fail",
@@ -528,49 +459,6 @@ class HiveMCPServer:
                 os.path.exists(self.db_path) else 0
         except OSError:
             return 0
-
-    def _link_status(self, repo_path: str) -> tuple[bool, Optional[dict]]:
-        """Best-effort link probe (the additive M07 health extension). The concrete
-        InstallPlanner may expose ``link_status``; absent it, report unlinked."""
-        probe = getattr(self.install_planner, "link_status", None)
-        if probe is None:
-            return False, None
-        try:
-            linked, link = probe(repo_path)
-            return bool(linked), link
-        except Exception:
-            return False, None
-
-    # ── V4 hook-seen substrate ────────────────────────────────────────────
-    def _note_hook_seen(self, tool: str) -> None:
-        """Stamp meta[hook:last_seen:<tool>] for a capture verb after it is served, so the
-        agent can confirm a Tier-2 OS hook reached the server. Best-effort and fully self-
-        contained: a stamp failure is logged and SWALLOWED — it must never convert a
-        successful capture into a tool error. // O(1)."""
-        if tool not in _HOOK_SEEN_TOOLS:
-            return
-        try:
-            self.store.meta_set(f"{_HOOK_SEEN_PREFIX}{tool}", str(int(self.now())))
-        except Exception:                                    # telemetry must never break a capture
-            _log.warning("mcp.hook_seen_stamp_failed", extra={"event": "mcp.hook_seen_stamp_failed",
-                         "tool": tool}, exc_info=True)
-
-    def _hooks_seen(self) -> dict:
-        """The read side: last-seen tick per capture verb (a verb absent ⇒ never seen). A
-        pure read; a meta failure degrades to ``{}`` rather than failing health. // O(1)."""
-        out: dict[str, int] = {}
-        for tool in _HOOK_SEEN_TOOLS:
-            try:
-                raw = self.store.meta_get(f"{_HOOK_SEEN_PREFIX}{tool}")
-            except Exception:
-                continue
-            if raw is None:
-                continue
-            try:
-                out[tool] = int(raw)
-            except (TypeError, ValueError):                  # a non-int blob ⇒ skip, never raise
-                continue
-        return out
 
 
 # ── stdio loop (PORT verbatim; stderr-clean so stdout JSON-RPC is unpolluted) ──
