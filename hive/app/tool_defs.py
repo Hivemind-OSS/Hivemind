@@ -68,7 +68,8 @@ TOOL_DEFINITIONS: list[dict] = [
                     "against — the supersession-review queue). include_trends=true "
                     "adds current-vs-previous 14d convergence trends (confident "
                     "rate, demand entropy, promotions, dead-capture ratio). "
-                    "embedder_loaded gates the container HEALTHCHECK.",
+                    "embedder_loaded reports whether this process's embedder is resident "
+                    "(the container HEALTHCHECK is a separate process reading boot markers).",
      "inputSchema": {"type": "object", "required": [],
                      "properties": {"repo_path": {"type": "string"},
                                     "include_gaps": {"type": "boolean"},
