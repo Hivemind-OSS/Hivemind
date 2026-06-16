@@ -18,6 +18,17 @@ def test_server_instructions_cover_the_verbs_and_search_first_timing():
     assert "RECALL FIRST" in s                       # the search-before-build nudge
 
 
+def test_instructions_convey_capture_default_vs_approved_fastpath_strategy():
+    """Agents must learn the STRATEGY, not just the mechanism: capture is the cheap default
+    (let demand/recall-counts promote), and the approved write is the immediate-serve fast-path
+    reserved for crucial memories — with the approver generalized beyond a human to an
+    orchestrated fleet."""
+    s = SERVER_INSTRUCTIONS.lower()
+    assert "default" in s                            # capture framed as the default
+    assert "immediately" in s                        # write = the must-serve-now fast-path
+    assert "orchestrator" in s                       # approver isn't only a human
+
+
 def test_capture_taxonomy_names_the_fleet_high_signal_categories():
     """The dev-team categories the user asked for must be named, or agents won't know what's
     worth storing — and the noise floor must be explicit, or recall fills with junk."""
