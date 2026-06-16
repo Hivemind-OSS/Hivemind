@@ -34,6 +34,14 @@ def test_tool_list_is_exactly_4():
     assert {t["name"] for t in TOOL_DEFINITIONS} == _FOUR
 
 
+def test_write_description_generalizes_the_approver():
+    """The approved-write path must read for an orchestrated fleet, not only a human approver —
+    so an autonomous sub-agent under an orchestrator knows the orchestrator's sign-off counts."""
+    desc = next(t["description"] for t in TOOL_DEFINITIONS if t["name"] == "hive_write")
+    assert "approved_by" in desc
+    assert "orchestrat" in desc.lower()                  # approver isn't only a human
+
+
 def test_health_description_carries_onboarding_reference():
     """Onboarding option C: with hive_init gone, the static onboarding rules block is the
     payload of the hive_health DESCRIPTION — the only discovery path a connected agent has.
