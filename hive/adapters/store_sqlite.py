@@ -253,13 +253,17 @@ class SqliteEpisodeStore:
         return approved, pending
 
     # ── trust lifecycle (promotion / supersession / decay) ────────────────────
-    def set_trust(self, episode_id: int, new_trust: str, *, now: int) -> bool:
+    def set_trust(self, episode_id: int, new_trust: str, *, now: int,
+                  approver: Optional[str] = None, approved_ts: int = 0) -> bool:
         """Transactional trust transition on a MATERIALIZED row. Promotion into a
         servable state stamps ``last_active_ts=now`` (a fresh promotion is never
-        instantly dead); demotion leaves the clock untouched. Index sync after
-        commit is best-effort [B3] — add on entering a servable trust state, remove
-        on leaving (boot rebuild recovers divergence). False on unknown/unflipped
-        rows; raises on an unknown trust label (caller bug, not data)."""
+        instantly dead); demotion leaves the clock untouched. ``approver`` is set only
+        when a human vouch establishes an already-materialized row (BUG-001): it also
+        records ``approved_by``/``approved_ts``. Mechanical promotion passes none and
+        leaves the approver untouched. Index sync after commit is best-effort [B3] —
+        add on entering a servable trust state, remove on leaving (boot rebuild
+        recovers divergence). False on unknown/unflipped rows; raises on an unknown
+        trust label (caller bug, not data)."""
         if new_trust not in TRUST_STATES:
             raise ValueError(f"bad trust {new_trust!r}")
         servable_states = (ESTABLISHED, PROVISIONAL)
@@ -271,9 +275,15 @@ class SqliteEpisodeStore:
                 return False
             old_trust = r["trust"]
             if new_trust in servable_states:
-                self.conn.execute(
-                    "UPDATE episodes SET trust=?, last_active_ts=? WHERE id=?",
-                    (new_trust, now, episode_id))
+                if approver is not None:
+                    self.conn.execute(
+                        "UPDATE episodes SET trust=?, last_active_ts=?, approved_by=?, "
+                        "approved_ts=? WHERE id=?",
+                        (new_trust, now, approver, approved_ts, episode_id))
+                else:
+                    self.conn.execute(
+                        "UPDATE episodes SET trust=?, last_active_ts=? WHERE id=?",
+                        (new_trust, now, episode_id))
             else:
                 self.conn.execute(
                     "UPDATE episodes SET trust=? WHERE id=?", (new_trust, episode_id))

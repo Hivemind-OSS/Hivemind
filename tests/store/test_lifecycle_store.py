@@ -99,6 +99,26 @@ def test_set_trust_promote_adds_demote_removes():
     assert s.get_episode(eid).last_active_ts == 50                # demotion does NOT re-stamp
 
 
+# ── set_trust: human-vouched establishment records the approver (B0/BUG-001) ────
+def test_set_trust_establish_records_approver():
+    s = _store()
+    eid = _materialize(s, "captured then vouched", trust=QUARANTINED, vec=_VECS[2])
+    assert s.get_episode(eid).approved_by is None                 # capture left it unvouched
+    assert s.set_trust(eid, ESTABLISHED, now=70, approver="alice", approved_ts=70) is True
+    ep = s.get_episode(eid)
+    assert ep.trust == ESTABLISHED and ep.approved_by == "alice"  # the vouch is recorded
+    assert ep.last_active_ts == 70                                # liveness stamped
+    assert s.index.search(_VECS[2], k=1)[0][0] == eid             # entered the index
+
+
+def test_set_trust_without_approver_leaves_approved_by_untouched():
+    # mechanical promotion (lifecycle) passes no approver → approved_by stays as-is
+    s = _store()
+    eid = _materialize(s, "mechanically promoted", trust=QUARANTINED, vec=_VECS[3])
+    assert s.set_trust(eid, PROVISIONAL, now=50) is True
+    assert s.get_episode(eid).approved_by is None                 # untouched by promotion
+
+
 def test_set_trust_guards():
     s = _store()
     assert s.set_trust(404, PROVISIONAL, now=1) is False          # unknown row

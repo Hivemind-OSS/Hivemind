@@ -30,7 +30,7 @@ from dataclasses import dataclass
 from typing import Callable, Optional
 
 from hive.domain.errors import SecretRefused
-from hive.domain.lifecycle import QUARANTINED
+from hive.domain.lifecycle import DEPRECATED, ESTABLISHED, QUARANTINED
 from hive.domain.models import content_hash
 from hive.domain.secret_scan import REDACT, REFUSE, ScanVerdict
 
@@ -159,14 +159,41 @@ class AdmissionService:
         h = content_hash(staged_text)
         ep = self._store.get_episode(eid)
         if ep is not None and ep.status == "approved":
-            # dedup hit on an ALREADY-approved memory: it is already recallable — no
-            # re-embed, no re-approve (idempotent). Re-stamping approved_by would let a
-            # later caller overwrite the original approver, so leave it untouched.
-            _log.info("admission.dedup_approved", extra={
-                "event": "admission.dedup_approved", "episode_id": eid,
-                "content_hash": h, "proposed_by": proposed_by, "request_id": request_id})
-            # the vouched correction still applies on a dedup landing; a text that
-            # deduped back to the TARGET itself is the self-supersede no-op.
+            # MATERIALIZED dedup target. Branch on TRUST (the servability axis): status
+            # alone is NOT servability — a quarantined capture is status='approved' too,
+            # so keying the idempotent skip on status silently dropped the vouch (BUG-001).
+            if ep.trust == ESTABLISHED:
+                # already human-servable → idempotent: no re-embed/re-approve, and the
+                # original approver is preserved (a later caller can't overwrite the vouch).
+                _log.info("admission.dedup_established", extra={
+                    "event": "admission.dedup_established", "episode_id": eid,
+                    "content_hash": h, "proposed_by": proposed_by, "request_id": request_id})
+                superseded = self._apply_supersession(replaces, eid, actor=approved_by,
+                                                      request_id=request_id)
+                return WriteResult(status=status, episode_id=eid, content_hash=h,
+                                   scan=verdict, deduped=True, superseded=superseded)
+            if ep.trust == DEPRECATED:
+                # a retired row is never silently revived by re-writing its old text;
+                # re-establishment goes through replaces= only.
+                _log.info("admission.dedup_deprecated_norevive", extra={
+                    "event": "admission.dedup_deprecated_norevive", "episode_id": eid,
+                    "content_hash": h, "proposed_by": proposed_by, "request_id": request_id})
+                return WriteResult(status=status, episode_id=eid, content_hash=h,
+                                   scan=verdict, deduped=True)
+            # quarantined / provisional: the human vouch ESTABLISHES the existing
+            # materialized row in place — value already embedded, so no re-embed. This is
+            # exactly the promotion the status-keyed guard used to drop (BUG-001).
+            if not self._store.set_trust(eid, ESTABLISHED, now=self._now(),
+                                         approver=approved_by, approved_ts=self._now()):
+                _log.error("admission.dedup_establish_failed", extra={
+                    "event": "admission.dedup_establish_failed", "episode_id": eid,
+                    "request_id": request_id})
+                raise RuntimeError(
+                    f"establish-on-dedup failed for episode {eid} (lost-update race)")
+            _log.info("admission.dedup_established_promoted", extra={
+                "event": "admission.dedup_established_promoted", "episode_id": eid,
+                "content_hash": h, "approved_by": approved_by,
+                "proposed_by": proposed_by, "request_id": request_id})
             superseded = self._apply_supersession(replaces, eid, actor=approved_by,
                                                   request_id=request_id)
             return WriteResult(status=status, episode_id=eid, content_hash=h,

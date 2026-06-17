@@ -308,3 +308,32 @@ def test_write_replaces_self_dedup_is_benign_noop():
     assert r.superseded is None
     ep = store.get_episode(old.episode_id)
     assert ep.trust == "established" and ep.superseded_by is None
+
+
+# ═══ BUG-001 / B0: a human write ESTABLISHES a previously-captured identical memory ══
+# A quarantined capture is status='approved' (materialized) with trust='quarantined'.
+# The dedup guard must key on TRUST (the servability axis), not status, or the vouch is
+# silently lost: write() dedups onto the quarantined row and never promotes it.
+def test_write_establishes_previously_captured_quarantined_text():
+    svc, store = _svc_v2()
+    cap = svc.capture("a fact first seen autonomously", proposed_by="agent-1")
+    assert store.get_episode(cap.episode_id).trust == "quarantined"
+    assert store.scan_approved() == []                              # not servable yet
+    w = _write(svc, "a fact first seen autonomously", approved_by="alice")
+    assert w.deduped is True and w.episode_id == cap.episode_id     # same row, promoted in place
+    ep = store.get_episode(cap.episode_id)
+    assert ep.trust == "established"                                # ← the fix
+    assert ep.approved_by == "alice"                               # human vouch recorded
+    assert cap.episode_id in {eid for eid, _ in store.scan_approved()}  # now servable
+    assert store.index.size() == 1                                 # entered the warm index
+
+
+def test_write_dedup_onto_deprecated_does_not_revive():
+    svc, store = _svc_v2()
+    old = _write(svc, "the port is 5432")
+    _write(svc, "the port is 6543 now", replaces=old.episode_id)    # old → deprecated
+    assert store.get_episode(old.episode_id).trust == "deprecated"
+    again = _write(svc, "the port is 5432", approved_by="alice")    # dedups onto the dead row
+    assert again.deduped is True and again.episode_id == old.episode_id
+    assert store.get_episode(old.episode_id).trust == "deprecated"  # ← NOT silently revived
+    assert old.episode_id not in {eid for eid, _ in store.scan_approved()}
