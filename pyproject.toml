@@ -19,6 +19,9 @@ hive = "hive.tools.cli:main"
 # Real embedder adapter (Phase 1); the pure domain + slice need none of these.
 embed = ["sentence-transformers>=2.2"]
 dev = ["pytest>=7"]
+# Dev-time benchmark harness (hive/research/bench): the LongMemEval head-to-head vs mem0.
+# mem0 is run offline (local embedder, infer=False) — never a runtime dependency of the server.
+bench = ["hive[embed]", "mem0ai==2.0.7", "huggingface-hub>=0.20"]
 
 [tool.setuptools.packages.find]
 include = ["hive*", "tests*"]
