@@ -29,7 +29,7 @@ from hive.app import registry
 from hive.app.config import Config
 from hive.app.mcp_server import HiveMCPServer, ServerIdentity
 from hive.domain.admission import AdmissionService
-from hive.domain.lifecycle import DemandRule, LifecycleService, SurvivalRule
+from hive.domain.lifecycle import DemandRule, LifecycleService
 from hive.domain.recall import RecallPipeline
 
 _log = logging.getLogger("hive.container")
@@ -196,10 +196,7 @@ def build_container(cfg: Config, *, tenant_id: str, agent_id: str,
         demand_window_s=aut.demand_window_days * _DAY_S,
         quarantine_ttl_s=aut.quarantine_ttl_days * _DAY_S,
         provisional_ttl_s=aut.provisional_ttl_days * _DAY_S,
-        enabled=aut.enabled,
-        survival_rule=SurvivalRule(
-            survival_e=aut.survival_e, survival_days=aut.survival_days,
-            survival_min_exposures=aut.survival_min_exposures))
+        enabled=aut.enabled)
     recall = RecallPipeline(
         embedder=embedder, index=index, gate=gate,
         reader=store,

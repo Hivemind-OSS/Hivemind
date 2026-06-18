@@ -13,7 +13,7 @@ from hive.adapters.index_exhaustive import ExhaustiveCosineIndex
 from hive.adapters.sqlite_db import connect
 from hive.adapters.store_sqlite import SqliteEpisodeStore
 from hive.domain.lifecycle import (
-    DEPRECATED, ESTABLISHED, PROVISIONAL, QUARANTINED, ExposureRow, MissRow,
+    DEPRECATED, ESTABLISHED, PROVISIONAL, QUARANTINED, MissRow,
 )
 from hive.domain.ports import ExposureLedger
 
@@ -286,46 +286,6 @@ def test_quarantined_candidates_excludes_dead():
     eid, vec, proposed_by, ts, last_active = cands[0]
     assert proposed_by == "writer" and ts == NOW - 1 and last_active == NOW - 1
     assert np.allclose(vec, _VECS[1])
-
-
-# ── survival-establish store surface (CV2) ─────────────────────────────────────
-def test_survival_candidates_aggregate_prefilter():
-    s = _store()
-    prov = _materialize(s, "demanded row", trust=QUARANTINED, vec=_VECS[0])
-    s.set_trust(prov, PROVISIONAL, now=10)
-    thin = _materialize(s, "barely exposed", trust=QUARANTINED, vec=_VECS[1])
-    s.set_trust(thin, PROVISIONAL, now=10)
-    est = _materialize(s, "already established", trust=ESTABLISHED, approver="h",
-                       vec=_VECS[2])
-    for i in range(5):
-        s.record_exposure(f"t-{i}", [(prov, 0.5)], agent_id=f"agent-{i % 2}",
-                          ts=20 + i)
-    s.record_exposure("t-thin", [(thin, 0.5)], agent_id="agent-x", ts=20)
-    s.record_exposure("t-est", [(est, 0.5)], agent_id="agent-x", ts=20)
-    # one aggregate: only the provisional row clearing min_exposures returns
-    assert s.survival_candidates(since_ts=0, min_exposures=5) == [(prov, "writer")]
-    # established rows never re-enter; below-threshold provisional rows are absent
-    assert s.survival_candidates(since_ts=0, min_exposures=1) == [(prov, "writer"),
-                                                                  (thin, "writer")]
-    # the window is STRICT (> since_ts): exposures at the boundary don't count
-    assert s.survival_candidates(since_ts=24, min_exposures=1) == []
-
-
-def test_exposures_for_windowed_and_ordered():
-    s = _store()
-    eid = _materialize(s, "watched row", trust=ESTABLISHED, approver="h",
-                       vec=_VECS[0])
-    s.record_exposure("t-b", [(eid, 0.5)], agent_id="agent-B", ts=30)
-    s.record_exposure("t-a", [(eid, 0.5)], agent_id="agent-A", ts=10)
-    # a NULL agent_id (pre-identity row) coerces to '' — never aliases a writer
-    s.conn.execute(
-        "INSERT INTO exposure(trace_id, episode_id, recall_margin, injected_ts, "
-        "agent_id) VALUES('t-null', ?, 0.5, 20, NULL)", (eid,))
-    out = s.exposures_for(eid, since_ts=10)            # STRICT: ts > since_ts
-    assert out == [ExposureRow(agent_id="", ts=20),
-                   ExposureRow(agent_id="agent-B", ts=30)]
-    assert s.exposures_for(eid, since_ts=0)[0] == ExposureRow("agent-A", 10)
-    assert s.exposures_for(404, since_ts=0) == []
 
 
 # ── audit + counts ─────────────────────────────────────────────────────────────

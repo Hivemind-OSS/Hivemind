@@ -116,10 +116,6 @@ class AutonomyConfig:
     competitor_tau: float = 0.85    # candidate ↔ servable cosine ⇒ demand already answered
     quarantine_ttl_days: int = 14
     provisional_ttl_days: int = 45
-    # CV2 survival-establish (the 2nd mechanical rung; rides `enabled`):
-    survival_e: int = 2             # distinct non-writer identities required
-    survival_days: int = 14         # minimum first-to-last exposure span
-    survival_min_exposures: int = 5
     # CV1 solo mode: a single-seat fleet swaps the demand rule's identity-
     # diversity clause for elapsed-span demand. Operator-set env, NOT client-gameable.
     solo_mode: bool = False
@@ -131,7 +127,6 @@ class AutonomyConfig:
     def __post_init__(self) -> None:
         for name in ("demand_m", "demand_window_days",
                      "quarantine_ttl_days", "provisional_ttl_days",
-                     "survival_e", "survival_days", "survival_min_exposures",
                      "solo_min_span_days"):
             v = getattr(self, name)
             if int(v) < 1:

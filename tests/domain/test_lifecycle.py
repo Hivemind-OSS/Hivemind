@@ -4,11 +4,17 @@ provisional rows). Truth-table + boundary pins; the DemandRule/LifecycleService 
 live in test_demand_rule.py."""
 from __future__ import annotations
 
+import inspect
+
 import pytest
 
+from hive.adapters.index_exhaustive import ExhaustiveCosineIndex
+from hive.adapters.sqlite_db import connect
+from hive.adapters.store_sqlite import SqliteEpisodeStore
+from hive.domain import lifecycle as lifecycle_mod
 from hive.domain.lifecycle import (
     DEPRECATED, ESTABLISHED, PROVISIONAL, QUARANTINED, TRUST_STATES,
-    decayed, is_servable,
+    DemandRule, LifecycleService, decayed, is_servable,
 )
 
 TTL = 100          # provisional_ttl_s used by the truth table
@@ -95,3 +101,37 @@ def test_promotion_stamp_freshness():
     assert _dec(trust=PROVISIONAL, last_active_ts=NOW, created_ts=NOW - 10**9) is False
     assert is_servable(status="approved", trust=PROVISIONAL, last_active_ts=NOW,
                        now=NOW, provisional_ttl_s=1) is True
+
+
+# ── ONE mechanical rung: sweep is decay-only (the survival rung is removed) ──────
+class _DecayOnlyStore:
+    """Minimal duck-typed store: sweep() drives only sweep_decayed. A surviving
+    survival pass would call survival_candidates — absent here on purpose, so any
+    mechanical establish attempt would raise (and the test would notice)."""
+
+    def sweep_decayed(self, *, now, q_ttl_s, p_ttl_s):
+        return {QUARANTINED: 0, PROVISIONAL: 1}
+
+
+def _svc(store) -> LifecycleService:
+    return LifecycleService(
+        store=store, index=None,
+        rule=DemandRule(demand_m=3, demand_tau=0.75, competitor_tau=0.85),
+        now=lambda: NOW, demand_window_s=1, quarantine_ttl_s=1, provisional_ttl_s=1)
+
+
+def test_sweep_is_decay_only():
+    # sweep() returns EXACTLY sweep_decayed's verdict — no 'established' key, because
+    # the mechanical provisional→established rung no longer exists.
+    out = _svc(_DecayOnlyStore()).sweep()
+    assert out == {QUARANTINED: 0, PROVISIONAL: 1}
+    assert "established" not in out
+    # the survival ctor seam is gone from the service…
+    assert "survival_rule" not in inspect.signature(LifecycleService.__init__).parameters
+    # …the SurvivalRule type is gone from the domain module…
+    assert not hasattr(lifecycle_mod, "SurvivalRule")
+    assert not hasattr(lifecycle_mod, "ExposureRow")
+    # …and the store's survival prefilter surface is gone.
+    store = SqliteEpisodeStore(connect(":memory:"), index=ExhaustiveCosineIndex(4))
+    assert not hasattr(store, "survival_candidates")
+    assert not hasattr(store, "exposures_for")

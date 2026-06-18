@@ -138,7 +138,7 @@ class DemandRule:
     Solo mode (operator-consented): a single-seat fleet structurally cannot
     produce identity diversity, so with ``solo_mode`` the diversity clause SWAPS —
     distinct identity → elapsed-span demand: ``max(ts) − min(ts)`` over the matched
-    misses must be ≥ ``solo_min_span_days``·86400 (the SurvivalRule span idiom — a
+    misses must be ≥ ``solo_min_span_days``·86400 (the elapsed-span idiom — a
     sub-24h burst never promotes, even straddling UTC midnight). All other clauses
     are unchanged; ``n_other_identities`` is still computed into the verdict."""
 
@@ -197,77 +197,6 @@ class DemandRule:
             return PromotionDecision(False, 0, 0, 0.0, "error")
 
 
-# ── survival-establish: the SECOND mechanical rung (provisional → established) ──
-
-@dataclass(frozen=True, slots=True)
-class ExposureRow:
-    """One exposure event inside a survival window — the carrier the store returns
-    for a provisional candidate. ``agent_id`` is the served caller's authenticated
-    token label (the same anti-gaming currency as ``MissRow.agent_id``)."""
-    agent_id: str
-    ts: int
-
-
-@dataclass(frozen=True, slots=True)
-class SurvivalDecision:
-    """The machine-readable verdict on one provisional candidate — its fields go
-    verbatim into the ``establish`` audit payload. ``reason`` names the FIRST failed
-    clause in rule order (insufficient_identities → insufficient_exposures →
-    insufficient_span), ``survival`` on establishment."""
-    establish: bool
-    n_exposures: int
-    n_other_identities: int
-    span_days: float
-    reason: str
-
-
-class SurvivalRule:
-    """establish IFF, among the window exposures:
-        identities = {e.agent_id} − {writer}        (the writer's own reads never
-            count — the same structural anti-gaming key as the demand rule)
-        len(identities) >= survival_e
-    AND len(exposures) >= survival_min_exposures
-    AND max(ts) − min(ts) >= survival_days·86400    (spread over time, not one burst;
-        the compare is INCLUSIVE — a span of exactly survival_days establishes)
-    Pure, total, never raises; empty exposures ⇒ establish=False.  // O(|exposures|).
-
-    ``decide(now=…)`` accepts the sweep tick for trigger symmetry with DemandRule;
-    the verdict itself is a pure function of the exposure window the caller scoped."""
-
-    def __init__(self, *, survival_e: int, survival_days: int,
-                 survival_min_exposures: int) -> None:
-        for name, v in (("survival_e", survival_e), ("survival_days", survival_days),
-                        ("survival_min_exposures", survival_min_exposures)):
-            if int(v) < 1:
-                raise ValueError(f"{name} must be >= 1 (got {v})")
-        self.survival_e = int(survival_e)
-        self.survival_days = int(survival_days)
-        self.survival_min_exposures = int(survival_min_exposures)
-
-    def decide(self, *, writer: str, exposures: Sequence[ExposureRow],
-               now: int) -> SurvivalDecision:
-        try:
-            n = len(exposures)
-            identities = {e.agent_id for e in exposures} - {writer}
-            span_s = (max(e.ts for e in exposures) - min(e.ts for e in exposures)) \
-                if n else 0
-            span_days = span_s / float(_DAY_S)
-            if len(identities) < self.survival_e:
-                return SurvivalDecision(False, n, len(identities), span_days,
-                                        "insufficient_identities")
-            if n < self.survival_min_exposures:
-                return SurvivalDecision(False, n, len(identities), span_days,
-                                        "insufficient_exposures")
-            if span_s < self.survival_days * _DAY_S:
-                return SurvivalDecision(False, n, len(identities), span_days,
-                                        "insufficient_span")
-            return SurvivalDecision(True, n, len(identities), span_days, "survival")
-        except Exception:                          # noqa: BLE001 — total by contract
-            _log.warning("survival rule internal failure → fail-closed no-establish",
-                         exc_info=True)
-            return SurvivalDecision(False, 0, 0, 0.0, "error")
-
-
 class LifecycleService:
     """The promotion/decay driver, composed from duck-typed store + index handles,
     the pure DemandRule, and an injected clock. Trigger sites are SYNCHRONOUS at
@@ -278,8 +207,7 @@ class LifecycleService:
 
     def __init__(self, *, store, index, rule: DemandRule, now: Callable[[], int],
                  demand_window_s: int, quarantine_ttl_s: int, provisional_ttl_s: int,
-                 enabled: bool = True,
-                 survival_rule: Optional[SurvivalRule] = None) -> None:
+                 enabled: bool = True) -> None:
         self._store = store
         self._index = index
         self._rule = rule
@@ -288,9 +216,6 @@ class LifecycleService:
         self._q_ttl = int(quarantine_ttl_s)
         self._p_ttl = int(provisional_ttl_s)
         self.enabled = bool(enabled)
-        # CV2: the second mechanical rung (provisional → established), evaluated at
-        # sweep time only. None ⇒ no survival pass (the pre-CV2 sweep, byte-stable).
-        self._survival = survival_rule
 
     # ── trigger: a capture arrived — does existing demand already want it? ────
     def on_capture(self, episode_id: int) -> Optional[PromotionDecision]:
@@ -336,52 +261,20 @@ class LifecycleService:
             return []
 
     def sweep(self, now: Optional[int] = None) -> dict:
-        """Materialize lazy decay (boot + post-capture piggyback), then the CV2
-        survival pass (when a SurvivalRule is wired) — decay FIRST so a lapsed
-        provisional row is never establishment-evaluated. Inert when disabled;
-        a sweep fault is logged, never raised."""
+        """Materialize lazy decay (boot + post-capture piggyback): TTL-lapsed
+        quarantined/provisional rows flip to deprecated. Inert when disabled;
+        a sweep fault is logged, never raised. This is the ONLY mechanical
+        sweep-time trust change — ``established`` is reachable only via a human
+        ``hive_write(approved_by=…)``, never mechanically."""
         if not self.enabled:
             return {}
         try:
             t = self._now() if now is None else int(now)
-            out = dict(self._store.sweep_decayed(now=t, q_ttl_s=self._q_ttl,
-                                                 p_ttl_s=self._p_ttl))
-            if self._survival is not None:
-                out["established"] = self._survival_pass(t)
-            return out
+            return dict(self._store.sweep_decayed(now=t, q_ttl_s=self._q_ttl,
+                                                  p_ttl_s=self._p_ttl))
         except Exception:                          # noqa: BLE001
             _log.warning("lifecycle.sweep_failed", exc_info=True)
             return {}
-
-    def _survival_pass(self, t: int) -> int:
-        """Survival-establish, sweep-time: ONE aggregate prefilter
-        (``survival_candidates`` — never an N+1 per-row COUNT loop), then the pure
-        rule per surviving candidate; an establishment is a trust flip + ONE
-        ``establish`` audit row carrying the decision. The exposure window is the
-        provisional liveness horizon (provisional_ttl_s) — exposures older than
-        the row's servable lifetime never count.  // O(GROUP-BY + candidates)."""
-        since = t - self._p_ttl
-        n_est = 0
-        for eid, writer in self._store.survival_candidates(
-                since_ts=since,
-                min_exposures=self._survival.survival_min_exposures):
-            d = self._survival.decide(
-                writer=writer,
-                exposures=self._store.exposures_for(int(eid), since_ts=since),
-                now=t)
-            if d.establish and self._store.set_trust(int(eid), ESTABLISHED, now=t):
-                self._store.insert_audit(int(eid), "establish", "server", t,
-                                         json.dumps({
-                                             "rule": "survival",
-                                             "n_exposures": d.n_exposures,
-                                             "n_other_identities": d.n_other_identities,
-                                             "span_days": d.span_days,
-                                             "reason": d.reason}))
-                n_est += 1
-                _log.info("lifecycle.established episode_id=%s n_exposures=%d "
-                          "n_other=%d span_days=%.2f", eid, d.n_exposures,
-                          d.n_other_identities, d.span_days)
-        return n_est
 
     # ── internals ──────────────────────────────────────────────────────────────
     def _window(self, t: int) -> list[MissRow]:

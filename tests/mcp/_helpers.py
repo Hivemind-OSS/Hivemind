@@ -15,7 +15,7 @@ from hive.adapters.store_sqlite import SqliteEpisodeStore
 from hive.app.config import AutonomyConfig
 from hive.app.mcp_server import HiveMCPServer, MCPRequest, ServerIdentity
 from hive.domain.admission import AdmissionService
-from hive.domain.lifecycle import DemandRule, LifecycleService, SurvivalRule
+from hive.domain.lifecycle import DemandRule, LifecycleService
 from hive.domain.recall import NormalizedEntropyGate, RecallPipeline
 from tests.fakes._fakes import FakeClock, FakeProvider, FakeScanner
 
@@ -48,10 +48,7 @@ def build_real_server(*, d: int = 64, h: float = 0.5, beta: float = 16.0,
         demand_window_s=aut.demand_window_days * _DAY_S,
         quarantine_ttl_s=aut.quarantine_ttl_days * _DAY_S,
         provisional_ttl_s=aut.provisional_ttl_days * _DAY_S,
-        enabled=aut.enabled,
-        survival_rule=SurvivalRule(
-            survival_e=aut.survival_e, survival_days=aut.survival_days,
-            survival_min_exposures=aut.survival_min_exposures))
+        enabled=aut.enabled)
     admission = AdmissionService(store, scanner, embedder, now=clock.now,
                                  lifecycle=lifecycle, autonomy_enabled=aut.enabled)
     recall = RecallPipeline(
