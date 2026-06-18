@@ -74,6 +74,11 @@ CREATE TABLE IF NOT EXISTS evidence_events(
   actor TEXT NOT NULL, ts INTEGER NOT NULL,
   payload TEXT NOT NULL DEFAULT '{}');
 CREATE INDEX IF NOT EXISTS idx_evidence_episode ON evidence_events(episode_id, kind);
+CREATE TABLE IF NOT EXISTS co_access_edges(
+  a_id INTEGER NOT NULL, b_id INTEGER NOT NULL,
+  weight REAL NOT NULL DEFAULT 1.0, last_co_ts INTEGER NOT NULL,
+  PRIMARY KEY(a_id, b_id), CHECK(a_id < b_id));
+CREATE INDEX IF NOT EXISTS idx_coaccess_b ON co_access_edges(b_id);
 """
 
 
@@ -487,6 +492,43 @@ class SqliteEpisodeStore:
                 "miss_type, ts) VALUES(?,?,?,?,?)",
                 (query_text, query_vector, agent_id, miss_type, ts))
 
+
+    # ── CoAccess port (associative-recall co-access edges) ────────────────────
+    def record_co_access(self, eids: Sequence[int], *, ts: int) -> None:
+        """Accrue undirected co-access edges among ``eids`` (memories served
+        together). Canonicalize in Python to unordered (min,max) pairs over the
+        DISTINCT ids — the CHECK(a_id<b_id) makes the (a,b)/(b,a) duplicate
+        unstorable, so an out-of-order or repeated id can never fork an edge. ONE
+        tx, ONE executemany; weight increments by 1.0 on every co-access (1.0 on
+        first insert via the column DEFAULT). < 2 distinct ids ⇒ no pair ⇒ no-op."""
+        distinct = sorted({int(e) for e in eids})
+        if len(distinct) < 2:
+            return
+        pairs = [(distinct[i], distinct[j], int(ts))
+                 for i in range(len(distinct))
+                 for j in range(i + 1, len(distinct))]
+        with tx(self.conn):
+            self.conn.executemany(
+                "INSERT INTO co_access_edges(a_id, b_id, last_co_ts) VALUES(?,?,?) "
+                "ON CONFLICT(a_id, b_id) DO UPDATE SET weight=weight+1.0, "
+                "last_co_ts=excluded.last_co_ts", pairs)
+
+    def co_access_neighbors(self, eid: int, *,
+                            min_weight: float) -> list[tuple[int, float]]:
+        """1-hop co-access neighbors of ``eid`` at/above ``min_weight``, weight-
+        descending: the OTHER endpoint of every edge touching ``eid`` in EITHER
+        direction (a_id=eid ⇒ b_id is the neighbor, b_id=eid ⇒ a_id is). Read-only
+        (autocommit read under isolation_level=None — no tx). The (eid, eid) row is
+        impossible (CHECK a<b), so an id never returns itself."""
+        return [(int(r["nid"]), float(r["weight"]))
+                for r in self.conn.execute(
+                    "SELECT b_id AS nid, weight FROM co_access_edges "
+                    "WHERE a_id=? AND weight>=? "
+                    "UNION ALL "
+                    "SELECT a_id AS nid, weight FROM co_access_edges "
+                    "WHERE b_id=? AND weight>=? "
+                    "ORDER BY weight DESC",
+                    (int(eid), float(min_weight), int(eid), float(min_weight)))]
 
     def miss_count_since(self, since_ts: int) -> int:
         """Misses recorded strictly after ``since_ts`` (hive_health telemetry)."""

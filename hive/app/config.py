@@ -98,6 +98,8 @@ class RecallConfig:
     shadow_tau: float = 0.95              # pairwise cosine at/above which the loser is hidden
     drafts: bool = False                  # self-quarantine resurfacing read channel; OFF ⇒ byte-inert wire
     draft_tau: float = 0.6                # query↔own-quarantined cosine floor to surface a draft
+    co_access: bool = False               # Phase-1 associative-recall WRITE: accrue co-access edges; OFF ⇒ port never touched (flip first, measure write cost)
+    associations: bool = False            # Phase-2 associative-recall READ: surface co-accessed neighbors on the separate `associations` channel; OFF ⇒ () (flip after co_access)
 
     def __post_init__(self) -> None:
         if not (math.isfinite(self.shadow_tau) and 0.0 < self.shadow_tau <= 1.0):

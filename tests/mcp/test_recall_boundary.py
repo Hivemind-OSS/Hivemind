@@ -5,7 +5,8 @@ key on hit AND abstain (the request_id→trace_id rename pinned)."""
 from __future__ import annotations
 
 from hive.domain.models import (
-    ABSTAIN, CONFIDENT, EMPTY_NO_DATA, RecallDraft, RecallHit, RecallResult,
+    ABSTAIN, CONFIDENT, EMPTY_NO_DATA, RecallAssoc, RecallDraft, RecallHit,
+    RecallResult,
 )
 from tests.fakes._fakes import FakeIndex
 from tests.mcp._helpers import build_real_server, content, tool_call, write_text
@@ -177,3 +178,40 @@ def test_recall_confident_carries_both_channels():
     assert [h["episode_id"] for h in env["reference_context"]] == [eid]
     assert [d["episode_id"] for d in env["self_quarantine"]] == [7]
     assert env["abstained"] is False
+
+
+# ── associations: the co-access neighbor channel (separate envelope key) ────────
+def test_recall_associations_serialized_on_separate_key():
+    """A CONFIDENT result carrying associations serializes them under a SEPARATE
+    envelope key `associations` — never mixed into reference_context."""
+    server, _ = build_real_server()
+    eid = write_text(server, "a trusted memory")["id"]
+    server.recall = _StubRecall(RecallResult(
+        CONFIDENT, "T-a", (RecallHit(eid, "a trusted memory", 0.95),), 0.05, 0.5,
+        associations=(RecallAssoc(9, "a related memory", 3.0, ts=22),)))
+    env = content(tool_call(server, "hive_recall", {"query": "q"}))
+    assert [h["episode_id"] for h in env["reference_context"]] == [eid]
+    assert env["associations"] == [
+        {"episode_id": 9, "text": "a related memory", "weight": 3.0,
+         "trust": "quarantined", "ts": 22}]
+
+
+def test_recall_associations_absent_when_empty():
+    """No associations ⇒ the key is absent (the wire is byte-identical to pre-feature)."""
+    server, _ = build_real_server()
+    eid = write_text(server, "an approved memory")["id"]
+    server.recall = _StubRecall(_confident(eid, "an approved memory"))
+    env = content(tool_call(server, "hive_recall", {"query": "q"}))
+    assert "associations" not in env
+
+
+def test_recall_abstained_unaffected_by_associations():
+    """`abstained` is computed from the TRUSTED hits only — never from associations.
+    (Associations only ride CONFIDENT, but the guard must not key off them.)"""
+    server, _ = build_real_server()
+    eid = write_text(server, "a trusted memory")["id"]
+    server.recall = _StubRecall(RecallResult(
+        CONFIDENT, "T-a", (RecallHit(eid, "a trusted memory", 0.95),), 0.05, 0.5,
+        associations=(RecallAssoc(9, "related", 3.0),)))
+    env = content(tool_call(server, "hive_recall", {"query": "q"}))
+    assert env["abstained"] is False and env["associations"]

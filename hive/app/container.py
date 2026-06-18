@@ -233,7 +233,14 @@ def build_container(cfg: Config, *, tenant_id: str, agent_id: str,
         draft_reader=store if cfg.recall.drafts else None,
         drafts_enabled=cfg.recall.drafts,
         draft_tau=cfg.recall.draft_tau,
-        quarantine_ttl_s=aut.quarantine_ttl_days * _DAY_S)
+        quarantine_ttl_s=aut.quarantine_ttl_days * _DAY_S,
+        # associative recall: the store IS the CoAccess adapter (same reader=store
+        # idiom). The handle is supplied whenever EITHER phase is on, so
+        # associations=true with co_access=false simply reads an empty edge table
+        # and returns () (correct). OFF on both ⇒ no handle, byte-inert.
+        co_access=store if (cfg.recall.co_access or cfg.recall.associations) else None,
+        co_access_enabled=cfg.recall.co_access,
+        associations_enabled=cfg.recall.associations)
     admission = AdmissionService(store, scanner, embedder, now=clock.now,
                                  lifecycle=lifecycle, autonomy_enabled=aut.enabled)
 

@@ -81,3 +81,22 @@ Offboard a seat any time: `hive revoke <seat>` → next request 401s.
 **Convergence KPIs:** call `hive_health(include_trends=true)` over MCP — current vs previous
 7d window + deltas, read-only off the warm store. Host-side: `hive health` prints the same
 trends off the warm store (no MCP seat needed).
+
+### Associative recall (co-access edges) — optional, default OFF
+
+Memories frequently *served together* can accrue a weighted edge, and a confident recall can
+then surface those neighbors on a separate `associations` channel (related context, never
+ranked answers). Two independent boot env knobs, both default OFF — set on the server host
+(a restart applies config; there is no live reload):
+
+| Env var | Default | What it enables |
+|---|---|---|
+| `HIVE_RECALL__CO_ACCESS` | `false` | **Write side** — accrue co-access edges after each confident recall (bounded: ≤28 upserts/recall, independent of `recall_top_n`). No read surface yet. |
+| `HIVE_RECALL__ASSOCIATIONS` | `false` | **Read side** — surface co-accessed neighbors of the served hits under the `associations` recall key. |
+
+**Staged rollout:** enable `HIVE_RECALL__CO_ACCESS=true` first and let edges accumulate while you
+watch the per-recall write cost on your real store; only then enable
+`HIVE_RECALL__ASSOCIATIONS=true` to start surfacing neighbors (with associations on but co-access
+off, the edge table is simply empty, so the channel returns nothing — harmless). The
+`associations` payload is omitted from the recall envelope whenever it is empty, so leaving both
+off is byte-identical to a build without the feature.

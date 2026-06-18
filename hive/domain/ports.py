@@ -84,6 +84,20 @@ class QuarantineReader(Protocol):
 
 
 @runtime_checkable
+class CoAccess(Protocol):
+    """Co-access edges (associative recall): memories served together accrue a
+    weighted undirected edge; a confident recall can surface the 1-hop neighbors of
+    its served hits on a separate channel. ONE port carrying BOTH halves (read+write
+    of one side-channel over one table), mirroring ``ExposureLedger`` — splitting it
+    into a reader + a writer would be temporal decomposition of one body of knowledge.
+    A SEPARATE narrow port (not a widening of any existing one) so existing narrow
+    fakes stay conformant; the SqliteEpisodeStore already satisfies it."""
+    def record_co_access(self, eids: Sequence[int], *, ts: int) -> None: ...
+    def co_access_neighbors(self, eid: int, *, min_weight: float
+                            ) -> list[tuple[int, float]]: ...  # (neighbor_id, weight) desc
+
+
+@runtime_checkable
 class EpisodeStore(Protocol):
     """The durable single-writer store. The exposure table is the recall side-channel
     (record_exposure / record_miss) — the demand signal that drives promotion. The slice
