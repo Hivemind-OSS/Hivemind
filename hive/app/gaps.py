@@ -7,17 +7,10 @@ cluster (insertion order ⇒ deterministic for a given store). Vector-less
 ``secret_refused`` misses cannot cluster (no content survives the scan) and are
 surfaced as one aggregate bucket so refused demand stays visible without leaking
 anything. App-side and read-only: nothing here writes or promotes.
-
-CV3 adds ``contested_misses`` — the same clusters, then ONE servable-index probe
-per CLUSTER (never per miss): clusters whose representative sits within
-``contested_tau`` of a servable row group by that row. Repeated abstains near a
-servable row = near-dups splitting softmax mass or a contradiction in the store;
-repeated re-asks = the served content isn't satisfying. Either way it is the
-supersession-review queue: one ``hive_write(replaces=…)`` resolves it.
 """
 from __future__ import annotations
 
-from typing import Callable, Mapping, Optional, Sequence
+from typing import Mapping, Optional, Sequence
 
 import numpy as np
 
@@ -71,39 +64,3 @@ def cluster_misses(rows: Sequence[Mapping], *, tau: float,
     out = clusters + ([refused] if refused is not None else [])
     out.sort(key=lambda c: (-c["miss_count"], -c["last_seen"]))
     return [{k: v for k, v in c.items() if k != "_vec"} for c in out[:top_n]]
-
-
-def contested_misses(rows: Sequence[Mapping], *, tau: float, contested_tau: float,
-                     search: Callable[["np.ndarray", int], list],
-                     get_episode: Callable[[int], object],
-                     top_n: int = 10) -> list[dict]:
-    """The CV3 contested-memory report: servable rows that recent misses cluster
-    AGAINST. Misses are clustered FIRST (the existing machinery), then ``search``
-    (the live servable index) is probed ONCE per cluster with the cluster's
-    representative vector — the probe count is capped at the cluster count, never
-    the miss count. Clusters whose top servable sim >= ``contested_tau`` group by
-    that episode: ``{episode_id, trust, miss_count, miss_types, last_seen}``,
-    ordered by miss_count desc then recency. Report-time compute only — zero
-    write-path changes.  // O(rows·clusters·d + clusters·search)."""
-    clusters, _refused = _cluster(rows, tau=tau)   # refused rows carry no vector
-    by_eid: dict[int, dict] = {}
-    for c in clusters:
-        hits = search(c["_vec"], 1)
-        if not hits:
-            continue
-        eid, sim = int(hits[0][0]), float(hits[0][1])
-        if sim < contested_tau:
-            continue
-        agg = by_eid.get(eid)
-        if agg is None:
-            ep = get_episode(eid)
-            agg = by_eid[eid] = {
-                "episode_id": eid,
-                "trust": getattr(ep, "trust", "unknown") if ep is not None else "unknown",
-                "miss_count": 0, "miss_types": {}, "last_seen": 0}
-        agg["miss_count"] += c["miss_count"]
-        for kind, n in c["miss_types"].items():
-            agg["miss_types"][kind] = agg["miss_types"].get(kind, 0) + n
-        agg["last_seen"] = max(agg["last_seen"], c["last_seen"])
-    out = sorted(by_eid.values(), key=lambda a: (-a["miss_count"], -a["last_seen"]))
-    return out[:top_n]

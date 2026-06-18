@@ -38,3 +38,13 @@ def test_health_snapshot_has_no_secret_substring():
     snap = content(tool_call(server, "hive_health", {}))
     blob = json.dumps(snap)
     assert "AKIA" not in blob and "sk-" not in blob and "-----BEGIN" not in blob
+
+
+def test_health_has_no_contested():
+    # the contested-memory review queue was cut; include_gaps still serves the demand-gap
+    # report, but never a contested block (no _contested_report wiring remains).
+    server, _ = build_real_server()
+    snap = content(tool_call(server, "hive_health", {"include_gaps": True}))
+    assert "gaps" in snap                                     # the surviving demand-gap channel
+    assert "contested" not in snap and "contested_note" not in snap
+    assert not hasattr(server, "_contested_report")

@@ -7,11 +7,8 @@ so a stale marker from a crashed server does NOT read green. No network.
 """
 from __future__ import annotations
 
-import json
 import os
 import sqlite3
-
-import pytest
 
 from hive.tools import entrypoint as E
 from hive.tools import healthcheck as H
@@ -164,53 +161,12 @@ def test_default_probe_opens_read_only(tmp_path, monkeypatch):
     assert "mode=ro" in seen.get("uri", ""), f"probe did not open read-only: {seen.get('uri')!r}"
 
 
-# ── report mode (--trends): conn-only KPI snapshot off the warm store ──────────
-_REPORT_NOW = 100 * 86_400
-
-
-def _seed_trends_db(tmp_path):
-    """A temp FILE store with two in-window misses, checkpointed (TRUNCATE) so a
-    later mode=ro reader sees committed rows (WAL frames flushed to the main file)."""
-    import numpy as np
-
-    from hive.adapters.index_exhaustive import ExhaustiveCosineIndex
-    from hive.adapters.sqlite_db import connect
-    from hive.adapters.store_sqlite import SqliteEpisodeStore
-
-    db = tmp_path / "shared.db"
-    store = SqliteEpisodeStore(connect(str(db)), index=ExhaustiveCosineIndex(8))
-    vec = np.eye(1, 8, 0, dtype=np.float32).ravel()
-    store.record_miss("q1", vec.tobytes(), "a", "no_match", ts=_REPORT_NOW - 86_400)
-    store.record_miss("q2", vec.tobytes(), "a", "abstained", ts=_REPORT_NOW - 2 * 86_400)
-    store.conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
-    store.conn.close()
-    return db
-
-
-def test_report_trends_emits_envelope(tmp_path, capsys):
-    db = _seed_trends_db(tmp_path)
-    rc = H.main(["--trends"], env={"HIVE_STORE__DB_PATH": str(db)}, now=_REPORT_NOW)
-    snap = json.loads(capsys.readouterr().out)
-    assert snap["ok"] is True and snap["db_path"] == str(db)
-    assert set(snap["trends"]) == {"current", "previous", "deltas"}
-    assert snap["trends"]["current"]["misses_no_match"] == 1
-    assert snap["trends"]["current"]["misses_abstained"] == 1
-    # report mode reports KPIs; its exit reflects store reachability, not embedder residency
-    assert rc == H.HEALTHY
-
-
-def test_bare_healthcheck_unchanged_by_report_path(tmp_path, capsys):
-    # no --trends ⇒ pure liveness: the Docker HEALTHCHECK contract is intact and NO
-    # report JSON is written to stdout.
+# ── bare liveness writes NO stdout (the Docker HEALTHCHECK contract; report mode cut) ──
+def test_bare_healthcheck_writes_no_stdout(tmp_path, capsys):
+    # pure liveness: the Docker HEALTHCHECK contract is intact and NO JSON is written
+    # to stdout (the host-side `--trends` report mode was removed — KPI trends now ride
+    # hive_health(include_trends=true) over MCP only).
     db = _make_db(tmp_path, marker="1", pid=os.getpid())
     rc = H.main(env={"HIVE_STORE__DB_PATH": str(db)})
     assert rc == H.HEALTHY
     assert capsys.readouterr().out == ""
-
-
-def test_report_trends_never_creates_db(tmp_path, capsys):
-    missing = tmp_path / "absent.db"
-    rc = H.main(["--trends"], env={"HIVE_STORE__DB_PATH": str(missing)}, now=_REPORT_NOW)
-    snap = json.loads(capsys.readouterr().out)
-    assert snap["ok"] is False and not missing.exists()   # report mode is read-only
-    assert rc == H.UNHEALTHY

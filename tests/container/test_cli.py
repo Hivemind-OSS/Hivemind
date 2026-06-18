@@ -328,21 +328,10 @@ def test_backup_maps_child_failure_to_unavailable():
     assert rc == cli.EX_UNAVAILABLE
 
 
-# ── health: KPI trends off the warm store (exec → healthcheck --trends) ─────────
-def test_health_execs_healthcheck_trends():
-    report = '{"ok": true, "trends": {"current": {}, "previous": {}, "deltas": {}}}\n'
-    fake = FakeRun(script=[(lambda a: seq_in(a, "python", "-m", "hive.tools.healthcheck",
-                                             "--trends"), proc(stdout=report))])
-    out = io.StringIO()
-    rc = cli.main(["health"], run=fake, out=out, env=ENV)
-    assert rc == cli.EX_OK
-    assert out.getvalue() == report                          # KPI JSON forwarded verbatim
-    assert any(seq_in(c, "exec", "-T", "hive-server", "python", "-m",
-                      "hive.tools.healthcheck", "--trends") for c in fake.calls)
-
-
-def test_health_maps_child_failure_to_unavailable():
-    fake = FakeRun(script=[(lambda a: seq_in(a, "hive.tools.healthcheck"),
-                            proc(rc=1, stderr="boom"))])
-    rc = cli.main(["health"], run=fake, out=io.StringIO(), env=ENV)
-    assert rc == cli.EX_UNAVAILABLE
+# ── health verb removed (KPI trends ride hive_health(include_trends) over MCP) ──
+def test_health_verb_is_absent():
+    # the host-side `hive health` wrapper was cut; the §8.3 demand-health window now
+    # lives ONLY on hive_health(include_trends=true) over MCP. argparse rejects it.
+    assert "health" not in cli._HANDLERS
+    with pytest.raises(SystemExit):
+        cli.main(["health"], run=FakeRun(script=[]), out=io.StringIO(), env=ENV)

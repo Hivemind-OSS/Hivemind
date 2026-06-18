@@ -16,12 +16,10 @@ Touches NO network (HF is offline anyway). Returns a sysexits-style code:
 """
 from __future__ import annotations
 
-import json
 import logging
 import os
 import sqlite3
 import sys
-import time
 from typing import Any, Callable, Mapping, Optional
 
 _log = logging.getLogger("hive.healthcheck")
@@ -125,71 +123,15 @@ def _as_int(raw: Any) -> int:
         return -1
 
 
-# ── report mode (`--trends`): the host-side convergence KPI read ──────────────────
-_DEFAULT_DEMAND_TAU = 0.75
-
-
-class _StoreConn:
-    """compute_trends / cluster_misses read ONLY ``store.conn`` — so this shim IS the
-    entire 'store' surface the report needs, keeping it conn-only. (SqliteEpisodeStore is
-    unusable here: its constructor runs DDL, so it cannot open a read-only connection.)"""
-
-    def __init__(self, conn: sqlite3.Connection) -> None:
-        self.conn = conn
-
-
-def _demand_tau(env: Mapping[str, str]) -> float:
-    """The clusterer cosine floor — mirrors AutonomyConfig.demand_tau so the host-side
-    entropy clusters the SAME neighborhoods the server and the demand rule see. A
-    non-numeric override falls back to the default rather than failing the report."""
-    try:
-        return float((env.get("HIVE_AUTONOMY__DEMAND_TAU") or "").strip()
-                     or _DEFAULT_DEMAND_TAU)
-    except ValueError:
-        return _DEFAULT_DEMAND_TAU
-
-
-def _trends_payload(db_path: str, *, now: int, tau: float) -> dict:
-    """The SAME compute_trends the MCP hive_health serves, read host-side off a READ-ONLY
-    connection (store.conn alone). Fail-soft to {} (never raises) — a report is telemetry,
-    not a gate. Imports are deferred so the per-interval liveness CMD never loads numpy."""
-    from hive.app.gaps import cluster_misses          # lazy (numpy) — keep liveness light
-    from hive.app.trends import compute_trends
-    conn: Optional[sqlite3.Connection] = None
-    try:
-        conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True, timeout=5.0)
-        conn.row_factory = sqlite3.Row
-        return compute_trends(_StoreConn(conn),
-                              lambda rows: cluster_misses(rows, tau=tau), now=now)
-    except Exception as exc:                            # noqa: BLE001 — report never raises
-        _log.warning("healthcheck.trends_failed kind=%s db_path=%s",
-                     type(exc).__name__, db_path)
-        return {}
-    finally:
-        if conn is not None:
-            conn.close()
-
-
 def main(argv: Optional[list[str]] = None, *, env: Optional[Mapping[str, str]] = None,
          probe: Optional[Callable[[Mapping[str, str]], dict[str, Any]]] = None,
          now: Optional[int] = None) -> int:
-    """Two modes off ONE probe. Bare (the image HEALTHCHECK CMD): exit 0 IFF `ok` AND
-    `embedder_loaded` — the conjunction IS the contract (dropping the `embedder_loaded`
-    term, a deliberate mutation, lets a cold server report healthy). `--trends` (the
-    `hive health` verb): print the snapshot + convergence KPIs as JSON and exit on store
-    reachability (`ok`) — this mode REPORTS trends, it does not gate readiness. // O(1)."""
+    """The image HEALTHCHECK CMD: exit 0 IFF `ok` AND `embedder_loaded` — the
+    conjunction IS the contract (dropping the `embedder_loaded` term, a deliberate
+    mutation, lets a cold server report healthy). // O(1)."""
     env = os.environ if env is None else env
-    argv = [] if argv is None else list(argv)
     probe = probe or _default_probe
     snap = probe(env)
-
-    if "--trends" in argv:                              # report mode — emit JSON to stdout
-        if snap.get("ok"):
-            ts = int(now) if now is not None else int(time.time())
-            snap["trends"] = _trends_payload(
-                snap.get("db_path", ""), now=ts, tau=_demand_tau(env))
-        print(json.dumps(snap))
-        return HEALTHY if snap.get("ok") else UNHEALTHY
 
     ok = snap.get("ok") is True
     embedder_loaded = snap.get("embedder_loaded") is True

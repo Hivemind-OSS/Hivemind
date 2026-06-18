@@ -78,9 +78,9 @@ Offboard a seat any time: `hive revoke <seat>` → next request 401s.
 | `hive backup` | snapshot the store now — manual (no scheduler); keeps the `backup_keep` most-recent you take |
 | `hive down` / `hive nuke` | stop (keep data) / destroy (typed confirm) |
 
-**Convergence KPIs:** call `hive_health(include_trends=true)` over MCP — current vs previous
-7d window + deltas, read-only off the warm store. Host-side: `hive health` prints the same
-trends off the warm store (no MCP seat needed).
+**Demand-health KPIs:** call `hive_health(include_trends=true)` over MCP — current vs previous
+7d window + deltas (`confident_rate` + `demand_entropy`), read-only off the warm store. This
+trend is the only window into silent fail-open rot, so it stays instrumented.
 
 ### Associative recall (co-access edges) — optional, default OFF
 

@@ -1,28 +1,27 @@
-"""Convergence trends for ``hive_health(include_trends=true)`` — CV4.
+"""Demand-health trends for ``hive_health(include_trends=true)``.
 
-Lazy SQL over the EXISTING tables (exposure, recall_misses, episodes,
-evidence_events), two fixed windows (current 7d vs previous 7d), computed at
-report time only: no new table, no scheduler, no write-path change. App-side
-like ``gaps.py``; the store's connection is read directly (this module is the
-one consumer of cross-table windowed aggregates — pushing six one-off methods
-into the store would widen its surface for a single report).
+Lazy SQL over the EXISTING tables (exposure, recall_misses), two fixed windows
+(current 7d vs previous 7d), computed at report time only: no new table, no
+scheduler, no write-path change. App-side like ``gaps.py``; the store's
+connection is read directly (this module is the one consumer of cross-table
+windowed aggregates — pushing one-off methods into the store would widen its
+surface for a single report).
 
-**The convergence KPI, defined:** ``confident_rate`` ↑ AND ``demand_entropy`` ↓
-(demand is being answered, and what remains is concentrated/fillable rather
-than diffuse noise) with ``dead_capture_ratio`` bounded (the fleet isn't
-writing junk). These are COVERAGE proxies — whether a served memory actually
-helped (outcome ground truth) is not measured by this report.
+**The demand-health KPI, defined:** ``confident_rate`` ↑ AND ``demand_entropy`` ↓
+(demand is being answered, and what remains is concentrated/fillable rather than
+diffuse noise). These are the ONLY window into silent fail-open rot (THEORY §8.3)
+— fail-open side-channels can corrupt the demand signal invisibly, so the trend
+is kept load-bearing. They are COVERAGE proxies — whether a served memory
+actually helped (outcome ground truth) is not measured by this report.
 
 Window semantics: half-open ``(lo, hi]`` — an event exactly at the boundary
 ``now − 7d`` belongs to the PREVIOUS window, so the two windows partition.
 """
 from __future__ import annotations
 
-import json
 import math
-import statistics
 from dataclasses import asdict, dataclass
-from typing import Callable, Optional, Sequence
+from typing import Callable, Sequence
 
 import numpy as np
 
@@ -32,19 +31,14 @@ WINDOW_DAYS = 7
 
 @dataclass(frozen=True)
 class TrendWindow:
-    """One window's aggregates. Every field is total/zero-safe — an empty store
-    yields a fully-populated window of zeros (and a None median), never a raise."""
+    """One window's demand-health aggregates — the ONLY window into silent
+    fail-open rot (THEORY §8.3). Every field is total/zero-safe — an empty store
+    yields a fully-populated window of zeros, never a raise."""
     recalls_confident: int
     misses_abstained: int
     misses_no_match: int
     confident_rate: float                 # confident / (confident + misses); 0.0 on empty
     demand_entropy: float                 # H over miss-cluster mass / ln(C) ∈ [0,1]; 0.0 if <2 clusters
-    n_promotions: int
-    n_establishments: int
-    n_supersessions: int
-    median_days_to_promotion: Optional[float]
-    dead_capture_ratio: float             # ttl_expired(quarantined) / captures, this window
-    est_tokens_served: int                # Σ len(text)//4 over served hits (cost proxy)
 
 
 def demand_entropy(cluster_masses: Sequence[int]) -> float:
@@ -109,52 +103,7 @@ def _window(store, gaps_clusterer, *, lo: int, hi: int) -> TrendWindow:
     clusters = gaps_clusterer(rows) if rows else []
     entropy = demand_entropy([c.get("miss_count", 0) for c in clusters])
 
-    kinds = {r["kind"]: int(r["c"]) for r in conn.execute(
-        "SELECT kind, COUNT(*) AS c FROM evidence_events "
-        "WHERE ts>? AND ts<=? AND kind IN ('promote','establish','supersede') "
-        "GROUP BY kind", (lo, hi))}
-
-    dts = [int(r["dt"]) for r in conn.execute(
-        "SELECT (ev.ts - e.ts) AS dt FROM evidence_events ev "
-        "JOIN episodes e ON e.id = ev.episode_id "
-        "WHERE ev.kind='promote' AND ev.ts>? AND ev.ts<=?", (lo, hi))]
-    median_days = (statistics.median(dts) / _DAY_S) if dts else None
-
-    # dead captures: quarantine TTL expiries (payload names the source state —
-    # parsed, not LIKE-matched) over the window's capture volume. A capture is
-    # an approved row with NO approver (writes always carry one).
-    expired_q = sum(
-        1 for r in conn.execute(
-            "SELECT payload FROM evidence_events "
-            "WHERE kind='ttl_expired' AND ts>? AND ts<=?", (lo, hi))
-        if _payload_from(r["payload"]) == "quarantined")
-    captures = int(conn.execute(
-        "SELECT COUNT(*) AS c FROM episodes "
-        "WHERE ts>? AND ts<=? AND status='approved' AND approved_by IS NULL",
-        (lo, hi)).fetchone()["c"])
-    dead_ratio = (expired_q / captures) if captures else 0.0
-
-    tokens = int(conn.execute(
-        "SELECT COALESCE(SUM(LENGTH(e.text)/4), 0) AS t FROM exposure x "
-        "JOIN episodes e ON e.id = x.episode_id "
-        "WHERE x.injected_ts>? AND x.injected_ts<=?", (lo, hi)).fetchone()["t"])
-
     return TrendWindow(
         recalls_confident=confident, misses_abstained=abstained,
         misses_no_match=no_match, confident_rate=round(confident_rate, 6),
-        demand_entropy=round(entropy, 6),
-        n_promotions=kinds.get("promote", 0),
-        n_establishments=kinds.get("establish", 0),
-        n_supersessions=kinds.get("supersede", 0),
-        median_days_to_promotion=median_days,
-        dead_capture_ratio=round(dead_ratio, 6),
-        est_tokens_served=tokens)
-
-
-def _payload_from(raw: str) -> Optional[str]:
-    """The ``from`` state inside a ttl_expired audit payload; None on junk."""
-    try:
-        body = json.loads(raw)
-        return body.get("from") if isinstance(body, dict) else None
-    except (TypeError, ValueError):
-        return None
+        demand_entropy=round(entropy, 6))

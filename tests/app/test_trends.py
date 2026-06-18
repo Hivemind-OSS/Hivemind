@@ -1,10 +1,10 @@
-"""CV4 — convergence trends: half-open window partition, the demand-entropy
-KPI's bounds, zero-safety on an empty store, and the envelope shape contract.
-Driven against the REAL sqlite store (the aggregates are SQL — a fake would
-test the fake)."""
+"""Demand-health trends: half-open window partition, the demand-entropy KPI's
+bounds, zero-safety on an empty store, the two-metric window shape, and the
+envelope shape contract. Driven against the REAL sqlite store (the aggregates
+are SQL — a fake would test the fake)."""
 from __future__ import annotations
 
-import json
+from dataclasses import asdict
 
 import numpy as np
 import pytest
@@ -13,7 +13,10 @@ from hive.adapters.index_exhaustive import ExhaustiveCosineIndex
 from hive.adapters.sqlite_db import connect
 from hive.adapters.store_sqlite import SqliteEpisodeStore
 from hive.app.gaps import cluster_misses
-from hive.app.trends import WINDOW_DAYS, compute_trends, demand_entropy
+from hive.app.trends import TrendWindow, WINDOW_DAYS, compute_trends, demand_entropy
+
+_TREND_FIELDS = {"recalls_confident", "misses_abstained", "misses_no_match",
+                 "confident_rate", "demand_entropy"}
 
 D = 8
 DAY = 86_400
@@ -107,23 +110,22 @@ def test_demand_entropy_composes_cluster_masses_not_misses():
     assert _trends(s2)["current"]["demand_entropy"] == 0.0
 
 
-# ── zero-safety + lifecycle counters ───────────────────────────────────────────
-def test_rates_and_ratios_zero_safe():
+# ── zero-safety ─────────────────────────────────────────────────────────────────
+def test_rates_zero_safe():
     out = _trends(_store())                                   # EMPTY store
     for win in ("current", "previous"):
         w = out[win]
+        assert set(w) == _TREND_FIELDS                        # exactly the two-metric core
         assert w["recalls_confident"] == 0 and w["confident_rate"] == 0.0
-        assert w["demand_entropy"] == 0.0 and w["dead_capture_ratio"] == 0.0
-        assert w["median_days_to_promotion"] is None
-        assert w["est_tokens_served"] == 0
-    assert out["deltas"]["median_days_to_promotion"] is None  # None-safe delta
+        assert w["demand_entropy"] == 0.0
+        assert w["misses_abstained"] == 0 and w["misses_no_match"] == 0
     assert out["deltas"]["confident_rate"] == 0.0
+    assert out["deltas"]["demand_entropy"] == 0.0
 
 
-def test_counters_rates_and_tokens():
+def test_confident_rate_and_miss_counts():
     s = _store()
-    text = "x" * 40                                           # 40 chars ⇒ 10 est tokens
-    eid = _episode(s, text, ts=NOW - 5 * DAY, approver="h")
+    eid = _episode(s, "x" * 40, ts=NOW - 5 * DAY, approver="h")
     cap = _episode(s, "captured row", ts=NOW - 5 * DAY)       # approver=None ⇒ capture
     # two confident recalls (distinct traces), one of them serving both rows
     s.record_exposure("t-1", [(eid, 0.5)], agent_id="a", ts=NOW - 4 * DAY)
@@ -131,25 +133,20 @@ def test_counters_rates_and_tokens():
     # one abstain + one no_match in-window
     s.record_miss("m1", U.tobytes(), "a", "abstained", ts=NOW - 2 * DAY)
     s.record_miss("m2", U.tobytes(), "a", "no_match", ts=NOW - 2 * DAY)
-    # lifecycle events: promote (creation→promotion 3d), establish, supersede,
-    # and one quarantined TTL expiry against the one capture
-    s.insert_audit(cap, "promote", "server", NOW - 2 * DAY, '{"rule":"demand"}')
-    s.insert_audit(cap, "establish", "server", NOW - DAY, '{"rule":"survival"}')
-    s.insert_audit(eid, "supersede", "h", NOW - DAY, '{}')
-    s.insert_audit(cap, "ttl_expired", "server", NOW - DAY,
-                   json.dumps({"from": "quarantined"}))
-    s.insert_audit(cap, "ttl_expired", "server", NOW - DAY,
-                   json.dumps({"from": "provisional"}))       # NOT a dead capture
     cur = _trends(s)["current"]
     assert cur["recalls_confident"] == 2
     assert cur["misses_abstained"] == 1 and cur["misses_no_match"] == 1
-    assert cur["confident_rate"] == pytest.approx(2 / 4)
-    assert cur["n_promotions"] == 1 and cur["n_establishments"] == 1
-    assert cur["n_supersessions"] == 1
-    assert cur["median_days_to_promotion"] == pytest.approx(3.0)
-    assert cur["dead_capture_ratio"] == pytest.approx(1 / 1)  # 1 expiry / 1 capture
-    # t-1 served 40 chars (10 tokens); t-2 served 40 + len("captured row")=12 (3)
-    assert cur["est_tokens_served"] == 10 + 10 + 3
+    assert cur["confident_rate"] == pytest.approx(2 / 4)      # confident / (confident + misses)
+
+
+# ── the two-metric window shape (the trim guard) ────────────────────────────────
+def test_trends_window_is_two_metric_only():
+    # the demand-health window is EXACTLY the THEORY §8.3 rot-detection core — the
+    # heavier KPI surface (promotions/establishments/supersessions, median-days,
+    # dead-capture ratio, token cost) was trimmed.
+    w = TrendWindow(recalls_confident=1, misses_abstained=2, misses_no_match=3,
+                    confident_rate=0.5, demand_entropy=0.0)
+    assert set(asdict(w).keys()) == _TREND_FIELDS
 
 
 # ── envelope contract ──────────────────────────────────────────────────────────
@@ -159,12 +156,26 @@ def test_health_trends_shape():
     snap = content(tool_call(server, "hive_health", {"include_trends": True}))
     trends = snap["trends"]
     assert set(trends) == {"current", "previous", "deltas"}
-    fields = {"recalls_confident", "misses_abstained", "misses_no_match",
-              "confident_rate", "demand_entropy", "n_promotions",
-              "n_establishments", "n_supersessions", "median_days_to_promotion",
-              "dead_capture_ratio", "est_tokens_served"}
-    assert set(trends["current"]) == fields
-    assert set(trends["previous"]) == fields
-    assert set(trends["deltas"]) == fields
+    assert set(trends["current"]) == _TREND_FIELDS
+    assert set(trends["previous"]) == _TREND_FIELDS
+    assert set(trends["deltas"]) == _TREND_FIELDS
     plain = content(tool_call(server, "hive_health", {}))
     assert "trends" not in plain                              # opt-in only
+
+
+# ── gaps clustering regression (re-homed from the deleted contested tests) ──────
+def _miss_row(vec, miss_type="abstained", ts=100, text="how do we rotate the key"):
+    return {"query_text": text, "vector": vec, "miss_type": miss_type, "ts": ts}
+
+
+def test_cluster_misses_report_unchanged():
+    # the demand-gap report keeps its shape: no _vec leak, the vector-less refused
+    # aggregate still present and visible (the surviving demand-gap channel — the
+    # contested report on top of it was cut).
+    rows = [_miss_row(U, "abstained", ts=100 + i) for i in range(2)]
+    rows += [_miss_row(None, "secret_refused", ts=400, text="")]
+    out = cluster_misses(rows, tau=0.75)
+    assert all("_vec" not in c for c in out)
+    assert {c["miss_count"] for c in out} == {2, 1}
+    refused = [c for c in out if c["representative_query"] == ""][0]
+    assert refused["miss_types"] == {"secret_refused": 1}

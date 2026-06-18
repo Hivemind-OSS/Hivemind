@@ -120,9 +120,6 @@ class AutonomyConfig:
     # diversity clause for elapsed-span demand. Operator-set env, NOT client-gameable.
     solo_mode: bool = False
     solo_min_span_days: int = 1     # first-to-last matched-miss span required to promote
-    # CV3 contested-memory report: a miss cluster whose representative sits this
-    # close to a SERVABLE row marks that row contested (supersession-review queue).
-    contested_tau: float = 0.80
 
     def __post_init__(self) -> None:
         for name in ("demand_m", "demand_window_days",
@@ -131,7 +128,7 @@ class AutonomyConfig:
             v = getattr(self, name)
             if int(v) < 1:
                 raise ValueError(f"autonomy.{name} must be >= 1 (got {v})")
-        for name in ("demand_tau", "competitor_tau", "contested_tau"):
+        for name in ("demand_tau", "competitor_tau"):
             v = getattr(self, name)
             if not (math.isfinite(v) and 0.0 < v <= 1.0):
                 raise ValueError(f"autonomy.{name} must be finite in (0, 1] (got {v})")
