@@ -92,13 +92,8 @@ class RecallConfig:
     recall_top_n: int = 10
     softmax_beta: float = 16.0            # gate mass temperature (β>0)
     hybrid: bool = False                  # lexical(FTS5)+RRF channel; flip decided by the in-domain BM25 benchmark (benchmarks/BENCHMARK.md)
-    shadow: bool = False                  # CV3 serve-time version shadowing; OFF ⇒ byte-identical (golden)
-    shadow_tau: float = 0.95              # pairwise cosine at/above which the loser is hidden
 
     def __post_init__(self) -> None:
-        if not (math.isfinite(self.shadow_tau) and 0.0 < self.shadow_tau <= 1.0):
-            raise ValueError(
-                f"recall.shadow_tau must be finite in (0, 1] (got {self.shadow_tau})")
         if not (0.0 < self.H_frac_max <= 1.0):
             raise ValueError(
                 f"recall.H_frac_max must be in (0.0, 1.0] (the never-hallucinate floor; "

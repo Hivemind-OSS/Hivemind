@@ -158,6 +158,23 @@ def test_recall_config_rejects_drafts_knob():
     assert not hasattr(c.recall, "drafts_enabled")
 
 
+# ── version-shadowing CUT: the shadow filter + its knobs are GONE ──────────────
+def test_shadow_knobs_removed():
+    # CV3 serve-time shadowing was removed — neither config knob exists, the
+    # pipeline ctor carries no shadow params, and the module-level filter +
+    # trust-rank are gone (re-adding any of them REDS this).
+    import inspect
+
+    from hive.app.config import RecallConfig
+    from hive.domain import recall as recall_mod
+    assert not hasattr(RecallConfig(), "shadow")
+    assert not hasattr(RecallConfig(), "shadow_tau")
+    params = inspect.signature(recall_mod.RecallPipeline.__init__).parameters
+    assert "shadow_enabled" not in params and "shadow_tau" not in params
+    assert not hasattr(recall_mod, "shadow_filter")
+    assert not hasattr(recall_mod, "_TRUST_RANK")
+
+
 # ── the QuarantineReader port SURVIVES (the demand-promotion scan, not drafts) ──
 def test_real_store_satisfies_quarantine_reader_port():
     # conformance-test the REAL adapter against the new port (not just the fake): a

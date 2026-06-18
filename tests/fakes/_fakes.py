@@ -124,8 +124,8 @@ def make_episode(episode_id: int, text: str, weight: float = 1.0,
     text. An approved episode defaults to trust='established' (mirroring the real
     store, where the human-vouched flip stamps established); pass ``trust`` to model
     provisional/quarantined rows. ``value`` defaults to None (margin/surface tests
-    read only text + weight + labels); the CV3 shadow tests pass the vector — the
-    real store's get_episode always populates it."""
+    read only text + weight + labels) but can be supplied — the real store's
+    get_episode always populates it."""
     approved = status == "approved"
     if trust is None:
         trust = "established" if approved else "quarantined"
