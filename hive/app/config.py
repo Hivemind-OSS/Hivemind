@@ -93,7 +93,7 @@ class RecallConfig:
     recall_top_n: int = 10
     epsilon_explore: float = 0.1          # consumed ONLY by the hive.research eval harnesses (no live consumer — the surfacer was removed); validated > 0 because they assume a positive ε
     softmax_beta: float = 16.0            # gate mass temperature (β>0)
-    hybrid: bool = False                  # lexical(FTS5)+RRF channel; flips only on channel_eval CI evidence
+    hybrid: bool = False                  # lexical(FTS5)+RRF channel; flip decided by the in-domain BM25 benchmark (benchmarks/BENCHMARK.md)
     shadow: bool = False                  # CV3 serve-time version shadowing; OFF ⇒ byte-identical (golden)
     shadow_tau: float = 0.95              # pairwise cosine at/above which the loser is hidden
     drafts: bool = False                  # self-quarantine resurfacing read channel; OFF ⇒ byte-inert wire
