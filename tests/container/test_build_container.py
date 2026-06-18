@@ -173,36 +173,12 @@ def test_real_store_satisfies_quarantine_reader_port():
     assert isinstance(c.store, QuarantineReader)
 
 
-def test_real_store_satisfies_co_access_port():
-    # the REAL adapter against the co-access port (read+write of the edge table).
-    from hive.domain.ports import CoAccess
-    c = _build()
-    assert isinstance(c.store, CoAccess)
-
-
-def test_co_access_off_by_default_no_port_handle():
-    # both flags default OFF ⇒ the pipeline has NO handle to the co-access table
-    # (byte-inert: neither the write accrual nor the neighbor read can fire).
-    c = _build()
-    assert c.recall.co_access is None
-    assert c.recall.co_access_enabled is False
-    assert c.recall.associations_enabled is False
-
-
-def test_co_access_flag_wires_store_as_writer():
-    # co_access=true wires the store as the CoAccess port (same store-IS-the-adapter
-    # idiom as draft_reader); the read flag stays independently OFF.
-    c = _build(recall={"co_access": True})
-    assert c.recall.co_access is c.store
-    assert c.recall.co_access_enabled is True
-    assert c.recall.associations_enabled is False
-
-
-def test_associations_flag_enables_read_and_reuses_co_access_handle():
-    # associations=true enables the neighbor read; co_access=true supplies the handle.
-    c = _build(recall={"co_access": True, "associations": True})
-    assert c.recall.co_access is c.store
-    assert c.recall.associations_enabled is True
+def test_recall_config_has_no_co_access_knobs():
+    # the co-access + associations channels are GONE — neither knob exists on the
+    # frozen RecallConfig (re-adding either field REDS this).
+    from hive.app.config import RecallConfig
+    assert not hasattr(RecallConfig(), "co_access")
+    assert not hasattr(RecallConfig(), "associations")
 
 
 def test_hybrid_requires_fts5(monkeypatch):

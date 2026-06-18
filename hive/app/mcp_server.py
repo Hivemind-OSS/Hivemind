@@ -342,17 +342,6 @@ class HiveMCPServer:
                 {"episode_id": d.episode_id, "text": d.text, "sim": float(d.sim),
                  "trust": d.trust, "ts": d.ts}
                 for d in result.drafts]
-        # associative recall: co-accessed NEIGHBORS of the served hits on a SEPARATE
-        # key, labeled `weight` (edge strength, not a relevance sim) — *related*, never
-        # an *answer*, so never merged into reference_context. CONDITIONAL (the key is
-        # ABSENT when empty — byte-identical wire to pre-feature, and never an
-        # unconditional index into a possibly-empty channel). `abstained` is unchanged
-        # (computed from trusted hits only).
-        if result.associations:
-            env["associations"] = [
-                {"episode_id": a.episode_id, "text": a.text, "weight": float(a.weight),
-                 "trust": a.trust, "ts": a.ts}
-                for a in result.associations]
         return env
 
     def _handle_health(self, args: dict, identity: ServerIdentity) -> dict:

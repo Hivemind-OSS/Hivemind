@@ -80,22 +80,6 @@ class RecallDraft:
 
 
 @dataclass(frozen=True, slots=True)
-class RecallAssoc:
-    """One co-accessed neighbor of a served hit — the associative-recall channel.
-    *Related*, NOT an *answer*: a memory frequently served TOGETHER with a trusted
-    hit, surfaced on a SEPARATE channel so a co-access-popular but dense-irrelevant
-    row never enters the ranked ``hits``. A DISTINCT type from ``RecallHit`` /
-    ``RecallDraft`` so it can NEVER be merged into the trusted channel. ``weight`` is
-    the co-access edge weight (co-occurrence count); ``trust``/``ts`` label the
-    neighbor row (fail-safe defaults: under-claim, never over-claim)."""
-    episode_id: int
-    text: str
-    weight: float
-    trust: str = QUARANTINED
-    ts: int = 0
-
-
-@dataclass(frozen=True, slots=True)
 class RecallResult:
     """The frozen result of a recall. ``hits`` is non-empty IFF ``CONFIDENT``;
     ``trace_id`` is ALWAYS present (hit AND abstain) — the move-#6 join key.
@@ -104,19 +88,13 @@ class RecallResult:
     unpromoted quarantined captures, labeled. It is deliberately UNCONSTRAINED by
     ``state`` (it may ride ABSTAIN/EMPTY/CONFIDENT alike): the never-hallucinate
     biconditional below binds ``hits`` ONLY, so a populated ``drafts`` on an
-    abstained result is by design, never a resurrected trusted answer.
-
-    ``associations`` is the co-access neighbor channel — *related* memories, never
-    *answers*. Like ``drafts`` it is unconstrained by the biconditional (which binds
-    ``hits`` only); in practice it is populated on CONFIDENT only (neighbors attach to
-    hits), so ``empty()``/``abstain()`` keep it absent."""
+    abstained result is by design, never a resurrected trusted answer."""
     state: RecallState
     trace_id: str
     hits: tuple[RecallHit, ...]
     entropy_norm: float                    # H/ln(N_eff) ∈ [0,1]; 0.0 on EMPTY_NO_DATA
     top_margin: float
     drafts: tuple["RecallDraft", ...] = ()
-    associations: tuple["RecallAssoc", ...] = ()
 
     @classmethod
     def empty(cls, trace_id: str, drafts: tuple["RecallDraft", ...] = ()) -> "RecallResult":

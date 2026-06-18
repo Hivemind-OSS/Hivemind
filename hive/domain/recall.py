@@ -29,10 +29,10 @@ from hive.domain.lifecycle import (
     ESTABLISHED, PROVISIONAL, _cosine, is_servable,
 )
 from hive.domain.models import (
-    CONFIDENT, Episode, RecallAssoc, RecallDraft, RecallHit, RecallResult, Scored,
+    CONFIDENT, Episode, RecallDraft, RecallHit, RecallResult, Scored,
 )
 from hive.domain.ports import (
-    CoAccess, EmbeddingProvider, EpisodeReader, ExposureLedger, LexicalIndex,
+    EmbeddingProvider, EpisodeReader, ExposureLedger, LexicalIndex,
     QuarantineReader, VectorIndex,
 )
 from hive.domain.secret_scan import REDACT, REFUSE
@@ -149,13 +149,6 @@ class NormalizedEntropyGate:
 # lowest (the resolve belt should have dropped it; rank-defensive, not load-bearing).
 _TRUST_RANK = {ESTABLISHED: 1, PROVISIONAL: 0}
 
-# ── associative recall (co-access edges) — mechanism CONSTANTS, not config ─────
-# Only ONE knob per phase ships (recall.co_access / recall.associations); these three
-# are mechanism defaults no operator has evidence to tune. Greppable, one-place-changeable.
-_ASSOC_FANOUT = 8        # top-N served hits paired into co-access edges (bounds the I7 upserts to C(8,2)=28, independent of recall_top_n)
-_ASSOC_MIN_WEIGHT = 2.0  # Phase-2 edge-surface floor: a single co-occurrence is noise
-_ASSOC_TOP_N = 5         # Phase-2 associations-channel cap
-
 
 def shadow_filter(episodes: Sequence[Episode], *,
                   shadow_tau: float) -> list[Episode]:
@@ -215,9 +208,6 @@ class RecallPipeline:
         drafts_enabled: bool = False,
         draft_tau: float = 0.6,
         quarantine_ttl_s: int = 0,
-        co_access: Optional[CoAccess] = None,
-        co_access_enabled: bool = False,
-        associations_enabled: bool = False,
     ) -> None:
         self.embedder = embedder
         self.index = index
@@ -259,16 +249,6 @@ class RecallPipeline:
         self.drafts_enabled = bool(drafts_enabled)
         self.draft_tau = float(draft_tau)
         self.quarantine_ttl_s = int(quarantine_ttl_s)
-        # associative recall (co-access edges), two independently-gated phases over
-        # ONE CoAccess port + ONE table. WRITE accrual (co_access_enabled): post-
-        # exposure on CONFIDENT, upsert pairwise edges among the top _ASSOC_FANOUT
-        # served hits — bounded, fail-open, byte-inert OFF. READ surfacing
-        # (associations_enabled): the served hits' 1-hop neighbors on the SEPARATE
-        # `associations` channel — READ-ONLY (no exposure / no trust mutation; the
-        # exposure-resurrection belt-ordering rule), fail-open, () OFF or non-CONFIDENT.
-        self.co_access = co_access
-        self.co_access_enabled = bool(co_access_enabled)
-        self.associations_enabled = bool(associations_enabled)
 
     def recall(self, query: str, *, agent_id: str) -> RecallResult:
         trace_id = uuid.uuid4().hex
@@ -433,17 +413,10 @@ class RecallPipeline:
         self._note_exposure(
             trace_id, [(s.episode_id, by_eid[s.episode_id][0]) for s in scored],
             agent_id)
-        # associative recall, post-exposure on the SERVED set (same eids the ledger
-        # has): accrue co-access edges (WRITE), then surface their neighbors on the
-        # separate `associations` channel (READ). Both guarded + fail-open: a fault in
-        # either degrades silently and never touches the trusted return.
-        served_eids = [s.episode_id for s in scored]
-        self._record_co_access(served_eids, now_belt)
-        assoc = self._associations(served_eids, now_belt)
         _log.debug("CONFIDENT trace=%s n_hits=%d top_sim=%.4f",
                    trace_id, len(hits), hits[0].sim)
         return RecallResult(CONFIDENT, trace_id, hits, entropy_norm, top_margin,
-                            drafts, associations=assoc)
+                            drafts)
 
     # ── self-quarantine resurfacing (READ-ONLY; fail-open) ────────────────────
     def _resurface_drafts(self, value_q, agent_id: str) -> tuple[RecallDraft, ...]:
@@ -481,65 +454,6 @@ class RecallPipeline:
         except Exception as exc:                           # noqa: BLE001 — never break recall
             _log.warning("self-quarantine resurface failed (agent=%s): %r — no drafts",
                          agent_id, exc)
-            return ()
-
-    # ── associative recall: co-access edge accrual (WRITE) + neighbor read ────
-    def _record_co_access(self, eids: Sequence[int], now: int) -> None:
-        """Accrue co-access edges among the top ``_ASSOC_FANOUT`` served hits (a
-        constant, NOT recall_top_n — this bounds the I7 upsert fan-out to ≤ C(8,2)).
-        Same data the exposure ledger already has. Guarded by ``co_access_enabled``
-        and wrapped fail-open — a write fault never breaks recall (sibling of
-        ``_note_exposure``). // O(_ASSOC_FANOUT²) pairs in ONE adapter tx."""
-        if not self.co_access_enabled or self.co_access is None:
-            return
-        try:
-            top = list(eids)[:_ASSOC_FANOUT]
-            self.co_access.record_co_access(top, ts=int(now))
-        except Exception as exc:                           # noqa: BLE001 — fail open
-            _log.warning("co-access record failed: %r — recall unaffected", exc)
-
-    def _associations(self, hit_eids: Sequence[int],
-                      now: int) -> tuple[RecallAssoc, ...]:
-        """The co-accessed neighbors of the SERVED hits, on the separate
-        ``associations`` channel — *related*, never *answers*. Union the 1-hop
-        neighbors (weight ≥ ``_ASSOC_MIN_WEIGHT``) over ``hit_eids``, drop ids already
-        in ``hit_eids``, dedup keeping MAX weight, sort weight-desc, take
-        ``_ASSOC_TOP_N``, resolve text, and DROP any that is missing or no longer
-        ``is_servable`` (a neighbor may have decayed — a co-access edge never
-        resurrects a row past its lifecycle). READ-ONLY: records NO exposure and NO
-        trust mutation (refreshing a neighbor's liveness on a read that merely
-        *mentions* it would resurrect a row the lifecycle should drop — the
-        belt-ordering invariant). Guarded + ONE try/except → () (never breaks recall).
-        // O(Σ deg(hit) + k log k)."""
-        if not self.associations_enabled or self.co_access is None:
-            return ()
-        try:
-            hit_set = {int(e) for e in hit_eids}
-            best: dict[int, float] = {}                    # neighbor_id → max weight
-            for eid in hit_set:
-                for nid, w in self.co_access.co_access_neighbors(
-                        eid, min_weight=_ASSOC_MIN_WEIGHT):
-                    nid = int(nid)
-                    if nid in hit_set:                     # already a trusted hit
-                        continue
-                    if w > best.get(nid, float("-inf")):
-                        best[nid] = float(w)
-            ranked = sorted(best.items(), key=lambda kv: (-kv[1], kv[0]))
-            out: list[RecallAssoc] = []
-            for nid, w in ranked:
-                if len(out) >= _ASSOC_TOP_N:
-                    break
-                ep = self.reader.get_episode(nid)
-                if ep is None or not is_servable(
-                        status=ep.status, trust=ep.trust,
-                        last_active_ts=ep.last_active_ts, now=int(now),
-                        provisional_ttl_s=self.provisional_ttl_s):
-                    continue                               # decayed/missing ⇒ never resurrect
-                out.append(RecallAssoc(episode_id=nid, text=ep.text, weight=w,
-                                       trust=ep.trust, ts=ep.ts))
-            return tuple(out)
-        except Exception as exc:                           # noqa: BLE001 — never break recall
-            _log.warning("associations read failed: %r — no associations", exc)
             return ()
 
     # ── the recall side-channel (exposure + demand), fail-open for the read ───

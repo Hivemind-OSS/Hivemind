@@ -195,74 +195,7 @@ def test_legacy_store_without_polarity_is_refused_at_open():
         SqliteEpisodeStore(conn)
 
 
-# ── co-access edges (Phase 1 write accrual + Phase 2 neighbor read) ───────────
-def test_co_access_canonicalizes_a_lt_b_into_one_row():
-    """Inserting (b,a) then (a,b) must land ONE canonical (min,max) row, weight 2.0
-    — the CHECK(a_id<b_id) + python min/max guarantee (a,b) and (b,a) never coexist."""
-    s = _store()
-    s.record_co_access([5, 2], ts=10)           # unordered → canonicalized to (2,5)
-    s.record_co_access([2, 5], ts=20)           # same pair, other order → increments
-    rows = s.conn.execute(
-        "SELECT a_id, b_id, weight, last_co_ts FROM co_access_edges").fetchall()
-    assert len(rows) == 1
-    r = rows[0]
-    assert (r["a_id"], r["b_id"]) == (2, 5)     # min,max canonical
-    assert r["weight"] == 2.0                   # 1.0 default + 1.0 increment
-    assert r["last_co_ts"] == 20                # latest co-access ts
-
-
-def test_co_access_weight_increments_on_repeat():
-    s = _store()
-    for _ in range(3):
-        s.record_co_access([1, 2], ts=0)
-    w = s.conn.execute(
-        "SELECT weight FROM co_access_edges WHERE a_id=1 AND b_id=2").fetchone()["weight"]
-    assert w == 3.0
-
-
-def test_co_access_fewer_than_two_distinct_is_noop():
-    s = _store()
-    s.record_co_access([7], ts=0)               # single eid → no pair
-    s.record_co_access([7, 7], ts=0)            # one DISTINCT eid → no pair
-    s.record_co_access([], ts=0)                # empty → no pair
-    n = s.conn.execute("SELECT COUNT(*) AS c FROM co_access_edges").fetchone()["c"]
-    assert n == 0
-
-
-def test_co_access_writes_all_pairwise_edges():
-    s = _store()
-    s.record_co_access([1, 2, 3], ts=0)         # C(3,2)=3 canonical pairs
-    pairs = {(r["a_id"], r["b_id"]) for r in s.conn.execute(
-        "SELECT a_id, b_id FROM co_access_edges")}
-    assert pairs == {(1, 2), (1, 3), (2, 3)}
-
-
-def test_co_access_neighbors_both_directions_and_min_weight():
-    """The Phase-2 reader returns the OTHER endpoint of every edge touching ``eid``
-    (a_id OR b_id) at/above ``min_weight``, weight-descending."""
-    s = _store()
-    s.record_co_access([1, 2], ts=0)            # edge (1,2) w1 — below a min_weight=2 floor
-    s.record_co_access([1, 3], ts=0)
-    s.record_co_access([1, 3], ts=0)            # edge (1,3) w2 — eid 1 is the LOW endpoint
-    s.record_co_access([3, 9], ts=0)
-    s.record_co_access([3, 9], ts=0)            # edge (3,9) w2 — eid 9 reaches 3 via b-direction
-    # neighbors of 3 at min_weight=2: 1 (via a_id=1,b_id=3) and 9 (via a_id=3,b_id=9); NOT 2 (w1)
-    got = s.co_access_neighbors(3, min_weight=2.0)
-    assert {eid for eid, _w in got} == {1, 9}
-    assert all(w >= 2.0 for _eid, w in got)
-    # weight-descending contract
-    weights = [w for _eid, w in got]
-    assert weights == sorted(weights, reverse=True)
-    # the min_weight floor excludes the w1 edge to 2
-    assert 2 not in {eid for eid, _w in s.co_access_neighbors(3, min_weight=2.0)}
-
-
 # ── port conformance [C1] ─────────────────────────────────────────────────────
 def test_fake_and_sqlite_store_satisfy_protocol():
     assert isinstance(FakeStore(), EpisodeStore)
     assert isinstance(SqliteEpisodeStore(connect(":memory:")), EpisodeStore)
-
-
-def test_sqlite_store_satisfies_co_access_port():
-    from hive.domain.ports import CoAccess
-    assert isinstance(SqliteEpisodeStore(connect(":memory:")), CoAccess)

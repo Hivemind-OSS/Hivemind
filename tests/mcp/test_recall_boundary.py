@@ -4,8 +4,10 @@ neutral reference_context framing (never 'instructions'), and the trace_id join
 key on hit AND abstain (the request_id→trace_id rename pinned)."""
 from __future__ import annotations
 
+import dataclasses
+
 from hive.domain.models import (
-    ABSTAIN, CONFIDENT, EMPTY_NO_DATA, RecallAssoc, RecallDraft, RecallHit,
+    ABSTAIN, CONFIDENT, EMPTY_NO_DATA, RecallDraft, RecallHit,
     RecallResult,
 )
 from tests.fakes._fakes import FakeIndex
@@ -180,38 +182,15 @@ def test_recall_confident_carries_both_channels():
     assert env["abstained"] is False
 
 
-# ── associations: the co-access neighbor channel (separate envelope key) ────────
-def test_recall_associations_serialized_on_separate_key():
-    """A CONFIDENT result carrying associations serializes them under a SEPARATE
-    envelope key `associations` — never mixed into reference_context."""
+# ── NEW GUARD: the associations channel is GONE (the cut is total) ──────────────
+def test_confident_envelope_has_no_associations_key():
+    """A CONFIDENT recall envelope never carries an `associations` key — the
+    co-access neighbor channel was removed. The model field itself is gone, so
+    re-adding the field (and the mcp serialization block it feeds) REDS this."""
+    # structural: re-adding the RecallResult.associations field reds here directly
+    assert "associations" not in {f.name for f in dataclasses.fields(RecallResult)}
     server, _ = build_real_server()
     eid = write_text(server, "a trusted memory")["id"]
-    server.recall = _StubRecall(RecallResult(
-        CONFIDENT, "T-a", (RecallHit(eid, "a trusted memory", 0.95),), 0.05, 0.5,
-        associations=(RecallAssoc(9, "a related memory", 3.0, ts=22),)))
-    env = content(tool_call(server, "hive_recall", {"query": "q"}))
-    assert [h["episode_id"] for h in env["reference_context"]] == [eid]
-    assert env["associations"] == [
-        {"episode_id": 9, "text": "a related memory", "weight": 3.0,
-         "trust": "quarantined", "ts": 22}]
-
-
-def test_recall_associations_absent_when_empty():
-    """No associations ⇒ the key is absent (the wire is byte-identical to pre-feature)."""
-    server, _ = build_real_server()
-    eid = write_text(server, "an approved memory")["id"]
-    server.recall = _StubRecall(_confident(eid, "an approved memory"))
+    server.recall = _StubRecall(_confident(eid, "a trusted memory"))
     env = content(tool_call(server, "hive_recall", {"query": "q"}))
     assert "associations" not in env
-
-
-def test_recall_abstained_unaffected_by_associations():
-    """`abstained` is computed from the TRUSTED hits only — never from associations.
-    (Associations only ride CONFIDENT, but the guard must not key off them.)"""
-    server, _ = build_real_server()
-    eid = write_text(server, "a trusted memory")["id"]
-    server.recall = _StubRecall(RecallResult(
-        CONFIDENT, "T-a", (RecallHit(eid, "a trusted memory", 0.95),), 0.05, 0.5,
-        associations=(RecallAssoc(9, "related", 3.0),)))
-    env = content(tool_call(server, "hive_recall", {"query": "q"}))
-    assert env["abstained"] is False and env["associations"]

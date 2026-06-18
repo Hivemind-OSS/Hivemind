@@ -174,45 +174,6 @@ class FakeQuarantineReader:
         return list(self._rows)
 
 
-class FakeCoAccess:
-    """CoAccess: in-memory co-access edge table (write accrual + neighbor read).
-
-    Mirrors the store: canonicalized undirected edges keyed (min,max), weight
-    increments on repeat. ``writes`` counts ``record_co_access`` calls so an
-    off-inert test can assert the port was NEVER touched; ``raises`` toggles a
-    fault on EITHER method to prove the pipeline fail-opens."""
-    def __init__(self, *, raises: bool = False) -> None:
-        self._edges: dict[tuple[int, int], float] = {}
-        self.writes = 0
-        self.raises = bool(raises)
-
-    def record_co_access(self, eids: Sequence[int], *, ts: int) -> None:
-        self.writes += 1
-        if self.raises:
-            raise RuntimeError("co_access write boom")
-        distinct = sorted({int(e) for e in eids})
-        for i in range(len(distinct)):
-            for j in range(i + 1, len(distinct)):
-                key = (distinct[i], distinct[j])
-                self._edges[key] = self._edges.get(key, 0.0) + 1.0
-
-    def co_access_neighbors(self, eid: int, *,
-                            min_weight: float) -> list[tuple[int, float]]:
-        if self.raises:
-            raise RuntimeError("co_access read boom")
-        eid = int(eid)
-        out: list[tuple[int, float]] = []
-        for (a, b), w in self._edges.items():
-            if w < min_weight:
-                continue
-            if a == eid:
-                out.append((b, w))
-            elif b == eid:
-                out.append((a, w))
-        out.sort(key=lambda t: t[1], reverse=True)
-        return out
-
-
 class FakeStore:
     """EpisodeStore slice (transaction + meta kv), in-memory. The exposure /
     task_outcomes ledger methods were removed with the producer subsystem."""
