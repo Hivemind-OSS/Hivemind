@@ -23,4 +23,4 @@ def build_provider(cfg: "Config", *, head_bytes: Optional[bytes] = None,
     ``warm_embedder``/``load()``, not here, so construction stays torch-cheap)."""
     return LocalSTEmbedder(
         model_name=cfg.embedding.model, w_version=cfg.geometry.W_version,
-        head_bytes=head_bytes, model=model)
+        d=cfg.geometry.d, head_bytes=head_bytes, model=model)

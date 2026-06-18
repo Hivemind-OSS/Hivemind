@@ -66,14 +66,14 @@ def st_model():
 def embedder_v1(st_model):
     """The shipping embedder, resident. Shared (encode is stateless/read-only) so the model
     + PCA head load once for the whole acceptance suite."""
-    return LocalSTEmbedder(model=st_model, w_version=1, bootstrap_n=448).load()
+    return LocalSTEmbedder(model=st_model, w_version=1, d=256, bootstrap_n=448).load()
 
 
 @pytest.fixture(scope="session")
 def embedder_v2(st_model):
     """A SECOND geometry (W_version=2 ⇒ a different bootstrap-fit PCA basis) for the geometry
     re-embed migration round-trip — a genuine geometry change, same semantics."""
-    return LocalSTEmbedder(model=st_model, w_version=2, bootstrap_n=448).load()
+    return LocalSTEmbedder(model=st_model, w_version=2, d=256, bootstrap_n=448).load()
 
 
 def build_acc(embedder, *, db_path: str = ":memory:", clock=None,

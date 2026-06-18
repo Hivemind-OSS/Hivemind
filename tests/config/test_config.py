@@ -139,3 +139,12 @@ def test_geometry_d_positive():
 def test_backup_keep_at_least_one():
     with pytest.raises(ValueError, match=r"backup_keep"):
         Config.load(retention={"backup_keep": 0})
+
+
+# ── config → embedder threading (torch-free: construction does not load the model) ────
+def test_build_provider_threads_config_d():
+    # the embedder's compression dim is sourced from geometry.d, not a head constant —
+    # construction is lazy (no model load), so this proves the wiring without bge.
+    from hive.adapters.embedding.factory import build_provider
+    cfg = Config.load(db_path=":memory:", geometry={"d": 200})
+    assert build_provider(cfg).d == 200

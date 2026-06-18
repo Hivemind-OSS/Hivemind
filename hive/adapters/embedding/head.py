@@ -2,6 +2,11 @@
 
 The variance-preserving native→d projection head, FROZEN at construction (no lazy
 fit, no random fallback — the reference's encode/encode_batch split-brain is DELETED).
+The head is geometry-agnostic: it carries no model-specific magic numbers. The native
+dim (d_in) is whatever the configured model emits, discovered from the sample matrix at
+fit time; the compression dim (d_out) is supplied by the caller from config. Both are
+stored per-instance and serialized, so the head is a general frozen reducer d_in → d_out.
+
 The codec serializes the head so a re-embed migration round-trips W_version
 bit-for-bit — the field the reference's base64+JSON codec silently dropped, which is
 why the geometry re-embed could corrupt geometry. Endianness is pinned little-endian.
@@ -19,8 +24,6 @@ import numpy as np
 
 from hive.domain.errors import GeometryError, HeadCodecError
 
-NATIVE_DIM = 384          # bge-small-en-v1.5
-PROJECTED_DIM = 256       # the dense value dim
 _MAGIC = b"HVH1"
 _FMT_VERSION = 1
 _DTYPE_F32 = 1
@@ -34,9 +37,9 @@ class FrozenPcaHead:
         if W.ndim != 2:
             raise GeometryError(f"head W must be 2-D; got shape {W.shape}")
         d_out, d_in = W.shape
-        if d_in != NATIVE_DIM or d_out != PROJECTED_DIM:
+        if not (1 <= d_out <= d_in):
             raise GeometryError(
-                f"head must be ({PROJECTED_DIM},{NATIVE_DIM}); got {(d_out, d_in)}")
+                f"projection head must reduce dim: need 1 <= d_out <= d_in; got {(d_out, d_in)}")
         self.W = W
         self.w_version = int(w_version)
         self.d_in = d_in
@@ -56,20 +59,24 @@ class FrozenPcaHead:
         return (out / norms).astype(np.float32)
 
     @classmethod
-    def fit_pca(cls, samples: np.ndarray, w_version: int) -> "FrozenPcaHead":
-        """Top-PROJECTED_DIM principal directions of the native sample batch. Needs
-        n >= NATIVE_DIM, else the covariance is rank-deficient (underpowered) and we
-        fail loud rather than ship a degenerate head."""
+    def fit_pca(cls, samples: np.ndarray, w_version: int, *, d_out: int) -> "FrozenPcaHead":
+        """Top-``d_out`` principal directions of the native sample batch. The native dim is
+        INFERRED from the samples (``X.shape[1]``) — the head carries no model constant. Needs
+        n >= native, else the covariance is rank-deficient (underpowered) and we fail loud
+        rather than ship a degenerate head."""
         X = np.asarray(samples, dtype=np.float32)
-        if X.ndim != 2 or X.shape[1] != NATIVE_DIM:
-            raise GeometryError(f"fit samples must be (n,{NATIVE_DIM}); got {X.shape}")
-        if X.shape[0] < NATIVE_DIM:
+        if X.ndim != 2:
+            raise GeometryError(f"fit samples must be 2-D; got shape {X.shape}")
+        native = X.shape[1]
+        if not (1 <= d_out <= native):
+            raise GeometryError(f"d_out must satisfy 1 <= d_out <= native({native}); got {d_out}")
+        if X.shape[0] < native:
             raise GeometryError(
-                f"pca_fit_underpowered: n={X.shape[0]} < native_dim={NATIVE_DIM}")
+                f"pca_fit_underpowered: n={X.shape[0]} < native_dim={native}")
         Xc = X - X.mean(axis=0, keepdims=True)
         cov = (Xc.T @ Xc) / float(X.shape[0])
         _evals, evecs = np.linalg.eigh(cov)               # ascending
-        top = evecs[:, ::-1][:, :PROJECTED_DIM]            # (d_in, d_out) leading dirs
+        top = evecs[:, ::-1][:, :d_out]                    # (d_in, d_out) leading dirs
         return cls(W=top.T.astype(np.float32), w_version=w_version)
 
     # ── codec [B2] ────────────────────────────────────────────────────────────

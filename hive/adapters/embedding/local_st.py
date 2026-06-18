@@ -25,21 +25,23 @@ from typing import Optional, Sequence
 
 import numpy as np
 
-from hive.adapters.embedding.head import NATIVE_DIM, PROJECTED_DIM, FrozenPcaHead
+from hive.adapters.embedding.head import FrozenPcaHead
 from hive.domain.errors import GeometryError
 
 _log = logging.getLogger("hive.embedding")
 
 DEFAULT_MODEL = "BAAI/bge-small-en-v1.5"
-# ≥ NATIVE_DIM (384) so the bootstrap PCA fit is full-rank; a touch over for headroom.
+# ≥ the model's native dim so the fit is full-rank; 448 covers bge-small (384). A
+# larger-native model needs a larger bootstrap_n (the fit fails loud otherwise).
 DEFAULT_BOOTSTRAP_N = 448
 
 
 # ── deterministic bootstrap corpus (the cold-start PCA fit data) ──────────────
 # A repo-independent, deterministic sentence pack. The fit only needs broad variance
 # directions in bge space, so the pack spans engineering / ops / data / general topics.
-# Combinatorial (subjects × predicates) → > NATIVE_DIM distinct sentences, with a
-# ``salt`` rotation so a W_version bump can fit a genuinely different (still valid) basis.
+# Combinatorial (subjects × predicates) → enough distinct sentences to exceed the model's
+# native dim (so the fit is full-rank), with a ``salt`` rotation so a W_version bump can fit
+# a genuinely different (still valid) basis.
 _SUBJECTS: tuple[str, ...] = (
     "the database connection pool", "the redis cache layer", "the message queue",
     "the authentication service", "the deployment pipeline", "the vector index",
@@ -101,13 +103,13 @@ class LocalSTEmbedder:
     ``name``)."""
 
     def __init__(
-        self, *, model_name: str = DEFAULT_MODEL, w_version: int = 1,
+        self, *, d: int, model_name: str = DEFAULT_MODEL, w_version: int = 1,
         head: Optional[FrozenPcaHead] = None, head_bytes: Optional[bytes] = None,
         bootstrap_n: int = DEFAULT_BOOTSTRAP_N, model=None,
     ) -> None:
         self.name = str(model_name)
         self.w_version = int(w_version)
-        self.d = PROJECTED_DIM
+        self.d = int(d)                    # the compression dim, sourced from geometry.d
         self._bootstrap_n = int(bootstrap_n)
         self._model = model                # an injected, already-loaded ST (tests) or None
         if head is not None:
@@ -123,6 +125,13 @@ class LocalSTEmbedder:
             raise GeometryError(
                 f"head w_version {self._head.w_version} != embedder w_version {self.w_version} "
                 "— a persisted head from a different geometry cannot be loaded under this stamp")
+        # A supplied head's compression dim MUST match this embedder's declared d — a persisted
+        # head from a DIFFERENT projection dim would disagree with the index/store vector dim.
+        # The out-of-scope live geometry.d swap fails loud HERE, never corrupts silently.
+        if self._head is not None and int(self._head.d_out) != self.d:
+            raise GeometryError(
+                f"head d_out {self._head.d_out} != embedder d {self.d} "
+                "— a persisted head from a different projection dim cannot be loaded")
         # resident iff BOTH the model and the frozen head are in place
         self.loaded = self._model is not None and self._head is not None
 
@@ -136,8 +145,6 @@ class LocalSTEmbedder:
             _log.info("embedding.model_load name=%s", self.name)
             self._model = SentenceTransformer(self.name, device="cpu")
         if self._head is None:
-            _log.info("embedding.head_fit w_version=%d bootstrap_n=%d native_dim=%d",
-                      self.w_version, self._bootstrap_n, NATIVE_DIM)
             self._head = self._fit_bootstrap_head()
         self.loaded = True
         return self
@@ -175,5 +182,7 @@ class LocalSTEmbedder:
 
     def _fit_bootstrap_head(self) -> FrozenPcaHead:
         samples = bootstrap_corpus(self._bootstrap_n, salt=self.w_version)
-        native = self._encode_native(samples)              # (bootstrap_n, 384)
-        return FrozenPcaHead.fit_pca(native, self.w_version)
+        native = self._encode_native(samples)              # (bootstrap_n, native_dim)
+        _log.info("embedding.head_fit w_version=%d bootstrap_n=%d native_dim=%d d_out=%d",
+                  self.w_version, self._bootstrap_n, native.shape[1], self.d)
+        return FrozenPcaHead.fit_pca(native, self.w_version, d_out=self.d)

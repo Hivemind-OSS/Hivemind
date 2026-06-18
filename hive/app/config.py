@@ -48,6 +48,8 @@ class RuntimeConfig:
 class GeometryConfig:
     # Changing d or W_version needs a re-embed, not just a restart —
     # the stored vectors were projected through the old geometry.
+    # `d` is the projected/compression dim the embedder reduces native embeddings down to —
+    # the stored-vector dim (single source; the head no longer carries its own copy).
     d: int = 256
     W_version: int = 1
 
