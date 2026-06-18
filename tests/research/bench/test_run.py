@@ -5,13 +5,19 @@ a genuinely unanswerable question is. Tested over the tiny fixture with a verbat
 and an in-memory backend — no model, no network."""
 from __future__ import annotations
 
+import json
 from pathlib import Path
+
+import pytest
 
 from hive.research.bench.backends import Proposal, RecallObs
 from hive.research.bench.dataset import load_longmemeval
 from hive.research.bench.llm import FakeLLM
 from hive.research.bench.orchestrator import AllowAllGate, OracleEvidenceGate
-from hive.research.bench.run import ArmObservations, evaluate_arm
+from hive.research.bench.run import (
+    ArmObservations, VerbatimLLM, build_report, compare_arms, evaluate_arm, main,
+    preflight, score_arm,
+)
 
 _FIX = Path(__file__).parent / "fixtures" / "longmemeval_tiny.json"
 
@@ -88,3 +94,82 @@ def test_store_is_reset_per_case():
     b = _FakeBackend()
     evaluate_arm(b, AllowAllGate(), _cases(), llm=FakeLLM(_verbatim_extractor), seats=["sub-a"])
     assert b.resets == 3                                  # one fresh store per question
+
+
+# ── B6b: VerbatimLLM, preflight, score_arm, compare_arms, build_report, main ────
+def test_verbatim_llm_returns_user_turns_as_facts():
+    out = VerbatimLLM().complete("Conversation:\nuser: we use redis\nassistant: ok\nuser: port 6379\n")
+    assert out == "we use redis\nport 6379"
+
+
+class _StubLLM:
+    def __init__(self, ok: bool = True) -> None:
+        self.ok = ok; self.preflighted = False
+
+    def preflight(self) -> None:
+        self.preflighted = True
+        if not self.ok:
+            raise RuntimeError("not logged in")
+
+    def complete(self, prompt: str, *, system=None) -> str:
+        return ""
+
+
+def test_preflight_missing_dataset_raises(tmp_path):
+    with pytest.raises(FileNotFoundError, match="HIVE_BENCH_LME_PATH"):
+        preflight(dataset_path=str(tmp_path / "nope.json"), llm=_StubLLM())
+
+
+def test_preflight_runs_the_llm_preflight():
+    s = _StubLLM()
+    preflight(dataset_path=str(_FIX), llm=s)
+    assert s.preflighted is True
+
+
+def test_preflight_propagates_unauthenticated_llm():
+    with pytest.raises(RuntimeError, match="not logged in"):
+        preflight(dataset_path=str(_FIX), llm=_StubLLM(ok=False))
+
+
+def test_score_arm_returns_means_and_per_question_vectors():
+    sc = score_arm(_FakeBackend(), OracleEvidenceGate({"s1", "s3", "s4"}), _cases(),
+                   llm=FakeLLM(_verbatim_extractor), seats=["sub-a"], ks=(5, 10))
+    assert 0.0 <= sc["retrieval"]["hit_at_k"]["5"] <= 1.0 and sc["retrieval"]["n"] == 2
+    assert len(sc["hit_at_k_per_q"]["5"]) == 2            # one entry per answerable question
+    assert sc["abstention_auroc"] is None or 0.0 <= sc["abstention_auroc"] <= 1.0
+
+
+def test_compare_arms_flags_ship_when_ci_excludes_zero():
+    # primary strictly beats baseline on every question ⇒ paired CI lo > 0 ⇒ ships
+    primary = {"hit_at_k_per_q": {"5": (1.0, 1.0, 1.0, 1.0)}, "mrr_per_q": (1.0, 1.0, 1.0, 1.0)}
+    baseline = {"hit_at_k_per_q": {"5": (0.0, 0.0, 0.0, 0.0)}, "mrr_per_q": (0.0, 0.0, 0.0, 0.0)}
+    cmps = {c["metric"]: c for c in compare_arms(primary, baseline, ks=(5,), seed=0)}
+    assert cmps["hit_at_5"]["ships"] is True and cmps["hit_at_5"]["lo"] > 0.0
+
+
+def test_compare_arms_no_ship_on_a_tie():
+    flat = {"hit_at_k_per_q": {"5": (1.0, 0.0, 1.0, 0.0)}, "mrr_per_q": (0.5, 0.5, 0.5, 0.5)}
+    cmps = {c["metric"]: c for c in compare_arms(flat, flat, ks=(5,), seed=0)}
+    assert cmps["hit_at_5"]["ships"] is False            # identical arms ⇒ delta 0 ⇒ no ship
+
+
+def test_build_report_refuses_incomplete_provenance():
+    prov = {"dataset_hash": "abc", "n_cases": 3, "seeds": [0], "embedder_model": "bge",
+            "extractor": "verbatim", "llm_digest": "n/a", "ks": [5, 10]}
+    del prov["dataset_hash"]
+    with pytest.raises(ValueError, match="provenance"):
+        build_report(arms={}, comparisons=[], provenance=prov)
+
+
+def test_main_offline_writes_a_provenance_stamped_report(tmp_path):
+    out = tmp_path / "report.json"
+    rc = main(["--backend", "x", "--gate", "allowall",
+               "--baseline-backend", "y", "--baseline-gate", "oracle",
+               "--extractor", "verbatim", "--dataset", str(_FIX), "--out", str(out)],
+              backend_factory=lambda name: _FakeBackend(),
+              llm_factory=lambda extractor: FakeLLM(_verbatim_extractor))
+    assert rc == 0 and out.exists()
+    rep = json.loads(out.read_text())
+    assert set(rep) >= {"provenance", "arms", "comparisons"}
+    assert rep["provenance"]["n_cases"] == 3 and rep["provenance"]["dataset_hash"]
+    assert len(rep["arms"]) == 2 and rep["comparisons"]
