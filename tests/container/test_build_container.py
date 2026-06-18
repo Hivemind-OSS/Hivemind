@@ -147,23 +147,18 @@ def test_hybrid_wires_lexical_index_to_store():
     assert c.recall.hybrid_enabled is True
 
 
-# ── self-quarantine resurfacing wiring (draft channel = the store, behind recall.drafts) ──
-def test_drafts_off_wires_no_draft_reader():
+# ── self-quarantine resurfacing CUT: the drafts channel is GONE ────────────────
+def test_recall_config_rejects_drafts_knob():
+    # the drafts knob was removed — an explicit override is an unknown-field error,
+    # and the pipeline carries no draft_reader handle (re-adding either REDS this).
+    with pytest.raises(ValueError, match="unknown config override"):
+        _build(recall={"drafts": True})
     c = _build()
-    assert c.recall.draft_reader is None
-    assert c.recall.drafts_enabled is False
+    assert not hasattr(c.recall, "draft_reader")
+    assert not hasattr(c.recall, "drafts_enabled")
 
 
-def test_drafts_wires_draft_reader_to_store():
-    # the store IS the QuarantineReader adapter (same reader=store/ledger=store idiom);
-    # the TTL is sourced from the autonomy knob so a draft never outlives quarantine.
-    c = _build(recall={"drafts": True})
-    assert c.recall.draft_reader is c.store
-    assert c.recall.drafts_enabled is True
-    assert c.recall.draft_tau == 0.6
-    assert c.recall.quarantine_ttl_s == c.cfg.autonomy.quarantine_ttl_days * 86_400
-
-
+# ── the QuarantineReader port SURVIVES (the demand-promotion scan, not drafts) ──
 def test_real_store_satisfies_quarantine_reader_port():
     # conformance-test the REAL adapter against the new port (not just the fake): a
     # runtime_checkable Protocol only checks name-presence, so a port that goes green

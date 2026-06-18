@@ -134,15 +134,3 @@ def test_backup_keep_at_least_one():
 def test_recall_hybrid_defaults_off_env_coercible():
     assert Config.load(db_path=":memory:").recall.hybrid is False
     assert Config.load(db_path=":memory:", env={"HIVE_RECALL__HYBRID": "true"}).recall.hybrid is True
-
-
-def test_recall_drafts_defaults_off_env_coercible():
-    assert Config.load(db_path=":memory:").recall.drafts is False
-    assert Config.load(db_path=":memory:", env={"HIVE_RECALL__DRAFTS": "true"}).recall.drafts is True
-
-
-def test_recall_draft_tau_default_and_validated():
-    assert Config.load(db_path=":memory:").recall.draft_tau == 0.6
-    for bad in (0.0, -0.1, 1.5, float("nan")):
-        with pytest.raises(ValueError, match=r"recall\.draft_tau"):
-            Config.load(recall={"draft_tau": bad})

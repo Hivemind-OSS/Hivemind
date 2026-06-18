@@ -66,44 +66,22 @@ class RecallHit:
 
 
 @dataclass(frozen=True, slots=True)
-class RecallDraft:
-    """One UNPROMOTED quarantined capture handed back to its OWN writer as a labeled
-    draft (the self-quarantine resurfacing channel) — strictly separate from the
-    trusted ``RecallHit``. A DISTINCT type so it can never be merged into the
-    never-hallucinate ``hits`` channel; ``trust`` defaults to QUARANTINED (it always
-    rides on the quarantined channel) and ``ts`` orders coexisting captures."""
-    episode_id: int
-    text: str
-    sim: float
-    trust: str = QUARANTINED
-    ts: int = 0
-
-
-@dataclass(frozen=True, slots=True)
 class RecallResult:
     """The frozen result of a recall. ``hits`` is non-empty IFF ``CONFIDENT``;
-    ``trace_id`` is ALWAYS present (hit AND abstain) — the move-#6 join key.
-
-    ``drafts`` is the self-quarantine resurfacing side-channel — a seat's own
-    unpromoted quarantined captures, labeled. It is deliberately UNCONSTRAINED by
-    ``state`` (it may ride ABSTAIN/EMPTY/CONFIDENT alike): the never-hallucinate
-    biconditional below binds ``hits`` ONLY, so a populated ``drafts`` on an
-    abstained result is by design, never a resurrected trusted answer."""
+    ``trace_id`` is ALWAYS present (hit AND abstain) — the move-#6 join key."""
     state: RecallState
     trace_id: str
     hits: tuple[RecallHit, ...]
     entropy_norm: float                    # H/ln(N_eff) ∈ [0,1]; 0.0 on EMPTY_NO_DATA
     top_margin: float
-    drafts: tuple["RecallDraft", ...] = ()
 
     @classmethod
-    def empty(cls, trace_id: str, drafts: tuple["RecallDraft", ...] = ()) -> "RecallResult":
-        return cls(EMPTY_NO_DATA, trace_id, (), 0.0, 0.0, drafts)
+    def empty(cls, trace_id: str) -> "RecallResult":
+        return cls(EMPTY_NO_DATA, trace_id, (), 0.0, 0.0)
 
     @classmethod
-    def abstain(cls, trace_id: str, h_norm: float, margin: float,
-                drafts: tuple["RecallDraft", ...] = ()) -> "RecallResult":
-        return cls(ABSTAIN, trace_id, (), h_norm, margin, drafts)
+    def abstain(cls, trace_id: str, h_norm: float, margin: float) -> "RecallResult":
+        return cls(ABSTAIN, trace_id, (), h_norm, margin)
 
     def __post_init__(self) -> None:
         if self.state not in (CONFIDENT, ABSTAIN, EMPTY_NO_DATA):

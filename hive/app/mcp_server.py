@@ -332,16 +332,6 @@ class HiveMCPServer:
                       "trace_id": result.trace_id, "state": result.state,
                       "entropy_norm": float(result.entropy_norm)})
             env["note"] = _abstain_note(result.state)
-        # self-quarantine resurfacing: the seat's OWN unpromoted captures on a
-        # SEPARATE key, labeled trust='quarantined'. BYPASSES the servable belt above
-        # (quarantined is never servable). `abstained` is computed from trusted hits
-        # only — a populated self_quarantine on an abstained:true envelope is the
-        # contract (drafts are a separate channel, never a trusted answer).
-        if result.drafts:
-            env["self_quarantine"] = [
-                {"episode_id": d.episode_id, "text": d.text, "sim": float(d.sim),
-                 "trust": d.trust, "ts": d.ts}
-                for d in result.drafts]
         return env
 
     def _handle_health(self, args: dict, identity: ServerIdentity) -> dict:
