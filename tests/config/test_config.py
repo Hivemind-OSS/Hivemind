@@ -128,9 +128,3 @@ def test_geometry_d_positive():
 def test_backup_keep_at_least_one():
     with pytest.raises(ValueError, match=r"backup_keep"):
         Config.load(retention={"backup_keep": 0})
-
-
-# ── channel flags ship OFF by construction; env-coercible to ON ───────────────
-def test_recall_hybrid_defaults_off_env_coercible():
-    assert Config.load(db_path=":memory:").recall.hybrid is False
-    assert Config.load(db_path=":memory:", env={"HIVE_RECALL__HYBRID": "true"}).recall.hybrid is True

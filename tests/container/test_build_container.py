@@ -133,18 +133,16 @@ def test_d_mismatch_fails_fast():
                         embedder=FakeWarmProvider(d=128))   # geometry.d defaults to 256
 
 
-# ── hybrid recall wiring (lexical channel = the store, behind recall.hybrid) ──
-def test_hybrid_off_wires_no_lexical_index():
+# ── hybrid + FTS lexical mirror CUT: no hybrid/lexical surface anywhere ─────────
+def test_no_hybrid_or_lexical_surface():
+    # the BM25 hybrid channel + the FTS5 mirror were removed end to end — the
+    # pipeline carries no hybrid/lexical handle and the store exposes no FTS
+    # surface (re-adding any of these REDS this).
     c = _build()
-    assert c.recall.lexical_index is None
-    assert c.recall.hybrid_enabled is False
-
-
-def test_hybrid_wires_lexical_index_to_store():
-    # the store IS the LexicalIndex adapter (same idiom as reader=store/ledger=store)
-    c = _build(recall={"hybrid": True})
-    assert c.recall.lexical_index is c.store
-    assert c.recall.hybrid_enabled is True
+    assert not hasattr(c.recall, "hybrid_enabled")
+    assert not hasattr(c.recall, "lexical_index")
+    assert not hasattr(c.store, "search_text")
+    assert not hasattr(c.store, "fts_enabled")
 
 
 # ── self-quarantine resurfacing CUT: the drafts channel is GONE ────────────────
@@ -191,36 +189,3 @@ def test_recall_config_has_no_co_access_knobs():
     from hive.app.config import RecallConfig
     assert not hasattr(RecallConfig(), "co_access")
     assert not hasattr(RecallConfig(), "associations")
-
-
-def test_hybrid_requires_fts5(monkeypatch):
-    """hybrid=true on a stripped SQLite (no FTS5) fails FAST at boot; the same
-    stripped build with hybrid off boots fine (silent degrade)."""
-    import hive.app.container as container_mod
-    from hive.adapters.store_sqlite import SqliteEpisodeStore
-
-    class _NoFtsStore(SqliteEpisodeStore):
-        def __init__(self, *a, **k):
-            super().__init__(*a, **k)
-            self.fts_enabled = False
-
-    monkeypatch.setattr(container_mod, "SqliteEpisodeStore", _NoFtsStore)
-    with pytest.raises(RuntimeError, match="FTS5"):
-        build_container(_cfg(recall={"hybrid": True}), tenant_id="t1", agent_id="a1",
-                        embedder=FakeWarmProvider(d=256))
-    c = build_container(_cfg(), tenant_id="t1", agent_id="a1",
-                        embedder=FakeWarmProvider(d=256))
-    assert c.recall.lexical_index is None
-
-
-def test_build_index_self_heals_fts():
-    """build_index() rebuilds the FTS mirror after the dense rebuild — drift
-    introduced behind the store's back is healed at boot."""
-    c = _build(recall={"hybrid": True})
-    c.warm_embedder()
-    c.admission.write("a memory about fts healing", proposed_by="a1",
-                      approved_by="user")
-    c.conn.execute("DELETE FROM episodes_fts")            # simulate mirror drift
-    assert c.store.search_text("healing", 5) == []
-    c.build_index()
-    assert [eid for eid, _sc in c.store.search_text("healing", 5)]

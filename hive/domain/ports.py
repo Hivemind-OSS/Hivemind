@@ -53,16 +53,6 @@ class MutableVectorIndex(VectorIndex, Protocol):
 
 
 @runtime_checkable
-class LexicalIndex(Protocol):
-    """Exact lexical (BM25) search over the SERVABLE episode text set. Implemented
-    by the episode store (FTS5 mirrors servable membership in the store's own
-    transactions); the pipeline depends only on this method. May serve a
-    TTL-lapsed row — the resolve belt (is_servable at RESOLVE) is the
-    authoritative filter, same as for the dense index."""
-    def search_text(self, query: str, k: int) -> list[tuple[int, float]]: ...  # (episode_id, score) desc
-
-
-@runtime_checkable
 class EpisodeReader(Protocol):
     """Narrow read seam the RecallPipeline uses to resolve a search hit (eid, sim)
     to its full candidate — the ``weight`` (surfacer base multiplier) and ``text``

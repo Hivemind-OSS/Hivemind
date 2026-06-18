@@ -91,7 +91,6 @@ class RecallConfig:
     H_frac_max: float = 0.5
     recall_top_n: int = 10
     softmax_beta: float = 16.0            # gate mass temperature (β>0)
-    hybrid: bool = False                  # lexical(FTS5)+RRF channel; flip decided by the in-domain BM25 benchmark (benchmarks/BENCHMARK.md)
 
     def __post_init__(self) -> None:
         if not (0.0 < self.H_frac_max <= 1.0):

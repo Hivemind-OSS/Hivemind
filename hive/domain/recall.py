@@ -24,14 +24,12 @@ import math
 import uuid
 from typing import Callable, Optional, Sequence
 
-from hive.domain.fusion import rrf_fuse
 from hive.domain.lifecycle import is_servable
 from hive.domain.models import (
     CONFIDENT, Episode, RecallHit, RecallResult, Scored,
 )
 from hive.domain.ports import (
-    EmbeddingProvider, EpisodeReader, ExposureLedger, LexicalIndex,
-    VectorIndex,
+    EmbeddingProvider, EpisodeReader, ExposureLedger, VectorIndex,
 )
 from hive.domain.secret_scan import REDACT, REFUSE
 
@@ -158,8 +156,6 @@ class RecallPipeline:
         recall_top_n: int, ledger: ExposureLedger, clock_now: Callable[[], int],
         scanner, provisional_ttl_s: int, lifecycle=None,
         autonomy_enabled: bool = True,
-        lexical_index: Optional[LexicalIndex] = None,
-        hybrid_enabled: bool = False,
     ) -> None:
         self.embedder = embedder
         self.index = index
@@ -180,11 +176,6 @@ class RecallPipeline:
         self.provisional_ttl_s = int(provisional_ttl_s)
         self.lifecycle = lifecycle        # LifecycleService or None: on_miss trigger
         self.autonomy_enabled = bool(autonomy_enabled)
-        # the lexical (BM25) channel, fused by RRF inside the CONFIDENT branch only.
-        # OFF by default and byte-inert when off: the dense shortlist is used as-is
-        # and the port is never called.
-        self.lexical_index = lexical_index
-        self.hybrid_enabled = bool(hybrid_enabled)
 
     def recall(self, query: str, *, agent_id: str) -> RecallResult:
         trace_id = uuid.uuid4().hex
@@ -244,22 +235,7 @@ class RecallPipeline:
             sim_by_eid = {dense_ids[i]: float(candidates[i][1])
                           for i in range(len(dense_ids))}
 
-            # hybrid (off by default): fuse the lexical (BM25) ranking into the
-            # shortlist. The lexical call sits INSIDE the confident branch — the
-            # gate decided on the dense distribution alone, before any lexical I/O
-            # (never-hallucinate unchanged) — and ANY lexical/fusion fault degrades
-            # to the dense shortlist, never to EMPTY (the gate already ruled the
-            # dense field confident).
             shortlist = dense_ids[:self.recall_top_n]
-            if self.hybrid_enabled and self.lexical_index is not None:
-                try:
-                    lex_ids = [int(eid) for eid, _s in self.lexical_index.search_text(
-                        query, self.recall_top_n)]
-                    shortlist = rrf_fuse([dense_ids, lex_ids])[:self.recall_top_n]
-                except Exception as exc:           # noqa: BLE001 — degrade to dense
-                    _log.warning("lexical channel failure (trace=%s): %r — "
-                                 "dense-only", trace_id, exc)
-
             # resolve the shortlist to full episodes (weight + text + trust labels),
             # keeping each hit's full-set mass. A hit that cannot resolve OR is no
             # longer servable is dropped HERE — before it can be surfaced or exposed
