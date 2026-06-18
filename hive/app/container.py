@@ -209,8 +209,8 @@ def build_container(cfg: Config, *, tenant_id: str, agent_id: str,
 
     identity = ServerIdentity(tenant_id=tenant_id, agent_id=agent_id)
 
-    _log.info("container.assembled tenant_id=%s db_path=%s d=%d backend=%s provider=%s "
-              "autonomy=%s", tenant_id, cfg.db_path, cfg.geometry.d, cfg.index.backend,
+    _log.info("container.assembled tenant_id=%s db_path=%s d=%d provider=%s "
+              "autonomy=%s", tenant_id, cfg.db_path, cfg.geometry.d,
               cfg.embedding.provider, aut.enabled)
     return Container(
         cfg=cfg, conn=conn, index=index, store=store, token_store=token_store,

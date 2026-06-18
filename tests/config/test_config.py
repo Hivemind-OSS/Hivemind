@@ -25,7 +25,6 @@ def test_defaults_match_spec_geometry():
     assert cfg.recall.H_frac_max == 0.5
     assert cfg.recall.recall_top_n == 10
     assert cfg.embedding.model == "BAAI/bge-small-en-v1.5"
-    assert cfg.index.backend == "exhaustive"
     assert cfg.retention.backup_keep == 30
 
 
@@ -113,11 +112,6 @@ def test_h_frac_max_bounds():
 def test_db_path_required():
     with pytest.raises(ValueError, match=r"db_path"):
         Config.load(db_path="")
-
-
-def test_unknown_index_backend_rejected():
-    with pytest.raises(ValueError, match=r"backend"):
-        Config.load(index={"backend": "totally-made-up"})
 
 
 def test_geometry_d_positive():

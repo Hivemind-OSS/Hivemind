@@ -1,18 +1,20 @@
-"""M11 — the three swap seams as plain, greppable dicts + fail-fast `build_*`.
+"""M11 — the embedder/index/gate wiring: a single fail-fast `build_*` per seam.
 
-Adding a provider is ONE dict entry + one adapter file, with zero core change (the
-swap mandate made literal: every registration is visible at one read, not hidden behind
-decorator magic). `build_gate(cfg)` is the ONE located owner that passes the frozen
-`cfg.recall` object BY IDENTITY into the abstention gate — the floor physically cannot fork
-(CONFIG_DRIFT killed structurally; M11).
+The embedder and index each have ONE measured-right backend (local_st / exhaustive),
+so each seam is a direct `build_*` that fails fast on any other provider string — a
+second provider is a one-function edit (add the branch, register the adapter), never a
+generic provider-registry an operator could mis-set (§9.14: encode the one right answer).
+`build_gate(cfg)` is the ONE located owner that passes the frozen `cfg.recall` object BY
+IDENTITY into the abstention gate — the floor physically cannot fork (CONFIG_DRIFT killed
+structurally; M11).
 
-Registry values are LAZY constructors: Config validation checks only key-presence (cheap,
-torch-free), while the heavy adapter import happens when `build_*` actually invokes.
+The heavy adapter import is LAZY: Config validation is cheap and torch-free, while the
+SentenceTransformer load happens when `build_embedder` actually invokes.
 """
 from __future__ import annotations
 
 import logging
-from typing import TYPE_CHECKING, Any, Callable
+from typing import TYPE_CHECKING, Any
 
 from hive.adapters import index_exhaustive
 from hive.domain.recall import NormalizedEntropyGate
@@ -40,51 +42,29 @@ def _build_local_st(cfg: "Config", *, head_bytes=None, model=None):
     return build_provider(cfg, head_bytes=head_bytes, model=model)
 
 
-EMBEDDING_PROVIDERS: dict[str, Callable[..., Any]] = {
-    "local_st": _build_local_st,
-}
-
-
 def build_embedder(cfg: "Config", **kwargs: Any):
-    """Construct the configured embedder; fail fast (ValueError, valid keys) on an unknown
-    seam string — the likely agent typo, caught at startup not at first recall. ``kwargs``
-    (e.g. ``head_bytes`` — the persisted PCA geometry — or ``model`` — a test seam) are
-    forwarded to the selected ctor; the composition root threads them, the registry only
-    selects + fails fast."""
+    """Construct the configured embedder; fail fast (ValueError) on any provider other than
+    the one measured-right default — the likely agent typo, caught at startup not at first
+    recall. ``kwargs`` (e.g. ``head_bytes`` — the persisted PCA geometry — or ``model`` — a
+    test seam) are forwarded; the composition root threads them, the registry only selects +
+    fails fast."""
     name = cfg.embedding.provider
-    ctor = EMBEDDING_PROVIDERS.get(name)
-    if ctor is None:
+    if name != "local_st":
         raise ValueError(
-            f"unknown embedding provider {name!r}; valid={sorted(EMBEDDING_PROVIDERS)}")
+            f"unknown embedding provider {name!r}; valid=['local_st']")
     _log.info("registry.build_embedder provider=%s model=%s", name, cfg.embedding.model)
-    return ctor(cfg, **kwargs)
+    return _build_local_st(cfg, **kwargs)
 
 
 # ── vector-index seam (C5/C3) ─────────────────────────────────────────────────
-def _build_exhaustive(cfg: "Config"):
-    return index_exhaustive.build_index("exhaustive", cfg.geometry.d)
-
-
-INDEX_PROVIDERS: dict[str, Callable[..., Any]] = {
-    "exhaustive": _build_exhaustive,
-}
-
-
 def build_index(cfg: "Config"):
-    """Construct the configured index; ASSERT the authoritative-index property holds for an
-    authoritative backend (exhaustive never silently flips to ANN — the build-time closure of
-    the approx_threshold trap)."""
-    name = cfg.index.backend
-    ctor = INDEX_PROVIDERS.get(name)
-    if ctor is None:
-        raise ValueError(f"unknown index backend {name!r}; valid={sorted(INDEX_PROVIDERS)}")
-    idx = ctor(cfg)
-    if name == "exhaustive" and idx.is_authoritative() is not True:
+    """Construct the exhaustive index; ASSERT the authoritative-index property holds
+    (exhaustive never silently flips to ANN — the build-time closure of the
+    approx_threshold trap; Law 5 never-flip-to-ANN guard)."""
+    idx = index_exhaustive.build_index("exhaustive", cfg.geometry.d)
+    if idx.is_authoritative() is not True:
         raise AssertionError(
             "build_index postcondition violated: exhaustive backend is not authoritative")
-    if idx.is_authoritative() is not True:
-        _log.warning("registry.index_approximate backend=%s; exact-eval recall not guaranteed",
-                     name)
     return idx
 
 

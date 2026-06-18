@@ -31,7 +31,6 @@ from typing import Any, Mapping, Optional
 _log = logging.getLogger("hive.config")
 
 _MEMORY_DB = ":memory:"
-_AUTHORITATIVE_BACKENDS = frozenset({"exhaustive"})
 
 
 # ── frozen config groups ──────────────────────────────────────────────────────
@@ -47,7 +46,7 @@ class RuntimeConfig:
 
 @dataclass(frozen=True)
 class GeometryConfig:
-    # Changing d or W_version needs a re-embed (reembed_from_text), not just a restart —
+    # Changing d or W_version needs a re-embed, not just a restart —
     # the stored vectors were projected through the old geometry.
     d: int = 256
     W_version: int = 1
@@ -65,25 +64,12 @@ class EmbeddingConfig:
     # worse at every d, so the decision is encoded in code (the local_st adapter builds
     # PCA unconditionally), never offered as a choice an operator could mis-set.
     provider: str = "local_st"
-    model: str = "BAAI/bge-small-en-v1.5"   # changing the model needs a re-embed, not just a restart
+    model: str = "BAAI/bge-small-en-v1.5"
 
     def __post_init__(self) -> None:
-        from hive.app.registry import EMBEDDING_PROVIDERS   # lazy — no torch at import
-        if self.provider not in EMBEDDING_PROVIDERS:
+        if self.provider != "local_st":
             raise ValueError(
-                f"embedding.provider {self.provider!r} unknown; "
-                f"valid={sorted(EMBEDDING_PROVIDERS)}")
-
-
-@dataclass(frozen=True)
-class IndexConfig:
-    backend: str = "exhaustive"
-
-    def __post_init__(self) -> None:
-        from hive.app.registry import INDEX_PROVIDERS    # lazy
-        valid = _AUTHORITATIVE_BACKENDS | set(INDEX_PROVIDERS)
-        if self.backend not in valid:
-            raise ValueError(f"index.backend {self.backend!r} unknown; valid={sorted(valid)}")
+                f"embedding.provider {self.provider!r} unknown; valid=['local_st']")
 
 
 @dataclass(frozen=True)
@@ -157,7 +143,6 @@ _GROUP_TYPES: dict[str, type] = {
     "runtime": RuntimeConfig,
     "geometry": GeometryConfig,
     "embedding": EmbeddingConfig,
-    "index": IndexConfig,
     "recall": RecallConfig,
     "autonomy": AutonomyConfig,
     "retention": RetentionConfig,
@@ -165,7 +150,7 @@ _GROUP_TYPES: dict[str, type] = {
 }
 # field-groups constructed (and thus validated) BEFORE runtime, so a field-level error
 # (e.g. recall.H_frac_max) surfaces ahead of the db_path-required check.
-_FIELD_GROUP_ORDER = ("geometry", "embedding", "index", "recall",
+_FIELD_GROUP_ORDER = ("geometry", "embedding", "recall",
                       "autonomy", "retention", "obs")
 
 
@@ -174,7 +159,6 @@ class Config:
     runtime: RuntimeConfig
     geometry: GeometryConfig
     embedding: EmbeddingConfig
-    index: IndexConfig
     recall: RecallConfig
     autonomy: AutonomyConfig
     retention: RetentionConfig

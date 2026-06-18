@@ -6,9 +6,9 @@ into the abstention gate (CONFIG_DRIFT killed structurally — the gate-holds-co
 """
 from __future__ import annotations
 
-import numpy as np
 import pytest
 
+from hive.adapters import index_exhaustive
 from hive.app.config import Config
 from hive.app import registry
 from hive.domain.recall import NormalizedEntropyGate
@@ -22,51 +22,39 @@ def test_build_index_default_and_authoritative():
     assert idx.is_authoritative() is True
 
 
-def test_build_index_authoritative_true():
-    cfg = Config.load(db_path=":memory:", index={"backend": "exhaustive"})
-    assert registry.build_index(cfg).is_authoritative() is True
-
-
 # ── Config itself rejects a typo'd seam at construction (first line of defence) ─
 def test_config_rejects_unknown_embedding_provider():
     with pytest.raises(ValueError, match=r"provider|valid"):
         Config.load(embedding={"provider": "ghost-provider"})
 
 
-# ── build_* keep their OWN fail-fast (belt) — proven by popping a live key ─────
-def test_build_embedder_unknown_provider_fails_fast():
-    # a Config built while the key was present, then the registry loses it:
+# ── build_embedder keeps its OWN fail-fast (belt), independent of Config ───────
+class _StubEmbeddingCfg:
+    """A thin cfg whose embedding.provider bypasses Config.__post_init__ — proves the
+    belt-level fail-fast in build_embedder survives the registry collapse on its own."""
+    def __init__(self, provider: str) -> None:
+        self.embedding = type("E", (), {"provider": provider, "model": "m"})()
+
+
+def test_build_embedder_rejects_unknown_provider(monkeypatch):
+    # neuter the local_st ctor so the ONLY source of a ValueError is the provider guard
+    # itself — dropping the `provider != 'local_st'` raise turns this into a DID-NOT-RAISE
+    # red, not an incidental downstream crash.
+    monkeypatch.setattr(registry, "_build_local_st", lambda *_a, **_k: object())
+    with pytest.raises(ValueError, match=r"valid|provider|ghost"):
+        registry.build_embedder(_StubEmbeddingCfg("ghost"))
+
+
+# ── the Law-5 never-flip postcondition fires if the index declares non-authoritative ─
+def test_build_index_postcondition_fires(monkeypatch):
+    class _FakeIdx:
+        def is_authoritative(self):
+            return False
+
+    monkeypatch.setattr(index_exhaustive, "build_index", lambda *_a, **_k: _FakeIdx())
     cfg = Config.load(db_path=":memory:")
-    saved = registry.EMBEDDING_PROVIDERS.pop(cfg.embedding.provider)
-    try:
-        with pytest.raises(ValueError, match=r"valid|provider"):
-            registry.build_embedder(cfg)
-    finally:
-        registry.EMBEDDING_PROVIDERS[cfg.embedding.provider] = saved
-
-
-# ── the SWAP MANDATE proof: a new adapter, zero core change ───────────────────
-class _LoopbackEmbedder:
-    """A second TextEmbedder registered at runtime — proves a swap needs only
-    registry.py + this adapter, no core edit."""
-    w_version = 1
-
-    def encode(self, text: str) -> "np.ndarray":
-        return np.ones(256, dtype=np.float32) / np.sqrt(256.0)
-
-    def encode_batch(self, texts):
-        return np.stack([self.encode(t) for t in texts])
-
-
-def test_second_adapter_swaps_with_no_core_change():
-    registry.EMBEDDING_PROVIDERS["remote_loopback"] = lambda cfg: _LoopbackEmbedder()
-    try:
-        cfg = Config.load(db_path=":memory:", embedding={"provider": "remote_loopback"})
-        emb = registry.build_embedder(cfg)
-        assert isinstance(emb, _LoopbackEmbedder)
-        assert emb.w_version == 1
-    finally:
-        registry.EMBEDDING_PROVIDERS.pop("remote_loopback", None)
+    with pytest.raises(AssertionError, match=r"authoritative"):
+        registry.build_index(cfg)
 
 
 # ── floor-by-identity: the gate holds the SAME frozen recall object ───────────
