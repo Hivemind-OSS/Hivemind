@@ -50,8 +50,8 @@ def default_run(argv: Sequence[str], env: Optional[Mapping[str, str]] = None, *,
                 input: Optional[str] = None) -> subprocess.CompletedProcess:
     """The one place that actually spawns a child. `env` is passed through whole (the
     prod caller hands os.environ), so compose interpolation sees the operator's vars.
-    `input` pipes text to the child's stdin (the credit NDJSON ingest rides this —
-    a keyword-only, additive widening). // O(child)."""
+    `input`, when given, pipes text to the child's stdin (a keyword-only, additive seam
+    for verbs that feed a child over stdin rather than argv). // O(child)."""
     return subprocess.run(
         list(argv), env=None if env is None else dict(env),
         capture_output=capture, text=True, input=input)

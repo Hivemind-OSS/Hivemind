@@ -29,17 +29,6 @@ def test_defaults_match_spec_geometry():
     assert cfg.retention.backup_keep == 30
 
 
-# ── [A4] ε is validated on recall ──────────────────────────────────────────────
-def test_recall_epsilon_validated_positive():
-    with pytest.raises(ValueError, match=r"recall\.epsilon_explore"):
-        Config.load(recall={"epsilon_explore": 0.0})
-
-
-def test_recall_epsilon_negative_rejected():
-    with pytest.raises(ValueError, match=r"recall\.epsilon_explore"):
-        Config.load(recall={"epsilon_explore": -0.1})
-
-
 # ── env namespacing closes the CORTEX_D collision ─────────────────────────────
 def test_env_namespacing_no_collision():
     env = {"HIVE_RECALL__H_FRAC_MAX": "0.4", "HIVE_GEOMETRY__D": "384"}

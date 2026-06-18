@@ -1,9 +1,10 @@
 """Shared SQLite connection + single-writer transaction discipline.
 
 One WAL file, one writer. ``tx(conn)`` is the BEGIN IMMEDIATE lane: all of a
-producer tick's hops (settle → clawback → credit → watermark) run inside ONE
-transaction on ONE connection [A7], so a failure anywhere rolls the whole tick
-back — partial credit is impossible. isolation_level=None ⇒ we drive BEGIN/COMMIT
+multi-hop write's steps (e.g. a demand-promotion tick: stamp trust → record the
+exposure → refresh the index row) run inside ONE transaction on ONE connection,
+so a failure anywhere rolls the whole tick back — a half-applied promotion is
+impossible. isolation_level=None ⇒ we drive BEGIN/COMMIT
 explicitly rather than relying on the implicit Python transaction machinery.
 """
 from __future__ import annotations

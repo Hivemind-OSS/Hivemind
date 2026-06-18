@@ -27,7 +27,6 @@ from hive.adapters.sqlite_db import connect
 from hive.adapters.store_sqlite import SqliteEpisodeStore
 from hive.app import registry
 from hive.app.config import Config
-from hive.app.health import health
 from hive.app.mcp_server import HiveMCPServer, ServerIdentity
 from hive.domain.admission import AdmissionService
 from hive.domain.lifecycle import DemandRule, LifecycleService, SurvivalRule
@@ -135,10 +134,7 @@ class Container:
             identity=self.identity, now=self.clock.now, started_ts=self.started_ts,
             db_path=db_path, autonomy=self.cfg.autonomy)
 
-    # ── convenience surfaces (health probe + clean shutdown) ──────────────────────
-    def health(self):
-        return health(self.cfg, self.store, self.embedder)
-
+    # ── convenience surface (clean shutdown) ──────────────────────────────────────
     def close(self) -> None:
         try:
             self.conn.close()

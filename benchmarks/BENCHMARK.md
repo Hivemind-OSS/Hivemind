@@ -44,7 +44,7 @@ it as a **measured, paired contrast**, never a slogan:
   CI** on `primary − baseline` excludes 0: ships iff `lo > 0`, regresses iff `hi < 0`, else
   inconclusive. A bare point gain never ships. (`hive/research/metrics_ir.py:bootstrap_ci`.)
 - **Metric vocabulary** (`metrics_ir.py`): `hit@k` (any gold-source unit in top-k), `recall@k`,
-  `precision@k`, `mrr`, `ndcg@k`, `jaccard@k`, `abstention_auroc`. A false abstention scores 0 — it
+  `mrr`, `abstention_auroc`. A false abstention scores 0 — it
   is counted as the real cost it is, never silently skipped.
 - **LLM access — Claude subscription ONLY.** When a benchmark makes model calls they route through
   one adapter that shells `claude -p "<prompt>" --output-format json` — no raw Anthropic/OpenAI key,

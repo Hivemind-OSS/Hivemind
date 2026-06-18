@@ -10,8 +10,8 @@ into the store would widen its surface for a single report).
 **The convergence KPI, defined:** ``confident_rate`` ↑ AND ``demand_entropy`` ↓
 (demand is being answered, and what remains is concentrated/fillable rather
 than diffuse noise) with ``dead_capture_ratio`` bounded (the fleet isn't
-writing junk). These are COVERAGE proxies — outcome ground truth is the credit
-scan's job (CV6), not this report's.
+writing junk). These are COVERAGE proxies — whether a served memory actually
+helped (outcome ground truth) is not measured by this report.
 
 Window semantics: half-open ``(lo, hi]`` — an event exactly at the boundary
 ``now − 7d`` belongs to the PREVIOUS window, so the two windows partition.

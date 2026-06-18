@@ -8,8 +8,7 @@ from __future__ import annotations
 import pytest
 
 from hive.research.metrics_ir import (
-    abstention_auroc, bootstrap_ci, jaccard_at_k, mrr, ndcg_at_k,
-    precision_at_k, recall_at_k,
+    abstention_auroc, bootstrap_ci, mrr, recall_at_k,
 )
 
 
@@ -20,26 +19,15 @@ def test_recall_at_k_basic():
     assert recall_at_k(["x", "y"], {"a"}, 5) == 0.0
 
 
-def test_precision_at_k_denominator_is_k():
-    # only one retrieved, k=5 ⇒ short list penalized (denominator is k, not len)
-    assert precision_at_k(["a"], {"a"}, 5) == pytest.approx(0.2)
-    assert precision_at_k(["a", "b"], {"a", "b"}, 2) == pytest.approx(1.0)
-
-
 def test_metrics_reject_nonpositive_k():
-    for fn in (precision_at_k, recall_at_k, ndcg_at_k):
-        with pytest.raises(ValueError):
-            fn(["a"], {"a"}, 0)
-        with pytest.raises(ValueError):
-            fn(["a"], {"a"}, -1)
     with pytest.raises(ValueError):
-        jaccard_at_k(["a"], ["a"], 0)
+        recall_at_k(["a"], {"a"}, 0)
+    with pytest.raises(ValueError):
+        recall_at_k(["a"], {"a"}, -1)
 
 
 def test_metrics_empty_relevant_is_zero():
     assert recall_at_k(["a", "b"], set(), 5) == 0.0
-    assert precision_at_k(["a", "b"], set(), 5) == 0.0
-    assert ndcg_at_k(["a", "b"], set(), 5) == 0.0
     assert mrr(["a", "b"], set()) == 0.0
 
 
@@ -47,25 +35,12 @@ def test_dedup_before_truncate():
     # a leading duplicate must NOT push the distinct relevant item out of top-2
     # naive truncate-then-dedup of ["a","a","b"] @2 → {"a"} (loses b); correct → {"a","b"}
     assert recall_at_k(["a", "a", "b"], {"a", "b"}, 2) == pytest.approx(1.0)
-    assert jaccard_at_k(["a", "a", "b"], ["a", "b"], 2) == pytest.approx(1.0)
 
 
 def test_mrr_first_relevant_rank():
     assert mrr(["x", "y", "a"], {"a"}) == pytest.approx(1.0 / 3.0)
     assert mrr(["a"], {"a"}) == pytest.approx(1.0)
     assert mrr(["x", "y"], {"a"}) == 0.0
-
-
-def test_ndcg_monotone_in_rank():
-    top = ndcg_at_k(["a", "x", "y"], {"a"}, 3)
-    low = ndcg_at_k(["x", "y", "a"], {"a"}, 3)
-    assert top == pytest.approx(1.0)         # gold at rank 1 ⇒ perfect
-    assert 0.0 < low < top                   # gold deeper ⇒ discounted
-
-
-def test_jaccard_both_empty_is_one():
-    assert jaccard_at_k([], [], 5) == 1.0
-    assert jaccard_at_k(["a"], [], 5) == 0.0
 
 
 # ── BUILD-NEW: abstention_auroc ───────────────────────────────────────────────

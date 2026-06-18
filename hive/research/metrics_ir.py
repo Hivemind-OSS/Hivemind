@@ -1,8 +1,9 @@
 """M10 — pure information-retrieval metrics + BUILD-NEW significance machinery.
 
-The load-bearing arithmetic of the eval membrane. The six metric functions are a
-verbatim PORT of the reference ``research/metrics_ir.py`` (contracts already
-correct: dedup-before-truncate, ``k<=0`` raises, empty-relevant→0.0). The two
+The load-bearing arithmetic of the eval membrane. The pure IR metrics
+(``recall_at_k``, ``mrr``) are a verbatim PORT of the reference
+``research/metrics_ir.py`` (contracts already correct: dedup-before-truncate,
+``k<=0`` raises, empty-relevant→0.0). The two
 significance helpers (``abstention_auroc``, ``bootstrap_ci``) are BUILD-NEW — the
 honest-abstention AUROC gate and the CI-significance ship rule have NO scorer anywhere
 in the reference tree (grep-verified). Dev-time only — the runtime never imports
@@ -54,18 +55,6 @@ def _topk_unique(retrieved: Sequence[str], k: int) -> list[str]:
     return _dedup(retrieved)[:k]
 
 
-def precision_at_k(retrieved: Sequence[str], relevant: set[str], k: int) -> float:
-    """Fraction of the top-``k`` ranks that are relevant. Denominator is ``k`` (the
-    cutoff), not ``len(retrieved)`` — a short result list is correctly penalized.
-    // O(k) time, O(R) space."""
-    if k <= 0:
-        raise ValueError(f"precision_at_k requires k > 0, got {k}")
-    if not relevant:
-        return 0.0
-    hits = sum(1 for item in _topk_unique(retrieved, k) if item in relevant)
-    return hits / k
-
-
 def recall_at_k(retrieved: Sequence[str], relevant: set[str], k: int) -> float:
     """Fraction of all relevant items in the top-``k`` ranks. Denominator is
     ``len(relevant)``. Empty ``relevant`` → 0.0 (undefined; caller should skip).
@@ -93,44 +82,6 @@ def mrr(retrieved: Sequence[str], relevant: set[str]) -> float:
         if item in relevant:
             return 1.0 / rank
     return 0.0
-
-
-def ndcg_at_k(retrieved: Sequence[str], relevant: set[str], k: int) -> float:
-    """Normalized DCG at ``k`` with binary relevance.
-
-    DCG = Σ_{i=1..k} rel_i / log2(i + 1), rel_i ∈ {0,1} over the deduped top-k.
-    IDCG = the DCG of the ideal ranking (min(k, |relevant|) ones up front).
-    nDCG = DCG / IDCG; IDCG == 0 → 0.0. // O(k) time."""
-    if k <= 0:
-        raise ValueError(f"ndcg_at_k requires k > 0, got {k}")
-    if not relevant:
-        return 0.0
-    topk = _topk_unique(retrieved, k)
-    dcg = 0.0
-    for i, item in enumerate(topk, start=1):
-        if item in relevant:
-            dcg += 1.0 / math.log2(i + 1)
-    ideal_hits = min(k, len(relevant))
-    idcg = sum(1.0 / math.log2(i + 1) for i in range(1, ideal_hits + 1))
-    if idcg == 0.0:
-        return 0.0
-    return dcg / idcg
-
-
-def jaccard_at_k(a: Sequence[str], b: Sequence[str], k: int) -> float:
-    """Jaccard similarity of the two top-``k`` rank *sets* (order-insensitive).
-
-    |A∩B| / |A∪B| over the deduped top-k windows. Two empty windows → 1.0
-    (identical); one empty, one not → 0.0. The stability metric capture→replay
-    reports across a retrieval change. // O(k) time."""
-    if k <= 0:
-        raise ValueError(f"jaccard_at_k requires k > 0, got {k}")
-    sa = set(_topk_unique(a, k))
-    sb = set(_topk_unique(b, k))
-    union = sa | sb
-    if not union:
-        return 1.0
-    return len(sa & sb) / len(union)
 
 
 # ── BUILD-NEW: significance machinery (no scorer exists in the reference) ──────

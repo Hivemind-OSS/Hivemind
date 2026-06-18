@@ -71,9 +71,9 @@ def test_log_level_gates_info_checkpoints(capsys):
 
 
 def test_config_invalid_error_is_structured_json(capsys):
-    # a bad config field (epsilon_explore=0 violates the guardrail-1 floor) ⇒ EX_CONFIG; the
+    # a bad config field (H_frac_max=0 disables the never-hallucinate floor) ⇒ EX_CONFIG; the
     # failure surfaces as a structured-JSON ERROR record on stderr (stdout stays clean).
-    rc = E.main(env={"HIVE_RECALL__EPSILON_EXPLORE": "0"}, build_boot=_build_boot,
+    rc = E.main(env={"HIVE_RECALL__H_FRAC_MAX": "0"}, build_boot=_build_boot,
                 serve=lambda s: None)
     assert rc == E.EX_CONFIG
     cap = capsys.readouterr()

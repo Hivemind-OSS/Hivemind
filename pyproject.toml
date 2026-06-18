@@ -24,7 +24,10 @@ dev = ["pytest>=7"]
 bench = ["hive[embed]", "mem0ai==2.0.7", "huggingface-hub>=0.20"]
 
 [tool.setuptools.packages.find]
+# hive.research is the dev-time benchmark harness (heavy optional deps); it stays in the
+# repo for editable checkouts but is NOT shipped in the built wheel an operator installs.
 include = ["hive*", "tests*"]
+exclude = ["hive.research*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

@@ -11,7 +11,6 @@ Boundary: this module WIRES, it does not COMPUTE. It depends on the registry onl
 never reaches into `core/` domain logic.
 
 Grounded deviations (built-decision-wins):
-- `recall.epsilon_explore > 0` is validated (the hive.research eval harnesses assume a positive ε).
 - `db_path` defaults to `":memory:"` (ephemeral — cannot corrupt a persistent store) so a
   no-db_path `Config.load(...)` resolves; an EMPTY string is the fail-fast trigger. The
   "no silent default" prose guards a *persistent* store; `:memory:` is not one.
@@ -91,7 +90,6 @@ class IndexConfig:
 class RecallConfig:
     H_frac_max: float = 0.5
     recall_top_n: int = 10
-    epsilon_explore: float = 0.1          # consumed ONLY by the hive.research eval harnesses (no live consumer — the surfacer was removed); validated > 0 because they assume a positive ε
     softmax_beta: float = 16.0            # gate mass temperature (β>0)
     hybrid: bool = False                  # lexical(FTS5)+RRF channel; flip decided by the in-domain BM25 benchmark (benchmarks/BENCHMARK.md)
     shadow: bool = False                  # CV3 serve-time version shadowing; OFF ⇒ byte-identical (golden)
@@ -114,10 +112,6 @@ class RecallConfig:
                 f"0 or >1 silently disables the gate); got {self.H_frac_max}")
         if self.recall_top_n < 1:
             raise ValueError(f"recall.recall_top_n must be >= 1 (got {self.recall_top_n})")
-        if not self.epsilon_explore > 0.0:
-            raise ValueError(
-                f"recall.epsilon_explore must be > 0 (the hive.research eval harnesses "
-                f"assume a positive ε); got {self.epsilon_explore}")
         if not self.softmax_beta > 0.0:
             raise ValueError(f"recall.softmax_beta must be > 0 (got {self.softmax_beta})")
 
@@ -191,7 +185,7 @@ _GROUP_TYPES: dict[str, type] = {
     "obs": ObservabilityConfig,
 }
 # field-groups constructed (and thus validated) BEFORE runtime, so a field-level error
-# (e.g. recall.epsilon_explore) surfaces ahead of the db_path-required check.
+# (e.g. recall.H_frac_max) surfaces ahead of the db_path-required check.
 _FIELD_GROUP_ORDER = ("geometry", "embedding", "index", "recall",
                       "autonomy", "retention", "obs")
 
