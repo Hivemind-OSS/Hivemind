@@ -116,6 +116,48 @@ def test_up_tunnel_sets_profile():
     assert seq_in(fake.calls[0], "up", "-d", "--build")
 
 
+# ── AUTH-OPTIONAL: --tunnel REFUSES open mode (the enforced public-exposure gate) ──
+def test_up_tunnel_refuses_open_mode_even_with_secrets(capsys):
+    # a public, UNAUTHENTICATED endpoint is a memory-poisoning hole: --tunnel + open
+    # → EX_CONFIG and NO child spawned, even when the NGROK secrets ARE present (the
+    # refusal is not just a missing-secret consequence).
+    fake = FakeRun(script=list(_HEALTHY))
+    env = dict(ENV, HIVE_AUTH__MODE="open", NGROK_AUTHTOKEN="t", NGROK_DOMAIN="brain.ngrok.app")
+    rc = cli.main(["up", "--tunnel"], run=fake, out=io.StringIO(), env=env)
+    assert rc == cli.EX_CONFIG
+    assert fake.calls == []                              # no child — fail-fast before compose
+    assert "open" in capsys.readouterr().err.lower()     # the operator is told why
+
+
+def test_up_tunnel_token_mode_proceeds(capsys):
+    # regression: the open-mode guard does NOT fire in token mode (secrets present).
+    fake = FakeRun(script=list(_HEALTHY))
+    env = dict(ENV, HIVE_AUTH__MODE="token", NGROK_AUTHTOKEN="t", NGROK_DOMAIN="brain.ngrok.app")
+    rc = cli.main(["up", "--tunnel"], run=fake, out=io.StringIO(), env=env)
+    assert rc == cli.EX_OK
+    assert seq_in(fake.calls[0], "--profile", "tunnel")
+
+
+def test_up_tunnel_no_auth_mode_proceeds():
+    # no HIVE_AUTH__MODE ⇒ default token ⇒ --tunnel proceeds (secrets present).
+    fake = FakeRun(script=list(_HEALTHY))
+    env = dict(ENV, NGROK_AUTHTOKEN="t", NGROK_DOMAIN="brain.ngrok.app")
+    rc = cli.main(["up", "--tunnel"], run=fake, out=io.StringIO(), env=env)
+    assert rc == cli.EX_OK
+    assert seq_in(fake.calls[0], "--profile", "tunnel")
+
+
+def test_up_open_mode_loopback_is_allowed():
+    # the guard is --tunnel-ONLY: a plain `hive up` in open mode brings the loopback daemon
+    # up normally (loopback open is the intended deployment).
+    fake = FakeRun(script=list(_HEALTHY))
+    env = dict(ENV, HIVE_AUTH__MODE="open")
+    rc = cli.main(["up"], run=fake, out=io.StringIO(), env=env)
+    assert rc == cli.EX_OK
+    assert seq_in(fake.calls[0], "up", "-d", "--build", "hive-server")
+    assert not any("--profile" in c or "tunnel" in c for c in fake.calls)
+
+
 # ── .env folded UNDER the shell env: ONE source for the CLI gate and compose ─────
 def test_load_dotenv_adds_keys_absent_from_shell(tmp_path):
     p = tmp_path / ".env"

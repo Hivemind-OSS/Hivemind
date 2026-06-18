@@ -27,7 +27,7 @@ from http.server import ThreadingHTTPServer
 
 import pytest
 
-from hive.app.http_server import _bearer, _build_handler
+from hive.app.http_server import _AGENT_ID_HEADER, _asserted_agent_id, _bearer, _build_handler
 from hive.app.mcp_server import MCPResponse, ServerIdentity
 from hive.app.rate_limit import TokenBucketLimiter
 
@@ -269,5 +269,159 @@ def test_under_cap_body_passes_with_belts_on():
         status, body, _ = _request(url, body=_RPC, token="good-tok")
         assert status == 200
         assert json.loads(body)["result"]["ok"] is True
+    finally:
+        stop()
+
+
+# ── AUTH-OPTIONAL: the `_asserted_agent_id` extractor (open-mode carrier) ───────
+def test_asserted_agent_id_extracts_strips_and_floors_blank():
+    def h(val):
+        m = Message()
+        if val is not None:
+            m[_AGENT_ID_HEADER] = val
+        return m
+    assert _asserted_agent_id(h("alice")) == "alice"
+    assert _asserted_agent_id(h("  bob  ")) == "bob"     # surrounding whitespace stripped
+    assert _asserted_agent_id(h("   ")) is None          # blank/whitespace → None (never anon)
+    assert _asserted_agent_id(h("")) is None             # empty → None
+    assert _asserted_agent_id(h(None)) is None           # absent → None
+
+
+# ── AUTH-OPTIONAL: token-mode regression (prove byte-identical + carrier no-leak) ──
+def _open_spy(verify_calls):
+    """A SpyServer + a verify that RECORDS each call (so open mode can assert it never
+    runs). Returns (spy, verify)."""
+    spy = _SpyServer()
+
+    def verify(tok):
+        verify_calls.append(tok)
+        return {"good-tok": "alice-laptop"}.get(tok)
+    return spy, verify
+
+
+def test_token_mode_default_ignores_agent_id_header():
+    # DEFAULT (auth_mode omitted) is token mode: an X-Hive-Agent-Id header with NO Bearer
+    # still 401s — open's carrier must NOT leak into token mode.
+    spy = _SpyServer()
+    url, stop = _serve(spy, lambda tok: {"good-tok": "alice-laptop"}.get(tok))
+    try:
+        status, body, _ = _request(url, body=_RPC,
+                                   headers={_AGENT_ID_HEADER: "mallory"})
+        assert status == 401
+        assert json.loads(body)["error"] == "unauthorized"
+        assert spy.calls == []                           # the header bought no access
+    finally:
+        stop()
+
+
+def test_token_mode_explicit_still_verifies_bearer():
+    # auth_mode="token" explicitly: a valid Bearer → the verified label; the header is ignored.
+    spy = _SpyServer()
+    url, stop = _serve(spy, lambda tok: {"good-tok": "alice-laptop"}.get(tok),
+                       auth_mode="token")
+    try:
+        status, _, _ = _request(url, body=_RPC, token="good-tok",
+                                headers={_AGENT_ID_HEADER: "mallory"})
+        assert status == 200
+        (_, identity), = spy.calls
+        assert identity.agent_id == "alice-laptop"       # the Bearer label, NOT the header
+    finally:
+        stop()
+
+
+# ── AUTH-OPTIONAL: open mode (tokenless, header-asserted identity) ──────────────
+def test_open_mode_header_identity_runs_handler_with_that_agent_id():
+    verify_calls: list = []
+    spy, verify = _open_spy(verify_calls)
+    url, stop = _serve(spy, verify, auth_mode="open")
+    try:
+        status, body, _ = _request(url, body=_RPC,
+                                   headers={_AGENT_ID_HEADER: "alice"})   # NO Bearer
+        assert status == 200
+        env = json.loads(body)
+        assert env["result"]["ok"] is True
+        (_, identity), = spy.calls
+        assert identity.agent_id == "alice"              # attribution is the asserted header
+        assert identity.tenant_id == "default"           # tenant still from the server
+        assert verify_calls == []                        # verify NEVER consulted in open mode
+    finally:
+        stop()
+
+
+def test_open_mode_missing_header_is_400_never_anonymous():
+    # open ⇒ UNVERIFIED, not ANONYMOUS: no header (and no Bearer) → 400, handler untouched.
+    spy = _SpyServer()
+    url, stop = _serve(spy, lambda tok: "x", auth_mode="open")
+    try:
+        status, body, _ = _request(url, body=_RPC)       # no header at all
+        assert status == 400
+        assert json.loads(body)["error"] == "missing_agent_id"
+        assert spy.calls == []
+    finally:
+        stop()
+
+
+def test_open_mode_blank_header_is_400():
+    # a whitespace-only header trips the `.strip()` floor → 400 (not a blank-named identity).
+    spy = _SpyServer()
+    url, stop = _serve(spy, lambda tok: "x", auth_mode="open")
+    try:
+        status, body, _ = _request(url, body=_RPC,
+                                   headers={_AGENT_ID_HEADER: "   "})
+        assert status == 400
+        assert json.loads(body)["error"] == "missing_agent_id"
+        assert spy.calls == []
+    finally:
+        stop()
+
+
+def test_open_mode_ignores_bearer_identity_comes_from_header():
+    # a forged-looking Bearer is IGNORED in open mode; identity is the header and verify
+    # is never called (the SQLite token store stays dark).
+    verify_calls: list = []
+    spy, verify = _open_spy(verify_calls)
+    url, stop = _serve(spy, verify, auth_mode="open")
+    try:
+        status, _, _ = _request(url, body=_RPC, token="good-tok",
+                                headers={_AGENT_ID_HEADER: "carol"})
+        assert status == 200
+        (_, identity), = spy.calls
+        assert identity.agent_id == "carol"              # the header, not the Bearer label
+        assert verify_calls == []                        # no verify call in open mode
+    finally:
+        stop()
+
+
+def test_open_mode_limiter_keys_on_asserted_label():
+    # parity with token-mode D3: the limiter keys on the asserted label; two past the
+    # bucket from the SAME header → 429 (handle not called on the throttled request).
+    spy = _SpyServer()
+    limiter = TokenBucketLimiter(limit=2, window_s=3600.0)
+    url, stop = _serve(spy, lambda tok: None, auth_mode="open", limiter=limiter)
+    try:
+        for _ in range(2):
+            status, _, _ = _request(url, body=_RPC, headers={_AGENT_ID_HEADER: "alice"})
+            assert status == 200
+        status, body, hdrs = _request(url, body=_RPC, headers={_AGENT_ID_HEADER: "alice"})
+        assert status == 429
+        assert json.loads(body)["error"] == "rate_limited"
+        assert int(hdrs.get("Retry-After")) >= 1
+        assert len(spy.calls) == 2                        # the 429'd request never reached handle
+        # a different asserted identity has its own bucket
+        status, _, _ = _request(url, body=_RPC, headers={_AGENT_ID_HEADER: "bob"})
+        assert status == 200 and len(spy.calls) == 3
+    finally:
+        stop()
+
+
+def test_open_mode_handler_exception_is_jsonrpc_error_in_200():
+    # INV-3 holds in open mode too: the mode branch is BEFORE handle, so a raising
+    # handler still yields a JSON-RPC -32603 inside a 200.
+    spy = _SpyServer(raise_on="tools/call")
+    url, stop = _serve(spy, lambda tok: None, auth_mode="open")
+    try:
+        status, body, _ = _request(url, body=_RPC, headers={_AGENT_ID_HEADER: "alice"})
+        assert status == 200
+        assert json.loads(body)["error"]["code"] == -32603
     finally:
         stop()

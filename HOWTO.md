@@ -67,6 +67,33 @@ Loopback never leaves the host, so open exactly one door:
 Never publish `0.0.0.0:8765` — a bearer token over plain LAN HTTP is cleartext.
 Offboard a seat any time: `hive revoke <seat>` → next request 401s.
 
+### Tokenless mode for a trusted, loopback-only fleet (`HIVE_AUTH__MODE=open`)
+
+By default every request is authenticated by a per-seat Bearer token (`token` mode). A
+**trusted internal fleet on one host** can instead run **tokenless** by setting
+`HIVE_AUTH__MODE=open` on the server (a restart applies it; there is no live reload):
+
+- Token verification is skipped. Each request still states a **distinct identity** via an
+  `X-Hive-Agent-Id: <seat>` HTTP header — that header becomes the `agent_id` for attribution
+  and demand anti-gaming. There is no anonymous access: a request **missing or with a blank**
+  `X-Hive-Agent-Id` is rejected with **400** (open means *unverified*, never *anonymous*).
+- Register a seat with the header instead of a token:
+
+  ```bash
+  claude mcp add --transport http hive http://localhost:8765/mcp \
+    --header "X-Hive-Agent-Id: alice-laptop"
+  ```
+
+- **Loopback-only, never tunneled.** Open mode trusts the network, so it is safe **only** on
+  `127.0.0.1` (or a private host every member trusts). `hive up --tunnel` **refuses to start**
+  while `HIVE_AUTH__MODE=open` (exits `EX_CONFIG`, spawns nothing) — a public, unauthenticated
+  endpoint would let anyone poison the shared memory. For any tunneled or cross-machine
+  deployment, keep `token` mode (the default) and hand out per-seat tokens as in section 2.
+- Identity is still **trust, not crypto**: a member could forge another seat's
+  `X-Hive-Agent-Id`. That is acceptable for an honest fleet (the same assumption a local-first
+  store already makes); operators who don't trust their fleet keep `token` mode. For a *single*
+  identity, prefer `HIVE_AUTONOMY__SOLO_MODE=true` (section 2) over open mode.
+
 ## 4. Day-2 operations
 
 | Command | What it tells/does |

@@ -43,6 +43,7 @@ _log = logging.getLogger("hive.app.http_server")
 
 _JSON = "application/json"
 _DEFAULT_MAX_BODY = 1 << 20      # 1 MiB — generous for JSON-RPC tool calls (gbrain parity)
+_AGENT_ID_HEADER = "X-Hive-Agent-Id"   # open-mode self-asserted identity (token-mode: ignored)
 
 
 def _bearer(headers) -> Optional[str]:
@@ -56,18 +57,33 @@ def _bearer(headers) -> Optional[str]:
     return tok or None
 
 
+def _asserted_agent_id(headers) -> Optional[str]:
+    """The open-mode self-asserted caller identity from ``X-Hive-Agent-Id``, or None if
+    absent/blank. Transport-level (parallel to the Bearer it replaces) so INV-2 holds:
+    the caller never asserts identity through a TOOL argument. // O(1)."""
+    val = (headers.get(_AGENT_ID_HEADER) or "").strip()
+    return val or None
+
+
 def _build_handler(server: HiveMCPServer,
                    verify: Callable[[str], Optional[str]],
                    lock: threading.Lock, *,
                    limiter: Optional[TokenBucketLimiter] = None,
-                   max_body_bytes: int = _DEFAULT_MAX_BODY) -> type:
+                   max_body_bytes: int = _DEFAULT_MAX_BODY,
+                   auth_mode: str = "token") -> type:
     """Build the ``BaseHTTPRequestHandler`` subclass that enforces the endpoint contract.
     Factored out of ``run_http`` so the contract is unit-testable against a real loopback
     ``ThreadingHTTPServer`` on an ephemeral port (``run_http`` only binds + serve_forever).
     The Part S belts are keyword-only and defaulted OFF/generous (``limiter=None`` ⇒ no
     429 path exists; AC6). ``limiter.check`` runs under the SAME global lock as ``verify``
     — the limiter has no internal locking by contract. The deliberate mutations (skip the
-    ``verify``-None → 401 guard; drop the 413/429 guards) live in ``do_POST``."""
+    ``verify``-None → 401 guard; drop the 413/429 guards) live in ``do_POST``.
+
+    ``auth_mode`` defaults to ``"token"`` (today's wire, byte-identical). In ``"open"`` mode
+    (trusted-loopback) token verification is SKIPPED and the per-request identity is the
+    self-asserted ``X-Hive-Agent-Id`` header — a missing/blank one is a 400 (never anonymous);
+    ``verify`` is never consulted. The carrier never crosses modes: a stray header in token
+    mode buys no access, and a stray Bearer in open mode is ignored."""
 
     class _Handler(BaseHTTPRequestHandler):
         protocol_version = "HTTP/1.1"          # keep-alive; every body is drained so it is safe
@@ -122,18 +138,26 @@ def _build_handler(server: HiveMCPServer,
                 # (1) Origin guard (spec MUST, DNS-rebinding): a browser is never legitimate.
                 if self.headers.get("Origin") is not None:     # INV-4
                     return self._json(403, {"error": "forbidden_origin"})
-                # (2) auth BEFORE handle — verify under the lock (shared conn). INV-1.
-                tok = _bearer(self.headers)
-                with lock:
-                    label = verify(tok) if tok else None
-                    # (2b) per-token throttle (429, AC4): POST-auth, keyed on the verified
-                    # label (D3 — no forwarded-IP trust), under the same lock (the limiter
-                    # has no internal locking). Never consulted for an invalid token —
-                    # that path 401s below. ← dropping this guard is a deliberate mutation.
-                    rl = (limiter.check(label)
-                          if (limiter is not None and label is not None) else None)
-                if label is None:                              # ← skipping this guard is the mutation
-                    return self._json(401, {"error": "unauthorized"})
+                # (2) identity BEFORE handle. token: verify the Bearer (INV-1 401). open: take
+                # the self-asserted X-Hive-Agent-Id (trusted-loopback; 400 if absent — never
+                # anonymous). The 429 throttle keys on the resolved label in BOTH modes (D3 —
+                # no forwarded-IP trust), under the same lock (the limiter has no internal lock).
+                if auth_mode == "open":
+                    label = _asserted_agent_id(self.headers)
+                    if label is None:                          # ← dropping this 400 serves ANON
+                        return self._json(400, {"error": "missing_agent_id"})
+                    rl = None
+                    if limiter is not None:
+                        with lock:
+                            rl = limiter.check(label)
+                else:
+                    tok = _bearer(self.headers)
+                    with lock:
+                        label = verify(tok) if tok else None
+                        rl = (limiter.check(label)
+                              if (limiter is not None and label is not None) else None)
+                    if label is None:                          # ← skipping this guard is the mutation
+                        return self._json(401, {"error": "unauthorized"})
                 if rl is not None and not rl.allowed:
                     return self._json(429, {"error": "rate_limited"},
                                       extra={"Retry-After": str(rl.retry_after_s)})
@@ -183,13 +207,16 @@ def run_http(server: HiveMCPServer, *, host: str, port: int,
              verify: Callable[[str], Optional[str]],
              lock: threading.Lock,
              limiter: Optional[TokenBucketLimiter] = None,
-             max_body_bytes: int = _DEFAULT_MAX_BODY) -> None:  # pragma: no cover — blocking serve
+             max_body_bytes: int = _DEFAULT_MAX_BODY,
+             auth_mode: str = "token") -> None:  # pragma: no cover — blocking serve
     """Bind a ``ThreadingHTTPServer`` on ``(host, port)`` and serve the endpoint contract forever.
     The blocking serve loop is the (uncovered) transport wrapper; the contract itself lives in
     ``_build_handler``, exercised on a real loopback server in the tests. The Part S belts
-    (``limiter`` / ``max_body_bytes``) thread through defaulted-off (AC6)."""
+    (``limiter`` / ``max_body_bytes``) thread through defaulted-off (AC6); ``auth_mode`` defaults
+    to the safe ``"token"`` posture (open mode is opt-in)."""
     httpd = ThreadingHTTPServer((host, port),
                                 _build_handler(server, verify, lock,
-                                               limiter=limiter, max_body_bytes=max_body_bytes))
+                                               limiter=limiter, max_body_bytes=max_body_bytes,
+                                               auth_mode=auth_mode))
     _log.info("http.serving host=%s port=%d", host, port)
     httpd.serve_forever()

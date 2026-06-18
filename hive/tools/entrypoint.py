@@ -131,6 +131,7 @@ def _make_http_serve(boot: Boot, port: int, *,
                      rate_limit: int = _DEFAULT_RATE_LIMIT,
                      rate_window_s: float = _DEFAULT_RATE_WINDOW_S,
                      max_body_bytes: int = _DEFAULT_MAX_BODY_BYTES,
+                     auth_mode: str = "token",
                      run_http: Optional[Callable[..., None]] = None) -> Callable[[Any], None]:
     """The DEFAULT serve step (replacing stdio): a warm HTTP daemon that authenticates every
     connecting device by its bearer token. The transport depends on a `verify` CALLABLE
@@ -150,7 +151,7 @@ def _make_http_serve(boot: Boot, port: int, *,
     def serve(server: Any) -> None:
         run_http(server, host="0.0.0.0", port=port,
                  verify=boot.token_store.verify, lock=lock,
-                 limiter=limiter, max_body_bytes=max_body_bytes)
+                 limiter=limiter, max_body_bytes=max_body_bytes, auth_mode=auth_mode)
     return serve
 
 
@@ -251,11 +252,20 @@ def main(argv: Optional[list[str]] = None, *, env: Optional[Mapping[str, str]] =
         _log.error("entrypoint.assemble_failed kind=%s code=%d", type(exc).__name__, EX_SOFTWARE)
         return EX_SOFTWARE
 
+    # Resolve the auth posture off the frozen config (getattr/default so a minimal cfg can't
+    # KeyError). open mode WARNs but SERVES (symmetric with zero-config boot) — the enforced
+    # public-exposure gate is the CLI `--tunnel` refusal, not the process.
+    auth_mode = getattr(getattr(cfg, "auth", None), "mode", "token")
+    if auth_mode == "open":
+        _log.warning("entrypoint.auth_open — token verification DISABLED; identity is the "
+                     "self-asserted X-Hive-Agent-Id header. Trusted-loopback ONLY; never tunnel.")
+
     # Default the serve step to the warm HTTP daemon (needs boot.token_store.verify, so it is
     # built only after assembly). The listen port is fixed at 8765 (the compose host map, the
     # ngrok forward, and `hive connect` all assume it); the rate-limit belt uses its fixed
     # defaults. An injected `serve` (every unit test) takes precedence.
-    serve = serve or _make_http_serve(boot, _DEFAULT_HTTP_PORT, max_body_bytes=max_body_bytes)
+    serve = serve or _make_http_serve(boot, _DEFAULT_HTTP_PORT,
+                                      max_body_bytes=max_body_bytes, auth_mode=auth_mode)
 
     # Invalidate any STALE ready marker from a prior boot BEFORE migrate — a restarted
     # container (persistent volume + reused PID 1) must start red until THIS boot warms.

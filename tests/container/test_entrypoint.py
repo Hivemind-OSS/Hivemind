@@ -243,7 +243,8 @@ def test_make_http_serve_wires_run_http_with_port_and_verify():
     this red."""
     captured: dict = {}
 
-    def fake_run_http(server, *, host, port, verify, lock, limiter, max_body_bytes):
+    def fake_run_http(server, *, host, port, verify, lock, limiter, max_body_bytes,
+                      auth_mode="token"):
         captured.update(server=server, host=host, port=port, verify=verify, lock=lock,
                         limiter=limiter, max_body_bytes=max_body_bytes)
 
@@ -265,7 +266,8 @@ def test_make_http_serve_constructs_limiter_from_resolved_values():
     on one label, and the explicit max_body_bytes reaches run_http verbatim."""
     captured: dict = {}
 
-    def fake_run_http(server, *, host, port, verify, lock, limiter, max_body_bytes):
+    def fake_run_http(server, *, host, port, verify, lock, limiter, max_body_bytes,
+                      auth_mode="token"):
         captured.update(limiter=limiter, max_body_bytes=max_body_bytes)
 
     serve = E._make_http_serve(_RecordingBoot([]), 8765, rate_limit=5, rate_window_s=2.5,
@@ -333,3 +335,75 @@ def test_main_serve_fixed_port_and_threaded_max_body(monkeypatch):
     assert captured["port"] == 8765
     assert captured["max_body_bytes"] == 4096
     assert "rate_limit" not in captured            # main() no longer threads rate knobs
+
+
+# ── AUTH-OPTIONAL: auth_mode threading + the open-mode WARN ────────────────────
+def test_make_http_serve_threads_auth_mode_open():
+    """_make_http_serve forwards auth_mode to run_http; the explicit open value reaches it."""
+    captured: dict = {}
+
+    def fake_run_http(server, *, host, port, verify, lock, limiter, max_body_bytes, auth_mode):
+        captured["auth_mode"] = auth_mode
+
+    serve = E._make_http_serve(_RecordingBoot([]), 8765, auth_mode="open",
+                               run_http=fake_run_http)
+    serve(object())
+    assert captured["auth_mode"] == "open"
+
+
+def test_make_http_serve_default_auth_mode_is_token():
+    """The DEFAULT path threads auth_mode='token' (the safe posture) into run_http."""
+    captured: dict = {}
+
+    def fake_run_http(server, *, host, port, verify, lock, limiter, max_body_bytes, auth_mode):
+        captured["auth_mode"] = auth_mode
+
+    serve = E._make_http_serve(_RecordingBoot([]), 8765, run_http=fake_run_http)
+    serve(object())
+    assert captured["auth_mode"] == "token"
+
+
+def test_main_open_mode_serves_and_warns(monkeypatch, capsys):
+    """HIVE_AUTH__MODE=open SERVES (EX_OK — WARN-only, never refuse) and threads auth_mode=open
+    into the serve builder, AND logs the entrypoint.auth_open warning. The `hive` logger has
+    propagate=False (its own JSON-stderr handler), so the WARN is asserted on stderr (the
+    operator-visible channel), not caplog."""
+    captured: dict = {}
+
+    def fake_make_http_serve(boot, port, **kw):
+        captured.update(**kw)
+        return lambda s: None
+
+    monkeypatch.setattr(E, "_make_http_serve", fake_make_http_serve)
+    rc = E.main(env={"HIVE_TENANT_ID": "acme", "HIVE_AUTH__MODE": "open"},
+                build_boot=_boot_factory(_RecordingBoot([])))
+    assert rc == E.EX_OK                               # open mode SERVES — no refuse
+    assert captured["auth_mode"] == "open"
+    err = capsys.readouterr().err
+    assert "entrypoint.auth_open" in err               # the operator WARN fired on stderr
+
+
+def test_main_default_auth_mode_is_token_no_warn(monkeypatch, capsys):
+    """No HIVE_AUTH__MODE ⇒ auth_mode resolves to 'token' (getattr/default reads cleanly) and
+    NO open WARN is logged."""
+    captured: dict = {}
+
+    def fake_make_http_serve(boot, port, **kw):
+        captured.update(**kw)
+        return lambda s: None
+
+    monkeypatch.setattr(E, "_make_http_serve", fake_make_http_serve)
+    rc = E.main(env=_OK_ENV, build_boot=_boot_factory(_RecordingBoot([])))
+    assert rc == E.EX_OK
+    assert captured["auth_mode"] == "token"
+    assert "entrypoint.auth_open" not in capsys.readouterr().err
+
+
+def test_main_injected_serve_takes_precedence_over_auth_mode(monkeypatch):
+    """An injected serve (every unit test path) still wins — the auth_mode resolution does not
+    force the prod serve builder. The injected serve runs and main returns EX_OK."""
+    served: list = []
+    rc = E.main(env={"HIVE_TENANT_ID": "acme", "HIVE_AUTH__MODE": "open"},
+                build_boot=_boot_factory(_RecordingBoot([])),
+                serve=lambda s: served.append(True))
+    assert rc == E.EX_OK and served == [True]

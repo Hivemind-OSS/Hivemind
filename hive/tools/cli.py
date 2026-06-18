@@ -153,6 +153,15 @@ def _up(args, *, run: Run, out: TextIO, env: Mapping[str, str], ask) -> int:
             print(f"hive: --tunnel requires {' + '.join(missing)} "
                   "(set in .env — see .env.example)", file=sys.stderr)
             return EX_CONFIG
+        # public exposure of an UNAUTHENTICATED endpoint is a memory-poisoning hole: refuse
+        # --tunnel in open mode even when the secrets ARE present. Reads the SAME `env`
+        # (.env-folded) compose interpolates, so the CLI and the daemon agree on one source.
+        if (env.get("HIVE_AUTH__MODE") or "").strip().lower() == "open":
+            print("hive: refusing --tunnel with HIVE_AUTH__MODE=open — a public, "
+                  "UNAUTHENTICATED endpoint is a memory-poisoning hole. Use token mode "
+                  "for any tunneled deployment (unset HIVE_AUTH__MODE or set it to 'token').",
+                  file=sys.stderr)
+            return EX_CONFIG
         profile = TUNNEL_PROFILE
     # tunnel up is unnamed (starts the profile's sidecar too); default names the
     # daemon only — both are `up -d`, never an ephemeral cold-start `run --rm`.
