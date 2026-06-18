@@ -12,10 +12,10 @@ boot-time `.env`. They add no in-system machinery.
 
 ## Operating model (read first — it shapes every skill)
 
-- **Two planes.** *Host shell* runs the `hive` CLI (lifecycle, provisioning, KPIs). *MCP
-  client* (one admin seat) is needed ONLY for the gap/contested reports
-  (`hive_health(include_gaps=true)`); the convergence KPIs are now host-side via
-  `hive health`, so the common loop needs no seat.
+- **Two planes.** *Host shell* runs the `hive` CLI (lifecycle, provisioning). *MCP
+  client* (one admin seat) reads the convergence KPIs and the gap/contested reports —
+  `hive_health(include_trends=true)` for the trends and `hive_health(include_gaps=true)`
+  for the queues — so the observe loop needs that seat.
 - **Tuning is boot-time, not live.** Every knob is a frozen `Config` field resolved once at
   boot. To change one: edit `.env` (`HIVE_<GROUP>__<FIELD>`) → `hive up` (recreates the
   container in place; the `hive-data` volume persists) → re-measure. There is **no live
@@ -67,8 +67,9 @@ Guardrails · Done when**.
 ### `/hive-observe` — convergence KPI dashboard (sensor, read-only)
 - **Purpose:** A verdict on whether the fleet's memory is converging FOR THIS TEAM.
 - **Trigger:** "how's the hive doing", weekly check, before `/hive-tune`.
-- **Levers:** `hive status`; `hive health` (trends, host-side); `hive_health(include_gaps=
-  true)` over MCP for the gap/contested queues.
+- **Levers:** `hive status` (liveness, tunnel, seat count — host-side);
+  `hive_health(include_trends=true)` for the convergence trends and
+  `hive_health(include_gaps=true)` for the gap/contested queues — both over MCP (one seat).
 - **Inputs:** none (reads the warm store).
 - **Reads:** `confident_rate↑`, `demand_entropy↓`, `dead_capture_ratio` bounded,
   `n_promotions>0`, `median_days_to_promotion`, `est_tokens_served`; `trust_counts`,
@@ -83,7 +84,7 @@ Guardrails · Done when**.
 - **Purpose:** Move a stalled KPI by changing exactly one knob, then confirm it moved.
 - **Trigger:** a symptom from `/hive-observe` (e.g. "captures never promote").
 - **Levers:** a bounded `.env` edit (`autonomy.*`, `recall.*`, `retention.backup_keep`) →
-  `hive up` → re-measure with `hive health`. See the symptom→knob table below.
+  `hive up` → re-measure with `hive_health(include_trends=true)`. See the symptom→knob table below.
 - **Inputs:** the current KPI snapshot + the team profile.
 - **Outputs:** an applied `.env` diff, a restart, and a before/after KPI comparison
   (revert if the KPI didn't move or a guardrail KPI regressed).
@@ -131,13 +132,13 @@ Guardrails · Done when**.
 | Promotions ≈ 0 **and** single identity (`solo_hint` set) | anti-gaming clause unsatisfiable (one writer) | `AUTONOMY__SOLO_MODE=true` + `AUTONOMY__SOLO_MIN_SPAN_DAYS` |
 | `demand_entropy` high & flat | demand is diffuse noise, not fillable gaps | hand to `/hive-curate`; do **not** loosen promotion |
 | `dead_capture_ratio` rising | fleet writing junk, or TTL too short | review capture discipline; ↑ `AUTONOMY__QUARANTINE_TTL_DAYS` cautiously |
-| `confident_rate` low despite stock | recall gate too tight / lexical blind spot | enable `RECALL__HYBRID=true` (needs FTS5); revisit `RECALL__RECALL_TOP_N`, `RECALL__SOFTMAX_BETA` — **never** weaken `RECALL__H_FRAC_MAX` |
+| `confident_rate` low despite stock | recall gate too tight | revisit `RECALL__RECALL_TOP_N`, `RECALL__SOFTMAX_BETA`, `RECALL__TAU_TOP1` — **never** weaken `RECALL__H_FRAC_MAX` |
 | repeated abstains near a servable row (contested) | stale/contradictory `established` memory | route to `/hive-curate` → `hive_write(replaces=…)` |
 | provisional rows vanishing too fast | `provisional_ttl_days` too short for cadence | ↑ `AUTONOMY__PROVISIONAL_TTL_DAYS` |
 
 Restart-tier knobs that need more than a bounce: `EMBEDDING__MODEL` and `GEOMETRY__D` change
-the vector space → a re-embed, not just `hive up`. `RECALL__HYBRID` requires an FTS5-enabled
-SQLite (the daemon fail-fasts at boot otherwise).
+the vector space, so an existing store's vectors no longer match — they need a clean store
+(`hive nuke` then `hive up`), not just a restart (no re-embed migration ships).
 
 ---
 
@@ -148,10 +149,10 @@ SQLite (the daemon fail-fasts at boot otherwise).
   actuator (edit `.env` → restart → re-measure). Re-introducing a fully autonomous tuner
   re-opens that decision; do it knowingly, after the symptom→knob mapping above has been
   trusted manually — not by default.
-- **No agent-driven `established` trust.** Promotion to `established` is the survival rule
-  (`survival_e` distinct non-writer identities over `survival_days` with
-  `survival_min_exposures`) or a human `hive_write(approved_by=…)`. An admin skill never
-  manufactures human approval.
-- **No host-side gaps/contested (yet).** Those need the live servable index, which a
-  read-only host-side read cannot build; they stay on `hive_health(include_gaps=true)` over
-  MCP. (`hive health` covers the trends KPIs host-side.)
+- **No agent-driven `established` trust.** Demand-promotion only lifts a capture to
+  `provisional`; promotion to `established` is a human `hive_write(approved_by=…)` ONLY
+  (the mechanical survival rung was removed). An admin skill never manufactures human approval.
+- **No host-side KPI/gaps readout.** The convergence trends and the gap/contested reports
+  both need the live warm store / servable index, so they are served over MCP via
+  `hive_health` (`include_trends=true` / `include_gaps=true`), not host-side. `hive status`
+  is the only host-side health signal (liveness, tunnel, seat count).

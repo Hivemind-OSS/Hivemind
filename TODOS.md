@@ -144,7 +144,7 @@ guided workflow — if no operator polls the report, conflicts accumulate invisi
 1. **Logging / notification (the push signal).** Emit a structured, throttled log line + a
    `hive status`-visible counter when the contested queue is non-empty. Today the only
    contested-related log is `mcp.contested_report_failed` (the failure path) — there is no
-   "N memories pending review" signal. Host-side `hive health` deliberately excludes
+   "N memories pending review" signal. Host-side KPI reads deliberately exclude
    gaps/contested (they need the live servable index — `cli.py`), so the push path must
    originate daemon-side where the index is warm.
 2. **Admin skill `/hive-resolve`** (alongside `/hive-tune` in `ADMINSKILLS.md`): pull the

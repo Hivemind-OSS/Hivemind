@@ -6,10 +6,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 ### Added
-- `hive health` — host-side convergence KPI trends: execs the in-container healthcheck
-  in `--trends` report mode and forwards the same trends the MCP `hive_health` serves,
-  read off a READ-ONLY store connection (no MCP seat needed). Gaps/contested stay on
-  `hive_health` over MCP (they need the live servable index).
 - `hive backup` — a manual durability verb (the in-container `hive.tools.backupctl`
   entry runs the existing `run_daily_backup` and prints the snapshot path).
 - Self-serve onboarding: the `hive_health` tool description carries the static,
@@ -33,7 +29,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   refresh the served rows' liveness clock in the same transaction.
 - Recall hits carry `trust` + `ts`; `hive_health` adds `trust_counts`, `n_misses_7d`,
   and `include_gaps` (clustered demand-gap report).
-- `autonomy` config group (`enabled` + demand / TTL / survival / solo knobs); like all
+- `autonomy` config group (`enabled` + demand / TTL / solo knobs); like all
   config it is resolved at boot — there is no live reload (tune via `.env` then `hive up`).
 ### Changed
 - Convergence KPI window narrowed 14d → 7d (`trends.WINDOW_DAYS`): current vs previous
