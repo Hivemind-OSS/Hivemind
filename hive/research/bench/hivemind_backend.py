@@ -64,7 +64,11 @@ class HivemindBackend:
     def commit(self, proposal: Proposal, *, approver: str) -> str:
         res = self._call("hive_write",
                          {"text": proposal.text, "approved_by": approver}, _ORCHESTRATOR_SEAT)
-        return str(res["id"])
+        # hive_write OMITS "id" when the write doesn't establish — the secret scanner refused the
+        # text (status="refused", real with conversational data) or autonomy is disabled. The fact
+        # simply isn't stored; signal "not committed" with an empty handle, never KeyError on ["id"].
+        mid = res.get("id")
+        return str(mid) if mid is not None else ""
 
     def reset(self) -> None:
         self._server = self._factory()

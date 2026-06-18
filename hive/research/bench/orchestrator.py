@@ -158,8 +158,12 @@ def run_ingestion(backend: MemoryBackend, gate: "GatePolicy",
             prior = backend.recall(seat, fact)
             proposal = backend.propose(seat, fact, source_id=session_id)
             proposed += 1
+            if not proposal.proposal_id:        # backend refused to STAGE it (e.g. secret scan)
+                continue
             if gate.decide(proposal, GateContext(prior=prior, seat=seat)):
                 mem_id = backend.commit(proposal, approver="orchestrator")
+                if not mem_id:                  # write refused at COMMIT time ⇒ never stored
+                    continue
                 mem_source[mem_id] = session_id
                 approved += 1
     return IngestionTrace(mem_source=mem_source, proposed=proposed, approved=approved)

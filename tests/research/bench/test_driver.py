@@ -138,6 +138,29 @@ def test_trace_feeds_gold_relevant():
 
 
 # ── run_queries ─────────────────────────────────────────────────────────────────
+def test_run_ingestion_skips_refused_proposals_and_refused_commits():
+    # a backend may refuse to STAGE a fact (propose → "") or refuse at COMMIT (→ "") — e.g. the
+    # secret scanner. Neither must be counted/mapped, and no empty handle may leak into mem_source.
+    class _Picky:
+        def __init__(self): self.store = {}; self.n = 0
+        def recall(self, seat, q): return RecallObs(query=q, ranked_ids=(), top_score=0.0,
+                                                    confidence=0.0, abstained=True)
+        def propose(self, seat, text, *, source_id):
+            self.n += 1
+            pid = "" if "REFUSE_PROPOSE" in text else str(self.n)   # refuse to stage
+            return Proposal(proposal_id=pid, seat=seat, text=text, source_id=source_id)
+        def commit(self, proposal, *, approver):
+            if "REFUSE_COMMIT" in proposal.text:
+                return ""                                          # refuse at write time
+            mid = f"m{proposal.proposal_id}"; self.store[mid] = proposal.text; return mid
+        def reset(self): self.store.clear(); self.n = 0
+    b = _Picky()
+    facts = [("s1", ["good one", "REFUSE_PROPOSE x", "REFUSE_COMMIT y", "good two"])]
+    tr = run_ingestion(b, AllowAllGate(), facts, ["sub-a"])
+    assert tr.proposed == 4 and tr.approved == 2                    # all attempted, only 2 stored
+    assert len(tr.mem_source) == 2 and "" not in tr.mem_source      # no empty-handle key leaked
+
+
 def test_run_queries_returns_one_obs_per_question():
     b = _FakeBackend()
     run_ingestion(b, AllowAllGate(), [("s1", ["redis listens on 6379"])], ["sub-a"])

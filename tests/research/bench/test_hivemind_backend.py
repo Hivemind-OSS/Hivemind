@@ -4,8 +4,10 @@ no model download). Asserts the trust-ladder flow end-to-end: propose lands QUAR
 proposals never serve, recall parses the envelope, and the store is shared across seats."""
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 from hive.app.config import AutonomyConfig
-from hive.research.bench.backends import MemoryBackend
+from hive.research.bench.backends import MemoryBackend, Proposal
 from hive.research.bench.hivemind_backend import HivemindBackend
 from tests.mcp._helpers import build_real_server
 
@@ -63,3 +65,16 @@ def test_reset_clears_the_store():
     assert b.recall("sub-a", text).abstained is False
     b.reset()
     assert b.recall("sub-a", text).abstained is True
+
+
+def test_commit_handles_a_refused_write_without_crashing():
+    # hive_write returns {status:"refused"} (no "id") when the secret scanner rejects text — real
+    # with conversational data. commit must return an empty handle, never KeyError on res["id"].
+    class _RefuseServer:
+        def handle(self, req, *, identity):
+            return SimpleNamespace(result={"content": [
+                {"text": '{"status": "refused", "reason": "secret-shaped"}'}]})
+    b = HivemindBackend(lambda: _RefuseServer())
+    mid = b.commit(Proposal(proposal_id="1", seat="sub-a", text="sk-proj-xxxx", source_id="s1"),
+                   approver="orchestrator")
+    assert mid == ""
