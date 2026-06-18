@@ -123,7 +123,8 @@ class AdmissionService:
     # ── write: scan → (refuse 0-rows | redact-mask) → stage → embed → approve ──
     def write(self, text: str, *, approved_by: str, proposed_by: str,
               weight: float = 1.0, request_id: str = "-",
-              replaces: Optional[int] = None) -> WriteResult:
+              replaces: Optional[int] = None,
+              polarity: str = "neutral") -> WriteResult:
         """Capture a human-approved insight in one call. ``approved_by`` is the
         principal that approved this write in native chat (client-gated trust);
         ``proposed_by`` is the agent that proposed it — both are recorded. REFUSE raises
@@ -149,7 +150,7 @@ class AdmissionService:
         try:
             eid, deduped = self._store.stage(
                 text=staged_text, weight=weight, source="", tags="",
-                proposed_by=proposed_by, ts=self._now())
+                proposed_by=proposed_by, ts=self._now(), polarity=polarity)
         except Exception:
             _log.error("admission.stage_fail", extra={
                 "event": "admission.stage_fail", "proposed_by": proposed_by,
@@ -247,7 +248,7 @@ class AdmissionService:
 
     # ── capture: the autonomous path — lands embedded but UNSERVABLE ───────────
     def capture(self, text: str, *, proposed_by: str, weight: float = 1.0,
-                request_id: str = "-") -> WriteResult:
+                request_id: str = "-", polarity: str = "neutral") -> WriteResult:
         """Capture WITHOUT asking: scan → stage (dedup) → embed → complete
         ``trust='quarantined'`` (``approved_by`` NULL — embedded but structurally
         unservable until measured demand promotes it) → synchronous promotion
@@ -269,7 +270,7 @@ class AdmissionService:
         try:
             eid, deduped = self._store.stage(
                 text=staged_text, weight=weight, source="", tags="",
-                proposed_by=proposed_by, ts=self._now())
+                proposed_by=proposed_by, ts=self._now(), polarity=polarity)
         except Exception:
             _log.error("admission.capture_stage_fail", extra={
                 "event": "admission.capture_stage_fail", "proposed_by": proposed_by,

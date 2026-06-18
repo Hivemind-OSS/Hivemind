@@ -265,9 +265,11 @@ class HiveMCPServer:
         # (``proposed_by`` is gone from the write schema). Deliberate mutation: read self.identity here.
         proposed_by = identity.agent_id
         replaces = args.get("replaces")           # human-vouched supersession target
+        polarity = args.get("polarity", "neutral")  # do|dont|neutral (schema-enum-checked)
         try:
             res = self.admission.write(text, approved_by=approved_by,
-                                       proposed_by=proposed_by, replaces=replaces)
+                                       proposed_by=proposed_by, replaces=replaces,
+                                       polarity=polarity)
         except SecretRefused as e:
             # REFUSE: nothing written (0 rows). Envelope carries rule NAMES, never bytes.
             return {"status": "refused", "reason": str(e),
@@ -284,8 +286,10 @@ class HiveMCPServer:
 
     def _handle_capture(self, args: dict, identity: ServerIdentity) -> dict:
         text = args.get("text")
+        polarity = args.get("polarity", "neutral")  # do|dont|neutral (schema-enum-checked)
         try:
-            res = self.admission.capture(text, proposed_by=identity.agent_id)
+            res = self.admission.capture(text, proposed_by=identity.agent_id,
+                                         polarity=polarity)
         except SecretRefused as e:
             # REFUSE: nothing written (0 rows). Envelope carries rule NAMES, never bytes.
             return {"status": "refused", "reason": str(e),
@@ -316,7 +320,8 @@ class HiveMCPServer:
                              "trace_id": result.trace_id, "episode_id": h.episode_id})
                 continue
             hits.append({"episode_id": h.episode_id, "text": h.text,
-                         "sim": float(h.sim), "trust": h.trust, "ts": h.ts})
+                         "sim": float(h.sim), "trust": h.trust, "ts": h.ts,
+                         "polarity": h.polarity})
         # an empty post-belt set is an ABSTAIN, never a confident-empty (never-hallucinate)
         abstained = (result.state != CONFIDENT) or (not hits)
         env: dict = {"reference_context": hits, "abstained": abstained,

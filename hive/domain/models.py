@@ -53,13 +53,16 @@ class RecallHit:
 
     ``trust`` + ``ts`` label every hit so a consumer can discount provisional
     content and order coexisting versions (immutable rows + dedup mean an "update"
-    always coexists as a second row). Defaults are FAIL-SAFE: a construction site
-    that forgets to wire them under-claims (quarantined/epoch-0), never over-claims."""
+    always coexists as a second row). ``polarity`` (do|dont|neutral) is a third
+    carried-not-interpreted label so a recalled prohibition is never pattern-matched
+    as a ``do``. Defaults are FAIL-SAFE: a construction site that forgets to wire
+    them under-claims (quarantined/epoch-0/neutral), never over-claims."""
     episode_id: int
     text: str
     sim: float
     trust: str = QUARANTINED
     ts: int = 0
+    polarity: str = "neutral"
 
 
 @dataclass(frozen=True, slots=True)
@@ -146,10 +149,13 @@ class Episode:
     trust: str = QUARANTINED           # fail-safe default: unserved until vouched/promoted
     superseded_by: Optional[int] = None   # latest applied successor (None = live)
     last_active_ts: int = 0            # liveness clock: capture/write, promotion, exposure
+    polarity: str = "neutral"         # do|dont|neutral — carried-not-interpreted consumer label
 
     def __post_init__(self) -> None:
         if self.content_hash != content_hash(self.text):
             raise ValueError("content_hash does not bind text (hash≠sha256(text))")
+        if self.polarity not in ("do", "dont", "neutral"):
+            raise ValueError(f"bad polarity {self.polarity!r}")
         if self.status not in ("pending", "approved"):
             raise ValueError(f"bad status {self.status!r}")
         if self.trust not in TRUST_STATES:

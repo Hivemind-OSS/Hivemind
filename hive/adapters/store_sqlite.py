@@ -50,7 +50,8 @@ CREATE TABLE IF NOT EXISTS episodes(
   version INTEGER NOT NULL DEFAULT 0,
   trust TEXT NOT NULL DEFAULT 'quarantined',
   superseded_by INTEGER,
-  last_active_ts INTEGER NOT NULL DEFAULT 0);
+  last_active_ts INTEGER NOT NULL DEFAULT 0,
+  polarity TEXT NOT NULL DEFAULT 'neutral' CHECK(polarity IN ('do','dont','neutral')));
 CREATE INDEX IF NOT EXISTS idx_episodes_status ON episodes(status);
 CREATE INDEX IF NOT EXISTS idx_episodes_hash ON episodes(content_hash);
 CREATE INDEX IF NOT EXISTS idx_episodes_trust ON episodes(trust);
@@ -86,10 +87,11 @@ class SqliteEpisodeStore:
         # would then crash cryptically), so refuse it BEFORE the script runs, with a
         # clear message. An absent table is fine — the script creates the v2 shape.
         cols = {r["name"] for r in conn.execute("PRAGMA table_info(episodes)")}
-        if cols and "trust" not in cols:
-            _log.error("store.schema_predates_lifecycle missing_column=trust")
+        if cols and ("trust" not in cols or "polarity" not in cols):
+            missing = "trust" if "trust" not in cols else "polarity"
+            _log.error("store.schema_predates_lifecycle missing_column=%s", missing)
             raise RuntimeError(
-                "episodes table predates the trust-lifecycle schema (no trust column); "
+                f"episodes table predates the current schema (no {missing} column); "
                 "this build has no migration — start from a clean store/volume")
         conn.executescript(_SCHEMA)
         # Lexical mirror of the SERVABLE set (plain FTS5, NOT contentless — per-row
@@ -111,10 +113,13 @@ class SqliteEpisodeStore:
 
     # ── episodes / blob group (admission CAS state machine) ───────────────────
     def stage(self, *, text: str, weight: float, source: str, tags: str,
-              proposed_by: str, tenant_id: str = "default", ts: int = 0) -> tuple[int, bool]:
+              proposed_by: str, tenant_id: str = "default", ts: int = 0,
+              polarity: str = "neutral") -> tuple[int, bool]:
         """Insert a PENDING row (value NULL — not recallable, not indexed) + its blob.
         Dedup by content_hash: a repeat of identical text returns the existing id,
-        deduped=True, no second row."""
+        deduped=True, no second row. ``polarity`` (do|dont|neutral) is the
+        carried-not-interpreted consumer label, defaulting fail-safe to 'neutral'
+        (CHECK-constrained by the DDL)."""
         h = content_hash(text)
         with tx(self.conn):
             existing = self.conn.execute(
@@ -125,9 +130,9 @@ class SqliteEpisodeStore:
                 "INSERT OR IGNORE INTO blobs(content_hash, text) VALUES(?,?)", (h, text))
             cur = self.conn.execute(
                 "INSERT INTO episodes(tenant_id, text, value, weight, ts, source, tags, "
-                "content_hash, status, proposed_by, version) "
-                "VALUES(?,?,NULL,?,?,?,?,?,'pending',?,0)",
-                (tenant_id, text, weight, ts, source, tags, h, proposed_by))
+                "content_hash, status, proposed_by, version, polarity) "
+                "VALUES(?,?,NULL,?,?,?,?,?,'pending',?,0,?)",
+                (tenant_id, text, weight, ts, source, tags, h, proposed_by, polarity))
             return int(cur.lastrowid), False
 
     def complete(self, episode_id: int, value: "np.ndarray", *, expected_version: int,
@@ -239,7 +244,7 @@ class SqliteEpisodeStore:
             content_hash=r["content_hash"], status=r["status"], proposed_by=r["proposed_by"] or "",
             approved_by=r["approved_by"], approved_ts=r["approved_ts"], version=r["version"],
             trust=r["trust"], superseded_by=r["superseded_by"],
-            last_active_ts=r["last_active_ts"])
+            last_active_ts=r["last_active_ts"], polarity=r["polarity"])
 
     def counts(self) -> tuple[int, int]:
         """(n_approved, n_pending) for hive_health — one grouped scan.  // O(N) time."""

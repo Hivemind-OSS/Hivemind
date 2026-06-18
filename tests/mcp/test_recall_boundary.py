@@ -93,8 +93,10 @@ def test_recall_framed_as_reference_context_not_instructions():
     assert env["abstained"] is False
     hit = env["reference_context"][0]
     # trust + ts are the additive lifecycle labels (consumers discount provisional
-    # content and order coexisting versions by them).
-    assert set(hit) == {"episode_id", "text", "sim", "trust", "ts"}
+    # content and order coexisting versions by them); polarity (do|dont|neutral) is the
+    # carried-not-interpreted prohibition label.
+    assert set(hit) == {"episode_id", "text", "sim", "trust", "ts", "polarity"}
+    assert hit["polarity"] == "neutral"             # default when unset on write
 
 
 def test_recall_trace_id_present_on_hit_and_abstain():

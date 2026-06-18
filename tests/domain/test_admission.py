@@ -328,6 +328,33 @@ def test_write_establishes_previously_captured_quarantined_text():
     assert store.index.size() == 1                                 # entered the warm index
 
 
+# ═══ polarity (do|dont|neutral): threaded through write + capture ══════════════
+def test_write_persists_passed_polarity():
+    svc, store = _svc_v2()
+    r = svc.write("never store the raw key", approved_by="alice", proposed_by="a",
+                  polarity="dont")
+    assert store.get_episode(r.episode_id).polarity == "dont"
+
+
+def test_capture_persists_passed_polarity():
+    svc, store = _svc_v2()
+    r = svc.capture("always run BEGIN IMMEDIATE on the writer lane",
+                    proposed_by="agent-1", polarity="do")
+    assert store.get_episode(r.episode_id).polarity == "do"
+
+
+def test_write_defaults_polarity_neutral():
+    svc, store = _svc_v2()
+    r = svc.write("a plain fact", approved_by="alice", proposed_by="a")
+    assert store.get_episode(r.episode_id).polarity == "neutral"
+
+
+def test_capture_defaults_polarity_neutral():
+    svc, store = _svc_v2()
+    r = svc.capture("a plain unvouched fact", proposed_by="agent-1")
+    assert store.get_episode(r.episode_id).polarity == "neutral"
+
+
 def test_write_dedup_onto_deprecated_does_not_revive():
     svc, store = _svc_v2()
     old = _write(svc, "the port is 5432")

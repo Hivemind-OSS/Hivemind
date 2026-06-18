@@ -124,6 +124,21 @@ def test_bad_type_rejected_by_schema():
     assert adm.write_calls == 0
 
 
+def test_non_enum_polarity_rejected_by_schema_belt():
+    """The wire-layer enforcement of the polarity enum: a non-(do|dont|neutral) value
+    on hive_write/hive_capture is schema-rejected BEFORE the handler — the port is
+    never touched (mirrors the bad-type belt)."""
+    adm = _CountingAdmission()
+    server = _server_with(adm)
+    r = tool_call(server, "hive_write",
+                  {"text": "x", "approved_by": "u", "polarity": "maybe"})
+    assert is_error(r)
+    assert adm.write_calls == 0
+    # hive_capture carries the same enum; a bad value is rejected there too.
+    rc = tool_call(server, "hive_capture", {"text": "x", "polarity": "sideways"})
+    assert is_error(rc)
+
+
 # ── loop survives a raising handler; the stack is never returned to the agent ────
 class _RaisingRecall:
     index = FakeIndex()

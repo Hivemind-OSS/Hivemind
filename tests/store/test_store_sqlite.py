@@ -147,6 +147,54 @@ def test_rebuild_recovers_after_crash_between_commit_and_add():
     assert s.index.search(_unit(0, 1, 0, 0), k=2)[0][0] == e2
 
 
+# ── polarity (do|dont|neutral): clean-store schema bump + carried label ───────
+def test_fresh_store_has_polarity_column():
+    s = _store()
+    cols = {r["name"] for r in s.conn.execute("PRAGMA table_info(episodes)")}
+    assert "polarity" in cols                    # the DDL carries it on a fresh store
+
+
+def test_polarity_check_rejects_out_of_enum_value():
+    s = _store()
+    # the CHECK constraint is the storage-layer enforcement point: a direct INSERT of a
+    # bad polarity is refused regardless of any domain/wire guard above it.
+    with pytest.raises(Exception):
+        s.conn.execute(
+            "INSERT INTO episodes(tenant_id, text, weight, ts, content_hash, status, "
+            "version, polarity) VALUES('t','x',1.0,0,'h','pending',0,'maybe')")
+
+
+def test_stage_roundtrips_polarity_default_neutral():
+    s = _store()
+    eid, _ = s.stage(text="default polarity", weight=1.0, source="m", tags="", proposed_by="a")
+    assert s.get_episode(eid).polarity == "neutral"     # fail-safe default
+
+
+def test_stage_roundtrips_explicit_dont():
+    s = _store()
+    eid, _ = s.stage(text="never run rm -rf on the volume", weight=1.0, source="m",
+                     tags="", proposed_by="a", polarity="dont")
+    assert s.get_episode(eid).polarity == "dont"        # the prohibition survives the round-trip
+
+
+def test_legacy_store_without_polarity_is_refused_at_open():
+    """The no-migration contract: a populated episodes table missing ``polarity`` is
+    REFUSED at open with the clean-store RuntimeError — NOT a silent KeyError at the
+    first recall (get_episode reading r['polarity'])."""
+    conn = connect(":memory:")
+    # build a TRUST-aware but pre-polarity episodes table (has trust, lacks polarity),
+    # then populate it so the boot guard's `cols and …` predicate fires.
+    conn.execute(
+        "CREATE TABLE episodes(id INTEGER PRIMARY KEY AUTOINCREMENT, tenant_id TEXT, "
+        "text TEXT, value BLOB, weight REAL, ts INTEGER, source TEXT, tags TEXT, "
+        "content_hash TEXT, status TEXT, proposed_by TEXT, approved_by TEXT, "
+        "approved_ts INTEGER, version INTEGER, trust TEXT, superseded_by INTEGER, "
+        "last_active_ts INTEGER)")
+    conn.execute("INSERT INTO episodes(tenant_id, text) VALUES('t','legacy row')")
+    with pytest.raises(RuntimeError, match="clean store/volume"):
+        SqliteEpisodeStore(conn)
+
+
 # ── port conformance [C1] ─────────────────────────────────────────────────────
 def test_fake_and_sqlite_store_satisfy_protocol():
     assert isinstance(FakeStore(), EpisodeStore)

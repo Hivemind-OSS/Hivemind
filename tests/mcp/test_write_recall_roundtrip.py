@@ -38,6 +38,27 @@ def test_write_dedup_returns_same_id_no_second_row():
     assert server.store.counts()[0] == 1               # exactly one approved row
 
 
+# ── polarity rides the recall hit: a `dont` write surfaces polarity:"dont" ──────
+def test_dont_write_surfaces_polarity_on_recall_hit():
+    server, _ = build_real_server()
+    text = "never delete the shared volume on teardown"
+    w = write_text(server, text, approved_by="alice", polarity="dont")
+    assert w["status"] == "approved"
+    env = content(tool_call(server, "hive_recall", {"query": text}))
+    assert env["abstained"] is False
+    hit = next(h for h in env["reference_context"] if h["episode_id"] == w["id"])
+    assert hit["polarity"] == "dont"                 # the prohibition label reaches the consumer
+
+
+def test_recall_hit_defaults_polarity_neutral():
+    server, _ = build_real_server()
+    text = "use BEGIN IMMEDIATE for the writer lane"
+    w = write_text(server, text, approved_by="alice")   # no polarity ⇒ neutral
+    env = content(tool_call(server, "hive_recall", {"query": text}))
+    hit = next(h for h in env["reference_context"] if h["episode_id"] == w["id"])
+    assert hit["polarity"] == "neutral"
+
+
 # ── approve-failure relay: a store CAS failure is a tool error, never a phantom write ──
 def test_store_approve_failure_surfaces_as_tool_error_and_leaves_no_row():
     server, _ = build_real_server()
