@@ -109,3 +109,37 @@ def test_entropy_norm_always_in_unit_interval():
     for sims in ([0.9, 0.3], [0.1, 0.1, 0.1, 0.1, 0.1], [0.99, -0.99], [-0.2, -0.3, -0.4]):
         _, h_norm, _ = NormalizedEntropyGate(0.5, 16.0).evaluate(sims)
         assert 0.0 <= h_norm <= 1.0
+
+
+# ── tau_top1 score-gap floor (inert at 0.0; strengthens Law 1) ────────────────
+def test_tau_top1_default_inert():
+    # a peaked field that PASSES the entropy gate stays served at the default floor (0.0)
+    # and at an explicit 0.0 — the floor adds no abstention when off (byte-stable decision).
+    peaked = [0.95, 0.1, 0.05]
+    base = NormalizedEntropyGate(0.5, 16.0).evaluate(peaked)
+    assert base[0] is False
+    assert NormalizedEntropyGate(0.5, 16.0, 0.0).evaluate(peaked) == base  # explicit 0.0 == default
+
+
+def test_tau_top1_floor_suppresses():
+    # a field that PASSES the entropy gate (entropy_norm 0.41 < 0.5) but whose top-1 mass
+    # (0.917) is below tau_top1 is suppressed by the floor ALONE (the OR clause adds the
+    # abstention the entropy gate did not).
+    sims = [0.65, 0.5]
+    assert NormalizedEntropyGate(0.5, 16.0).evaluate(sims)[0] is False        # entropy passes
+    suppress, _h, _m = NormalizedEntropyGate(0.5, 16.0, 0.95).evaluate(sims)
+    assert suppress is True                                                   # floor abstains
+
+
+def test_tau_top1_nonfinite_still_fails_closed():
+    # Law 1 placement: a non-finite sim raises in _softmax_mass_from_sims BEFORE mass_sorted
+    # exists, so the fail-closed except still returns (True, 1.0, 0.0) WITH the floor armed.
+    nan = float("nan")
+    assert NormalizedEntropyGate(0.5, 16.0, 0.5).evaluate([1.0, nan]) == (True, 1.0, 0.0)
+
+
+def test_tau_top1_ctor_rejects_negative():
+    with pytest.raises(ValueError):
+        NormalizedEntropyGate(0.5, 16.0, -0.1)
+    with pytest.raises(ValueError):
+        NormalizedEntropyGate(0.5, 16.0, float("inf"))

@@ -77,6 +77,10 @@ class RecallConfig:
     H_frac_max: float = 0.5
     recall_top_n: int = 10
     softmax_beta: float = 16.0            # gate mass temperature (β>0)
+    # the top-1 score-gap abstention floor: suppress when the top hit's softmax mass is
+    # below tau_top1. Ships inert (0.0 ⇒ never fires, masses ∈ [0,1]); only ADDS abstentions.
+    # No upper clamp — a value > 1 is a legal permanent-abstain config.
+    tau_top1: float = 0.0
 
     def __post_init__(self) -> None:
         if not (0.0 < self.H_frac_max <= 1.0):
@@ -87,6 +91,9 @@ class RecallConfig:
             raise ValueError(f"recall.recall_top_n must be >= 1 (got {self.recall_top_n})")
         if not self.softmax_beta > 0.0:
             raise ValueError(f"recall.softmax_beta must be > 0 (got {self.softmax_beta})")
+        if not (math.isfinite(self.tau_top1) and self.tau_top1 >= 0.0):
+            raise ValueError(
+                f"recall.tau_top1 must be finite and >= 0.0 (got {self.tau_top1})")
 
 
 @dataclass(frozen=True)

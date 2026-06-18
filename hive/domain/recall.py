@@ -89,31 +89,40 @@ class NormalizedEntropyGate:
 
     `evaluate(sims) -> (suppress, entropy_norm, top_margin)`. The sims→mass step
     is `softmax(beta·sim)` (new code, β in the constructor); everything downstream
-    is byte-identical to the reference. `suppress` iff `entropy_norm > h_frac_max`.
-    Empty ⇒ `(False, 0.0, 0.0)`. Any internal failure ⇒ fail-closed
-    `(True, 1.0, 0.0)` — a gate that cannot decide MUST abstain, never fabricate.
+    is byte-identical to the reference. `suppress` iff `entropy_norm > h_frac_max`
+    OR `top1 < tau_top1` (the top-1 score-gap floor — an additive abstention, inert
+    at the `tau_top1=0.0` default since masses ∈ [0,1]). Empty ⇒ `(False, 0.0, 0.0)`.
+    Any internal failure ⇒ fail-closed `(True, 1.0, 0.0)` — a gate that cannot decide
+    MUST abstain, never fabricate.
     """
 
-    def __init__(self, h_frac_max: float, beta: float) -> None:
+    def __init__(self, h_frac_max: float, beta: float, tau_top1: float = 0.0) -> None:
         if not math.isfinite(h_frac_max):
             raise ValueError("h_frac_max must be finite")
         if not (math.isfinite(beta) and beta > 0.0):
             # a non-positive β inverts/flattens the mass, breaking the abstain
             # decision — fail fast at construction (B1).
             raise ValueError("beta must be finite and > 0")
+        if not (math.isfinite(tau_top1) and tau_top1 >= 0.0):
+            # the top-1 floor is only ever an additive abstention; a non-finite or
+            # negative threshold is undecidable — fail fast at construction.
+            raise ValueError("tau_top1 must be finite and >= 0")
         self.h_frac_max = float(h_frac_max)
         self.beta = float(beta)
+        self.tau_top1 = float(tau_top1)
         self._recall = None              # set by from_recall() to the frozen config object
 
     @classmethod
     def from_recall(cls, recall, beta: float) -> "NormalizedEntropyGate":
         """Construct the gate BY IDENTITY from the single frozen recall-config object
         (CONFIG_DRIFT killed structurally — M11). The floor is read off
-        ``recall.H_frac_max`` and the object itself is retained at ``self._recall`` so a
-        future second gate cannot fork the float. ``recall`` is duck-typed (any frozen
-        object exposing ``H_frac_max``) — the domain stays unaware of ``app.Config``.
+        ``recall.H_frac_max`` (+ the additive ``tau_top1`` top-1 floor, getattr-defaulted so
+        the duck-typed contract survives an older config) and the object itself is retained at
+        ``self._recall`` so a future second gate cannot fork the float. ``recall`` is duck-typed
+        (any frozen object exposing ``H_frac_max``) — the domain stays unaware of ``app.Config``.
         """
-        gate = cls(float(recall.H_frac_max), beta)
+        gate = cls(float(recall.H_frac_max), beta,
+                   float(getattr(recall, "tau_top1", 0.0)))
         gate._recall = recall
         return gate
 
@@ -125,6 +134,7 @@ class NormalizedEntropyGate:
             mass = _softmax_mass_from_sims(sims, self.beta)
             mass_sorted = sorted(mass, reverse=True)
             top_margin = mass_sorted[0] - (mass_sorted[1] if n > 1 else 0.0)
+            top1 = mass_sorted[0]
             n_eff = sum(1 for p in mass if p > 0.0)
             if n_eff <= 1:
                 entropy_norm = 0.0            # ln(1) guard — no div-by-zero / NaN
@@ -132,7 +142,10 @@ class NormalizedEntropyGate:
                 h = -math.fsum(p * math.log(p) for p in mass if p > 0.0)
                 entropy_norm = h / math.log(n_eff)
             entropy_norm = max(0.0, min(1.0, entropy_norm))   # [0,1] clamp
-            suppress = entropy_norm > self.h_frac_max
+            # the floor is the SAME try as the entropy decision: a non-finite sim raises in
+            # _softmax_mass_from_sims above (before mass_sorted), so the except still returns
+            # the fail-closed SUPPRESS — Law 1 holds. At tau_top1=0.0 the OR term is inert.
+            suppress = (entropy_norm > self.h_frac_max) or (top1 < self.tau_top1)
             return (suppress, entropy_norm, top_margin)
         except Exception:                     # noqa: BLE001 — fail-closed by contract
             _log.warning("entropy gate internal failure (n=%s) → fail-closed SUPPRESS",

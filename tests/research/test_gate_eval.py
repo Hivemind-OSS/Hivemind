@@ -11,8 +11,8 @@ from hive.research.gate_eval import (
 )
 
 D = 8
-CURRENT = (0.1, 8.0)        # the strict live gate: abstains every fixture field
-LOOSE = (0.5, 8.0)          # the candidate: serves every fixture field
+CURRENT = (0.1, 8.0, 0.0)   # the strict live gate: abstains every fixture field (floor inert)
+LOOSE = (0.5, 8.0, 0.0)     # the candidate: serves every fixture field (floor inert)
 
 
 def _rows(ts: int = 10):
@@ -91,11 +91,25 @@ def test_recommend_only_on_ci_lo_gt_0():
 
 def test_best_equals_current_never_recommends():
     # sweeping only worse arms: best stays current; the self-delta CI is 0-width
-    worse = (0.001, 8.0)                                    # abstains even harder
+    worse = (0.001, 8.0, 0.0)                               # abstains even harder
     out = run_gate_eval(_spec([FA1, FA2, *FA_MORE, TA1]), sweep=[worse],
                         n_boot=500, seed=0)
     assert out.best == CURRENT
     assert out.best_vs_current_ci == (0.0, 0.0, 0.0)
+    assert out.recommend is False
+
+
+def test_gate_eval_sweeps_tau_top1():
+    # the third sweep dimension is live: a tau_top1=0.99 arm (entropy threshold relaxed to
+    # 0.5) floors every fixture's top-1 mass (all in 0.92–0.96 < 0.99) → abstains the FAs it
+    # should have served, so it never beats CURRENT. Proves the 3-tuple arm is unpacked and
+    # the floor reaches the gate inside the sweep.
+    tau_arm = (0.5, 8.0, 0.99)
+    out = run_gate_eval(_spec([FA1, FA2, *FA_MORE, TA1]), sweep=[tau_arm],
+                        n_boot=500, seed=0)
+    assert set(out.arms) == {tau_arm, CURRENT}
+    assert out.arms[tau_arm]["false_abstain_rate"] == 1.0   # the floor abstains every FA
+    assert out.best == CURRENT                              # the over-flooring arm never wins
     assert out.recommend is False
 
 

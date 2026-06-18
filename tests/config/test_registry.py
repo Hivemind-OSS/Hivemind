@@ -71,3 +71,12 @@ def test_gate_floor_tracks_config_value():
     gate = registry.build_gate(cfg)
     assert gate.h_frac_max == 0.3
     assert gate._recall is cfg.recall
+
+
+def test_gate_carries_tau_top1_and_keeps_identity():
+    # build_gate threads tau_top1 off the frozen cfg.recall (by from_recall's getattr) AND
+    # still holds the recall object by identity — the floor and the gate share one source.
+    cfg = Config.load(db_path=":memory:", recall={"tau_top1": 0.4})
+    gate = registry.build_gate(cfg)
+    assert gate.tau_top1 == 0.4
+    assert gate._recall is cfg.recall

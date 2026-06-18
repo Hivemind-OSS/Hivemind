@@ -47,11 +47,11 @@ class LabeledMiss:
 class GateEvalSpec:
     """The frozen evaluation input. ``servable``: (episode_id, vector, ts) of
     today's servable rows; ``misses``: (vector, ts) of stored window misses;
-    ``current``: the LIVE (h_frac_max, softmax_beta). ``extra_labeled`` appends
-    pre-labeled cases (the existing labeled eval sets) after replay labeling."""
+    ``current``: the LIVE (h_frac_max, softmax_beta, tau_top1). ``extra_labeled``
+    appends pre-labeled cases (the existing labeled eval sets) after replay labeling."""
     servable: Sequence[tuple[int, "np.ndarray", int]]
     misses: Sequence[tuple["np.ndarray", int]]
-    current: tuple[float, float]
+    current: tuple[float, float, float]   # (h_frac_max, softmax_beta, tau_top1)
     label_tau: float = 0.80
     k: int = 5
     extra_labeled: Sequence[LabeledMiss] = field(default_factory=tuple)
@@ -59,8 +59,8 @@ class GateEvalSpec:
 
 @dataclass(frozen=True)
 class GateEvalResult:
-    arms: dict                            # (h_frac_max, beta) → {auroc, false_abstain_rate, recall_at_k, correct_rate}
-    best: tuple[float, float]
+    arms: dict                            # (h_frac_max, beta, tau_top1) → {auroc, false_abstain_rate, recall_at_k, correct_rate}
+    best: tuple[float, float, float]
     best_vs_current_ci: tuple             # (point, lo, hi) — paired per-query correctness delta
     recommend: bool                       # ci.lo > 0, NEVER the point estimate
 
@@ -94,9 +94,10 @@ def label_misses(spec: GateEvalSpec) -> list[LabeledMiss]:
     return out
 
 
-def run_gate_eval(spec: GateEvalSpec, *, sweep: Sequence[tuple[float, float]],
+def run_gate_eval(spec: GateEvalSpec, *,
+                  sweep: Sequence[tuple[float, float, float]],
                   n_boot: int = 10_000, seed: int = 0) -> GateEvalResult:
-    """Sweep (h_frac_max, beta) arms over the replay-labeled miss set. Per-arm:
+    """Sweep (h_frac_max, beta, tau_top1) arms over the replay-labeled miss set. Per-arm:
     decision correct_rate, AUROC of the confidence proxy (1 − entropy_norm) at
     separating true abstains, false_abstain_rate (labeled-FA queries the arm
     still suppresses), recall@k of the gold row when serving. ``best`` is the
@@ -112,11 +113,11 @@ def run_gate_eval(spec: GateEvalSpec, *, sweep: Sequence[tuple[float, float]],
     if current not in arms_list:
         arms_list.append(current)
 
-    correctness: dict[tuple[float, float], list[int]] = {}
+    correctness: dict[tuple[float, float, float], list[int]] = {}
     arms_report: dict = {}
     for arm in arms_list:
-        h, beta = arm
-        gate = NormalizedEntropyGate(h, beta)
+        h, beta, tau = arm
+        gate = NormalizedEntropyGate(h, beta, tau)
         correct: list[int] = []
         confidences: list[float] = []
         fa_total = fa_suppressed = 0
@@ -156,7 +157,7 @@ def run_gate_eval(spec: GateEvalSpec, *, sweep: Sequence[tuple[float, float]],
 
 
 def spec_from_store(store, *, now: int, provisional_ttl_s: int,
-                    current: tuple[float, float], window_s: int,
+                    current: tuple[float, float, float], window_s: int,
                     label_tau: float = 0.80, k: int = 5) -> GateEvalSpec:
     """Build a spec from a REAL store: today's servable rows (with their
     creation ts, for the temporal restriction) + the window's vector-bearing
@@ -171,5 +172,6 @@ def spec_from_store(store, *, now: int, provisional_ttl_s: int,
     misses = [(m.vector, int(m.ts))
               for m in store.misses_window(int(now) - int(window_s))]
     return GateEvalSpec(servable=servable, misses=misses,
-                        current=(float(current[0]), float(current[1])),
+                        current=(float(current[0]), float(current[1]),
+                                 float(current[2])),
                         label_tau=float(label_tau), k=int(k))

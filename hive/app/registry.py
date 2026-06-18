@@ -72,6 +72,7 @@ def build_index(cfg: "Config"):
 def build_gate(cfg: "Config") -> NormalizedEntropyGate:
     """THE single located owner of the never-hallucinate floor wiring. The frozen
     `cfg.recall` object is handed to the gate BY IDENTITY (not `cfg.recall.H_frac_max`
-    copied as a float) so a future second gate cannot fork the floor. Invariant:
-    `build_gate(cfg)._recall is cfg.recall` (pinned by test + mutation)."""
+    copied as a float) so a future second gate cannot fork the floor — `from_recall`
+    reads both the entropy floor and the additive `tau_top1` top-1 floor off that one
+    object. Invariant: `build_gate(cfg)._recall is cfg.recall` (pinned by test + mutation)."""
     return NormalizedEntropyGate.from_recall(cfg.recall, cfg.recall.softmax_beta)

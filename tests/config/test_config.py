@@ -109,6 +109,23 @@ def test_h_frac_max_bounds():
     assert Config.load(recall={"H_frac_max": 1.0}).recall.H_frac_max == 1.0
 
 
+def test_tau_top1_default_is_zero_inert():
+    # the top-1 confidence floor ships inert: a default load is 0.0, so it can never
+    # add an abstention (masses are in [0,1]; top1 < 0.0 is impossible).
+    assert Config.load(db_path=":memory:").recall.tau_top1 == 0.0
+
+
+def test_tau_top1_rejects_negative_and_nonfinite():
+    with pytest.raises(ValueError, match=r"tau_top1"):
+        Config.load(recall={"tau_top1": -0.1})
+    with pytest.raises(ValueError, match=r"tau_top1"):
+        Config.load(recall={"tau_top1": float("inf")})
+    with pytest.raises(ValueError, match=r"tau_top1"):
+        Config.load(recall={"tau_top1": float("nan")})
+    # >1 is a LEGAL permanent-abstain config (no upper clamp)
+    assert Config.load(recall={"tau_top1": 1.5}).recall.tau_top1 == 1.5
+
+
 def test_db_path_required():
     with pytest.raises(ValueError, match=r"db_path"):
         Config.load(db_path="")
