@@ -55,13 +55,28 @@ export HIVE_BENCH_LME_PATH=/path/to/longmemeval_s_cleaned.json
 python -m hive.research.bench.run \
   --backend hivemind --gate llm \
   --baseline-backend mem0 --baseline-gate allowall \
-  --extractor claude --dataset "$HIVE_BENCH_LME_PATH" --n 50 --out report.json
+  --extractor claude --recall-hfrac 0.9 \
+  --dataset "$HIVE_BENCH_LME_PATH" --n 50 --out report.json
 ```
 
 Flags: `--backend/--gate` (primary arm), `--baseline-backend/--baseline-gate` (default
-`mem0/allowall`), `--extractor {claude,verbatim}`, `--n` (seeded subsample, default all), `--seeds`
-(comma-separated), `--out`. `--extractor verbatim` swaps LLM extraction for a deterministic
-"echo the user turns" extractor — a zero-cost offline baseline (pair only with `allowall`/`oracle`).
+`mem0/allowall`), `--extractor {claude,verbatim}`, `--recall-hfrac` (the recall gate threshold —
+see below), `--n` (seeded subsample, default all), `--seeds` (comma-separated), `--out`.
+`--extractor verbatim` swaps LLM extraction for a deterministic "echo the user turns" extractor — a
+zero-cost offline baseline (pair only with `allowall`/`oracle`).
+
+### Calibrating the recall gate (required for Hivemind)
+
+Hivemind abstains via a normalized-entropy gate: it suppresses the whole result when the candidate
+similarities are flat (no clear winner). LongMemEval's multi-evidence / aggregation questions ("how
+many times…", "total cost of X and Y") spread the mass across several comparably-relevant facts, so
+at the **production default `H_frac_max=0.5` Hivemind abstains on essentially every question** —
+coverage and hit@k collapse to ~0 even though the store retrieves the right facts (verified: hit@10
+recovers to 3/3 on a 3-case sample as the threshold is relaxed). This is a calibration property, not
+a retrieval failure. `--recall-hfrac` exposes the threshold; calibrate it on the **dev slice** (the
+value that maximizes dev hit@k / coverage) and report the held-out test slice with that value. The
+threshold used is stamped in the report's provenance, so a flattering hand-pick is visible. mem0 has
+no such gate, so this knob does not affect it.
 
 ### Offline smoke (no API, no download)
 

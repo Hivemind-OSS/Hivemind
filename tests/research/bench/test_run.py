@@ -15,7 +15,7 @@ from hive.research.bench.dataset import load_longmemeval
 from hive.research.bench.llm import FakeLLM
 from hive.research.bench.orchestrator import AllowAllGate, OracleEvidenceGate
 from hive.research.bench.run import (
-    ArmObservations, VerbatimLLM, build_report, compare_arms, evaluate_arm, main,
+    ArmObservations, VerbatimLLM, _parse_args, build_report, compare_arms, evaluate_arm, main,
     preflight, score_arm,
 )
 
@@ -172,4 +172,10 @@ def test_main_offline_writes_a_provenance_stamped_report(tmp_path):
     rep = json.loads(out.read_text())
     assert set(rep) >= {"provenance", "arms", "comparisons"}
     assert rep["provenance"]["n_cases"] == 3 and rep["provenance"]["dataset_hash"]
+    assert rep["provenance"]["recall_hfrac"] == 0.9          # the gate threshold is stamped
     assert len(rep["arms"]) == 2 and rep["comparisons"]
+
+
+def test_parse_args_recall_hfrac_default_and_override():
+    assert _parse_args(["--dataset", "d", "--out", "o"]).recall_hfrac == 0.9
+    assert _parse_args(["--dataset", "d", "--out", "o", "--recall-hfrac", "0.95"]).recall_hfrac == 0.95

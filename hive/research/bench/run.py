@@ -141,7 +141,8 @@ def preflight(*, dataset_path: str, llm) -> None:
 
 
 _REQUIRED_PROVENANCE = (
-    "dataset_hash", "n_cases", "seeds", "embedder_model", "extractor", "llm_digest", "ks")
+    "dataset_hash", "n_cases", "seeds", "embedder_model", "extractor", "llm_digest", "ks",
+    "recall_hfrac")
 
 
 def build_report(*, arms: dict, comparisons: list, provenance: dict) -> dict:
@@ -173,13 +174,41 @@ def _build_llm(extractor: str):
     raise ValueError(f"unknown extractor {extractor!r} (use 'claude' or 'verbatim')")
 
 
-def _build_backend(name: str) -> MemoryBackend:
+def _hivemind_server_factory(h_frac_max: float = 0.9) -> Callable[[], object]:
+    """A factory booting a real bge-backed in-process server. The embedder is warmed ONCE and
+    shared across every per-case rebuild (so bge loads a single time, not once per question);
+    ``demand_m`` huge makes the orchestrator commit the sole promotion authority; an ephemeral
+    ``:memory:`` store guarantees the bench never touches a persistent operator DB.
+
+    ``h_frac_max`` is the recall entropy-gate threshold: the production default (0.5) abstains on
+    LongMemEval's multi-evidence/aggregation questions (the relevant facts spread the probability
+    mass ⇒ high entropy), collapsing coverage to ~0. It is exposed so it can be calibrated on a dev
+    slice and stamped into the report — never silently tuned to a flattering value."""
+    from hive.app import registry
+    from hive.app.config import Config
+    from hive.app.container import build_container
+    cfg = Config.load(db_path=":memory:", autonomy={"demand_m": 10**9},
+                      recall={"H_frac_max": h_frac_max})
+    embedder = registry.build_embedder(cfg, head_bytes=None)
+    embedder.load()                                    # warm bge + freeze the PCA head ONCE
+
+    def factory():
+        c = build_container(cfg, tenant_id="default", agent_id="bench-orchestrator",
+                            embedder=embedder)
+        c.migrate()
+        c.build_index()
+        c.warm_embedder()                              # idempotent on the shared warmed embedder
+        return c.make_server()
+    return factory
+
+
+def _build_backend(name: str, *, recall_hfrac: float = 0.9) -> MemoryBackend:
     if name == "mem0":
         from hive.research.bench.mem0_backend import Mem0Backend, RealMem0Client
         return Mem0Backend(RealMem0Client(model=EMBEDDER_MODEL, dims=384))
     if name == "hivemind":
-        raise NotImplementedError(
-            "the real bge HivemindBackend container factory is wired in the live-run chunk")
+        from hive.research.bench.hivemind_backend import HivemindBackend
+        return HivemindBackend(_hivemind_server_factory(recall_hfrac))
     raise ValueError(f"unknown backend {name!r} (use 'hivemind' or 'mem0')")
 
 
@@ -204,6 +233,9 @@ def _parse_args(argv: Optional[Sequence[str]]) -> argparse.Namespace:
     p.add_argument("--baseline-backend", dest="baseline_backend", default="mem0")
     p.add_argument("--baseline-gate", dest="baseline_gate", default="allowall")
     p.add_argument("--extractor", default="claude", choices=["claude", "verbatim"])
+    p.add_argument("--recall-hfrac", dest="recall_hfrac", type=float, default=0.9,
+                   help="Hivemind recall entropy-gate threshold H_frac_max (prod default 0.5 "
+                        "abstains on multi-evidence queries; calibrate on a dev slice)")
     p.add_argument("--dataset", default=os.environ.get("HIVE_BENCH_LME_PATH"))
     p.add_argument("--n", type=int, default=None)
     p.add_argument("--seeds", default="0")
@@ -225,7 +257,7 @@ def main(argv: Optional[Sequence[str]] = None, *,
     llm = (llm_factory or _build_llm)(cfg.extractor)
     preflight(dataset_path=cfg.dataset, llm=llm)     # verbatim has no preflight() ⇒ dataset-only
     cases = load_longmemeval(cfg.dataset, n=cfg.n, seed=cfg.seeds[0])
-    make_backend = backend_factory or _build_backend
+    make_backend = backend_factory or (lambda name: _build_backend(name, recall_hfrac=cfg.recall_hfrac))
 
     primary = score_arm(make_backend(cfg.backend), _build_gate(cfg.gate, cases, llm),
                         cases, llm=llm, seats=list(_SEATS), ks=_KS)
@@ -239,6 +271,7 @@ def main(argv: Optional[Sequence[str]] = None, *,
         "dataset_hash": _file_sha256(cfg.dataset), "n_cases": len(cases), "seeds": cfg.seeds,
         "embedder_model": EMBEDDER_MODEL, "extractor": cfg.extractor,
         "llm_digest": getattr(llm, "digest", lambda: "n/a")(), "ks": list(_KS),
+        "recall_hfrac": cfg.recall_hfrac,
         "primary": f"{cfg.backend}/{cfg.gate}", "baseline": f"{cfg.baseline_backend}/{cfg.baseline_gate}",
     }
     report = build_report(arms=arms, comparisons=comparisons, provenance=provenance)
