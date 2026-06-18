@@ -57,3 +57,9 @@ graphify-out
 
 # ── Agent tooling (local only; do not ship) ──
 .claude/
+
+# ── Local design/plan docs (recovered from history; kept local, not shipped) ──
+docs/PLANS/
+
+# local context files
+CONTEXT/

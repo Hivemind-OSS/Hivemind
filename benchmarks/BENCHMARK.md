@@ -8,6 +8,36 @@ purity test enforces it), shipping no runtime dependency. Everything lives under
 Status: **[runnable]** a harness exists today · **[planned]** the method is specified here, the
 harness is not yet built.
 
+## The headline (value proposition)  [planned]
+
+Every benchmark below feeds **one operator-legible claim** — the reason a fleet pays the
+cost of running a memory server at all:
+
+> **A cheaper model *with* Hivemind matches or beats a frontier model *without* it — at a
+> fraction of the cost.**
+
+This is the cost-anchored, model×memory framing the memory-systems space is judged on (a
+small model + good memory out-competing a large model on raw capability). Hivemind states
+it as a **measured, paired contrast**, never a slogan:
+
+- **Arms:** `H` = a cheap base model (e.g. Haiku) with Hivemind recall in context; `F` =
+  a frontier base model (e.g. Opus) with **no** memory. Same task suite, same harness, the
+  ONLY differences are model tier and memory-on/off.
+- **Metrics:** task-success rate Δ (`H − F`) under the **same ship gate as every other
+  benchmark** — the per-question paired bootstrap CI must exclude 0 (`lo > 0`) for "cheap
+  + memory ≥ frontier alone" to ship — reported **alongside the cost ratio** `cost(F) /
+  cost(H)` (deterministic from tokens × published price, not a CI quantity).
+- **The sentence that ships:** *"{cheap}+Hivemind {matched|beat} {frontier} alone on
+  {task}: success Δ = ⟨x⟩, CI [⟨lo⟩,⟨hi⟩], at ⟨N⟩× lower cost."* Every ⟨…⟩ is filled
+  **from the run** and provenance-stamped (dataset hash, both base-model names, LLM
+  call-log digest, seeds, ks); the generator refuses to emit on incomplete provenance.
+  **No figure is ever hand-set** — a number with no surviving CI is reported as
+  *inconclusive*, not as a headline.
+- **Status [planned]:** the runner today fixes the model/extractor and varies the *backend*
+  (Benchmark 1). The headline adds a **model-tier axis** (`H` vs `F`) as a sibling arm on
+  the same `hive.research.bench` harness; until that arm runs, this claim has **no shippable
+  number** and must not be quoted.
+
 ## Shared contract (every benchmark below)
 
 - **Ship gate — one rule, everywhere.** A result ships only when a **per-question paired bootstrap

@@ -129,3 +129,50 @@ Part of the credit/origin subsystem removal (`docs/PLANS/MINIMIZATION-PLAN.md` �
 **Mutations to verify:** a rendered rules block contains no `Hive-Credit`/trailer text after the strip; `hive_init` phase-1→phase-2 still round-trips on the recomputed block hash with the trailer removed; boot does not fail-fast on a missing `stamp_trailer`.
 
 **Note:** only relevant if the credit subsystem is cut (a live product decision — see plan §5 T3). If credit is kept, this TODO is void.
+
+---
+
+## TODO 6 — Conflict-resolution logging + admin skill (the supersession-review workflow)
+
+**File:** `.claude/skills/hive-resolve/` (new admin skill, documented in `ADMINSKILLS.md`), `hive/app/gaps.py`, `hive/app/mcp_server.py`, `hive/app/observability.py`
+
+A contradiction between two memories is surfaced TODAY only as a *pull* report:
+`hive_health(include_gaps=true)` → `contested_misses` (`gaps.py`), the "supersession-review
+queue", resolved by one `hive_write(replaces=<episode_id>)`. There is no push signal and no
+guided workflow — if no operator polls the report, conflicts accumulate invisibly. Build:
+
+1. **Logging / notification (the push signal).** Emit a structured, throttled log line + a
+   `hive status`-visible counter when the contested queue is non-empty. Today the only
+   contested-related log is `mcp.contested_report_failed` (the failure path) — there is no
+   "N memories pending review" signal. Host-side `hive health` deliberately excludes
+   gaps/contested (they need the live servable index — `cli.py`), so the push path must
+   originate daemon-side where the index is warm.
+2. **Admin skill `/hive-resolve`** (alongside `/hive-tune` in `ADMINSKILLS.md`): pull the
+   contested report, render each `{episode_id, trust, miss_count, miss_types, last_seen}`
+   with the conflicting servable text side by side, and walk the operator through the
+   `hive_write(replaces=…)` resolution. Confirm the queue shrank afterwards off the
+   `admission.superseded` audit row (close the loop).
+
+**Edge cases to cover — the coverage holes in the demand-derived report (`contested_misses` only
+sees conflicts that PRODUCE misses/abstains):**
+- **Quiet contradiction, dominant winner.** Two contradictory servable rows where one scores
+  much higher: recall serves it CONFIDENT (the other as a lower hit), emits NO miss, so the
+  demand-derived report never sees it. Needs a DIRECT pairwise scan over the servable index
+  (rows within shadow/contested τ whose text — or outcome credit — diverges), not just
+  clustered misses.
+- **Quiet contradiction, co-served pair.** Both rows returned in one CONFIDENT result without
+  splitting softmax mass enough to trip the entropy gate → no abstain → no miss → never
+  queued. Same direct-scan fix.
+- **No notification / pull-only.** The queue is invisible until `hive_health(include_gaps=true)`
+  is called; the skill + log line are the missing push.
+- **Trust asymmetry — never auto-resolve.** An `established` (human-vouched) vs `provisional`
+  (demand-promoted) conflict must NOT be auto-superseded by recency; supersession is
+  human-only by design. The skill PRESENTS; the human decides.
+- **Self-resolving provisional.** A conflict may clear on its own when a provisional row hits
+  its lazy TTL; don't prompt a human to supersede a row about to lapse.
+
+**Mutations to verify:** seed two contradictory servable memories — (a) mass-splitting (loud:
+already surfaced by `contested_misses`) and (b) one-dominant (quiet: currently invisible). The
+new direct scan must surface BOTH; resolving one via `hive_write(replaces=)` removes the pair
+from the next report and writes the `admission.superseded` audit row; the non-empty-queue log
+line fires before resolution and not after.
