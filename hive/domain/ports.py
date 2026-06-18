@@ -28,7 +28,7 @@ class Clock(Protocol):
 class EmbeddingProvider(Protocol):
     """text → value[d] (embed → PCA head → L2-normalize). The SINGLE encode chain
     used by both capture and recall [D2]. ``d`` is the projected dim (256);
-    ``w_version`` versions the frozen projection head for re-embed migration."""
+    ``w_version`` versions the frozen projection head for re-embed safety."""
     d: int
     w_version: int
     def encode(self, text: str) -> "np.ndarray": ...
