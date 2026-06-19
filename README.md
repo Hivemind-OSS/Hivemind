@@ -38,21 +38,27 @@ pip install -e .          # installs the `hive` command (uninstalled: python -m 
 hive up                   # build + start; blocks until the daemon is healthy
 ```
 
-`hive up` is zero-config — it boots on safe code defaults. The daemon serves MCP over HTTP on
-**127.0.0.1:8765 only**; it is never exposed to the network implicitly.
+`hive up` is zero-config — it boots on safe code defaults. The daemon serves MCP over **two
+doors**: a tokenless **loopback** door on **127.0.0.1:8765** for local agents, and a
+token-required **tunnel** door for remote teammates (compose-internal, never host-published).
+Identity is per-agent-session — every connection gets its own identity automatically (the
+server-minted `Mcp-Session-Id`, or an explicit `X-Hive-Agent-Id` for readable provenance), so a
+fleet of K agents behaves the same whether 1 or N engineers run it. The token only
+authenticates the tunnel door — it is never the identity.
 
-Give each agent its own seat (one token per agent — never shared):
+Connect a **local** agent (no token needed — the loopback door is tokenless):
+
+```bash
+hive connect              # prints the ready-made tokenless `claude mcp add …` line
+claude mcp add --transport http hive http://localhost:8765/mcp
+```
+
+For a **remote** teammate, mint a seat token (the tunnel door authenticates with it):
 
 ```bash
 hive token alice-laptop   # prints the token ONCE — hand it over via a secret manager
-hive connect              # prints the ready-made `claude mcp add …` registration line
-```
-
-The teammate registers the server with that seat token:
-
-```bash
 export HIVE_TOKEN=hive_…
-claude mcp add --transport http hive http://localhost:8765/mcp \
+claude mcp add --transport http hive https://<your-domain>/mcp \
   --header "Authorization: Bearer ${HIVE_TOKEN}"
 ```
 
@@ -66,12 +72,15 @@ restart — there is no live reload). To override a knob, copy `.env.example` to
 `HIVE_<GROUP>__<FIELD>` key, and run `hive up`. Out-of-range values fail boot loudly rather than
 silently clamping.
 
-**Auth posture** (`HIVE_AUTH__MODE`):
+**Two doors** (auth is a property of the listening socket, not a config knob):
 
-- `token` (default) — every request carries a per-seat `Authorization: Bearer` token.
-- `open` — tokenless, for a **trusted loopback-only** fleet on one host; identity is
-  self-asserted via an `X-Hive-Agent-Id: <seat>` header (no anonymous access). Refused for any
-  tunneled deployment.
+- **Loopback door** (`127.0.0.1:8765`, host-published) — **tokenless**, for local agents on the
+  host. Identity is the per-session `X-Hive-Agent-Id` (or the server-minted `Mcp-Session-Id`),
+  else the `local` bucket.
+- **Tunnel door** (compose-internal `8766`, ngrok-forwarded) — **token-required**; the only
+  remote-reachable door. The bearer token authenticates; it is never the identity.
+
+There is no `HIVE_AUTH__MODE` switch — delete any leftover one from `.env` (it is ignored).
 
 ## Remote teammates
 

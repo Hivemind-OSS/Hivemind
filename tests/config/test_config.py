@@ -86,32 +86,13 @@ def test_isolation_frac_is_cut():
         Config.load(utility={"isolation_frac": 0.05})
 
 
-# ── auth posture: token (default) vs open (the AUTH-OPTIONAL group) ─────────────
-def test_auth_mode_defaults_to_token():
-    # the SAFE value is the default — a bare load is the authenticated path.
-    assert Config.load(db_path=":memory:").auth.mode == "token"
-
-
-def test_auth_mode_open_via_override():
-    assert Config.load(db_path=":memory:", auth={"mode": "open"}).auth.mode == "open"
-
-
-def test_auth_mode_open_via_env():
-    # the generic _apply_env routes the NEW group with no special-casing.
-    cfg = Config.load(db_path=":memory:", env={"HIVE_AUTH__MODE": "open"})
-    assert cfg.auth.mode == "open"
-
-
-def test_auth_mode_illegal_value_raises():
-    # fail-fast: an out-of-allowlist mode is rejected at load (no silent default).
-    with pytest.raises(ValueError, match=r"auth\.mode|token.*open"):
-        Config.load(auth={"mode": "bogus"})
-
-
-def test_auth_unknown_field_raises():
-    # the explicit-override typo guard fires on the new group too.
-    with pytest.raises(ValueError, match=r"moed|unknown config override"):
-        Config.load(auth={"moed": "open"})
+# ── auth group is removed (MODE-COLLAPSE): auth is a property of the listener ────
+def test_auth_group_is_removed():
+    # the HIVE_AUTH__MODE token|open switch is deleted — auth is now a property of the
+    # listening port (tokenless loopback door + token tunnel door), not a config group.
+    # An explicit `auth=` override hits the unknown-group guard, fail-fast.
+    with pytest.raises(ValueError, match=r"unknown config group override 'auth'"):
+        Config.load(auth={"mode": "open"})
 
 
 # ── frozen on root AND nested groups ──────────────────────────────────────────

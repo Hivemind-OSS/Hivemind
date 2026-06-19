@@ -234,44 +234,64 @@ def test_embedder_not_resident_exits_69():
     assert "serve" not in calls
 
 
-# ── default HTTP serve path + port resolution (the default-serve path injected-serve never exercises) ──
-def test_make_http_serve_wires_run_http_with_port_and_verify():
-    """_make_http_serve builds the default serve from the injectable run_http, the resolved
-    port, and the token store's verify CALLABLE (no SQLite class leaks into the transport).
-    Part S: it must ALSO construct a TokenBucketLimiter and thread it + max_body_bytes
-    through (defaults: 120/60s, 1 MiB). Mutating verify=boot.token_store.verify makes
-    this red."""
+# ── default dual-door serve path + port resolution (injected-serve never exercises it) ──
+def test_make_http_serve_wires_run_http_dual_with_ports_and_verify():
+    """_make_http_serve builds the default serve from the injectable run_http_dual, BOTH
+    resolved ports, and the token store's verify CALLABLE (no SQLite class leaks into the
+    transport). It must ALSO construct a TokenBucketLimiter and thread it + max_body_bytes
+    through (defaults: 120/60s, 1 MiB). Mutating verify=boot.token_store.verify makes this red."""
     captured: dict = {}
 
-    def fake_run_http(server, *, host, port, verify, lock, limiter, max_body_bytes,
-                      auth_mode="token"):
-        captured.update(server=server, host=host, port=port, verify=verify, lock=lock,
+    def fake_run_http_dual(server, *, host, loopback_port, tunnel_port, verify, lock,
+                           limiter, max_body_bytes):
+        captured.update(server=server, host=host, loopback_port=loopback_port,
+                        tunnel_port=tunnel_port, verify=verify, lock=lock,
                         limiter=limiter, max_body_bytes=max_body_bytes)
 
     boot = _RecordingBoot([])
-    serve = E._make_http_serve(boot, 9999, run_http=fake_run_http)
+    serve = E._make_http_serve(boot, 9999, 9998, run_http_dual=fake_run_http_dual)
     sentinel = object()
     serve(sentinel)
     assert captured["server"] is sentinel
     assert captured["host"] == "0.0.0.0"
-    assert captured["port"] == 9999
+    assert captured["loopback_port"] == 9999               # the tokenless host-published door
+    assert captured["tunnel_port"] == 9998                 # the token-required compose-internal door
     assert captured["verify"] == boot.token_store.verify   # the verify SEAM, not the class
     assert captured["lock"] is not None
     assert isinstance(captured["limiter"], TokenBucketLimiter)
     assert captured["max_body_bytes"] == 1 << 20           # the generous default cap
 
 
+def test_make_http_serve_threads_one_lock_and_one_limiter():
+    """The single-writer pin across two doors: the lock + limiter are built ONCE in
+    _make_http_serve (not per serve call), so a second serve() reuses the SAME objects.
+    Mutation — build the limiter INSIDE serve() — reds this."""
+    seen: list = []
+
+    def fake_run_http_dual(server, *, host, loopback_port, tunnel_port, verify, lock,
+                           limiter, max_body_bytes):
+        seen.append((lock, limiter))
+
+    serve = E._make_http_serve(_RecordingBoot([]), 8765, 8766,
+                               run_http_dual=fake_run_http_dual)
+    serve(object())
+    serve(object())                                        # a second serve reuses the SAME objects
+    (lock1, lim1), (lock2, lim2) = seen
+    assert lock1 is lock2                                  # ONE lock
+    assert lim1 is lim2 and isinstance(lim1, TokenBucketLimiter)   # ONE limiter
+
+
 def test_make_http_serve_constructs_limiter_from_resolved_values():
     """The knobs actually BITE: a limiter built with rate_limit=5 allows exactly 5 checks
-    on one label, and the explicit max_body_bytes reaches run_http verbatim."""
+    on one label, and the explicit max_body_bytes reaches run_http_dual verbatim."""
     captured: dict = {}
 
-    def fake_run_http(server, *, host, port, verify, lock, limiter, max_body_bytes,
-                      auth_mode="token"):
+    def fake_run_http_dual(server, *, host, loopback_port, tunnel_port, verify, lock,
+                           limiter, max_body_bytes):
         captured.update(limiter=limiter, max_body_bytes=max_body_bytes)
 
-    serve = E._make_http_serve(_RecordingBoot([]), 8765, rate_limit=5, rate_window_s=2.5,
-                               max_body_bytes=512, run_http=fake_run_http)
+    serve = E._make_http_serve(_RecordingBoot([]), 8765, 8766, rate_limit=5, rate_window_s=2.5,
+                               max_body_bytes=512, run_http_dual=fake_run_http_dual)
     serve(object())
     assert captured["max_body_bytes"] == 512
     limiter = captured["limiter"]
@@ -280,20 +300,23 @@ def test_make_http_serve_constructs_limiter_from_resolved_values():
     assert not limiter.check("dev").allowed                # the 6th — limit=5 was wired in
 
 
-def test_main_default_serve_is_http_with_default_port(monkeypatch):
-    """When `serve` is NOT injected, main() builds the HTTP daemon via _make_http_serve with
-    the resolved default port (8765) AND calls it — the boot completes, THEN serves."""
+def test_main_default_serve_is_http_with_default_ports(monkeypatch):
+    """When `serve` is NOT injected, main() builds the dual-door HTTP daemon via _make_http_serve
+    with the resolved default ports (8765 loopback + 8766 tunnel) AND calls it — the boot
+    completes, THEN serves."""
     captured: dict = {}
 
-    def fake_make_http_serve(boot, port, **kw):
-        captured["port"] = port
+    def fake_make_http_serve(boot, loopback_port, tunnel_port, **kw):
+        captured["loopback_port"] = loopback_port
+        captured["tunnel_port"] = tunnel_port
         return lambda s: captured.update(served=True)
 
     monkeypatch.setattr(E, "_make_http_serve", fake_make_http_serve)
     calls: list = []
     rc = E.main(env=_OK_ENV, build_boot=_boot_factory(_RecordingBoot(calls)))   # serve NOT injected
     assert rc == E.EX_OK
-    assert captured["port"] == 8765 and captured["served"] is True
+    assert captured["loopback_port"] == 8765 and captured["tunnel_port"] == 8766
+    assert captured["served"] is True
     assert calls == ["migrate", "build_index", "warm", "make_server"]           # full boot, then HTTP serve
 
 
@@ -319,91 +342,47 @@ def test_invalid_max_body_exits_config_before_assembly():
     assert calls == []                             # fail-fast BEFORE build_boot
 
 
-def test_main_serve_fixed_port_and_threaded_max_body(monkeypatch):
-    """main() serves on the FIXED 8765 port and threads only the resolved max_body knob into
-    _make_http_serve — the rate-limit belt uses its fixed defaults (no operator knob)."""
+def test_main_serve_fixed_ports_and_threaded_max_body(monkeypatch):
+    """main() serves on the FIXED ports (8765 loopback + 8766 tunnel) and threads only the
+    resolved max_body knob into _make_http_serve — the rate-limit belt uses its fixed defaults
+    (no operator knob)."""
     captured: dict = {}
 
-    def fake_make_http_serve(boot, port, **kw):
-        captured.update(port=port, **kw)
+    def fake_make_http_serve(boot, loopback_port, tunnel_port, **kw):
+        captured.update(loopback_port=loopback_port, tunnel_port=tunnel_port, **kw)
         return lambda s: None
 
     monkeypatch.setattr(E, "_make_http_serve", fake_make_http_serve)
     rc = E.main(env={"HIVE_HTTP_MAX_BODY_BYTES": "4096"},
                 build_boot=_boot_factory(_RecordingBoot([])))
     assert rc == E.EX_OK
-    assert captured["port"] == 8765
+    assert captured["loopback_port"] == 8765 and captured["tunnel_port"] == 8766
     assert captured["max_body_bytes"] == 4096
     assert "rate_limit" not in captured            # main() no longer threads rate knobs
 
 
-# ── AUTH-OPTIONAL: auth_mode threading + the open-mode WARN ────────────────────
-def test_make_http_serve_threads_auth_mode_open():
-    """_make_http_serve forwards auth_mode to run_http; the explicit open value reaches it."""
+# ── auth is a property of the socket: no posture to resolve, injected serve wins ──
+def test_main_injected_serve_takes_precedence(monkeypatch):
+    """An injected serve (every unit test path) wins — main() does not force the prod dual-door
+    serve builder. There is no auth posture to resolve (auth is a property of the listening
+    socket). The injected serve runs and main returns EX_OK."""
+    served: list = []
+    rc = E.main(env=_OK_ENV, build_boot=_boot_factory(_RecordingBoot([])),
+                serve=lambda s: served.append(True))
+    assert rc == E.EX_OK and served == [True]
+
+
+def test_main_stale_auth_env_is_ignored_not_a_crash(monkeypatch):
+    """A leftover HIVE_AUTH__MODE in an operator .env after the collapse is an ignored
+    unknown-group env key (WARN, not crash) — boot still reaches the dual-door serve."""
     captured: dict = {}
 
-    def fake_run_http(server, *, host, port, verify, lock, limiter, max_body_bytes, auth_mode):
-        captured["auth_mode"] = auth_mode
-
-    serve = E._make_http_serve(_RecordingBoot([]), 8765, auth_mode="open",
-                               run_http=fake_run_http)
-    serve(object())
-    assert captured["auth_mode"] == "open"
-
-
-def test_make_http_serve_default_auth_mode_is_token():
-    """The DEFAULT path threads auth_mode='token' (the safe posture) into run_http."""
-    captured: dict = {}
-
-    def fake_run_http(server, *, host, port, verify, lock, limiter, max_body_bytes, auth_mode):
-        captured["auth_mode"] = auth_mode
-
-    serve = E._make_http_serve(_RecordingBoot([]), 8765, run_http=fake_run_http)
-    serve(object())
-    assert captured["auth_mode"] == "token"
-
-
-def test_main_open_mode_serves_and_warns(monkeypatch, capsys):
-    """HIVE_AUTH__MODE=open SERVES (EX_OK — WARN-only, never refuse) and threads auth_mode=open
-    into the serve builder, AND logs the entrypoint.auth_open warning. The `hive` logger has
-    propagate=False (its own JSON-stderr handler), so the WARN is asserted on stderr (the
-    operator-visible channel), not caplog."""
-    captured: dict = {}
-
-    def fake_make_http_serve(boot, port, **kw):
-        captured.update(**kw)
+    def fake_make_http_serve(boot, loopback_port, tunnel_port, **kw):
+        captured.update(loopback_port=loopback_port, tunnel_port=tunnel_port)
         return lambda s: None
 
     monkeypatch.setattr(E, "_make_http_serve", fake_make_http_serve)
     rc = E.main(env={"HIVE_TENANT_ID": "acme", "HIVE_AUTH__MODE": "open"},
                 build_boot=_boot_factory(_RecordingBoot([])))
-    assert rc == E.EX_OK                               # open mode SERVES — no refuse
-    assert captured["auth_mode"] == "open"
-    err = capsys.readouterr().err
-    assert "entrypoint.auth_open" in err               # the operator WARN fired on stderr
-
-
-def test_main_default_auth_mode_is_token_no_warn(monkeypatch, capsys):
-    """No HIVE_AUTH__MODE ⇒ auth_mode resolves to 'token' (getattr/default reads cleanly) and
-    NO open WARN is logged."""
-    captured: dict = {}
-
-    def fake_make_http_serve(boot, port, **kw):
-        captured.update(**kw)
-        return lambda s: None
-
-    monkeypatch.setattr(E, "_make_http_serve", fake_make_http_serve)
-    rc = E.main(env=_OK_ENV, build_boot=_boot_factory(_RecordingBoot([])))
-    assert rc == E.EX_OK
-    assert captured["auth_mode"] == "token"
-    assert "entrypoint.auth_open" not in capsys.readouterr().err
-
-
-def test_main_injected_serve_takes_precedence_over_auth_mode(monkeypatch):
-    """An injected serve (every unit test path) still wins — the auth_mode resolution does not
-    force the prod serve builder. The injected serve runs and main returns EX_OK."""
-    served: list = []
-    rc = E.main(env={"HIVE_TENANT_ID": "acme", "HIVE_AUTH__MODE": "open"},
-                build_boot=_boot_factory(_RecordingBoot([])),
-                serve=lambda s: served.append(True))
-    assert rc == E.EX_OK and served == [True]
+    assert rc == E.EX_OK                               # a stale auth env never crashes boot
+    assert captured["loopback_port"] == 8765 and captured["tunnel_port"] == 8766

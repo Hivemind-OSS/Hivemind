@@ -1,12 +1,16 @@
-"""run_http — the warm HTTP daemon: per-device bearer auth in front of HiveMCPServer.
+"""run_http — the warm HTTP daemon: a two-door endpoint in front of HiveMCPServer.
 
-The natural generalization of ``run_stdio``: stdio is "one process, one
-identity"; this is "one process, PER-REQUEST identity." A POST carries a JSON-RPC body and a
-``Authorization: Bearer <token>`` header; the token is verified to a device label BEFORE
-``handle()`` is reached, so an absent / unknown / revoked token never touches the recall or
-write path (INV-1 — 401). That label becomes the verified ``proposed_by`` via a per-request
-``ServerIdentity`` threaded through ``handle(identity=…)``; the transport stays ignorant of
-tool internals (D1).
+The natural generalization of ``run_stdio``: stdio is "one process, one identity"; this is
+"one process, PER-AGENT-SESSION identity." Auth is a property of the listening SOCKET, not a
+config mode: ``run_http_dual`` binds a tokenless LOOPBACK door (host-published) and a
+token-required TUNNEL door (compose-internal, ngrok-forwarded) on ONE server / ONE lock / ONE
+limiter. On the tunnel door the Bearer is verified BEFORE ``handle()`` (an absent/unknown token
+never touches recall/write — INV-1 → 401); on the loopback door there is no token. AUTH and
+IDENTITY are orthogonal: on BOTH doors the per-request identity is resolved as
+``X-Hive-Agent-Id`` → echoed ``Mcp-Session-Id`` → ``"local"`` and becomes the ``proposed_by``
+via a per-request ``ServerIdentity`` threaded through ``handle(identity=…)``. The token GATES
+the tunnel door but is NEVER the identity (so token/engineer count cannot leak into promotion);
+the transport stays ignorant of tool internals (D1).
 
 Channel separation: auth/transport outcomes are HTTP status codes (401/403/405/202);
 protocol/handler errors are JSON-RPC errors INSIDE a 200 — the two never mix. The shared
@@ -31,6 +35,7 @@ from __future__ import annotations
 import json
 import logging
 import threading
+import uuid
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Callable, Optional
 
@@ -43,7 +48,9 @@ _log = logging.getLogger("hive.app.http_server")
 
 _JSON = "application/json"
 _DEFAULT_MAX_BODY = 1 << 20      # 1 MiB — generous for JSON-RPC tool calls (gbrain parity)
-_AGENT_ID_HEADER = "X-Hive-Agent-Id"   # open-mode self-asserted identity (token-mode: ignored)
+_AGENT_ID_HEADER = "X-Hive-Agent-Id"   # explicit per-session identity (highest precedence)
+_SESSION_ID_HEADER = "Mcp-Session-Id"  # server-minted at initialize; echoed by conforming clients
+_LOCAL_AGENT_ID = "local"              # the residual identity bucket (no header, no session id)
 
 
 def _bearer(headers) -> Optional[str]:
@@ -58,11 +65,36 @@ def _bearer(headers) -> Optional[str]:
 
 
 def _asserted_agent_id(headers) -> Optional[str]:
-    """The open-mode self-asserted caller identity from ``X-Hive-Agent-Id``, or None if
-    absent/blank. Transport-level (parallel to the Bearer it replaces) so INV-2 holds:
-    the caller never asserts identity through a TOOL argument. // O(1)."""
+    """The explicit per-session caller identity from ``X-Hive-Agent-Id``, or None if
+    absent/blank. Transport-level (never a TOOL argument, so INV-2 holds) and the reliable
+    override the bench harness / a client's env path populates. // O(1)."""
     val = (headers.get(_AGENT_ID_HEADER) or "").strip()
     return val or None
+
+
+def _session_id(headers) -> Optional[str]:
+    """The echoed server-minted ``Mcp-Session-Id`` (the provider-agnostic per-session
+    identity for a conforming client), or None. Best-effort by design: structurally absent
+    on request #1 (the ``initialize`` that mints it) and on a client that does not echo it —
+    such a caller falls through to ``"local"`` and is caught by the health hint. // O(1)."""
+    val = (headers.get(_SESSION_ID_HEADER) or "").strip()
+    return val or None
+
+
+def _resolve_identity(headers) -> str:
+    """The per-agent-session identity, resolved the SAME way on BOTH doors:
+    explicit ``X-Hive-Agent-Id`` → echoed ``Mcp-Session-Id`` → the ``"local"`` bucket.
+    The token (tunnel door) only AUTHENTICATES — it is NEVER the identity, so the engineer /
+    token count cannot leak into promotion (the solo ≡ team invariant). A missing identity is
+    never a 400: it floors to ``"local"``. // O(1)."""
+    return _asserted_agent_id(headers) or _session_id(headers) or _LOCAL_AGENT_ID
+
+
+def _mint_session_id() -> str:
+    """A fresh opaque session id (visible-ASCII per the MCP spec) the server assigns on the
+    ``initialize`` response; conforming clients echo it on every later request. No session
+    store — it is read back purely as the per-session identity. // O(1)."""
+    return uuid.uuid4().hex
 
 
 def _build_handler(server: HiveMCPServer,
@@ -70,7 +102,7 @@ def _build_handler(server: HiveMCPServer,
                    lock: threading.Lock, *,
                    limiter: Optional[TokenBucketLimiter] = None,
                    max_body_bytes: int = _DEFAULT_MAX_BODY,
-                   auth_mode: str = "token") -> type:
+                   auth_required: bool = True) -> type:
     """Build the ``BaseHTTPRequestHandler`` subclass that enforces the endpoint contract.
     Factored out of ``run_http`` so the contract is unit-testable against a real loopback
     ``ThreadingHTTPServer`` on an ephemeral port (``run_http`` only binds + serve_forever).
@@ -79,11 +111,13 @@ def _build_handler(server: HiveMCPServer,
     — the limiter has no internal locking by contract. The deliberate mutations (skip the
     ``verify``-None → 401 guard; drop the 413/429 guards) live in ``do_POST``.
 
-    ``auth_mode`` defaults to ``"token"`` (today's wire, byte-identical). In ``"open"`` mode
-    (trusted-loopback) token verification is SKIPPED and the per-request identity is the
-    self-asserted ``X-Hive-Agent-Id`` header — a missing/blank one is a 400 (never anonymous);
-    ``verify`` is never consulted. The carrier never crosses modes: a stray header in token
-    mode buys no access, and a stray Bearer in open mode is ignored."""
+    ``auth_required`` picks the DOOR (auth is a property of the listening socket, not a config
+    mode). ``True`` (default — the TUNNEL door): the Bearer is verified, an absent/unknown
+    token never reaches ``handle()`` (INV-1 → 401). ``False`` (the LOOPBACK door): tokenless —
+    no 401, ``verify`` is never consulted. AUTH and IDENTITY are orthogonal: on BOTH doors the
+    per-request identity is ``_resolve_identity`` (``X-Hive-Agent-Id`` → echoed
+    ``Mcp-Session-Id`` → ``"local"``); the token GATES the tunnel door but is NEVER the
+    identity, and a missing identity is floored to ``"local"`` (never a 400)."""
 
     class _Handler(BaseHTTPRequestHandler):
         protocol_version = "HTTP/1.1"          # keep-alive; every body is drained so it is safe
@@ -138,26 +172,27 @@ def _build_handler(server: HiveMCPServer,
                 # (1) Origin guard (spec MUST, DNS-rebinding): a browser is never legitimate.
                 if self.headers.get("Origin") is not None:     # INV-4
                     return self._json(403, {"error": "forbidden_origin"})
-                # (2) identity BEFORE handle. token: verify the Bearer (INV-1 401). open: take
-                # the self-asserted X-Hive-Agent-Id (trusted-loopback; 400 if absent — never
-                # anonymous). The 429 throttle keys on the resolved label in BOTH modes (D3 —
-                # no forwarded-IP trust), under the same lock (the limiter has no internal lock).
-                if auth_mode == "open":
-                    label = _asserted_agent_id(self.headers)
-                    if label is None:                          # ← dropping this 400 serves ANON
-                        return self._json(400, {"error": "missing_agent_id"})
-                    rl = None
+                # (2) AUTH gate (per-door) vs IDENTITY (shared, per-agent-session) — orthogonal.
+                # The token GATES the tunnel door; it is NEVER the identity (else token/engineer
+                # count would leak into promotion, breaking solo≡team). Identity resolves the
+                # SAME way on both doors: X-Hive-Agent-Id → echoed Mcp-Session-Id → "local"
+                # (a missing identity floors to "local", never a 400). The 429 throttle keys on
+                # that resolved label (D3 — no forwarded-IP trust), under the same lock (the
+                # limiter has no internal lock).
+                label = _resolve_identity(self.headers)
+                rl = None
+                if auth_required:                              # tunnel door: verify the Bearer
+                    tok = _bearer(self.headers)
+                    with lock:
+                        allowed = (verify(tok) is not None) if tok else False
+                        rl = (limiter.check(label)
+                              if (limiter is not None and allowed) else None)
+                    if not allowed:                            # ← skipping this guard is the mutation
+                        return self._json(401, {"error": "unauthorized"})
+                else:                                          # loopback door: tokenless, never 401
                     if limiter is not None:
                         with lock:
                             rl = limiter.check(label)
-                else:
-                    tok = _bearer(self.headers)
-                    with lock:
-                        label = verify(tok) if tok else None
-                        rl = (limiter.check(label)
-                              if (limiter is not None and label is not None) else None)
-                    if label is None:                          # ← skipping this guard is the mutation
-                        return self._json(401, {"error": "unauthorized"})
                 if rl is not None and not rl.allowed:
                     return self._json(429, {"error": "rate_limited"},
                                       extra={"Retry-After": str(rl.retry_after_s)})
@@ -180,6 +215,11 @@ def _build_handler(server: HiveMCPServer,
                 req = MCPRequest(id=payload.get("id"), method=payload.get("method", ""),
                                  params=params)
                 ident = ServerIdentity(tenant_id=server.identity.tenant_id, agent_id=label)
+                # Mcp-Session-Id mint: an `initialize` response carries a fresh server-minted
+                # session id; a conforming client echoes it on later requests, where
+                # _resolve_identity reads it back as the per-session identity (no session store).
+                extra = ({_SESSION_ID_HEADER: _mint_session_id()}
+                         if req.method == "initialize" else None)
                 try:
                     with lock:
                         resp = server.handle(req, identity=ident)
@@ -188,7 +228,7 @@ def _build_handler(server: HiveMCPServer,
                                "error_type": type(e).__name__}, exc_info=True)
                     resp = MCPResponse(id=req.id,
                                        error=_err(-32603, f"internal error: {type(e).__name__}"))
-                self._send(200, resp.to_json().encode("utf-8"), _JSON)
+                self._send(200, resp.to_json().encode("utf-8"), _JSON, extra)
             except Exception as e:            # INV-3: transport fault → HTTP 500, daemon survives
                 _log.error("http.transport_crash", extra={"event": "http.transport_crash",
                            "error_type": type(e).__name__}, exc_info=True)
@@ -208,15 +248,43 @@ def run_http(server: HiveMCPServer, *, host: str, port: int,
              lock: threading.Lock,
              limiter: Optional[TokenBucketLimiter] = None,
              max_body_bytes: int = _DEFAULT_MAX_BODY,
-             auth_mode: str = "token") -> None:  # pragma: no cover — blocking serve
+             auth_required: bool = True) -> None:  # pragma: no cover — blocking serve
     """Bind a ``ThreadingHTTPServer`` on ``(host, port)`` and serve the endpoint contract forever.
     The blocking serve loop is the (uncovered) transport wrapper; the contract itself lives in
     ``_build_handler``, exercised on a real loopback server in the tests. The Part S belts
-    (``limiter`` / ``max_body_bytes``) thread through defaulted-off (AC6); ``auth_mode`` defaults
-    to the safe ``"token"`` posture (open mode is opt-in)."""
+    (``limiter`` / ``max_body_bytes``) thread through defaulted-off (AC6); ``auth_required``
+    defaults to the safe ``True`` (the token-gated tunnel door)."""
     httpd = ThreadingHTTPServer((host, port),
                                 _build_handler(server, verify, lock,
                                                limiter=limiter, max_body_bytes=max_body_bytes,
-                                               auth_mode=auth_mode))
-    _log.info("http.serving host=%s port=%d", host, port)
+                                               auth_required=auth_required))
+    _log.info("http.serving host=%s port=%d auth_required=%s", host, port, auth_required)
     httpd.serve_forever()
+
+
+def run_http_dual(server: HiveMCPServer, *, host: str,
+                  loopback_port: int, tunnel_port: int,
+                  verify: Callable[[str], Optional[str]],
+                  lock: threading.Lock,
+                  limiter: Optional[TokenBucketLimiter] = None,
+                  max_body_bytes: int = _DEFAULT_MAX_BODY) -> None:  # pragma: no cover — blocking serve
+    """Bind BOTH doors on ONE server / ONE lock / ONE limiter: the tokenless LOOPBACK door
+    (``auth_required=False``, the host-published port) and the token-required TUNNEL door
+    (``auth_required=True``, the compose-internal port ngrok forwards to). The tunnel door
+    serves on a daemon thread; the loopback door serves on THIS thread (blocking). Passing the
+    SAME ``lock`` + SAME ``limiter`` into both ``_build_handler`` calls is what keeps the
+    single-writer serialization invariant (THEORY §5) holding across two listeners — no path
+    constructs a per-listener lock, so ``check_same_thread=False`` stays safe."""
+    tunnel = ThreadingHTTPServer(
+        (host, tunnel_port),
+        _build_handler(server, verify, lock, limiter=limiter,
+                       max_body_bytes=max_body_bytes, auth_required=True))
+    th = threading.Thread(target=tunnel.serve_forever, daemon=True)
+    th.start()
+    _log.info("http.serving host=%s tunnel_port=%d auth_required=True", host, tunnel_port)
+    loopback = ThreadingHTTPServer(
+        (host, loopback_port),
+        _build_handler(server, verify, lock, limiter=limiter,
+                       max_body_bytes=max_body_bytes, auth_required=False))
+    _log.info("http.serving host=%s loopback_port=%d auth_required=False", host, loopback_port)
+    loopback.serve_forever()

@@ -19,7 +19,8 @@ Boundary: the entrypoint OWNS the operator-facing env contract for the two
 boot-critical operator values (`tenant_id` / `db_path`, the compose keys
 `HIVE_TENANT_ID` / `HIVE_STORE__DB_PATH`) and bridges them into `Config.load`;
 `agent_id` carries a process default and is not operator-facing in the HTTP build
-(per-request attribution is token→label). The rest of the config tree is M-config's `HIVE_*__`
+(per-request attribution is the transport-resolved per-session identity). The rest of the
+config tree is M-config's `HIVE_*__`
 namespace, which the entrypoint does NOT re-parse. The REAL adapter assembly (store +
 embedder + index + server) lands in P1.14 (`hive.app.container.build_container`) and is
 INJECTED here as `build_boot` — so the boot ORDER, the fail-fast exit codes and the
@@ -49,7 +50,8 @@ _DEFAULT_DB_PATH = "/data/shared.db"
 _DEFAULT_AGENT_ID = "default-agent"
 _DEFAULT_TENANT_ID = "default"
 _DEFAULT_LOG_LEVEL = logging.INFO
-_DEFAULT_HTTP_PORT = 8765
+_DEFAULT_HTTP_PORT = 8765       # the loopback door — host-published (compose maps 127.0.0.1:8765)
+_DEFAULT_TUNNEL_PORT = 8766     # the tunnel door — compose-internal only (ngrok forwards to it)
 # Part S hardening: the rate-limit belt is fixed (no operator knob — disabling a DoS belt
 # on a tunnel-reachable daemon is a footgun). The 1 MiB body cap mirrors
 # http_server._DEFAULT_MAX_BODY (kept separate so http_server stays importable without it
@@ -127,31 +129,30 @@ def _default_build_boot(cfg: Config, *, tenant_id: str, agent_id: str) -> Boot:
     return build_container(cfg, tenant_id=tenant_id, agent_id=agent_id)  # pragma: no cover
 
 
-def _make_http_serve(boot: Boot, port: int, *,
+def _make_http_serve(boot: Boot, loopback_port: int, tunnel_port: int, *,
                      rate_limit: int = _DEFAULT_RATE_LIMIT,
                      rate_window_s: float = _DEFAULT_RATE_WINDOW_S,
                      max_body_bytes: int = _DEFAULT_MAX_BODY_BYTES,
-                     auth_mode: str = "token",
-                     run_http: Optional[Callable[..., None]] = None) -> Callable[[Any], None]:
-    """The DEFAULT serve step (replacing stdio): a warm HTTP daemon that authenticates every
-    connecting device by its bearer token. The transport depends on a `verify` CALLABLE
-    (`boot.token_store.verify`) — never the concrete SQLite class — so no adapter detail leaks
-    into the transport. One `threading.Lock` serializes all handler execution (the shared conn
-    + embedder are not thread-safe). Part S: the resolved hardening knobs become a
-    `TokenBucketLimiter` (rate_limit<=0 ⇒ its disabled sentinel) + `max_body_bytes`, threaded
-    into `run_http`. `run_http` is injectable ONLY so this default path is unit-testable:
-    every existing entrypoint test injects `serve`, so this path is otherwise uncovered. The
-    real `run_http` is lazy-imported (torch-free) so module import stays light."""
-    if run_http is None:
-        from hive.app.http_server import run_http as run_http_impl  # noqa: PLC0415 — lazy, torch-free
-        run_http = run_http_impl
-    lock = threading.Lock()
-    limiter = TokenBucketLimiter(limit=rate_limit, window_s=rate_window_s)
+                     run_http_dual: Optional[Callable[..., None]] = None) -> Callable[[Any], None]:
+    """The DEFAULT serve step (replacing stdio): a warm HTTP daemon binding BOTH doors — the
+    tokenless LOOPBACK door (host-published `loopback_port`) and the token-required TUNNEL door
+    (compose-internal `tunnel_port`, ngrok-forwarded). Auth is a property of the listening
+    socket, not a config mode. The tunnel door's bearer gate depends on a `verify` CALLABLE
+    (`boot.token_store.verify`) — never the concrete SQLite class. ONE `threading.Lock` + ONE
+    `TokenBucketLimiter` are created HERE and threaded into BOTH listeners, so the single-writer
+    serialization invariant (the shared conn + embedder are not thread-safe) holds ACROSS the
+    two doors. `run_http_dual` is injectable ONLY so this default path is unit-testable; the
+    real one is lazy-imported (torch-free) so module import stays light."""
+    if run_http_dual is None:
+        from hive.app.http_server import run_http_dual as impl  # noqa: PLC0415 — lazy, torch-free
+        run_http_dual = impl
+    lock = threading.Lock()                                              # ONE lock, both doors
+    limiter = TokenBucketLimiter(limit=rate_limit, window_s=rate_window_s)  # ONE limiter, both doors
 
     def serve(server: Any) -> None:
-        run_http(server, host="0.0.0.0", port=port,
-                 verify=boot.token_store.verify, lock=lock,
-                 limiter=limiter, max_body_bytes=max_body_bytes, auth_mode=auth_mode)
+        run_http_dual(server, host="0.0.0.0", loopback_port=loopback_port,
+                      tunnel_port=tunnel_port, verify=boot.token_store.verify,
+                      lock=lock, limiter=limiter, max_body_bytes=max_body_bytes)
     return serve
 
 
@@ -252,20 +253,14 @@ def main(argv: Optional[list[str]] = None, *, env: Optional[Mapping[str, str]] =
         _log.error("entrypoint.assemble_failed kind=%s code=%d", type(exc).__name__, EX_SOFTWARE)
         return EX_SOFTWARE
 
-    # Resolve the auth posture off the frozen config (getattr/default so a minimal cfg can't
-    # KeyError). open mode WARNs but SERVES (symmetric with zero-config boot) — the enforced
-    # public-exposure gate is the CLI `--tunnel` refusal, not the process.
-    auth_mode = getattr(getattr(cfg, "auth", None), "mode", "token")
-    if auth_mode == "open":
-        _log.warning("entrypoint.auth_open — token verification DISABLED; identity is the "
-                     "self-asserted X-Hive-Agent-Id header. Trusted-loopback ONLY; never tunnel.")
-
-    # Default the serve step to the warm HTTP daemon (needs boot.token_store.verify, so it is
-    # built only after assembly). The listen port is fixed at 8765 (the compose host map, the
-    # ngrok forward, and `hive connect` all assume it); the rate-limit belt uses its fixed
-    # defaults. An injected `serve` (every unit test) takes precedence.
-    serve = serve or _make_http_serve(boot, _DEFAULT_HTTP_PORT,
-                                      max_body_bytes=max_body_bytes, auth_mode=auth_mode)
+    # Default the serve step to the warm HTTP daemon binding BOTH doors (needs
+    # boot.token_store.verify, so it is built only after assembly). The ports are fixed: the
+    # loopback door at 8765 (the compose host map + `hive connect` assume it) and the tunnel
+    # door at 8766 (the compose-internal port ngrok forwards to). Auth is a property of the
+    # socket — no posture to resolve. The rate-limit belt uses its fixed defaults. An injected
+    # `serve` (every unit test) takes precedence.
+    serve = serve or _make_http_serve(boot, _DEFAULT_HTTP_PORT, _DEFAULT_TUNNEL_PORT,
+                                      max_body_bytes=max_body_bytes)
 
     # Invalidate any STALE ready marker from a prior boot BEFORE migrate — a restarted
     # container (persistent volume + reused PID 1) must start red until THIS boot warms.

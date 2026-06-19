@@ -1,16 +1,20 @@
-"""Chunk 3 — run_http: per-device bearer auth in front of HiveMCPServer.
+"""run_http — the two-door endpoint contract in front of HiveMCPServer.
 
 Drives the REAL handler (``_build_handler``) on a real loopback ``ThreadingHTTPServer`` at
 127.0.0.1:0, with a SpyServer standing in for HiveMCPServer so the transport obligations are
-tested in isolation: 200/result on a valid token, 401-BEFORE-handle (INV-1), identity
-threading (token label → ``identity.agent_id``), 202 notification, 405 GET, 403 Origin,
-INV-3 robustness, and channel separation (protocol errors ride a 200). The mutation
-(do_POST skips the ``verify``-None → 401 guard) makes the missing-token test red.
+tested in isolation. Auth is a property of the door (``auth_required``): the TUNNEL door
+(default ``True``) verifies the Bearer BEFORE handle (INV-1 401); the LOOPBACK door
+(``False``) is tokenless and never 401s. AUTH is orthogonal to IDENTITY: on BOTH doors the
+per-request identity is resolved ``X-Hive-Agent-Id`` → echoed ``Mcp-Session-Id`` → ``"local"``,
+and the token is NEVER the identity. Also covered: ``Mcp-Session-Id`` mint at ``initialize``,
+202 notification, 405 GET, 403 Origin, INV-3 robustness, and channel separation (protocol
+errors ride a 200). The mutation (do_POST skips the ``verify``-None → 401 guard) reds the
+missing-token test.
 
 Part S extends the contract with the two transport belts, both
 keyword-only and DEFAULT-OFF so every pre-existing test here doubles as the AC6
-backward-compat proof: a ``limiter`` throttles one verified label with 429+``Retry-After``
-(handle untouched, other labels unaffected), and ``max_body_bytes`` rejects an oversized
+backward-compat proof: a ``limiter`` throttles one resolved identity with 429+``Retry-After``
+(handle untouched, other identities unaffected), and ``max_body_bytes`` rejects an oversized
 body with 413 BEFORE any body byte is read (raw-socket proof: a declared-but-never-sent
 body would hang a server that drained first). Mutations: drop the 429 guard, drop
 the 413 return, flip the cap comparison.
@@ -27,7 +31,10 @@ from http.server import ThreadingHTTPServer
 
 import pytest
 
-from hive.app.http_server import _AGENT_ID_HEADER, _asserted_agent_id, _bearer, _build_handler
+from hive.app.http_server import (
+    _AGENT_ID_HEADER, _SESSION_ID_HEADER, _asserted_agent_id, _bearer, _build_handler,
+    _resolve_identity, _session_id,
+)
 from hive.app.mcp_server import MCPResponse, ServerIdentity
 from hive.app.rate_limit import TokenBucketLimiter
 
@@ -120,11 +127,12 @@ def test_garbage_token_is_401_and_handle_never_called(live):
     assert spy.calls == []
 
 
-def test_identity_reaching_handle_is_the_token_label(live):
+def test_tunnel_door_tenant_from_server_not_client(live):
+    # the tenant is always the server's, never the caller's (single-tenant boundary). The
+    # per-session identity model is pinned in test_tunnel_door_identity_is_session_not_token.
     url, spy = live
     _request(url, body=_RPC, token="good-tok")
     (_, identity), = spy.calls
-    assert identity.agent_id == "alice-laptop"               # the verified device label
     assert identity.tenant_id == "default"                   # tenant from the server, NOT the client
 
 
@@ -187,27 +195,31 @@ def test_bearer_parses_scheme_case_insensitively():
     assert _bearer(h(None)) is None                          # no header at all
 
 
-# ── Part S belt 1: per-token rate limit (429, post-auth, per-label — AC4) ───────
-def test_rate_limited_token_gets_429_and_other_tokens_unaffected():
+# ── Part S belt 1: per-identity rate limit (429, post-auth, per-label — AC4) ────
+def test_rate_limited_identity_gets_429_and_other_identities_unaffected():
+    # the limiter keys on the resolved per-session identity (X-Hive-Agent-Id), NOT the token
+    # (the token only gates the tunnel door). A valid Bearer passes the gate; the identity
+    # header partitions the buckets.
     spy = _SpyServer()
     # window_s=3600 ⇒ no refill can land mid-test (deterministic without an injected clock)
     limiter = TokenBucketLimiter(limit=2, window_s=3600.0)
-    url, stop = _serve(spy, lambda tok: {"tok-a": "alice", "tok-b": "bob"}.get(tok),
-                       limiter=limiter)
+    url, stop = _serve(spy, lambda tok: "ok" if tok == "good-tok" else None, limiter=limiter)
+    a = {_AGENT_ID_HEADER: "alice"}
     try:
         for _ in range(2):                                   # the per-window budget
-            status, _, _ = _request(url, body=_RPC, token="tok-a")
+            status, _, _ = _request(url, body=_RPC, token="good-tok", headers=a)
             assert status == 200
-        status, body, hdrs = _request(url, body=_RPC, token="tok-a")
-        assert status == 429                                 # the N+1th on the SAME label
+        status, body, hdrs = _request(url, body=_RPC, token="good-tok", headers=a)
+        assert status == 429                                 # the N+1th on the SAME identity
         assert json.loads(body)["error"] == "rate_limited"
         assert int(hdrs.get("Retry-After")) >= 1             # machine-actionable backoff
         assert len(spy.calls) == 2                           # handle NOT called on the 429
-        # independent buckets: a different device is untouched by alice's flood (AC4)
-        status, _, _ = _request(url, body=_RPC, token="tok-b")
+        # independent buckets: a different identity is untouched by alice's flood (AC4)
+        status, _, _ = _request(url, body=_RPC, token="good-tok",
+                                headers={_AGENT_ID_HEADER: "bob"})
         assert status == 200 and len(spy.calls) == 3
         # an INVALID token still 401s — the limiter never runs pre-auth (D3)
-        status, _, _ = _request(url, body=_RPC, token="not-a-token")
+        status, _, _ = _request(url, body=_RPC, token="not-a-token", headers=a)
         assert status == 401
     finally:
         stop()
@@ -273,7 +285,7 @@ def test_under_cap_body_passes_with_belts_on():
         stop()
 
 
-# ── AUTH-OPTIONAL: the `_asserted_agent_id` extractor (open-mode carrier) ───────
+# ── identity extractors + the per-session resolver (both doors) ─────────────────
 def test_asserted_agent_id_extracts_strips_and_floors_blank():
     def h(val):
         m = Message()
@@ -282,15 +294,41 @@ def test_asserted_agent_id_extracts_strips_and_floors_blank():
         return m
     assert _asserted_agent_id(h("alice")) == "alice"
     assert _asserted_agent_id(h("  bob  ")) == "bob"     # surrounding whitespace stripped
-    assert _asserted_agent_id(h("   ")) is None          # blank/whitespace → None (never anon)
+    assert _asserted_agent_id(h("   ")) is None          # blank/whitespace → None
     assert _asserted_agent_id(h("")) is None             # empty → None
     assert _asserted_agent_id(h(None)) is None           # absent → None
 
 
-# ── AUTH-OPTIONAL: token-mode regression (prove byte-identical + carrier no-leak) ──
+def test_session_id_extracts_strips_and_floors_blank():
+    def h(val):
+        m = Message()
+        if val is not None:
+            m[_SESSION_ID_HEADER] = val
+        return m
+    assert _session_id(h("sess-1")) == "sess-1"
+    assert _session_id(h("  s  ")) == "s"
+    assert _session_id(h("   ")) is None
+    assert _session_id(h(None)) is None
+
+
+def test_resolve_identity_precedence():
+    # X-Hive-Agent-Id → echoed Mcp-Session-Id → "local"; explicit header wins over the session.
+    def h(**vals):
+        m = Message()
+        for k, v in vals.items():
+            m[k] = v
+        return m
+    assert _resolve_identity(h()) == "local"                              # neither → the floor
+    assert _resolve_identity(h(**{_SESSION_ID_HEADER: "S"})) == "S"       # session id alone
+    assert _resolve_identity(h(**{_AGENT_ID_HEADER: "alice"})) == "alice" # explicit alone
+    assert _resolve_identity(h(**{_AGENT_ID_HEADER: "alice",              # both → explicit wins
+                                  _SESSION_ID_HEADER: "S"})) == "alice"
+    assert _resolve_identity(h(**{_SESSION_ID_HEADER: "   "})) == "local" # blank session floored
+
+
 def _open_spy(verify_calls):
-    """A SpyServer + a verify that RECORDS each call (so open mode can assert it never
-    runs). Returns (spy, verify)."""
+    """A SpyServer + a verify that RECORDS each call (so the loopback door can assert it
+    NEVER runs). Returns (spy, verify)."""
     spy = _SpyServer()
 
     def verify(tok):
@@ -299,105 +337,82 @@ def _open_spy(verify_calls):
     return spy, verify
 
 
-def test_token_mode_default_ignores_agent_id_header():
-    # DEFAULT (auth_mode omitted) is token mode: an X-Hive-Agent-Id header with NO Bearer
-    # still 401s — open's carrier must NOT leak into token mode.
-    spy = _SpyServer()
-    url, stop = _serve(spy, lambda tok: {"good-tok": "alice-laptop"}.get(tok))
-    try:
-        status, body, _ = _request(url, body=_RPC,
-                                   headers={_AGENT_ID_HEADER: "mallory"})
-        assert status == 401
-        assert json.loads(body)["error"] == "unauthorized"
-        assert spy.calls == []                           # the header bought no access
-    finally:
-        stop()
+# ── the tunnel door (auth_required=True, the default): the bearer GATES only ─────
+def test_tunnel_door_identity_is_session_not_token(live):
+    # the model's core: the token GATES the door, it is NEVER the identity — identity is
+    # per-session (X-Hive-Agent-Id, else the echoed Mcp-Session-Id), the SAME as loopback.
+    url, spy = live
+    _request(url, body=_RPC, token="good-tok", headers={_AGENT_ID_HEADER: "alice"})
+    (_, ident), = spy.calls
+    assert ident.agent_id == "alice"                     # NOT "alice-laptop" (the token label)
+    spy.calls.clear()
+    _request(url, body=_RPC, token="good-tok", headers={_SESSION_ID_HEADER: "S-123"})
+    (_, ident), = spy.calls
+    assert ident.agent_id == "S-123"                     # the echoed session, not the token label
 
 
-def test_token_mode_explicit_still_verifies_bearer():
-    # auth_mode="token" explicitly: a valid Bearer → the verified label; the header is ignored.
-    spy = _SpyServer()
-    url, stop = _serve(spy, lambda tok: {"good-tok": "alice-laptop"}.get(tok),
-                       auth_mode="token")
-    try:
-        status, _, _ = _request(url, body=_RPC, token="good-tok",
-                                headers={_AGENT_ID_HEADER: "mallory"})
-        assert status == 200
-        (_, identity), = spy.calls
-        assert identity.agent_id == "alice-laptop"       # the Bearer label, NOT the header
-    finally:
-        stop()
+def test_tunnel_door_bad_token_is_401_even_with_agent_id(live):
+    # the gate is independent of identity: a bad token still 401s WITH an X-Hive-Agent-Id.
+    url, spy = live
+    status, body, _ = _request(url, body=_RPC, token="bad",
+                               headers={_AGENT_ID_HEADER: "alice"})
+    assert status == 401 and json.loads(body)["error"] == "unauthorized"
+    assert spy.calls == []
 
 
-# ── AUTH-OPTIONAL: open mode (tokenless, header-asserted identity) ──────────────
-def test_open_mode_header_identity_runs_handler_with_that_agent_id():
+# ── the loopback door (auth_required=False): tokenless, identity per-session ─────
+def _loopback(spy, verify, **belts):
+    return _serve(spy, verify, auth_required=False, **belts)
+
+
+def test_loopback_door_serves_without_token():
+    # tokenless: NO Bearer, NO header → 200, identity floors to "local" (NOT a 400),
+    # and verify is NEVER consulted.
     verify_calls: list = []
     spy, verify = _open_spy(verify_calls)
-    url, stop = _serve(spy, verify, auth_mode="open")
+    url, stop = _loopback(spy, verify)
     try:
-        status, body, _ = _request(url, body=_RPC,
-                                   headers={_AGENT_ID_HEADER: "alice"})   # NO Bearer
+        status, body, _ = _request(url, body=_RPC)
         assert status == 200
-        env = json.loads(body)
-        assert env["result"]["ok"] is True
-        (_, identity), = spy.calls
-        assert identity.agent_id == "alice"              # attribution is the asserted header
-        assert identity.tenant_id == "default"           # tenant still from the server
-        assert verify_calls == []                        # verify NEVER consulted in open mode
+        assert json.loads(body)["result"]["ok"] is True
+        (_, ident), = spy.calls
+        assert ident.agent_id == "local"
+        assert verify_calls == []
     finally:
         stop()
 
 
-def test_open_mode_missing_header_is_400_never_anonymous():
-    # open ⇒ UNVERIFIED, not ANONYMOUS: no header (and no Bearer) → 400, handler untouched.
+def test_loopback_door_uses_asserted_header_when_present():
     spy = _SpyServer()
-    url, stop = _serve(spy, lambda tok: "x", auth_mode="open")
+    url, stop = _loopback(spy, lambda tok: "x")
     try:
-        status, body, _ = _request(url, body=_RPC)       # no header at all
-        assert status == 400
-        assert json.loads(body)["error"] == "missing_agent_id"
-        assert spy.calls == []
+        _request(url, body=_RPC, headers={_AGENT_ID_HEADER: "alice"})
+        (_, ident), = spy.calls
+        assert ident.agent_id == "alice"
     finally:
         stop()
 
 
-def test_open_mode_blank_header_is_400():
-    # a whitespace-only header trips the `.strip()` floor → 400 (not a blank-named identity).
-    spy = _SpyServer()
-    url, stop = _serve(spy, lambda tok: "x", auth_mode="open")
-    try:
-        status, body, _ = _request(url, body=_RPC,
-                                   headers={_AGENT_ID_HEADER: "   "})
-        assert status == 400
-        assert json.loads(body)["error"] == "missing_agent_id"
-        assert spy.calls == []
-    finally:
-        stop()
-
-
-def test_open_mode_ignores_bearer_identity_comes_from_header():
-    # a forged-looking Bearer is IGNORED in open mode; identity is the header and verify
-    # is never called (the SQLite token store stays dark).
+def test_loopback_door_ignores_bearer():
+    # a stray Bearer is IGNORED on the loopback door: identity is the header, verify is dark.
     verify_calls: list = []
     spy, verify = _open_spy(verify_calls)
-    url, stop = _serve(spy, verify, auth_mode="open")
+    url, stop = _loopback(spy, verify)
     try:
         status, _, _ = _request(url, body=_RPC, token="good-tok",
                                 headers={_AGENT_ID_HEADER: "carol"})
         assert status == 200
-        (_, identity), = spy.calls
-        assert identity.agent_id == "carol"              # the header, not the Bearer label
-        assert verify_calls == []                        # no verify call in open mode
+        (_, ident), = spy.calls
+        assert ident.agent_id == "carol"                 # the header, not the Bearer label
+        assert verify_calls == []
     finally:
         stop()
 
 
-def test_open_mode_limiter_keys_on_asserted_label():
-    # parity with token-mode D3: the limiter keys on the asserted label; two past the
-    # bucket from the SAME header → 429 (handle not called on the throttled request).
+def test_loopback_door_limiter_keys_on_label():
     spy = _SpyServer()
     limiter = TokenBucketLimiter(limit=2, window_s=3600.0)
-    url, stop = _serve(spy, lambda tok: None, auth_mode="open", limiter=limiter)
+    url, stop = _loopback(spy, lambda tok: None, limiter=limiter)
     try:
         for _ in range(2):
             status, _, _ = _request(url, body=_RPC, headers={_AGENT_ID_HEADER: "alice"})
@@ -406,22 +421,62 @@ def test_open_mode_limiter_keys_on_asserted_label():
         assert status == 429
         assert json.loads(body)["error"] == "rate_limited"
         assert int(hdrs.get("Retry-After")) >= 1
-        assert len(spy.calls) == 2                        # the 429'd request never reached handle
-        # a different asserted identity has its own bucket
+        assert len(spy.calls) == 2
         status, _, _ = _request(url, body=_RPC, headers={_AGENT_ID_HEADER: "bob"})
-        assert status == 200 and len(spy.calls) == 3
+        assert status == 200 and len(spy.calls) == 3      # a different identity, its own bucket
     finally:
         stop()
 
 
-def test_open_mode_handler_exception_is_jsonrpc_error_in_200():
-    # INV-3 holds in open mode too: the mode branch is BEFORE handle, so a raising
-    # handler still yields a JSON-RPC -32603 inside a 200.
+def test_loopback_door_handler_exception_is_jsonrpc_error_in_200():
+    # INV-3 holds on the loopback door too: a raising handler → JSON-RPC -32603 inside a 200.
     spy = _SpyServer(raise_on="tools/call")
-    url, stop = _serve(spy, lambda tok: None, auth_mode="open")
+    url, stop = _loopback(spy, lambda tok: None)
     try:
         status, body, _ = _request(url, body=_RPC, headers={_AGENT_ID_HEADER: "alice"})
         assert status == 200
         assert json.loads(body)["error"]["code"] == -32603
+    finally:
+        stop()
+
+
+# ── Mcp-Session-Id: server-minted at initialize, echoed back as the identity ─────
+_INIT = json.dumps({"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}})
+
+
+def test_initialize_mints_session_id():
+    # an initialize response carries a fresh Mcp-Session-Id; two initializes mint DISTINCT ids.
+    spy = _SpyServer()
+    url, stop = _loopback(spy, lambda tok: None)
+    try:
+        _, _, h1 = _request(url, body=_INIT)
+        _, _, h2 = _request(url, body=_INIT)
+        s1, s2 = h1.get(_SESSION_ID_HEADER), h2.get(_SESSION_ID_HEADER)
+        assert s1 and s2 and s1 != s2                     # fresh + distinct per initialize
+    finally:
+        stop()
+
+
+def test_non_initialize_does_not_mint_session_id(live):
+    # only initialize mints — a tools/call response carries no Mcp-Session-Id.
+    url, _ = live
+    _, _, hdrs = _request(url, body=_RPC, token="good-tok")
+    assert hdrs.get(_SESSION_ID_HEADER) is None
+
+
+def test_session_id_resolves_as_identity_when_no_header():
+    # a tool call echoing Mcp-Session-Id (no X-Hive-Agent-Id) → that session is the identity;
+    # X-Hive-Agent-Id wins when BOTH are present.
+    spy = _SpyServer()
+    url, stop = _loopback(spy, lambda tok: None)
+    try:
+        _request(url, body=_RPC, headers={_SESSION_ID_HEADER: "sess-9"})
+        (_, ident), = spy.calls
+        assert ident.agent_id == "sess-9"
+        spy.calls.clear()
+        _request(url, body=_RPC, headers={_SESSION_ID_HEADER: "sess-9",
+                                          _AGENT_ID_HEADER: "alice"})
+        (_, ident), = spy.calls
+        assert ident.agent_id == "alice"                 # explicit header wins over the session
     finally:
         stop()

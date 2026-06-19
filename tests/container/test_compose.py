@@ -8,11 +8,11 @@ are dead operator knobs); (2) `docker compose config` validity, skip-guarded on 
 
 Part A adds the tunnel contract: the `ngrok` sidecar is PROFILE-GATED
 (a plain `up` starts no tunnel — AC2), publishes no host port (egress only), reaches the
-daemon over the COMPOSE network (`hive-server:8765`, never a host address), only tunnels
-a HEALTHY daemon, and lives in its own image — the hive image bakes in no tunnel binary
-(D1/AC3, the hermetically-offline invariant). The deliberate mutation (drop
-`profiles: ["tunnel"]` → a default `up` would expose the daemon) reds
-`test_tunnel_is_profile_gated`.
+daemon over the COMPOSE network at the TOKEN-REQUIRED tunnel door (`hive-server:8766`, never
+the tokenless loopback door `8765` and never a host address), only tunnels a HEALTHY daemon,
+and lives in its own image — the hive image bakes in no tunnel binary (D1/AC3, the
+hermetically-offline invariant). The deliberate mutation (point ngrok back at 8765 → a public
+unauthenticated endpoint) reds `test_tunnel_uses_compose_network_upstream`.
 """
 from __future__ import annotations
 
@@ -153,10 +153,14 @@ def test_tunnel_depends_on_healthy_daemon():
 
 
 def test_tunnel_uses_compose_network_upstream():
-    # the sidecar reaches the daemon over the COMPOSE network — zero host-exposure change
-    # (D5: the host publish stays loopback-only; no LAN bind, no host.docker.internal).
+    # the sidecar reaches the daemon over the COMPOSE network, forwarding to the TOKEN-REQUIRED
+    # tunnel door (8766), NEVER the tokenless loopback door (8765) — that is the exact security
+    # contract (ngrok-to-8765 would expose an unauthenticated public endpoint). The tunnel door
+    # is compose-internal: it is never host-published.
     blk = _service_block("ngrok")
-    assert "hive-server:8765" in blk
+    assert "hive-server:8766" in blk
+    assert "hive-server:8765" not in blk                 # ngrok must NOT reach the tokenless door
+    assert "8766:8766" not in _text()                    # the tunnel door is never host-published
     assert "127.0.0.1" not in blk and "host.docker.internal" not in blk
 
 

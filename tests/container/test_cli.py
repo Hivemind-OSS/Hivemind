@@ -116,46 +116,15 @@ def test_up_tunnel_sets_profile():
     assert seq_in(fake.calls[0], "up", "-d", "--build")
 
 
-# ── AUTH-OPTIONAL: --tunnel REFUSES open mode (the enforced public-exposure gate) ──
-def test_up_tunnel_refuses_open_mode_even_with_secrets(capsys):
-    # a public, UNAUTHENTICATED endpoint is a memory-poisoning hole: --tunnel + open
-    # → EX_CONFIG and NO child spawned, even when the NGROK secrets ARE present (the
-    # refusal is not just a missing-secret consequence).
+# ── MODE-COLLAPSE: --tunnel no longer refuses any auth posture (the door is gated) ──
+def test_up_tunnel_proceeds_regardless_of_stale_auth_env():
+    # the --tunnel-refuses-open rail is GONE: the tunnel door is structurally token-gated, so
+    # even a leftover HIVE_AUTH__MODE in the env does not block --tunnel (secrets present).
     fake = FakeRun(script=list(_HEALTHY))
     env = dict(ENV, HIVE_AUTH__MODE="open", NGROK_AUTHTOKEN="t", NGROK_DOMAIN="brain.ngrok.app")
     rc = cli.main(["up", "--tunnel"], run=fake, out=io.StringIO(), env=env)
-    assert rc == cli.EX_CONFIG
-    assert fake.calls == []                              # no child — fail-fast before compose
-    assert "open" in capsys.readouterr().err.lower()     # the operator is told why
-
-
-def test_up_tunnel_token_mode_proceeds(capsys):
-    # regression: the open-mode guard does NOT fire in token mode (secrets present).
-    fake = FakeRun(script=list(_HEALTHY))
-    env = dict(ENV, HIVE_AUTH__MODE="token", NGROK_AUTHTOKEN="t", NGROK_DOMAIN="brain.ngrok.app")
-    rc = cli.main(["up", "--tunnel"], run=fake, out=io.StringIO(), env=env)
     assert rc == cli.EX_OK
     assert seq_in(fake.calls[0], "--profile", "tunnel")
-
-
-def test_up_tunnel_no_auth_mode_proceeds():
-    # no HIVE_AUTH__MODE ⇒ default token ⇒ --tunnel proceeds (secrets present).
-    fake = FakeRun(script=list(_HEALTHY))
-    env = dict(ENV, NGROK_AUTHTOKEN="t", NGROK_DOMAIN="brain.ngrok.app")
-    rc = cli.main(["up", "--tunnel"], run=fake, out=io.StringIO(), env=env)
-    assert rc == cli.EX_OK
-    assert seq_in(fake.calls[0], "--profile", "tunnel")
-
-
-def test_up_open_mode_loopback_is_allowed():
-    # the guard is --tunnel-ONLY: a plain `hive up` in open mode brings the loopback daemon
-    # up normally (loopback open is the intended deployment).
-    fake = FakeRun(script=list(_HEALTHY))
-    env = dict(ENV, HIVE_AUTH__MODE="open")
-    rc = cli.main(["up"], run=fake, out=io.StringIO(), env=env)
-    assert rc == cli.EX_OK
-    assert seq_in(fake.calls[0], "up", "-d", "--build", "hive-server")
-    assert not any("--profile" in c or "tunnel" in c for c in fake.calls)
 
 
 # ── .env folded UNDER the shell env: ONE source for the CLI gate and compose ─────
@@ -336,12 +305,17 @@ def test_connect_renders_mcp_add_line(capsys):
     assert "hive_init" not in text + err               # M11/M12: no handshake here
 
 
-def test_connect_without_domain_prints_loopback_line(capsys):
+def test_connect_without_domain_prints_tokenless_loopback_line(capsys):
     out = io.StringIO()
     rc = cli.main(["connect"], run=FakeRun(), out=out, env={})
     assert rc == cli.EX_OK
-    assert "http://localhost:8765/mcp" in out.getvalue()
-    assert "NGROK_DOMAIN" in capsys.readouterr().err   # says why it fell back to loopback
+    text = out.getvalue()
+    assert "http://localhost:8765/mcp" in text
+    assert "Authorization: Bearer" not in text         # the loopback door is tokenless
+    assert "X-Hive-Agent-Id" not in text               # no baked id on the registration line
+    err = capsys.readouterr().err
+    assert "NGROK_DOMAIN" in err                        # says why it fell back to loopback
+    assert "X-Hive-Agent-Id" in err                     # the per-client explicit-id NOTE is shown
 
 
 def test_default_run_forwards_stdin_input():

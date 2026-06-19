@@ -153,15 +153,9 @@ def _up(args, *, run: Run, out: TextIO, env: Mapping[str, str], ask) -> int:
             print(f"hive: --tunnel requires {' + '.join(missing)} "
                   "(set in .env — see .env.example)", file=sys.stderr)
             return EX_CONFIG
-        # public exposure of an UNAUTHENTICATED endpoint is a memory-poisoning hole: refuse
-        # --tunnel in open mode even when the secrets ARE present. Reads the SAME `env`
-        # (.env-folded) compose interpolates, so the CLI and the daemon agree on one source.
-        if (env.get("HIVE_AUTH__MODE") or "").strip().lower() == "open":
-            print("hive: refusing --tunnel with HIVE_AUTH__MODE=open — a public, "
-                  "UNAUTHENTICATED endpoint is a memory-poisoning hole. Use token mode "
-                  "for any tunneled deployment (unset HIVE_AUTH__MODE or set it to 'token').",
-                  file=sys.stderr)
-            return EX_CONFIG
+        # The tunnel door is STRUCTURALLY token-gated (the daemon binds the tunnel listener
+        # with auth_required=True; ngrok forwards only to it), so there is no posture to
+        # refuse here — the public endpoint cannot be unauthenticated by construction.
         profile = TUNNEL_PROFILE
     # tunnel up is unnamed (starts the profile's sidecar too); default names the
     # daemon only — both are `up -d`, never an ephemeral cold-start `run --rm`.
@@ -244,17 +238,32 @@ def _tokens(args, *, run: Run, out: TextIO, env: Mapping[str, str], ask) -> int:
 
 def _connect(args, *, run: Run, out: TextIO, env: Mapping[str, str], ask) -> int:
     """Print the teammate's transport-registration one-liner. Transport ONLY:
-    per-repo onboarding is agent-driven over MCP (the rules block in hive_health)."""
+    per-repo onboarding is agent-driven over MCP (the rules block in hive_health).
+
+    Identity is per-agent-SESSION — the server-minted ``Mcp-Session-Id`` any conforming client
+    echoes, or an explicit ``X-Hive-Agent-Id`` for readable provenance — so ``connect`` bakes no
+    static id. The remote (tunnel) door is token-gated; the bearer only AUTHENTICATES, it is
+    never the identity. The local (loopback) door is tokenless."""
     domain = (env.get("NGROK_DOMAIN") or "").strip()
     if domain:
-        url = f"https://{domain}/mcp"
+        # remote: the token-required tunnel door. The Bearer AUTHENTICATES; identity is still
+        # the agent's per-session Mcp-Session-Id (or an explicit X-Hive-Agent-Id), same as local.
+        print(f'claude mcp add --transport http hive https://{domain}/mcp '
+              '--header "Authorization: Bearer ${HIVE_TOKEN}"', file=out)
+        print(f"hive: the teammate exports HIVE_TOKEN first; {_SEAT_HINT}", file=sys.stderr)
     else:
-        url = f"http://localhost:{HTTP_PORT}/mcp"
-        print("hive: NGROK_DOMAIN not set — printed the local-loopback line "
-              "(`hive up --tunnel` + NGROK_DOMAIN gives the public one)", file=sys.stderr)
-    print(f'claude mcp add --transport http hive {url} '
-          '--header "Authorization: Bearer ${HIVE_TOKEN}"', file=out)
-    print(f"hive: the teammate exports HIVE_TOKEN first; {_SEAT_HINT}", file=sys.stderr)
+        # local: the tokenless loopback door. No Bearer, no baked id — per-session identity is
+        # automatic via the server-minted Mcp-Session-Id a conforming client echoes.
+        print(f'claude mcp add --transport http hive http://localhost:{HTTP_PORT}/mcp',
+              file=out)
+        print("hive: NGROK_DOMAIN not set — printed the tokenless local-loopback line "
+              "(`hive up --tunnel` + NGROK_DOMAIN gives the token-gated public one).",
+              file=sys.stderr)
+        print("hive: identity is per-agent-session (the server-minted Mcp-Session-Id a "
+              "conforming client echoes). For a readable/controlled id set a per-session "
+              "X-Hive-Agent-Id — Claude Code's headersHelper (fresh UUID per session), a "
+              "harness/CI header per agent, ${env:VAR} on Cursor/Windsurf/Cline, ${input:..} "
+              "on VS Code, or env_http_headers on Codex.", file=sys.stderr)
     return EX_OK
 
 

@@ -32,6 +32,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `autonomy` config group (`enabled` + demand / TTL / solo knobs); like all
   config it is resolved at boot — there is no live reload (tune via `.env` then `hive up`).
 ### Changed
+- Auth is now a property of the **listening socket**, not a config mode: the daemon binds a
+  tokenless **loopback** door (host-published `127.0.0.1:8765`) and a token-required **tunnel**
+  door (compose-internal `8766`, ngrok-forwarded). `HIVE_AUTH__MODE` (the `token|open` switch)
+  and the `--tunnel`-refuses-open CLI rail are removed — the tunnel door is structurally
+  token-gated. Identity is **per-agent-session**, resolved uniformly on both doors
+  (`X-Hive-Agent-Id` → server-minted `Mcp-Session-Id` → `local`); the token authenticates the
+  tunnel door but is never the identity, so a fleet of K agents behaves identically whether 1 or
+  N engineers run it. Local agents connect tokenless; remote teammates use a per-seat token.
 - Convergence KPI window narrowed 14d → 7d (`trends.WINDOW_DAYS`): current vs previous
   one-week windows over the warm store.
 - Tool surface is now exactly 4 verbs (`hive_write` / `hive_capture` / `hive_recall` /

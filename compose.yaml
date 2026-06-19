@@ -16,12 +16,13 @@ services:
       TRANSFORMERS_OFFLINE: "1"
     volumes:
       - hive-data:/data
-    # The warm daemon (PID 1) serves MCP over HTTP. The host mapping is LOOPBACK-ONLY: the
-    # daemon binds 0.0.0.0 INSIDE the container (so the Docker port map can reach it), but the
-    # host side is 127.0.0.1 only — never exposed beyond host-loopback (NOT "exposed to the
-    # network"). Remote use goes through an SSH tunnel or a reverse proxy; the
-    # per-device bearer token is the identity + revocation regardless. No stdin_open/tty — an
-    # HTTP service does not attach to stdin (the superseded stdio transport needed it).
+    # The warm daemon (PID 1) serves MCP over HTTP on TWO doors (auth is a property of the
+    # listening socket): a tokenless LOOPBACK door on 8765 and a token-required TUNNEL door on
+    # 8766. Only 8765 is host-published, and LOOPBACK-ONLY: the daemon binds 0.0.0.0 INSIDE the
+    # container (so the Docker port map can reach it), but the host side is 127.0.0.1 only. The
+    # tunnel door (8766) is NEVER host-published — it is reachable only over the compose network
+    # (the ngrok sidecar below), so a remote caller is ALWAYS bearer-gated. No stdin_open/tty —
+    # an HTTP service does not attach to stdin (the superseded stdio transport needed it).
     ports:
       - "127.0.0.1:8765:8765"
     restart: unless-stopped
@@ -33,11 +34,12 @@ services:
       start_period: 120s
   # ---- OPT-IN PUBLIC TUNNEL (profile: tunnel) — Part A ----------
   # Outbound, NAT-traversing HTTPS tunnel to the daemon — reachable from any OS/network.
-  # Profile-gated: a plain `docker compose up` does NOT start this (AC2). Reaches the
-  # daemon over the COMPOSE NETWORK (hive-server:8765), so NO host port is published here
-  # and the daemon needs no LAN bind (D5). ngrok lives in its own image — the hive image
-  # stays hermetically offline (D1/AC3). TLS terminates at the ngrok edge, so the bearer
-  # token is never cleartext on an untrusted hop.
+  # Profile-gated: a plain `docker compose up` does NOT start this (AC2). Forwards over the
+  # COMPOSE NETWORK to the TOKEN-REQUIRED tunnel door (hive-server:8766), NEVER the tokenless
+  # loopback door (8765), so the public endpoint is always bearer-gated. No host port is
+  # published here and the daemon needs no LAN bind (D5). ngrok lives in its own image — the
+  # hive image stays hermetically offline (D1/AC3). TLS terminates at the ngrok edge, so the
+  # bearer token is never cleartext on an untrusted hop.
   ngrok:
     image: ngrok/ngrok:3
     profiles: ["tunnel"]
@@ -46,8 +48,9 @@ services:
     environment:
       NGROK_AUTHTOKEN: "${NGROK_AUTHTOKEN:-}"
     # `--url` pins the account's (free) static domain so the teammate URL is STABLE across
-    # restarts; ngrok v3 flag. Forwards to the daemon's in-container port over the compose net.
-    command: ["http", "hive-server:8765", "--url", "${NGROK_DOMAIN:-}"]
+    # restarts; ngrok v3 flag. Forwards to the daemon's TOKEN-REQUIRED tunnel door (8766) over
+    # the compose net — never the tokenless loopback door (8765).
+    command: ["http", "hive-server:8766", "--url", "${NGROK_DOMAIN:-}"]
     depends_on:
       hive-server: { condition: service_healthy }   # only tunnel a daemon that's actually warm
     restart: unless-stopped

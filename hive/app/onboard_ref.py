@@ -94,10 +94,14 @@ ONBOARDING_REFERENCE = (
     ".cursor/rules / .windsurfrules / .clinerules — first existing wins, else create CLAUDE.md); "
     "on later sessions check the file first and skip if the block is already present.\n\n"
     + ONBOARDING_RULES_BLOCK + "\n\n"
-    "MCP registration is operator-owned config; identity is per seat — HTTP clients mint one token "
-    "per seat (`hive token <seat>`), and a fleet sharing one token cannot promote its own "
-    "captures. On claude-code ONLY, also merge these optional lifecycle hooks (recall + capture "
-    "nudges) into .claude/settings.json:\n\n" + CLAUDE_CODE_HOOKS
+    "MCP registration is operator-owned config. Identity is per-agent-SESSION, resolved the "
+    "SAME way on both doors: the server-minted `Mcp-Session-Id` any conforming client echoes, "
+    "or an explicit `X-Hive-Agent-Id` header for readable provenance. A fleet of K agents "
+    "promotes identically whether 1 or N engineers run it (the engineer/token count never "
+    "enters promotion). The bearer token only AUTHENTICATES the remote (tunnel) door — it is "
+    "never the identity; the local loopback door is tokenless. On claude-code ONLY, also merge "
+    "these optional lifecycle hooks (recall + capture nudges) into .claude/settings.json:\n\n"
+    + CLAUDE_CODE_HOOKS
 )
 
 # The server-level usage contract delivered via the MCP ``initialize`` result's ``instructions``
@@ -129,7 +133,9 @@ SERVER_INSTRUCTIONS = (
     "few memories that truly can't wait; let everything else ride capture->demand. Correct an "
     "existing memory with hive_write(replaces=<episode_id>).\n\n"
     + CAPTURE_TAXONOMY + "\n\n"
-    "Your bearer token IS your seat identity — never share it across agents.\n"
+    "Identity is per-agent-session — the server-minted Mcp-Session-Id your client echoes, or an "
+    "explicit X-Hive-Agent-Id header; the bearer token only authenticates the remote door, it is "
+    "never the identity. A fleet of K agents promotes identically whether 1 or N engineers run it.\n"
     "Optional (claude-code only) active nudges — merge into .claude/settings.json: "
     + CLAUDE_CODE_HOOKS
 )

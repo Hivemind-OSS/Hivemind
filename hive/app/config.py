@@ -147,21 +147,10 @@ class ObservabilityConfig:
     log_file: Optional[str] = None
 
 
-@dataclass(frozen=True)
-class AuthConfig:
-    """HTTP transport auth posture. ``token`` (default) = per-device Bearer verification
-    (INV-1 401 gate). ``open`` = trusted-loopback: token verification is SKIPPED and the
-    caller's identity is self-asserted via the ``X-Hive-Agent-Id`` header (Sybil-trusting;
-    for an honest internal fleet only — ``hive up --tunnel`` refuses it)."""
-    mode: str = "token"
-
-    def __post_init__(self) -> None:
-        if self.mode not in ("token", "open"):
-            raise ValueError(
-                f"auth.mode must be 'token' or 'open' (got {self.mode!r})")
-
-
 # ── the root ──────────────────────────────────────────────────────────────────
+# Auth is NOT a config group: it is a property of the listening socket (a tokenless
+# loopback door + a token-required tunnel door, bound by the entrypoint), so there is no
+# HIVE_AUTH__MODE switch to resolve here.
 _GROUP_TYPES: dict[str, type] = {
     "runtime": RuntimeConfig,
     "geometry": GeometryConfig,
@@ -170,12 +159,11 @@ _GROUP_TYPES: dict[str, type] = {
     "autonomy": AutonomyConfig,
     "retention": RetentionConfig,
     "obs": ObservabilityConfig,
-    "auth": AuthConfig,
 }
 # field-groups constructed (and thus validated) BEFORE runtime, so a field-level error
 # (e.g. recall.H_frac_max) surfaces ahead of the db_path-required check.
 _FIELD_GROUP_ORDER = ("geometry", "embedding", "recall",
-                      "autonomy", "retention", "obs", "auth")
+                      "autonomy", "retention", "obs")
 
 
 @dataclass(frozen=True)
@@ -187,7 +175,6 @@ class Config:
     autonomy: AutonomyConfig
     retention: RetentionConfig
     obs: ObservabilityConfig
-    auth: AuthConfig
 
     @property
     def db_path(self) -> str:
