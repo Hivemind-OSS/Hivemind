@@ -86,6 +86,17 @@ def test_isolation_frac_is_cut():
         Config.load(utility={"isolation_frac": 0.05})
 
 
+def test_autonomy_solo_knobs_removed():
+    # MODE-COLLAPSE: solo_mode + solo_min_span_days are deleted (promotion is one
+    # identity-diversity rule for solo and team). Each is now an unknown override field.
+    with pytest.raises(ValueError, match=r"solo_mode|unknown config override"):
+        Config.load(autonomy={"solo_mode": True})
+    with pytest.raises(ValueError, match=r"solo_min_span_days|unknown config override"):
+        Config.load(autonomy={"solo_min_span_days": 2})
+    # the default AutonomyConfig still validates
+    assert Config.load(db_path=":memory:").autonomy.enabled is True
+
+
 # ── auth group is removed (MODE-COLLAPSE): auth is a property of the listener ────
 def test_auth_group_is_removed():
     # the HIVE_AUTH__MODE token|open switch is deleted — auth is now a property of the

@@ -25,8 +25,10 @@ boot-time `.env`. They add no in-system machinery.
   `/hive-tune` maps a symptom to one knob, applies it, and **confirms the KPI moved**;
   `/hive-curate` is the parallel *content* lever (act on gaps, resolve contradictions).
 - **Identity diversity is the fuel.** Promotion out of quarantine requires demand from ≥1
-  identity other than the writer. One token per seat is therefore a correctness invariant,
-  not just hygiene — a fleet sharing one token structurally cannot promote its own captures.
+  identity other than the writer. Identity is **per-agent-session** (the server-minted
+  `Mcp-Session-Id` a client echoes, or an explicit `X-Hive-Agent-Id`), resolved by the
+  transport — never the token. So distinct agents promote each other's captures automatically,
+  whether 1 or N engineers run them; the per-seat token is remote-auth hygiene, not the fuel.
 - **"Value for a team" = convergence**, measured: `confident_rate` rising,
   `demand_entropy` falling, `dead_capture_ratio` bounded, promotions flowing, and the gap
   report shrinking as the team writes to it.
@@ -42,9 +44,9 @@ Guardrails · Done when**.
 - **Purpose:** Bring a healthy daemon up and choose the team's starting profile.
 - **Trigger:** "set up the hive", new host, fresh clone.
 - **Levers:** `hive up` (or `hive up --tunnel`); `.env` seeded from `.env.example`;
-  guarantee knobs (`HIVE_RECALL__H_FRAC_MAX`, `HIVE_AUTONOMY__ENABLED`); team shape
-  (`HIVE_AUTONOMY__SOLO_MODE` for a single-identity dev).
-- **Inputs:** team size/identity count; whether teammates are remote (→ `--tunnel` +
+  guarantee knobs (`HIVE_RECALL__H_FRAC_MAX`, `HIVE_AUTONOMY__ENABLED`). No team-shape knob —
+  solo and team share one promotion rule (identity is per-agent-session, automatic).
+- **Inputs:** team size; whether teammates are remote (→ `--tunnel` +
   `NGROK_AUTHTOKEN`/`NGROK_DOMAIN`).
 - **Outputs:** a daemon that passed the bounded health-wait; the `hive connect` line.
 - **Guardrails:** never expose `0.0.0.0`; `--tunnel` fail-fasts on missing secrets; if boot
@@ -60,8 +62,9 @@ Guardrails · Done when**.
   block carried in the `hive_health` tool description.
 - **Inputs:** one seat label per agent (e.g. `alice-laptop`).
 - **Outputs:** a registered seat; a verified `hive_write`→`hive_recall` round-trip.
-- **Guardrails:** **one token per seat, never shared** (the promotion-integrity invariant);
-  hand tokens over via a secret manager; tokens are never echoed except once on mint.
+- **Guardrails:** **one token per remote seat, never shared** (remote-auth hygiene — identity
+  is per-agent-session, so the token is no longer the promotion-integrity lever); hand tokens
+  over via a secret manager; tokens are never echoed except once on mint.
 - **Done when:** the seat round-trips, and `hive tokens` shows exactly the intended labels.
 
 ### `/hive-observe` — convergence KPI dashboard (sensor, read-only)
@@ -73,7 +76,7 @@ Guardrails · Done when**.
 - **Inputs:** none (reads the warm store).
 - **Reads:** `confident_rate↑`, `demand_entropy↓`, `dead_capture_ratio` bounded,
   `n_promotions>0`, `median_days_to_promotion`, `est_tokens_served`; `trust_counts`,
-  `n_misses_7d`; the `solo_hint` (single-seat traffic wasting demand).
+  `n_misses_7d`; the `solo_hint` (single-identity traffic wasting demand → enroll distinct agents).
 - **Outputs:** a ranked symptom list + a converging/stalled verdict → feeds `/hive-tune`
   and `/hive-curate`.
 - **Guardrails:** read-only — never writes `.env` or memory.
@@ -129,7 +132,7 @@ Guardrails · Done when**.
 | KPI symptom | Likely cause | Knob move (`.env`, then `hive up`) |
 |---|---|---|
 | `n_promotions ≈ 0`, quarantine piling up | demand too strict for a small/sparse team | ↓ `AUTONOMY__DEMAND_M`, ↑ `AUTONOMY__DEMAND_WINDOW_DAYS`, ↓ `AUTONOMY__DEMAND_TAU` |
-| Promotions ≈ 0 **and** single identity (`solo_hint` set) | anti-gaming clause unsatisfiable (one writer) | `AUTONOMY__SOLO_MODE=true` + `AUTONOMY__SOLO_MIN_SPAN_DAYS` |
+| Promotions ≈ 0 **and** single identity (`solo_hint` set) | agents share one identity (anti-gaming clause unsatisfiable) | register each agent via `hive connect` so every session carries a distinct `X-Hive-Agent-Id` (not a knob) |
 | `demand_entropy` high & flat | demand is diffuse noise, not fillable gaps | hand to `/hive-curate`; do **not** loosen promotion |
 | `dead_capture_ratio` rising | fleet writing junk, or TTL too short | review capture discipline; ↑ `AUTONOMY__QUARANTINE_TTL_DAYS` cautiously |
 | `confident_rate` low despite stock | recall gate too tight | revisit `RECALL__RECALL_TOP_N`, `RECALL__SOFTMAX_BETA`, `RECALL__TAU_TOP1` — **never** weaken `RECALL__H_FRAC_MAX` |

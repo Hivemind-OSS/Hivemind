@@ -53,9 +53,10 @@ onboarding is self-serve: the `hive_health` tool description carries the rules b
 connected agent writes it into its primary rules file (CLAUDE.md / AGENTS.md / …) and skips
 re-touch when the marker is already present. No skill, no handshake call, no manual per-repo work.
 
-**Solo (one dev, one identity)?** Set `HIVE_AUTONOMY__SOLO_MODE=true` on the server —
-demand-promotion swaps its identity-diversity clause for an elapsed-span rule. Human
-`hive_write(approved_by=…)` stays the only path to `established` trust.
+**Solo (one dev)?** Nothing to set — solo is automatic. A solo dev's independent agents each
+carry a distinct per-session identity (the server-minted `Mcp-Session-Id`, or an explicit
+`X-Hive-Agent-Id`), so their shared demand promotes under the one identity-diversity rule with
+no flag. Human `hive_write(approved_by=…)` stays the only path to `established` trust.
 
 ## 3. Teammates on other machines
 

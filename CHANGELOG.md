@@ -29,7 +29,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   refresh the served rows' liveness clock in the same transaction.
 - Recall hits carry `trust` + `ts`; `hive_health` adds `trust_counts`, `n_misses_7d`,
   and `include_gaps` (clustered demand-gap report).
-- `autonomy` config group (`enabled` + demand / TTL / solo knobs); like all
+- `autonomy` config group (`enabled` + demand / TTL knobs); like all
   config it is resolved at boot — there is no live reload (tune via `.env` then `hive up`).
 ### Changed
 - Auth is now a property of the **listening socket**, not a config mode: the daemon binds a
@@ -49,6 +49,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Boot order: decay sweep runs before the index rebuild.
 ### Fixed
 ### Removed
+- `autonomy.solo_mode` + `autonomy.solo_min_span_days` — demand-promotion is now ONE
+  identity-diversity rule for solo and team alike. A solo dev's independent agents each carry a
+  distinct per-session identity, so their shared demand promotes with no flag (the elapsed-span
+  bypass is gone, making anti-gaming strictly stricter). The `solo_hint` is kept but repurposed:
+  it now flags single-identity traffic and points to `hive connect` / `X-Hive-Agent-Id`.
 - `hive.sh` — replaced by the `hive` CLI; its up-not-run-rm contract lives on as a
   pytest argv assertion.
 - No migration/backfill path ships (clean-store start, human decision): an

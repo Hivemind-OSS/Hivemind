@@ -1,7 +1,8 @@
-"""CV1 — the ``solo_hint`` in hive_health: single-seat traffic wasting
-demand (≥ demand_m window misses, ≤1 distinct identity) is a silent autonomy
-stall; the hint converts it into a self-describing one. Fires PRECISELY:
-absent on an empty/quiet store, absent in solo_mode, absent with ≥2 identities."""
+"""The ``solo_hint`` in hive_health: single-IDENTITY traffic wasting demand
+(≥ demand_m window misses, ≤1 distinct identity) is a silent promotion stall; the hint
+converts it into a self-describing, actionable one (register distinct agents). Fires
+PRECISELY: absent on an empty/quiet store, absent when autonomy is disabled, absent with
+≥2 identities. With the solo-mode bypass removed, this is the SOLE identity-collapse signal."""
 from __future__ import annotations
 
 from hive.app.config import AutonomyConfig
@@ -30,21 +31,19 @@ def test_health_solo_hint_fires_precisely():
     assert "solo_hint" not in _health(server)            # below the demand_m floor
     _miss_recalls(server, 1)
     snap = _health(server)                               # 3 misses, ONE identity
-    assert "SOLO_MODE" in snap["solo_hint"]
-    assert "hive token <seat>" in snap["solo_hint"]
+    assert "X-Hive-Agent-Id" in snap["solo_hint"]        # the remedy: distinct per-session ids
+    assert "hive connect" in snap["solo_hint"]
+    assert "SOLO_MODE" not in snap["solo_hint"]          # the deleted knob is never advised
 
 
 def test_health_solo_hint_absent_with_identity_diversity():
     server, _clock = build_real_server()
     _miss_recalls(server, 3, agent="seat-a")
-    _miss_recalls(server, 1, agent="seat-b")             # a second seat exists
+    _miss_recalls(server, 1, agent="seat-b")             # a second identity exists
     assert "solo_hint" not in _health(server)
 
 
-def test_health_solo_hint_absent_in_solo_mode_and_disabled():
-    solo_server, _ = build_real_server(autonomy=AutonomyConfig(solo_mode=True))
-    _miss_recalls(solo_server, 3)
-    assert "solo_hint" not in _health(solo_server)       # already solo: nothing to say
+def test_health_solo_hint_absent_when_autonomy_disabled():
     off_server, _ = build_real_server(autonomy=AutonomyConfig(enabled=False))
     _miss_recalls(off_server, 3)                         # autonomy off: no misses recorded
     assert "solo_hint" not in _health(off_server)

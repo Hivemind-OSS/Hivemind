@@ -374,15 +374,15 @@ class HiveMCPServer:
 
     # ── health helpers ────────────────────────────────────────────────────────
     def _solo_hint(self) -> Optional[str]:
-        """When single-seat traffic is WASTING demand (≥ demand_m window
-        misses, all from ≤1 identity) under the anti-gaming rule, the autonomy
-        loop is silently inert — return the self-describing hint. None when
-        autonomy is off, solo_mode is already on, the store is empty/quiet, or
-        the probe faults (telemetry only, never breaks health)."""
+        """When single-IDENTITY traffic is WASTING demand (≥ demand_m window
+        misses, all from ≤1 identity) under the anti-gaming rule, promotion is
+        silently inert — return the self-describing hint. None when autonomy is
+        off, the store is empty/quiet, ≥2 identities are present, or the probe
+        faults (telemetry only, never breaks health). With the solo-mode span
+        bypass removed, this is the ONLY feedback signal that turns a silent
+        identity-collapse into a visible, actionable one."""
         try:
             if not bool(getattr(self.autonomy, "enabled", True)):
-                return None
-            if bool(getattr(self.autonomy, "solo_mode", False)):
                 return None
             window_s = int(self.autonomy.demand_window_days) * _DAY_S
             misses = self.store.misses_window(int(self.now()) - window_s)
@@ -390,10 +390,10 @@ class HiveMCPServer:
                 return None
             if len({m.agent_id for m in misses}) > 1:
                 return None
-            return ("single-seat traffic: demand-promotion is inert under the "
-                    "anti-gaming rule — set HIVE_AUTONOMY__SOLO_MODE=true or "
-                    "provision per-seat identities (one token per seat: "
-                    "hive token <seat>)")
+            return ("single-identity traffic: demand-promotion is inert under the "
+                    "anti-gaming rule because your agents share one identity — "
+                    "register each agent via `hive connect` so every session carries "
+                    "a distinct X-Hive-Agent-Id (remote seats: one token each).")
         except Exception:                                    # noqa: BLE001 — telemetry only
             _log.warning("mcp.solo_hint_probe_failed", extra={
                 "event": "mcp.solo_hint_probe_failed"}, exc_info=True)

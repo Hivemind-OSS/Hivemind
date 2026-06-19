@@ -111,15 +111,10 @@ class AutonomyConfig:
     competitor_tau: float = 0.85    # candidate ↔ servable cosine ⇒ demand already answered
     quarantine_ttl_days: int = 14
     provisional_ttl_days: int = 45
-    # CV1 solo mode: a single-seat fleet swaps the demand rule's identity-
-    # diversity clause for elapsed-span demand. Operator-set env, NOT client-gameable.
-    solo_mode: bool = False
-    solo_min_span_days: int = 1     # first-to-last matched-miss span required to promote
 
     def __post_init__(self) -> None:
         for name in ("demand_m", "demand_window_days",
-                     "quarantine_ttl_days", "provisional_ttl_days",
-                     "solo_min_span_days"):
+                     "quarantine_ttl_days", "provisional_ttl_days"):
             v = getattr(self, name)
             if int(v) < 1:
                 raise ValueError(f"autonomy.{name} must be >= 1 (got {v})")
