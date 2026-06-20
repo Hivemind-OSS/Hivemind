@@ -17,6 +17,7 @@ import numpy as np
 
 from hive.adapters.sqlite_db import tx
 from hive.domain.errors import SqliteBusyExhausted
+from hive.domain.kinds import DEFAULT_KIND, KIND_NAMES
 from hive.domain.lifecycle import (
     DEPRECATED, ESTABLISHED, PROVISIONAL, QUARANTINED, TRUST_STATES,
     MissRow, decayed, is_servable,
@@ -35,6 +36,13 @@ _RECALL_PREDICATE = "status='approved' AND value IS NOT NULL"
 # the far future, a provisional row can never prove freshness ⇒ established-only.
 _FAR_FUTURE = 1 << 62
 
+# The kind column DDL is built from the registry (sorted for a stable CHECK) so the stored
+# vocabulary cannot drift from hive.domain.kinds — the single source every surface projects.
+# Injected by sentinel below because _SCHEMA stays a plain string (it carries a literal
+# JSON '{}' default that an f-string would misread).
+_KIND_COLUMN_DDL = ("kind TEXT NOT NULL DEFAULT '%s' CHECK(kind IN (%s))" % (
+    DEFAULT_KIND, ", ".join(f"'{k}'" for k in sorted(KIND_NAMES))))
+
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS blobs(
   content_hash TEXT PRIMARY KEY, text TEXT NOT NULL);
@@ -50,7 +58,9 @@ CREATE TABLE IF NOT EXISTS episodes(
   trust TEXT NOT NULL DEFAULT 'quarantined',
   superseded_by INTEGER,
   last_active_ts INTEGER NOT NULL DEFAULT 0,
-  polarity TEXT NOT NULL DEFAULT 'neutral' CHECK(polarity IN ('do','dont','neutral')));
+  polarity TEXT NOT NULL DEFAULT 'neutral' CHECK(polarity IN ('do','dont','neutral')),
+  __KIND_COLUMN__,
+  anchor TEXT NOT NULL DEFAULT '');
 CREATE INDEX IF NOT EXISTS idx_episodes_status ON episodes(status);
 CREATE INDEX IF NOT EXISTS idx_episodes_hash ON episodes(content_hash);
 CREATE INDEX IF NOT EXISTS idx_episodes_trust ON episodes(trust);
@@ -73,7 +83,7 @@ CREATE TABLE IF NOT EXISTS evidence_events(
   actor TEXT NOT NULL, ts INTEGER NOT NULL,
   payload TEXT NOT NULL DEFAULT '{}');
 CREATE INDEX IF NOT EXISTS idx_evidence_episode ON evidence_events(episode_id, kind);
-"""
+""".replace("__KIND_COLUMN__", _KIND_COLUMN_DDL)
 
 
 class SqliteEpisodeStore:
@@ -86,8 +96,9 @@ class SqliteEpisodeStore:
         # would then crash cryptically), so refuse it BEFORE the script runs, with a
         # clear message. An absent table is fine — the script creates the v2 shape.
         cols = {r["name"] for r in conn.execute("PRAGMA table_info(episodes)")}
-        if cols and ("trust" not in cols or "polarity" not in cols):
-            missing = "trust" if "trust" not in cols else "polarity"
+        missing = next(
+            (c for c in ("trust", "polarity", "kind", "anchor") if c not in cols), None)
+        if cols and missing:
             _log.error("store.schema_predates_lifecycle missing_column=%s", missing)
             raise RuntimeError(
                 f"episodes table predates the current schema (no {missing} column); "
@@ -102,12 +113,16 @@ class SqliteEpisodeStore:
     # ── episodes / blob group (admission CAS state machine) ───────────────────
     def stage(self, *, text: str, weight: float, source: str, tags: str,
               proposed_by: str, tenant_id: str = "default", ts: int = 0,
-              polarity: str = "neutral") -> tuple[int, bool]:
+              polarity: str = "neutral", kind: str = DEFAULT_KIND,
+              anchor: str = "") -> tuple[int, bool]:
         """Insert a PENDING row (value NULL — not recallable, not indexed) + its blob.
         Dedup by content_hash: a repeat of identical text returns the existing id,
-        deduped=True, no second row. ``polarity`` (do|dont|neutral) is the
-        carried-not-interpreted consumer label, defaulting fail-safe to 'neutral'
-        (CHECK-constrained by the DDL)."""
+        deduped=True, no second row. ``polarity`` (do|dont|neutral), ``kind`` (registry
+        vocabulary), and ``anchor`` (the WHERE — file/module/symbol) are the
+        carried-not-interpreted consumer labels, never embedded; they default fail-safe
+        (neutral / note / empty). ``kind`` is CHECK-constrained by the DDL; ``anchor`` is
+        free text. On dedup the existing row's labels are preserved (identity is the text
+        hash alone, never the labels)."""
         h = content_hash(text)
         with tx(self.conn):
             existing = self.conn.execute(
@@ -118,9 +133,10 @@ class SqliteEpisodeStore:
                 "INSERT OR IGNORE INTO blobs(content_hash, text) VALUES(?,?)", (h, text))
             cur = self.conn.execute(
                 "INSERT INTO episodes(tenant_id, text, value, weight, ts, source, tags, "
-                "content_hash, status, proposed_by, version, polarity) "
-                "VALUES(?,?,NULL,?,?,?,?,?,'pending',?,0,?)",
-                (tenant_id, text, weight, ts, source, tags, h, proposed_by, polarity))
+                "content_hash, status, proposed_by, version, polarity, kind, anchor) "
+                "VALUES(?,?,NULL,?,?,?,?,?,'pending',?,0,?,?,?)",
+                (tenant_id, text, weight, ts, source, tags, h, proposed_by, polarity,
+                 kind, anchor))
             return int(cur.lastrowid), False
 
     def complete(self, episode_id: int, value: "np.ndarray", *, expected_version: int,
@@ -227,7 +243,8 @@ class SqliteEpisodeStore:
             content_hash=r["content_hash"], status=r["status"], proposed_by=r["proposed_by"] or "",
             approved_by=r["approved_by"], approved_ts=r["approved_ts"], version=r["version"],
             trust=r["trust"], superseded_by=r["superseded_by"],
-            last_active_ts=r["last_active_ts"], polarity=r["polarity"])
+            last_active_ts=r["last_active_ts"], polarity=r["polarity"],
+            kind=r["kind"], anchor=r["anchor"])
 
     def counts(self) -> tuple[int, int]:
         """(n_approved, n_pending) for hive_health — one grouped scan.  // O(N) time."""

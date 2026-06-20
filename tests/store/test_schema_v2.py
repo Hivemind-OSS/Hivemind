@@ -32,6 +32,24 @@ CREATE TABLE IF NOT EXISTS episodes(
 """
 
 
+# The v2 episodes table BEFORE the kind/anchor label columns — has trust+polarity
+# but lacks kind/anchor; used ONLY to prove a half-migrated (kind-less) store is refused.
+_V2_NO_KIND_EPISODES_SCHEMA = """
+CREATE TABLE IF NOT EXISTS episodes(
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  tenant_id TEXT NOT NULL, text TEXT NOT NULL, value BLOB,
+  weight REAL NOT NULL, ts INTEGER NOT NULL, source TEXT, tags TEXT,
+  content_hash TEXT NOT NULL,
+  status TEXT NOT NULL CHECK(status IN ('pending','approved')),
+  proposed_by TEXT, approved_by TEXT, approved_ts INTEGER,
+  version INTEGER NOT NULL DEFAULT 0,
+  trust TEXT NOT NULL DEFAULT 'quarantined',
+  superseded_by INTEGER,
+  last_active_ts INTEGER NOT NULL DEFAULT 0,
+  polarity TEXT NOT NULL DEFAULT 'neutral' CHECK(polarity IN ('do','dont','neutral')));
+"""
+
+
 def _cols(conn, table: str) -> dict[str, dict]:
     return {r["name"]: dict(r) for r in conn.execute(f"PRAGMA table_info({table})")}
 
@@ -78,6 +96,31 @@ def test_old_schema_store_refused():
     conn = connect(":memory:")
     conn.executescript(_OLD_EPISODES_SCHEMA)
     with pytest.raises(RuntimeError, match="clean"):
+        SqliteEpisodeStore(conn)
+
+
+def test_kind_anchor_columns_present_and_constrained():
+    conn = connect(":memory:")
+    SqliteEpisodeStore(conn)
+    ep_cols = _cols(conn, "episodes")
+    assert {"kind", "anchor"} <= set(ep_cols)
+    assert ep_cols["kind"]["dflt_value"] == "'note'"     # fail-safe under-claiming default
+    assert ep_cols["kind"]["notnull"] == 1
+    assert ep_cols["anchor"]["dflt_value"] == "''"
+    assert ep_cols["anchor"]["notnull"] == 1
+    # kind is CHECK-constrained to the registry vocabulary — a bad kind is refused at the DDL
+    with pytest.raises(Exception):
+        conn.execute("INSERT INTO episodes(tenant_id, text, weight, ts, content_hash, "
+                     "status, kind) VALUES('t','x',1.0,0,'h','pending','rumor')")
+
+
+def test_store_missing_kind_refused():
+    # A store with trust+polarity but no kind/anchor is the half-migrated trap: the
+    # CREATE IF NOT EXISTS would no-op and the store would limp to a mid-write "no such
+    # column" crash. The predates guard must refuse it, same as the pre-trust schema.
+    conn = connect(":memory:")
+    conn.executescript(_V2_NO_KIND_EPISODES_SCHEMA)
+    with pytest.raises(RuntimeError, match="kind"):
         SqliteEpisodeStore(conn)
 
 

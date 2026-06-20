@@ -306,3 +306,20 @@ def test_trust_counts_all_states_present():
     assert set(counts) == {QUARANTINED, PROVISIONAL, ESTABLISHED, DEPRECATED}
     assert counts[QUARANTINED] == 2 and counts[PROVISIONAL] == 2
     assert counts[ESTABLISHED] == 1 and counts[DEPRECATED] == 0   # zero-states visible
+
+
+# ── kind / anchor carried labels: stage → get_episode round-trip ───────────────
+def test_stage_roundtrips_kind_and_anchor():
+    s = _store()
+    eid, _ = s.stage(text="a known bug", weight=1.0, source="m", tags="",
+                     proposed_by="w", kind="bug", anchor="hive/domain/recall.py")
+    ep = s.get_episode(eid)
+    assert ep.kind == "bug" and ep.anchor == "hive/domain/recall.py"
+
+
+def test_stage_defaults_kind_note_and_anchor_empty():
+    # a write-site that names no kind/anchor under-claims (generic note, no WHERE)
+    s = _store()
+    eid, _ = s.stage(text="unlabelled", weight=1.0, source="m", tags="", proposed_by="w")
+    ep = s.get_episode(eid)
+    assert ep.kind == "note" and ep.anchor == ""
