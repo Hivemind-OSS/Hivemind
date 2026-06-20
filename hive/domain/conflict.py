@@ -1,0 +1,144 @@
+"""The pure conflict/redundancy detector — mechanical surfacing, NEVER resolution.
+
+Two memories that co-exist as *servable* rows have, by construction, no recorded
+relation between them (a superseded row is deprecated → not servable → never seen).
+This module turns the labels already on every Episode (``polarity``, ``anchor``, the
+embedding) into one of two mechanical classes over a near-dup (cosine ≥ τ) scan:
+
+  - OPPOSING polarity (do ↔ dont)  → ``contradiction`` (symmetric, no winner)
+  - compatible polarity            → ``redundancy``    (+ a directional ``loser_hint``)
+
+This is detection only (THEORY I1/I2, in-domain). It REFUSES automatic resolution
+(THEORY §10 O7): the ``loser_hint`` is a HINT a human applies via ``hive_supersede`` /
+``hive_write(replaces=)`` — it is never acted on here. Law 3 keeps retirement
+human-vouched.
+
+PURE: stdlib ``math`` + numpy only. The purity gate (tests/test_purity.py) forbids
+sqlite3 | torch | subprocess | os | git | time imports anywhere in hive/domain/.
+The detector is total and fail-closed: an undecidable (non-finite / shape-mismatch /
+zero-norm) pair is SKIPPED, never counted as a conflict.
+"""
+from __future__ import annotations
+
+import math
+from dataclasses import dataclass
+from typing import Optional, Sequence
+
+import numpy as np  # permitted in domain (compute, not I/O)
+
+# the mechanical relation vocabulary (distinct from the advisory ``kind`` vocabulary
+# {conflict, supersedes} on ConflictFlag — one documented mapping, THEORY decision 10).
+CONTRADICTION = "contradiction"
+REDUNDANCY = "redundancy"
+_RELATIONS = (CONTRADICTION, REDUNDANCY)
+
+# trust ranking for the redundancy loser hint: a human-vouched memory outranks a
+# demand-promoted one (established > provisional); anything else under-ranks (0).
+_TRUST_RANK = {"established": 2, "provisional": 1}
+
+
+@dataclass(frozen=True, slots=True)
+class ConflictItem:
+    """One servable memory's conflict-relevant projection: the vector to compare and
+    the carried labels that classify a near-dup pair. ``trust`` is established|provisional
+    (only servable rows enter detection). Built by the app layer from the eps it already
+    holds (recall belt) or from ``scan_servable_labeled`` (offline report)."""
+    episode_id: int
+    vector: "np.ndarray"
+    polarity: str            # do | dont | neutral
+    anchor: str
+    ts: int
+    trust: str               # established | provisional
+
+
+@dataclass(frozen=True, slots=True)
+class ConflictNote:
+    """One detected relation between two co-present servable memories. Frozen +
+    self-asserting: ``a_id < b_id`` canonical, ``relation`` in the vocabulary, ``cosine``
+    finite in [-1, 1]. ``loser_hint`` is the directional retire-candidate for a
+    ``redundancy`` (the lower-(trust, ts, id) id) and ``None`` for a symmetric
+    ``contradiction`` — a HINT, never applied here."""
+    a_id: int                # canonical: a_id < b_id
+    b_id: int
+    relation: str            # contradiction | redundancy
+    cosine: float            # finite, in [-1, 1]
+    anchor: str              # the shared anchor if both equal, else ""
+    loser_hint: Optional[int]
+
+    def __post_init__(self) -> None:
+        if self.relation not in _RELATIONS:
+            raise ValueError(f"bad relation {self.relation!r}")
+        if not self.a_id < self.b_id:
+            raise ValueError(f"ConflictNote ids must be canonical a_id<b_id "
+                             f"(got {self.a_id}, {self.b_id})")
+        if not (math.isfinite(self.cosine) and -1.0 <= self.cosine <= 1.0):
+            raise ValueError(f"cosine must be finite in [-1, 1] (got {self.cosine})")
+
+
+def _cosine(a, b) -> Optional[float]:
+    """True cosine in float64, or None when UNDECIDABLE — non-finite components, shape
+    mismatch, or a zero norm. None is the fail-closed signal: an undecidable similarity
+    must never count as a conflict (mirrors lifecycle._cosine).  // O(d)."""
+    if a is None or b is None:
+        return None
+    va = np.asarray(a, dtype=np.float64)
+    vb = np.asarray(b, dtype=np.float64)
+    if va.shape != vb.shape or va.ndim != 1:
+        return None
+    if not (np.all(np.isfinite(va)) and np.all(np.isfinite(vb))):
+        return None
+    na = float(np.linalg.norm(va))
+    nb = float(np.linalg.norm(vb))
+    if na <= 0.0 or nb <= 0.0:
+        return None
+    return float(np.dot(va, vb) / (na * nb))
+
+
+def _opposing(p: str, q: str) -> bool:
+    """True iff the two polarities are a do↔dont prescription/prohibition clash. neutral
+    is compatible with everything (no opposition)."""
+    return (p == "do" and q == "dont") or (p == "dont" and q == "do")
+
+
+def _loser_hint(x: ConflictItem, y: ConflictItem) -> int:
+    """The redundancy retire-candidate: the LOWER-ranked of the pair, where rank is
+    (trust, ts, id) — keep the higher-trust, then newer, then higher-id row; the other
+    is the loser. Total + deterministic (ids differ ⇒ keys differ)."""
+    kx = (_TRUST_RANK.get(x.trust, 0), x.ts, x.episode_id)
+    ky = (_TRUST_RANK.get(y.trust, 0), y.ts, y.episode_id)
+    return x.episode_id if kx < ky else y.episode_id
+
+
+def detect_conflicts(items: Sequence[ConflictItem], *, tau: float,
+                     top_n: int = 10) -> tuple[ConflictNote, ...]:
+    """All pairs i<j whose cosine ≥ ``tau``, classified by polarity: opposing (do↔dont)
+    → contradiction; else → redundancy (+ a directional loser_hint). Pure cosine in
+    float64; an undecidable pair (non-finite / shape / zero-norm) is SKIPPED (fail-closed,
+    never a fabricated conflict). Output is deterministic — sorted by (cosine desc, a_id,
+    b_id) — and capped at ``top_n``. Degenerate input (empty / single / all-below-τ) → ().
+    Total, never raises.  // O(n²·d) time, O(pairs) space."""
+    if not (math.isfinite(tau)) or top_n < 1:
+        return ()
+    scored: list[tuple[float, ConflictNote]] = []
+    n = len(items)
+    for i in range(n):
+        for j in range(i + 1, n):
+            a, b = items[i], items[j]
+            if a.episode_id == b.episode_id:
+                continue                              # defensive: same row, no self-pair
+            c = _cosine(a.vector, b.vector)
+            if c is None:
+                continue                              # undecidable ⇒ fail-closed skip
+            c = max(-1.0, min(1.0, c))                # float-error clamp into [-1, 1]
+            if c < tau:
+                continue
+            lo, hi = (a, b) if a.episode_id < b.episode_id else (b, a)
+            if _opposing(a.polarity, b.polarity):
+                relation, loser = CONTRADICTION, None
+            else:
+                relation, loser = REDUNDANCY, _loser_hint(lo, hi)
+            anchor = lo.anchor if lo.anchor == hi.anchor else ""
+            scored.append((c, ConflictNote(lo.episode_id, hi.episode_id, relation, c,
+                                           anchor, loser)))
+    scored.sort(key=lambda t: (-t[0], t[1].a_id, t[1].b_id))
+    return tuple(note for _c, note in scored[:top_n])
