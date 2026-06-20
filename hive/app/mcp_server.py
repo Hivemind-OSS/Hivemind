@@ -42,6 +42,7 @@ from hive.app.onboard_ref import SERVER_INSTRUCTIONS
 from hive.app.trends import compute_trends
 from hive.app.tool_defs import TOOL_DEFINITIONS
 from hive.domain.errors import SecretRefused
+from hive.domain.kinds import DEFAULT_KIND
 from hive.domain.lifecycle import is_servable
 from hive.domain.models import CONFIDENT
 
@@ -266,10 +267,12 @@ class HiveMCPServer:
         proposed_by = identity.agent_id
         replaces = args.get("replaces")           # human-vouched supersession target
         polarity = args.get("polarity", "neutral")  # do|dont|neutral (schema-enum-checked)
+        kind = args.get("kind", DEFAULT_KIND)     # registry vocabulary (schema-enum-checked)
+        anchor = args.get("anchor", "")           # the WHERE — file/module/symbol (free text)
         try:
             res = self.admission.write(text, approved_by=approved_by,
                                        proposed_by=proposed_by, replaces=replaces,
-                                       polarity=polarity)
+                                       polarity=polarity, kind=kind, anchor=anchor)
         except SecretRefused as e:
             # REFUSE: nothing written (0 rows). Envelope carries rule NAMES, never bytes.
             return {"status": "refused", "reason": str(e),
@@ -287,9 +290,11 @@ class HiveMCPServer:
     def _handle_capture(self, args: dict, identity: ServerIdentity) -> dict:
         text = args.get("text")
         polarity = args.get("polarity", "neutral")  # do|dont|neutral (schema-enum-checked)
+        kind = args.get("kind", DEFAULT_KIND)     # registry vocabulary (schema-enum-checked)
+        anchor = args.get("anchor", "")           # the WHERE — file/module/symbol (free text)
         try:
             res = self.admission.capture(text, proposed_by=identity.agent_id,
-                                         polarity=polarity)
+                                         polarity=polarity, kind=kind, anchor=anchor)
         except SecretRefused as e:
             # REFUSE: nothing written (0 rows). Envelope carries rule NAMES, never bytes.
             return {"status": "refused", "reason": str(e),
@@ -321,7 +326,7 @@ class HiveMCPServer:
                 continue
             hits.append({"episode_id": h.episode_id, "text": h.text,
                          "sim": float(h.sim), "trust": h.trust, "ts": h.ts,
-                         "polarity": h.polarity})
+                         "polarity": h.polarity, "kind": h.kind, "anchor": h.anchor})
         # an empty post-belt set is an ABSTAIN, never a confident-empty (never-hallucinate)
         abstained = (result.state != CONFIDENT) or (not hits)
         env: dict = {"reference_context": hits, "abstained": abstained,

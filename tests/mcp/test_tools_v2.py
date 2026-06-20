@@ -131,6 +131,27 @@ def test_recall_hits_carry_trust_and_ts():
     assert hit["trust"] == "established" and hit["ts"] == 5_000
 
 
+def test_recall_hits_carry_kind_and_anchor():
+    # end-to-end: the write handler reads kind/anchor → admission → store → recall →
+    # the recall handler wires them into the served envelope.
+    server, _ = build_real_server()
+    content(tool_call(server, "hive_write",
+                      {"text": "a labeled bug fact", "approved_by": "h",
+                       "kind": "bug", "anchor": "hive/domain/recall.py"}))
+    env = content(tool_call(server, "hive_recall", {"query": "a labeled bug fact"}))
+    hit = env["reference_context"][0]
+    assert hit["kind"] == "bug" and hit["anchor"] == "hive/domain/recall.py"
+
+
+def test_recall_hit_defaults_kind_note_when_unlabeled():
+    # omitted kind/anchor default server-side (SOFT): the hit under-claims, never errors.
+    server, _ = build_real_server()
+    content(tool_call(server, "hive_write", {"text": "an unlabeled fact", "approved_by": "h"}))
+    env = content(tool_call(server, "hive_recall", {"query": "an unlabeled fact"}))
+    hit = env["reference_context"][0]
+    assert hit["kind"] == "note" and hit["anchor"] == ""
+
+
 def test_recall_belt_drops_lapsed_provisional():
     server, clock = build_real_server()
     cap = content(tool_call(server, "hive_capture", {"text": "promoted insight"}))

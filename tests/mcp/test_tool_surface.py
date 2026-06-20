@@ -13,6 +13,7 @@ from hive.app.mcp_server import (
 )
 from hive.app.tool_defs import TOOL_DEFINITIONS
 from hive.domain.admission import WriteResult
+from hive.domain.kinds import KIND_NAMES
 from hive.domain.secret_scan import scan as _scan
 from tests.fakes._fakes import FakeIndex
 from tests.mcp._helpers import build_real_server, content, is_error, tool_call
@@ -136,6 +137,33 @@ def test_non_enum_polarity_rejected_by_schema_belt():
     assert adm.write_calls == 0
     # hive_capture carries the same enum; a bad value is rejected there too.
     rc = tool_call(server, "hive_capture", {"text": "x", "polarity": "sideways"})
+    assert is_error(rc)
+
+
+def test_capture_and_write_advertise_kind_enum_and_anchor():
+    """SOFT structure: kind is an enum over the registry vocabulary, anchor a free
+    string — both OPTIONAL (absent from required[]), server-defaulted when omitted.
+    The advertised enum is the registry, so it can't drift from what the store enforces."""
+    by_name = {t["name"]: t for t in TOOL_DEFINITIONS}
+    for name in ("hive_write", "hive_capture"):
+        schema = by_name[name]["inputSchema"]
+        props = schema["properties"]
+        assert props["kind"]["enum"] == sorted(KIND_NAMES)
+        assert props["anchor"]["type"] == "string"
+        assert "kind" not in schema["required"] and "anchor" not in schema["required"]
+
+
+def test_non_enum_kind_rejected_by_schema_belt():
+    """The kind enum is wire-enforced like polarity: a value outside the registry on
+    hive_write/hive_capture is schema-rejected BEFORE the handler — the port is never
+    touched (SOFT means optional, but checked when present)."""
+    adm = _CountingAdmission()
+    server = _server_with(adm)
+    r = tool_call(server, "hive_write",
+                  {"text": "x", "approved_by": "u", "kind": "rumor"})
+    assert is_error(r)
+    assert adm.write_calls == 0
+    rc = tool_call(server, "hive_capture", {"text": "x", "kind": "rumor"})
     assert is_error(rc)
 
 
