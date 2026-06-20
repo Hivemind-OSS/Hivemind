@@ -83,6 +83,16 @@ CREATE TABLE IF NOT EXISTS evidence_events(
   actor TEXT NOT NULL, ts INTEGER NOT NULL,
   payload TEXT NOT NULL DEFAULT '{}');
 CREATE INDEX IF NOT EXISTS idx_evidence_episode ON evidence_events(episode_id, kind);
+CREATE TABLE IF NOT EXISTS conflict_flags(
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  kind TEXT NOT NULL CHECK(kind IN ('conflict','supersedes')),
+  a_id INTEGER NOT NULL, b_id INTEGER NOT NULL,   -- canonical a_id < b_id; hash derived on read
+  winner_id INTEGER,
+  resolution TEXT NOT NULL DEFAULT '',
+  proposed_by TEXT NOT NULL, ts INTEGER NOT NULL,
+  status TEXT NOT NULL DEFAULT 'open' CHECK(status IN ('open','dismissed')));
+CREATE UNIQUE INDEX IF NOT EXISTS idx_conflict_flags_pair
+  ON conflict_flags(a_id, b_id, kind);
 """.replace("__KIND_COLUMN__", _KIND_COLUMN_DDL)
 
 
@@ -498,6 +508,41 @@ class SqliteEpisodeStore:
                 for r in self.conn.execute(
                     "SELECT query_vector, agent_id, ts FROM recall_misses "
                     "WHERE ts>? AND query_vector IS NOT NULL ORDER BY id", (since_ts,))]
+
+    # ── advisory conflict flags (ConflictFlagStore port + the worklist read) ──
+    def record_conflict_flag(self, *, kind: str, a_id: int, b_id: int,
+                             winner_id: Optional[int], resolution: str,
+                             proposed_by: str, ts: int) -> bool:
+        """Record ONE advisory conflict flag, idempotent on the canonical (a_id, b_id, kind).
+        Returns True iff a NEW row was written; a re-flag of the same pair+kind is a no-op
+        (the first write stands — no overwrite). Existence is checked explicitly (not
+        INSERT OR IGNORE) so a CHECK violation (bad kind/status) still RAISES rather than being
+        silently swallowed. The caller (ConflictFlagService) owns canonicalization + the
+        resolution secret scan. NEVER touches an episode's trust — this is advisory only."""
+        with tx(self.conn):
+            if self.conn.execute(
+                    "SELECT 1 FROM conflict_flags WHERE a_id=? AND b_id=? AND kind=?",
+                    (int(a_id), int(b_id), kind)).fetchone() is not None:
+                return False
+            self.conn.execute(
+                "INSERT INTO conflict_flags(kind, a_id, b_id, winner_id, resolution, "
+                "proposed_by, ts) VALUES(?,?,?,?,?,?,?)",
+                (kind, int(a_id), int(b_id),
+                 None if winner_id is None else int(winner_id),
+                 resolution, proposed_by, int(ts)))
+        return True
+
+    def open_conflict_flags(self) -> list[dict]:
+        """All status='open' advisory flags (the health worklist's advisory channel),
+        ordered by id. Duck-typed app read (the misses_detail_window convention), NOT a
+        domain port. A flag auto-clears from the worklist when either episode goes
+        non-servable — that filter lives in the app report, so status keeps only the
+        operator-driven 'dismissed'."""
+        return [{"id": r["id"], "kind": r["kind"], "a_id": r["a_id"], "b_id": r["b_id"],
+                 "winner_id": r["winner_id"], "resolution": r["resolution"],
+                 "proposed_by": r["proposed_by"], "ts": int(r["ts"])}
+                for r in self.conn.execute(
+                    "SELECT * FROM conflict_flags WHERE status='open' ORDER BY id")]
 
     # ── meta watermark kv ─────────────────────────────────────────────────────
     def meta_get(self, key: str) -> Optional[str]:

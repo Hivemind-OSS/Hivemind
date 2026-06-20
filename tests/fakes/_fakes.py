@@ -194,6 +194,29 @@ class FakeStore:
         self._meta[key] = value
 
 
+class FakeConflictFlagStore:
+    """ConflictFlagStore: records advisory flags in-memory, idempotent on the canonical
+    (a_id, b_id, kind). ``open_conflict_flags`` mirrors the durable read. There is NO
+    supersede/set_trust here BY CONSTRUCTION — the ConflictFlagService holds only this
+    write seam, so it structurally cannot retire anything (advisory only)."""
+    def __init__(self) -> None:
+        self.rows: list[dict] = []
+
+    def record_conflict_flag(self, *, kind: str, a_id: int, b_id: int,
+                             winner_id: Optional[int], resolution: str,
+                             proposed_by: str, ts: int) -> bool:
+        key = (int(a_id), int(b_id), kind)
+        if any((r["a_id"], r["b_id"], r["kind"]) == key for r in self.rows):
+            return False
+        self.rows.append({"kind": kind, "a_id": int(a_id), "b_id": int(b_id),
+                          "winner_id": winner_id, "resolution": resolution,
+                          "proposed_by": proposed_by, "ts": int(ts), "status": "open"})
+        return True
+
+    def open_conflict_flags(self) -> list[dict]:
+        return [dict(r) for r in self.rows if r["status"] == "open"]
+
+
 class FakeScanner:
     """SecretScanner wrapping the real deterministic scan. ``mode`` selects the
     secret disposition: REFUSE (default, fail-closed) or REDACT (mask-and-stage)."""

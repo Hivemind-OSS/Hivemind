@@ -46,7 +46,7 @@ _HEAD_WVER_KEY = "embedding:head:w_version"
 # caught at boot rather than at first recall.
 _REQUIRED_TABLES = frozenset({
     "blobs", "episodes", "exposure", "meta",
-    "recall_misses", "evidence_events",
+    "recall_misses", "evidence_events", "conflict_flags",
 })
 
 

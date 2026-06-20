@@ -74,6 +74,19 @@ class QuarantineReader(Protocol):
 
 
 @runtime_checkable
+class ConflictFlagStore(Protocol):
+    """The ONE new narrow port: the durable write seam for an advisory conflict flag. The
+    ConflictFlagService depends on this (+ ``EpisodeReader`` for id-exists + ``SecretScanner``
+    for the resolution scan) — NOT a widening of an existing port, so the narrow fakes stay
+    conformant. Idempotent on the canonical ``(a_id, b_id, kind)``; returns whether a NEW row
+    was written (a re-flag of the same pair+kind is a no-op ``False``). The caller owns
+    canonicalization (a_id<b_id) and the secret scan; this is the durable write only."""
+    def record_conflict_flag(self, *, kind: str, a_id: int, b_id: int,
+                             winner_id: Optional[int], resolution: str,
+                             proposed_by: str, ts: int) -> bool: ...
+
+
+@runtime_checkable
 class EpisodeStore(Protocol):
     """The durable single-writer store. The exposure table is the recall side-channel
     (record_exposure / record_miss) — the demand signal that drives promotion. The slice
