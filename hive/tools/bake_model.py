@@ -1,6 +1,6 @@
 """M12 — offline weight bake (BUILD-TIME only; never on the hot path).
 
-`python -m hive.tools.bake_model --model BAAI/bge-small-en-v1.5 --dest /opt/hf-cache/hub`
+`python -m hive.tools.bake_model --model Qwen/Qwen3-Embedding-0.6B --dest /opt/hf-cache/hub`
 runs in the Dockerfile *builder* stage to materialize the sentence-transformer weights
 into an image LAYER, so the runtime image (with `HF_HUB_OFFLINE=1`/`TRANSFORMERS_OFFLINE=1`)
 can load the model with the network namespace removed (`--network none`) — the product's
@@ -80,7 +80,7 @@ def main(argv: Optional[list[str]] = None, *,
          loader: Optional[Callable[[str, str], None]] = None) -> int:
     parser = argparse.ArgumentParser(prog="hive.tools.bake_model",
                                      description="Bake ST weights offline into an image layer.")
-    parser.add_argument("--model", required=True, help="HF model id, e.g. BAAI/bge-small-en-v1.5")
+    parser.add_argument("--model", required=True, help="HF model id, e.g. Qwen/Qwen3-Embedding-0.6B")
     parser.add_argument("--dest", required=True, help="cache dir (must match runtime HF_HOME)")
     args = parser.parse_args(argv)
     return bake(args.model, args.dest, loader=loader)

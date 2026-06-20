@@ -1,6 +1,6 @@
 """P1.14 — hive.app.container.build_container: the composition-root wiring contract.
 
-Fast (a fake warm embedder, no bge load): proves the Boot conformance, the Phase-1
+Fast (a fake warm embedder, no model load): proves the Boot conformance, the Phase-1
 utility-inert policy, the floor-by-identity gate wiring, the warm/persist-head step, the
 migrate schema/WAL assertion, the approved-only index warm, and — the load-bearing wiring
 fact — the SqliteUtilityStore-before-SqliteEpisodeStore order that guardrail-2 needs.

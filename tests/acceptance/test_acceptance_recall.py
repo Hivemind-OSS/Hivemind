@@ -1,4 +1,4 @@
-"""#1/#2/#3/#5b acceptance — the read path end-to-end on the REAL bge stack:
+"""#1/#2/#3/#5b acceptance — the read path end-to-end on the REAL Qwen3 stack:
 recall@5 floor, honest-abstention AUROC, abstain-no-resurrect, secret-refused-never-written,
 and reference-context framing. Wired through the real build_container; FakeOutcomeSource
 is not needed here (no producer)."""

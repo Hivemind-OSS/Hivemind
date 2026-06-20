@@ -27,10 +27,10 @@ _log = logging.getLogger("hive.registry")
 
 # ── embedder seam (C1) ────────────────────────────────────────────────────────
 def _build_local_st(cfg: "Config", *, head_bytes=None, model=None):
-    """Default embedder (M01 LocalSTEmbedder, bge-small). Lazy: the factory import is
-    torch-free and the heavy SentenceTransformer load is deferred to ``load()``/warm, so
+    """Default embedder (M01 LocalSTEmbedder, Qwen3-Embedding-0.6B). Lazy: the factory import
+    is torch-free and the heavy SentenceTransformer load is deferred to ``load()``/warm, so
     Config validation + ``build_container`` construction stay light. ``head_bytes`` (the
-    persisted PCA geometry) and ``model`` (a test seam) are threaded through when given."""
+    persisted truncation geometry) and ``model`` (a test seam) are threaded through when given."""
     try:
         from hive.adapters.embedding.factory import build_provider  # noqa: PLC0415 — lazy
     except ImportError as exc:

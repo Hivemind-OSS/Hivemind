@@ -176,3 +176,31 @@ already surfaced by `contested_misses`) and (b) one-dominant (quiet: currently i
 new direct scan must surface BOTH; resolving one via `hive_write(replaces=)` removes the pair
 from the next report and writes the `admission.superseded` audit row; the non-empty-queue log
 line fires before resolution and not after.
+
+---
+
+## TODO 7 — Qwen3 asymmetric query-instruction (deferred from the embedding swap)
+
+**File:** `hive/adapters/embedding/local_st.py`, `hive/domain/ports.py`, `hive/domain/recall.py`, `hive/domain/admission.py`, `tests/fakes/_fakes.py`
+
+Once the embedding model is `Qwen/Qwen3-Embedding-0.6B`, recall quality can be lifted by using the
+model's intended **asymmetric** encoding: a document is embedded as raw text; a query is embedded
+with an instruction prefix (`"Instruct: <task>\nQuery: <text>"`). The shipped `EmbeddingProvider.encode`
+is a single symmetric chain used by both capture and recall, so this is deferred — it is NOT a free
+swap:
+
+- It **widens the port** (a query path distinct from the document path) and must update every adapter
+  + the fake + both call sites (`recall.py` query side, `admission.py` document side), each conformance-
+  tested (a port change that goes green on fakes alone is the smell).
+- It **breaks "same text → same vector"**, which the trust lifecycle depends on: the recall miss-query
+  vector is matched against candidate/servable *document* vectors by cosine (`demand_tau` = miss↔candidate,
+  `competitor_tau` = candidate↔servable). Enabling asymmetry therefore requires **recalibrating
+  `autonomy.demand_tau`/`competitor_tau`** (and re-checking the recall gate) on the asymmetric geometry —
+  not just ranking.
+- Land it OFF by default and byte-inert when off (a fixed/empty prompt ⇒ identical to symmetric); flip
+  on only after the τ recalibration is measured.
+
+**Mutations to verify:** with asymmetry ON, the same text as query vs document must differ; with it OFF
+(default), query and document encodings must be byte-identical (the byte-inert guarantee); the
+recalibrated `demand_tau` must still promote a genuine cross-identity demand and still withhold a
+self-demanded one.

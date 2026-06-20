@@ -1,11 +1,11 @@
 """build_provider — the embedding swap-seam factory (M01 / registry).
 
 Selects + constructs the configured ``EmbeddingProvider``. The default is the real
-``LocalSTEmbedder`` (bge-small, baked). ``head_bytes`` (the persisted, W_version'd PCA
-geometry from the store meta) is threaded through so a restart reuses the same basis;
-absent it, the embedder fits a deterministic bootstrap head at ``load()``. ``model`` is
-an injection seam for tests (pass an already-loaded SentenceTransformer / a double) so the
-provider can be exercised without re-loading the model.
+``LocalSTEmbedder`` (Qwen3-Embedding-0.6B, baked). ``head_bytes`` (the persisted, W_version'd
+truncation geometry from the store meta) is threaded through so a restart reuses the same
+head; absent it, the embedder builds the truncation head from the model's native dim at
+``load()``. ``model`` is an injection seam for tests (pass an already-loaded
+SentenceTransformer / a double) so the provider can be exercised without re-loading the model.
 """
 from __future__ import annotations
 

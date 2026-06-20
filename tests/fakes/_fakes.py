@@ -52,7 +52,7 @@ class FakeProvider:
 class FakeWarmProvider:
     """A deterministic hash-based ``EmbeddingProvider`` that ALSO satisfies the M12 warm
     contract (``.loaded`` / ``.load()`` / ``.name`` / ``.head_bytes()``) — for fast
-    container-WIRING tests that must not pay the real bge model load. Hash-per-text means
+    container-WIRING tests that must not pay the real model load. Hash-per-text means
     only IDENTICAL text matches (semantic recall quality is proven against the real
     embedder in tests/acceptance/*)."""
     name = "fake-warm"

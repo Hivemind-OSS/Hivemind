@@ -1,8 +1,8 @@
 """Shared fixtures for the acceptance gate — the REAL stack end-to-end.
 
-A real bge-small ``LocalSTEmbedder`` (loaded once per session; head fit once), a real
-``SqliteEpisodeStore`` / ``ExhaustiveCosineIndex`` / ``DefaultSecretScanner`` wired by the
-real ``build_container``, on a fresh ``:memory:`` store per test. A small, controlled
+A real Qwen3-Embedding-0.6B ``LocalSTEmbedder`` (loaded once per session; truncation head
+built once), a real ``SqliteEpisodeStore`` / ``ExhaustiveCosineIndex`` / ``DefaultSecretScanner``
+wired by the real ``build_container``, on a fresh ``:memory:`` store per test. A small, controlled
 corpus + labelled query set makes recall@5 and the abstention AUROC meaningful and
 deterministic without LongMemEval. Network-free: the model is baked/cached (the suite runs
 under HF offline).
