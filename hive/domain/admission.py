@@ -30,6 +30,7 @@ from dataclasses import dataclass
 from typing import Callable, Optional
 
 from hive.domain.errors import SecretRefused
+from hive.domain.kinds import DEFAULT_KIND
 from hive.domain.lifecycle import DEPRECATED, ESTABLISHED, QUARANTINED
 from hive.domain.models import content_hash
 from hive.domain.secret_scan import REDACT, REFUSE, ScanVerdict
@@ -124,7 +125,8 @@ class AdmissionService:
     def write(self, text: str, *, approved_by: str, proposed_by: str,
               weight: float = 1.0, request_id: str = "-",
               replaces: Optional[int] = None,
-              polarity: str = "neutral") -> WriteResult:
+              polarity: str = "neutral", kind: str = DEFAULT_KIND,
+              anchor: str = "") -> WriteResult:
         """Capture a human-approved insight in one call. ``approved_by`` is the
         principal that approved this write in native chat (client-gated trust);
         ``proposed_by`` is the agent that proposed it — both are recorded. REFUSE raises
@@ -150,7 +152,8 @@ class AdmissionService:
         try:
             eid, deduped = self._store.stage(
                 text=staged_text, weight=weight, source="", tags="",
-                proposed_by=proposed_by, ts=self._now(), polarity=polarity)
+                proposed_by=proposed_by, ts=self._now(), polarity=polarity,
+                kind=kind, anchor=anchor)
         except Exception:
             _log.error("admission.stage_fail", extra={
                 "event": "admission.stage_fail", "proposed_by": proposed_by,
@@ -248,7 +251,8 @@ class AdmissionService:
 
     # ── capture: the autonomous path — lands embedded but UNSERVABLE ───────────
     def capture(self, text: str, *, proposed_by: str, weight: float = 1.0,
-                request_id: str = "-", polarity: str = "neutral") -> WriteResult:
+                request_id: str = "-", polarity: str = "neutral",
+                kind: str = DEFAULT_KIND, anchor: str = "") -> WriteResult:
         """Capture WITHOUT asking: scan → stage (dedup) → embed → complete
         ``trust='quarantined'`` (``approved_by`` NULL — embedded but structurally
         unservable until measured demand promotes it) → synchronous promotion
@@ -270,7 +274,8 @@ class AdmissionService:
         try:
             eid, deduped = self._store.stage(
                 text=staged_text, weight=weight, source="", tags="",
-                proposed_by=proposed_by, ts=self._now(), polarity=polarity)
+                proposed_by=proposed_by, ts=self._now(), polarity=polarity,
+                kind=kind, anchor=anchor)
         except Exception:
             _log.error("admission.capture_stage_fail", extra={
                 "event": "admission.capture_stage_fail", "proposed_by": proposed_by,

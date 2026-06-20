@@ -355,6 +355,37 @@ def test_capture_defaults_polarity_neutral():
     assert store.get_episode(r.episode_id).polarity == "neutral"
 
 
+# ═══ kind + anchor (registry vocabulary + the WHERE): threaded through write + capture ══
+def test_write_persists_passed_kind_and_anchor():
+    svc, store = _svc_v2()
+    r = svc.write("OPEN — recall abstains on flat sims", approved_by="alice",
+                  proposed_by="a", kind="bug", anchor="hive/domain/recall.py")
+    ep = store.get_episode(r.episode_id)
+    assert ep.kind == "bug" and ep.anchor == "hive/domain/recall.py"
+
+
+def test_capture_persists_passed_kind_and_anchor():
+    svc, store = _svc_v2()
+    r = svc.capture("the house way to build the writer lane", proposed_by="agent-1",
+                    kind="convention", anchor="hive/adapters/sqlite_db.py")
+    ep = store.get_episode(r.episode_id)
+    assert ep.kind == "convention" and ep.anchor == "hive/adapters/sqlite_db.py"
+
+
+def test_write_defaults_kind_note_and_anchor_empty():
+    svc, store = _svc_v2()
+    r = svc.write("a plain fact", approved_by="alice", proposed_by="a")
+    ep = store.get_episode(r.episode_id)
+    assert ep.kind == "note" and ep.anchor == ""
+
+
+def test_capture_defaults_kind_note_and_anchor_empty():
+    svc, store = _svc_v2()
+    r = svc.capture("a plain unvouched fact", proposed_by="agent-1")
+    ep = store.get_episode(r.episode_id)
+    assert ep.kind == "note" and ep.anchor == ""
+
+
 def test_write_dedup_onto_deprecated_does_not_revive():
     svc, store = _svc_v2()
     old = _write(svc, "the port is 5432")
