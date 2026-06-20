@@ -100,9 +100,7 @@ Never publish `0.0.0.0:8765` — a bearer token over plain LAN HTTP is cleartext
 (stop, keep data) / `nuke` (destroy the data volume, typed confirm). Upgrading across schema
 generations is `hive nuke` then `hive up` — no in-place migration ships.
 
-See **[HOWTO.md](HOWTO.md)** for the full operator guide (setup, tunneling, KPIs, tuning) and
-**[CONTEXT/THEORY.md](CONTEXT/THEORY.md)** for the design theory — the master laws, the
-hexagonal architecture, and the rules any change must follow.
+See **[HOWTO.md](HOWTO.md)** for the full operator guide (setup, tunneling, KPIs, tuning).
 
 ## Embedding model & attribution
 
@@ -117,10 +115,11 @@ full text and attribution travel with this repository in
 ## Repository layout
 
 ```
-hive/            the server: domain core, adapters (SQLite store, embedder), MCP app, CLI
-tests/           the test suite
-compose.yaml     the single-service stack (+ opt-in ngrok tunnel profile)
-Dockerfile       the hermetically-offline server image (embedder baked at build)
-HOWTO.md         operator guide      CONTEXT/THEORY.md   design theory
-ADMINSKILLS.md   admin-agent lifecycle skills            CONTEXT/BUGS.md   bug registry
+hive/                 the server: domain core, adapters (SQLite store, embedder), MCP app, CLI
+tests/                the test suite
+compose.yaml          the single-service stack (+ opt-in ngrok tunnel profile)
+Dockerfile            the hermetically-offline server image (embedder baked at build)
+HOWTO.md              operator guide
+ADMINSKILLS.md        admin-agent lifecycle skills
+THIRD_PARTY_NOTICES.md / LICENSES/   embedding-model attribution + license
 ```
