@@ -134,10 +134,15 @@ class ConflictConfig:
     advisory verb ONLY — the resolution verb ``hive_supersede`` is ALWAYS on (Law 3 human
     vouch). Default OFF ⇒ byte-inert (no ``conflicts`` key, ``hive_flag`` → disabled). The
     detection METHOD (cosine+polarity) is encoded in code, never a swap knob (THEORY §14);
-    ``tau`` is the one genuinely-empirical knob (the near-dup cosine floor, ``competitor_tau``
-    semantic)."""
+    ``tau`` is the one genuinely-empirical knob (the near-dup cosine floor). Default 0.80:
+    measured Qwen3 cosines put genuine paraphrase/contradiction pairs at ~0.81-0.87 while
+    distinct same-subsystem facts top out ~0.69, so 0.80 sits in that gap (recall over the
+    stricter 0.85 at no measured false-positive cost, with margin above the distinct-fact
+    ceiling). It stays a per-deployment knob — recalibrate on the real corpus via the
+    benchmark; the asymmetric cost (a false positive can lead a human to retire a real
+    memory) argues for keeping margin rather than chasing the lowest-cosine conflicts."""
     enabled: bool = False
-    tau: float = 0.85
+    tau: float = 0.80
     top_n: int = 10
 
     def __post_init__(self) -> None:

@@ -166,7 +166,9 @@ def test_backup_keep_at_least_one():
 def test_conflict_defaults_off_and_inert():
     cfg = Config.load(db_path=":memory:")
     assert cfg.conflict.enabled is False          # default OFF (byte-inert)
-    assert cfg.conflict.tau == 0.85               # reuse the near-dup competitor_tau semantic
+    # 0.80: measured to sit in the gap between distinct same-subsystem facts (~0.69) and
+    # genuine paraphrase/contradiction pairs (~0.81-0.87) — calibratable per deployment.
+    assert cfg.conflict.tau == 0.80
     assert cfg.conflict.top_n == 10
 
 
