@@ -8,7 +8,7 @@ pins the swap-seam contract only (the swap seam does not move as the adapter gro
 from __future__ import annotations
 
 from typing import (
-    Mapping, Optional, Protocol, Sequence, runtime_checkable,
+    Iterable, Mapping, Optional, Protocol, Sequence, runtime_checkable,
 )
 
 import numpy as np  # permitted in domain (not in the forbidden I/O set)
@@ -49,7 +49,7 @@ class MutableVectorIndex(VectorIndex, Protocol):
     """The write side: a derived, rebuildable cache over the durable store."""
     def add(self, episode_id: int, value: "np.ndarray") -> None: ...
     def remove(self, episode_id: int) -> None: ...
-    def rebuild_from_store(self, store: "EpisodeStore") -> None: ...
+    def rebuild_from_store(self, rows: Iterable[tuple[int, np.ndarray]]) -> None: ...
 
 
 @runtime_checkable

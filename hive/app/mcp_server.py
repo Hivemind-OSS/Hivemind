@@ -420,7 +420,7 @@ class HiveMCPServer:
     def _trends_report(self) -> dict:
         """CV4: current-vs-previous 7d windows over existing tables — the
         demand-health KPI (confident_rate ↑, demand_entropy ↓). The ONLY window
-        into silent fail-open rot (THEORY §8.3). Composes the gaps clustering;
+        into silent fail-open rot (THEORY §8 tension #3). Composes the gaps clustering;
         degrades to {} on a fault."""
         try:
             tau = float(self.autonomy.demand_tau)

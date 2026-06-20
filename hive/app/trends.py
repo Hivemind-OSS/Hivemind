@@ -9,7 +9,7 @@ surface for a single report).
 
 **The demand-health KPI, defined:** ``confident_rate`` ↑ AND ``demand_entropy`` ↓
 (demand is being answered, and what remains is concentrated/fillable rather than
-diffuse noise). These are the ONLY window into silent fail-open rot (THEORY §8.3)
+diffuse noise). These are the ONLY window into silent fail-open rot (THEORY §8 tension #3)
 — fail-open side-channels can corrupt the demand signal invisibly, so the trend
 is kept load-bearing. They are COVERAGE proxies — whether a served memory
 actually helped (outcome ground truth) is not measured by this report.
@@ -32,7 +32,7 @@ WINDOW_DAYS = 7
 @dataclass(frozen=True)
 class TrendWindow:
     """One window's demand-health aggregates — the ONLY window into silent
-    fail-open rot (THEORY §8.3). Every field is total/zero-safe — an empty store
+    fail-open rot (THEORY §8 tension #3). Every field is total/zero-safe — an empty store
     yields a fully-populated window of zeros, never a raise."""
     recalls_confident: int
     misses_abstained: int
