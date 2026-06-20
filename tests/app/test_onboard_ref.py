@@ -20,6 +20,17 @@ def test_server_instructions_cover_the_verbs_and_search_first_timing():
     assert "RECALL FIRST" in s                       # the search-before-build nudge
 
 
+def test_instructions_cover_the_conflict_surface():
+    """Agents must learn the resolution loop: recall surfaces a conflicts channel, the health
+    worklist lists candidates, hive_supersede retires (human-vouched), hive_flag records an
+    advisory note (never retires). Without this the surfaced conflicts have no served verb."""
+    s = SERVER_INSTRUCTIONS
+    assert "hive_supersede" in s and "hive_flag" in s
+    assert "include_conflicts" in s              # the worklist entry point
+    low = s.lower()
+    assert "conflict" in low and "advisory" in low   # the two classes are named
+
+
 def test_instructions_convey_capture_default_vs_approved_fastpath_strategy():
     """Agents must learn the STRATEGY, not just the mechanism: capture is the cheap default
     (let demand/recall-counts promote), and the approved write is the immediate-serve fast-path
