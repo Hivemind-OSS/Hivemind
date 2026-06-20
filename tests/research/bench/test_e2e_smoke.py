@@ -3,7 +3,7 @@ REAL in-process server → evaluate → score → paired-CI compare → provenan
 fixture with ZERO API and ZERO model download. FakeProvider embedder (fast, deterministic),
 VerbatimLLM extraction, Hivemind under both gates (Oracle ceiling vs AllowAll floor). It proves the
 pipeline wires together and emits a valid, provenance-stamped report; retrieval QUALITY is the real
-run's job (real bge + Claude extraction), not this smoke's."""
+run's job (real Qwen3 + Claude extraction), not this smoke's."""
 from __future__ import annotations
 
 import json
@@ -35,7 +35,7 @@ def test_e2e_offline_hivemind_oracle_vs_allowall(tmp_path):
 
     # provenance complete (build_report would have refused otherwise) + correctly stamped
     assert rep["provenance"]["n_cases"] == 3
-    assert rep["provenance"]["embedder_model"] == "BAAI/bge-small-en-v1.5"
+    assert rep["provenance"]["embedder_model"] == "Qwen/Qwen3-Embedding-0.6B"
     assert rep["provenance"]["extractor"] == "verbatim" and rep["provenance"]["dataset_hash"]
     assert rep["provenance"]["llm_digest"] == "verbatim"
 

@@ -16,10 +16,10 @@ The orchestrator-in-loop workflow maps onto mem0 (which has NO two-phase write /
     reset   → drop every memory for the shared user.
 
 Embedder asymmetry (disclosed, intentional): both sides use the SAME base model
-``BAAI/bge-small-en-v1.5``. Hivemind projects bge's native 384 through a frozen PCA head to 256
-(its store's geometry); mem0 keeps native 384. The base MODEL is identical — the plan's ISOLATED
-contract — and the projection is Hivemind's own (lossy) engineering, so it counts for/against
-Hivemind, never a thumb on the scale.
+``Qwen/Qwen3-Embedding-0.6B``. Hivemind truncates Qwen3's native 1024 through a frozen Matryoshka
+head to 768 (its store's geometry); mem0 keeps native 1024. The base MODEL is identical — the
+plan's ISOLATED contract — and the truncation is Hivemind's own (lossy) engineering, so it counts
+for/against Hivemind, never a thumb on the scale.
 """
 from __future__ import annotations
 
@@ -101,7 +101,7 @@ class Mem0Backend:
 
 class RealMem0Client:
     """The shipping mem0, configured for a fully OFFLINE, zero-API run: a local HuggingFace ST
-    embedder (pinned to Hivemind's base model), a local file-backed Qdrant, and an UNUSED
+    embedder (pinned to Hivemind's base model, native 1024), a local file-backed Qdrant, and an UNUSED
     lmstudio LLM slot (keyless, localhost — mem0 builds an LLM eagerly but ``infer=False`` never
     calls it). mem0 is imported lazily so the model-free tests need none of it installed."""
 

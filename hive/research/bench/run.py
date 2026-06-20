@@ -33,7 +33,7 @@ from hive.research.bench.orchestrator import (
 )
 from hive.research.bench.scoring import paired_delta_ci, score_abstention, score_retrieval
 
-EMBEDDER_MODEL = "BAAI/bge-small-en-v1.5"     # the base model pinned for BOTH backends (isolated)
+EMBEDDER_MODEL = "Qwen/Qwen3-Embedding-0.6B"  # the base model pinned for BOTH backends (isolated)
 _SEATS = ("sub-a", "sub-b", "sub-c", "sub-d")  # the N≥4 subagent fleet
 _KS = (5, 10)
 
@@ -175,8 +175,8 @@ def _build_llm(extractor: str):
 
 
 def _hivemind_server_factory(h_frac_max: float = 0.9) -> Callable[[], object]:
-    """A factory booting a real bge-backed in-process server. The embedder is warmed ONCE and
-    shared across every per-case rebuild (so bge loads a single time, not once per question);
+    """A factory booting a real Qwen3-backed in-process server. The embedder is warmed ONCE and
+    shared across every per-case rebuild (so Qwen3 loads a single time, not once per question);
     ``demand_m`` huge makes the orchestrator commit the sole promotion authority; an ephemeral
     ``:memory:`` store guarantees the bench never touches a persistent operator DB.
 
@@ -190,7 +190,7 @@ def _hivemind_server_factory(h_frac_max: float = 0.9) -> Callable[[], object]:
     cfg = Config.load(db_path=":memory:", autonomy={"demand_m": 10**9},
                       recall={"H_frac_max": h_frac_max})
     embedder = registry.build_embedder(cfg, head_bytes=None)
-    embedder.load()                                    # warm bge + freeze the PCA head ONCE
+    embedder.load()                                    # warm Qwen3 + freeze the truncation head ONCE
 
     def factory():
         c = build_container(cfg, tenant_id="default", agent_id="bench-orchestrator",
@@ -205,7 +205,7 @@ def _hivemind_server_factory(h_frac_max: float = 0.9) -> Callable[[], object]:
 def _build_backend(name: str, *, recall_hfrac: float = 0.9) -> MemoryBackend:
     if name == "mem0":
         from hive.research.bench.mem0_backend import Mem0Backend, RealMem0Client
-        return Mem0Backend(RealMem0Client(model=EMBEDDER_MODEL, dims=384))
+        return Mem0Backend(RealMem0Client(model=EMBEDDER_MODEL, dims=1024))
     if name == "hivemind":
         from hive.research.bench.hivemind_backend import HivemindBackend
         return HivemindBackend(_hivemind_server_factory(recall_hfrac))
@@ -252,7 +252,7 @@ def main(argv: Optional[Sequence[str]] = None, *,
          llm_factory: Optional[Callable[[str], LLM]] = None) -> int:
     """Run the primary arm vs the baseline arm over one dataset slice and write a provenance-stamped
     JSON report. ``backend_factory`` / ``llm_factory`` are injection seams (tests run fully offline);
-    the defaults build the real bge backends and the subscription LLM."""
+    the defaults build the real Qwen3 backends and the subscription LLM."""
     cfg = _parse_args(argv)
     llm = (llm_factory or _build_llm)(cfg.extractor)
     preflight(dataset_path=cfg.dataset, llm=llm)     # verbatim has no preflight() ⇒ dataset-only

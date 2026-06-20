@@ -9,7 +9,7 @@
     reset   → rebuild a fresh server from the injected factory (clean store per arm/seed).
 
 The ``server_factory`` seam lets tests inject a fast FakeProvider-backed server
-(``build_real_server``) and the real run inject a bge-small container — same backend code,
+(``build_real_server``) and the real run inject a Qwen3-Embedding container — same backend code,
 swapped embedder. The backend tunes nothing itself: the factory is responsible for making the
 orchestrator the SOLE promotion authority (``autonomy.demand_m`` huge) so only ``commit`` serves.
 """

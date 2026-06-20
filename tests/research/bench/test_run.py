@@ -154,7 +154,8 @@ def test_compare_arms_no_ship_on_a_tie():
 
 
 def test_build_report_refuses_incomplete_provenance():
-    prov = {"dataset_hash": "abc", "n_cases": 3, "seeds": [0], "embedder_model": "bge",
+    prov = {"dataset_hash": "abc", "n_cases": 3, "seeds": [0],
+            "embedder_model": "Qwen/Qwen3-Embedding-0.6B",
             "extractor": "verbatim", "llm_digest": "n/a", "ks": [5, 10]}
     del prov["dataset_hash"]
     with pytest.raises(ValueError, match="provenance"):

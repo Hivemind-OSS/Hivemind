@@ -157,7 +157,7 @@ def test_real_mem0_client_runs_offline(tmp_path, monkeypatch):
     monkeypatch.setenv("HF_HUB_OFFLINE", "1")
     monkeypatch.setenv("TRANSFORMERS_OFFLINE", "1")
     from hive.research.bench.mem0_backend import RealMem0Client
-    client = RealMem0Client(model=_cached_minilm(), dims=384, path=str(tmp_path))
+    client = RealMem0Client(model=_cached_minilm(), dims=384, path=str(tmp_path))  # MiniLM native dim (384)
     b = Mem0Backend(client)
     mid = b.commit(b.propose("sub-a", "the dev server runs on port 8080", source_id="s1"),
                    approver="orchestrator")
