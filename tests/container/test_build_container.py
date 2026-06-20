@@ -99,6 +99,27 @@ def test_migrate_raises_on_missing_table(tmp_path):
         c.migrate()
 
 
+def test_migrate_passes_dim_guard_on_fresh_store(tmp_path):
+    """A fresh store (no persisted vectors) trivially passes the stored-vector dim guard —
+    the fresh-start path the swap targets."""
+    c = _build(tmp_path)
+    c.migrate()                                                # no raise
+
+
+def test_migrate_raises_on_stored_vector_dim_mismatch(tmp_path):
+    """A persisted episode vector whose width != geometry.d means the store was written under a
+    DIFFERENT geometry (a forgotten `hive nuke` after a model/dim swap). Boot fails fast
+    (→ EX_SOFTWARE) rather than silently serving/searching mixed-dim garbage (Law 5 + Law 6)."""
+    import numpy as np
+    c = _build(tmp_path)                                       # geometry.d defaults to 768
+    wrong = np.zeros(256, dtype=np.float32).tobytes()          # 256-wide blob != 768
+    c.conn.execute(
+        "INSERT INTO episodes (tenant_id, text, value, weight, ts, content_hash, status) "
+        "VALUES ('default','t',?,1.0,0,'h','approved')", (wrong,))
+    with pytest.raises(RuntimeError, match="different geometry|stored vector dim"):
+        c.migrate()
+
+
 def test_build_index_warms_from_approved_only():
     c = _build()
     c.warm_embedder()

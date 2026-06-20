@@ -92,8 +92,27 @@ class Container:
             if str(mode).lower() != "wal":
                 _log.error("container.wal_pragma_mismatch observed=%s expected=wal", mode)
                 raise RuntimeError(f"WAL pragma mismatch: journal_mode={mode!r} (expected wal)")
+        self._assert_stored_vectors_match_geometry()
         _log.info("container.migrate_done tables=%d db_path=%s",
                   len(present), self.cfg.db_path)
+
+    def _assert_stored_vectors_match_geometry(self) -> None:
+        """Law 5 + Law 6 boot guard: any persisted episode vector whose width != geometry.d
+        means the store was written under a DIFFERENT geometry (a forgotten `hive nuke` after a
+        model/dim swap). Fail fast at boot (→ EX_SOFTWARE) rather than build the index from
+        mixed-dim rows and serve garbage. A fresh store (no vectors) passes trivially; values are
+        float32 BLOBs, so the width is the byte length / 4."""
+        row = self.conn.execute(
+            "SELECT value FROM episodes WHERE value IS NOT NULL LIMIT 1").fetchone()
+        if row is None or row["value"] is None:
+            return
+        width = len(row["value"]) // 4
+        if width != int(self.cfg.geometry.d):
+            _log.error("container.stored_dim_mismatch width=%d geometry_d=%d",
+                       width, self.cfg.geometry.d)
+            raise RuntimeError(
+                f"stored vector dim {width} != geometry.d {self.cfg.geometry.d} — the store was "
+                "written under a different geometry; re-initialise it (hive nuke) before serving")
 
     def build_index(self) -> None:
         """Boot order: decay sweep FIRST (materialize lazy TTL deaths so the
