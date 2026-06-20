@@ -20,11 +20,17 @@ zero-norm) pair is SKIPPED, never counted as a conflict.
 """
 from __future__ import annotations
 
+import logging
 import math
 from dataclasses import dataclass
-from typing import Optional, Sequence
+from typing import Callable, Optional, Sequence
 
 import numpy as np  # permitted in domain (compute, not I/O)
+
+from hive.domain.errors import SecretRefused
+from hive.domain.secret_scan import REDACT, REFUSE
+
+_log = logging.getLogger("hive.conflict")
 
 # the mechanical relation vocabulary (distinct from the advisory ``kind`` vocabulary
 # {conflict, supersedes} on ConflictFlag — one documented mapping, THEORY decision 10).
@@ -142,3 +148,84 @@ def detect_conflicts(items: Sequence[ConflictItem], *, tau: float,
                                            anchor, loser)))
     scored.sort(key=lambda t: (-t[0], t[1].a_id, t[1].b_id))
     return tuple(note for _c, note in scored[:top_n])
+
+
+# ── the advisory-flag domain service (Layer 2 — untrusted, never retires) ───────
+
+@dataclass(frozen=True, slots=True)
+class FlagResult:
+    """The result of an advisory ``flag``. ``status`` is ``flagged`` (recorded or already
+    present) or ``disabled`` (the feature is off — nothing written). ``recorded`` is True
+    only when a NEW row landed (an idempotent re-flag is ``flagged`` + ``recorded=False``).
+    ``kind`` echoes the advisory kind, or None when disabled."""
+    status: str              # "flagged" | "disabled"
+    recorded: bool
+    kind: Optional[str]
+
+
+class ConflictFlagService:
+    """Records an UNTRUSTED advisory marker that two memories conflict (symmetric) or one
+    supersedes the other (directional) — the semantic cases the mechanical labels can't reach
+    (embedding-distant, different anchor). It NEVER retires anything: resolution stays the
+    human ``hive_supersede`` / ``hive_write(replaces=)`` path (Law 3, THEORY §10 O7). It is
+    structurally incapable of retirement — it holds only a ``ConflictFlagStore`` (write seam),
+    an ``EpisodeReader`` (id-exists), a ``SecretScanner``, and a clock; no supersede/set_trust
+    handle exists to call.
+
+    Fail direction: validation rejects (raises) BEFORE any persistence, so an invalid flag
+    leaves zero rows. Disabled ⇒ inert. PURE domain (ports + clock only)."""
+
+    def __init__(self, *, flag_store, scanner, reader, now: Callable[[], int],
+                 enabled: bool = False) -> None:
+        self._flags = flag_store          # ConflictFlagStore (record_conflict_flag)
+        self._scanner = scanner           # SecretScanner (scan the resolution text)
+        self._reader = reader             # EpisodeReader (both ids must exist)
+        self._now = now
+        self.enabled = bool(enabled)
+
+    def flag(self, *, kind: str, a_id: int, b_id: int, winner_id: Optional[int],
+             resolution: str, proposed_by: str, request_id: str = "-") -> FlagResult:
+        """Validate → scan resolution → canonicalize → record ONE advisory row. Raises
+        ValueError on a self-pair / unknown episode / a ``supersedes`` without a winner in
+        the pair (nothing written); raises SecretRefused if the resolution carries a
+        credential (nothing written). ``conflict`` is symmetric (any winner is dropped to
+        None). Idempotent on the canonical (a_id, b_id, kind)."""
+        if not self.enabled:
+            return FlagResult("disabled", recorded=False, kind=None)
+        a_id, b_id = int(a_id), int(b_id)
+        if a_id == b_id:
+            raise ValueError("cannot flag an episode against itself")
+        if kind not in ("conflict", "supersedes"):
+            raise ValueError(f"bad flag kind {kind!r}")
+        # both episodes must EXIST before anything is persisted (no half state)
+        if self._reader.get_episode(a_id) is None or self._reader.get_episode(b_id) is None:
+            raise ValueError(
+                "both episodes must exist to flag a conflict — nothing recorded")
+        if kind == "supersedes":
+            if winner_id is None or int(winner_id) not in (a_id, b_id):
+                raise ValueError(
+                    "kind='supersedes' requires winner to be one of the two episodes")
+            winner: Optional[int] = int(winner_id)
+        else:                              # conflict is symmetric — there is no winner
+            winner = None
+        # scan the human/agent resolution text BEFORE persisting (refuse → 0 rows)
+        verdict = self._scanner.scan(resolution or "")
+        if verdict.action == REFUSE:
+            _log.warning("conflict.flag_refused", extra={
+                "event": "conflict.flag_refused",
+                "rules": [f.rule for f in verdict.findings],
+                "proposed_by": proposed_by, "request_id": request_id})
+            raise SecretRefused(
+                f"refused: credential in resolution "
+                f"({len(verdict.findings)} finding(s))",
+                rules=[f.rule for f in verdict.findings],
+                n_findings=len(verdict.findings))
+        stored = verdict.redacted_text if verdict.action == REDACT else (resolution or "")
+        lo, hi = (a_id, b_id) if a_id < b_id else (b_id, a_id)   # winner stable under swap
+        recorded = self._flags.record_conflict_flag(
+            kind=kind, a_id=lo, b_id=hi, winner_id=winner, resolution=stored,
+            proposed_by=proposed_by, ts=int(self._now()))
+        _log.info("conflict.flagged", extra={
+            "event": "conflict.flagged", "kind": kind, "a_id": lo, "b_id": hi,
+            "recorded": recorded, "proposed_by": proposed_by, "request_id": request_id})
+        return FlagResult("flagged", recorded=recorded, kind=kind)
