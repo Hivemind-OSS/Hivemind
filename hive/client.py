@@ -25,6 +25,15 @@ import urllib.request
 from typing import Any, Optional
 
 
+def _add_labels(args: dict, *, polarity: Optional[str], kind: Optional[str],
+                anchor: Optional[str]) -> None:
+    """Attach the carried labels that were explicitly set — each omitted when None so an
+    old caller's envelope stays byte-identical and the server applies its defaults."""
+    for key, val in (("polarity", polarity), ("kind", kind), ("anchor", anchor)):
+        if val is not None:
+            args[key] = val
+
+
 class HiveError(Exception):
     """The ONE failure type: transport, auth, JSON-RPC, or tool-level error.
     ``http_status`` / ``rpc_error`` carry the layer detail when known."""
@@ -53,18 +62,27 @@ class HiveClient:
         rc = self._call("hive_recall", {"query": query}).get("reference_context")
         return rc if isinstance(rc, list) else []
 
-    def capture(self, text: str) -> dict:
+    def capture(self, text: str, *, polarity: Optional[str] = None,
+                kind: Optional[str] = None, anchor: Optional[str] = None) -> dict:
         """Autonomous capture: lands QUARANTINED (stored, unserved) until fleet
-        demand promotes it. No approver needed; it cannot retire anything."""
-        return self._call("hive_capture", {"text": text})
+        demand promotes it. No approver needed; it cannot retire anything.
+        ``polarity`` (do|dont|neutral), ``kind`` (registry vocabulary), and ``anchor``
+        (file/module/symbol) are carried labels — each sent only when set, so an old
+        caller's envelope is byte-unchanged and the server defaults the rest."""
+        args: dict[str, Any] = {"text": text}
+        _add_labels(args, polarity=polarity, kind=kind, anchor=anchor)
+        return self._call("hive_capture", args)
 
     def write(self, text: str, *, approved_by: str,
-              replaces: Optional[int] = None) -> dict:
+              replaces: Optional[int] = None, polarity: Optional[str] = None,
+              kind: Optional[str] = None, anchor: Optional[str] = None) -> dict:
         """Human-vouched write (lands ESTABLISHED). ``approved_by`` names the
-        human who said yes in chat; ``replaces`` retires the corrected row."""
+        human who said yes in chat; ``replaces`` retires the corrected row.
+        ``polarity``/``kind``/``anchor`` are carried labels, each sent only when set."""
         args: dict[str, Any] = {"text": text, "approved_by": approved_by}
         if replaces is not None:
             args["replaces"] = int(replaces)
+        _add_labels(args, polarity=polarity, kind=kind, anchor=anchor)
         return self._call("hive_write", args)
 
     def health(self) -> dict:

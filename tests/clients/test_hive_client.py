@@ -110,6 +110,37 @@ def test_client_write_supersedes_via_replaces(live):
     assert new["superseded"] == old["id"]                     # the SOLE retirement path
 
 
+# ── carried labels: each kwarg rides the envelope only when set ────────────────
+def test_write_and_capture_include_labels_only_when_set():
+    # the minimal-envelope contract: an old caller's bytes are unchanged; a set label
+    # rides the arguments dict (closes the gap that the client couldn't send polarity).
+    sent: list[tuple[str, dict]] = []
+    c = HiveClient("http://x", "t")
+    c._call = lambda tool, arguments: (sent.append((tool, arguments)), {})[1]
+    c.write("a fact", approved_by="alice")
+    assert sent[-1] == ("hive_write", {"text": "a fact", "approved_by": "alice"})
+    c.capture("an insight")
+    assert sent[-1] == ("hive_capture", {"text": "an insight"})
+    c.write("a bug fact", approved_by="alice", polarity="dont", kind="bug",
+            anchor="hive/domain/recall.py")
+    assert sent[-1][1] == {"text": "a bug fact", "approved_by": "alice",
+                           "polarity": "dont", "kind": "bug",
+                           "anchor": "hive/domain/recall.py"}
+    c.capture("a convention", kind="convention", anchor="x.py", polarity="do")
+    assert sent[-1][1] == {"text": "a convention", "kind": "convention",
+                           "anchor": "x.py", "polarity": "do"}
+
+
+def test_client_write_kind_anchor_round_trip(live):
+    url, token, _server = live
+    c = HiveClient(url, token)
+    c.write("OPEN — the gate abstains on flat sims", approved_by="alice",
+            kind="bug", anchor="hive/domain/recall.py")
+    hits = c.recall("OPEN — the gate abstains on flat sims")
+    assert hits and hits[0]["kind"] == "bug"
+    assert hits[0]["anchor"] == "hive/domain/recall.py"
+
+
 # ── never-partial on any failure layer ─────────────────────────────────────────
 def test_client_never_partial_on_transport_error(live):
     url, token, _server = live
