@@ -90,6 +90,54 @@ class FakeWarmProvider:
         return np.stack([self._vec(t) for t in rows], axis=0)
 
 
+class FakeClusterProvider:
+    """An ``EmbeddingProvider`` whose vectors CLUSTER by a ``cid=<n>`` tag in the text: two
+    DISTINCT texts sharing a cid are near-duplicate (cosine≈1), different cids are
+    near-orthogonal. The controllable near-dup substrate the conflict-detection tests need —
+    the hash-based ``FakeProvider`` gives orthogonal vectors for ANY distinct text, so it
+    cannot model paraphrase. A text with no ``cid=`` tag falls back to a hash vector (its own
+    singleton cluster). Also satisfies the warm contract (``loaded``/``load``/``name``)."""
+    name = "fake-cluster"
+
+    def __init__(self, d: int = 64, w_version: int = 1, eps: float = 0.02,
+                 loaded: bool = True) -> None:
+        self.d = int(d)
+        self.w_version = int(w_version)
+        self._eps = float(eps)
+        self.loaded = bool(loaded)
+
+    def load(self) -> "FakeClusterProvider":
+        self.loaded = True
+        return self
+
+    def _hashvec(self, text: str) -> np.ndarray:
+        rng = np.random.default_rng(
+            int.from_bytes(hashlib.sha256(text.encode()).digest()[:8], "big"))
+        v = rng.standard_normal(self.d).astype(np.float32)
+        n = float(np.linalg.norm(v))
+        return v / n if n else v
+
+    def _vec(self, text: str) -> np.ndarray:
+        import re
+        m = re.search(r"cid=(\d+)", text)
+        if m is None:
+            return self._hashvec(text)
+        base = np.zeros(self.d, dtype=np.float32)
+        base[int(m.group(1)) % self.d] = 1.0          # one-hot cluster direction
+        v = base + self._eps * self._hashvec(text)     # tiny per-text perturbation
+        n = float(np.linalg.norm(v))
+        return (v / n).astype(np.float32)
+
+    def encode(self, text: str) -> np.ndarray:
+        return self._vec(text)
+
+    def encode_batch(self, texts: Sequence[str]) -> np.ndarray:
+        rows = list(texts)
+        if not rows:
+            return np.zeros((0, self.d), dtype=np.float32)
+        return np.stack([self._vec(t) for t in rows], axis=0)
+
+
 class FakeIndex:
     """Exhaustive cosine over an in-memory {eid: unit-vec}. Authoritative."""
     def __init__(self) -> None:

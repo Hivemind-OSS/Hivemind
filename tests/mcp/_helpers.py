@@ -24,17 +24,20 @@ _DAY_S = 86_400
 
 def build_real_server(*, d: int = 64, h: float = 0.5, beta: float = 16.0,
                       top_n: int = 10, t0: int = 1000,
-                      scanner=None, autonomy=None):
+                      scanner=None, autonomy=None, embedder=None, conflict=None):
     """Return (server, clock). ``clock`` is mutable so tests can stamp distinct ts.
     The FULL trust-lifecycle is wired (real DemandRule + LifecycleService on the
-    real store), mirroring build_container — pass ``autonomy`` to tune the knobs."""
+    real store), mirroring build_container — pass ``autonomy`` to tune the knobs.
+    Pass ``conflict`` (a ConflictConfig) to enable conflict surfacing + the advisory
+    flag service; ``embedder`` overrides the default FakeProvider (e.g. a
+    FakeClusterProvider for controllable near-dups)."""
     # production semantics (isolation_level=None, WAL, FKs) INCLUDING the thread
     # posture: build_container shares one conn across HTTP handler threads
     # (lock-serialized), so the helper mirrors check_same_thread=False too.
     conn = connect(":memory:", check_same_thread=False)
     index = ExhaustiveCosineIndex(dim=d)
     store = SqliteEpisodeStore(conn, index=index)
-    embedder = FakeProvider(d=d)
+    embedder = embedder or FakeProvider(d=d)
     scanner = scanner or FakeScanner()
     clock = FakeClock(t0)
     aut = autonomy or AutonomyConfig()
@@ -56,10 +59,17 @@ def build_real_server(*, d: int = 64, h: float = 0.5, beta: float = 16.0,
         ledger=store, clock_now=clock.now, scanner=scanner,
         provisional_ttl_s=aut.provisional_ttl_days * _DAY_S,
         lifecycle=lifecycle, autonomy_enabled=aut.enabled)
+    flag_service = None
+    if conflict is not None:
+        from hive.domain.conflict import ConflictFlagService
+        flag_service = ConflictFlagService(
+            flag_store=store, scanner=scanner, reader=store, now=clock.now,
+            enabled=conflict.enabled)
     server = HiveMCPServer(
         admission=admission, recall=recall, store=store, embedder=embedder,
         identity=ServerIdentity("default", "agent"),
-        now=clock.now, started_ts=t0, db_path="", autonomy=aut)
+        now=clock.now, started_ts=t0, db_path="", autonomy=aut,
+        conflict=conflict, flag_service=flag_service)
     return server, clock
 
 

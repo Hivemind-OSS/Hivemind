@@ -59,7 +59,7 @@ class Container:
         self, *, cfg: Config, conn, index, store, token_store, embedder, scanner,
         clock, gate, recall,
         admission, identity: ServerIdentity, started_ts: int,
-        lifecycle=None,
+        lifecycle=None, flag_service=None,
     ) -> None:
         self.cfg = cfg
         self.conn = conn
@@ -75,6 +75,7 @@ class Container:
         self.identity = identity
         self.started_ts = int(started_ts)
         self.lifecycle = lifecycle          # LifecycleService (boot sweep + triggers)
+        self.flag_service = flag_service    # ConflictFlagService (advisory hive_flag) or None
 
     # ── Boot protocol (the strict boot order the entrypoint enforces) ─────────────
     def migrate(self) -> None:
@@ -148,7 +149,8 @@ class Container:
             admission=self.admission, recall=self.recall, store=self.store,
             embedder=self.embedder,
             identity=self.identity, now=self.clock.now, started_ts=self.started_ts,
-            db_path=db_path, autonomy=self.cfg.autonomy)
+            db_path=db_path, autonomy=self.cfg.autonomy,
+            conflict=self.cfg.conflict, flag_service=self.flag_service)
 
     # ── convenience surface (clean shutdown) ──────────────────────────────────────
     def close(self) -> None:

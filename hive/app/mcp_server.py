@@ -41,6 +41,9 @@ from hive.app.gaps import cluster_misses
 from hive.app.onboard_ref import SERVER_INSTRUCTIONS
 from hive.app.trends import compute_trends
 from hive.app.tool_defs import TOOL_DEFINITIONS
+from hive.domain.conflict import (
+    CONTRADICTION, ConflictItem, detect_conflicts,
+)
 from hive.domain.errors import SecretRefused
 from hive.domain.kinds import DEFAULT_KIND
 from hive.domain.lifecycle import is_servable
@@ -170,12 +173,31 @@ def _abstain_note(state: str) -> str:
     return "no confident match — abstained rather than surface a weak guess"
 
 
+def _conflict_note_to_wire(note) -> dict:
+    """A mechanical ``ConflictNote`` → the ids-only wire dict. Carries NO memory text (Law 4):
+    only ids, the relation, the cosine, the shared anchor, and a directional retire HINT with
+    the human resolution call spelled out — never an applied action (THEORY §10 O7)."""
+    d: dict = {"a_id": note.a_id, "b_id": note.b_id, "relation": note.relation,
+               "cosine": round(float(note.cosine), 4), "anchor": note.anchor,
+               "loser_hint": note.loser_hint, "source": "mechanical"}
+    if note.relation == CONTRADICTION:
+        d["note"] = ("opposing polarity (do vs dont) on near-duplicate memories — they "
+                     "disagree; a human resolves which holds via hive_supersede")
+    else:
+        winner = note.b_id if note.loser_hint == note.a_id else note.a_id
+        d["note"] = (f"near-duplicate memories; {note.loser_hint} is the lower-trust/older "
+                     f"retire candidate (hive_supersede loser={note.loser_hint} "
+                     f"winner={winner})")
+    return d
+
+
 class HiveMCPServer:
     """JSON-RPC 2.0 over stdio. One process == one ``ServerIdentity``."""
 
     def __init__(self, *, admission, recall, store, embedder,
                  identity: ServerIdentity, now: Callable[[], int],
-                 started_ts: int = 0, db_path: str = "", autonomy=None) -> None:
+                 started_ts: int = 0, db_path: str = "", autonomy=None,
+                 conflict=None, flag_service=None) -> None:
         self.admission = admission          # AdmissionService: write + capture
         self.recall = recall                # RecallPipeline: recall(query, *, agent_id)
         self.store = store                  # EpisodeStore: get_episode (belt) / counts
@@ -191,6 +213,14 @@ class HiveMCPServer:
             from hive.app.config import AutonomyConfig   # noqa: PLC0415 — lazy default
             autonomy = AutonomyConfig()
         self.autonomy = autonomy
+        # conflict surfacing (duck-typed ConflictConfig); None ⇒ defaults (OFF ⇒ byte-inert:
+        # no ``conflicts`` key, no health worklist). ``flag_service`` (ConflictFlagService or
+        # None) backs the advisory hive_flag verb — gated by conflict.enabled.
+        if conflict is None:
+            from hive.app.config import ConflictConfig   # noqa: PLC0415 — lazy default
+            conflict = ConflictConfig()
+        self.conflict = conflict
+        self.flag_service = flag_service
         self._tool_handlers: dict[str, Callable[[dict, ServerIdentity], dict]] = {
             "hive_write": self._handle_write,
             "hive_capture": self._handle_capture,
@@ -316,6 +346,9 @@ class HiveMCPServer:
         now = int(self.now())
         belt_ttl_s = int(self.autonomy.provisional_ttl_days) * _DAY_S
         hits: list[dict] = []
+        # the conflict carrier reads the SAME eps the belt already fetched (no extra I/O),
+        # collecting the vector + labels the detector classifies by (off ⇒ never collected).
+        items: list[ConflictItem] = []
         for h in result.hits:
             ep = self.store.get_episode(h.episode_id)
             if ep is None or not is_servable(                # ← delete this guard ⇒ mut #2
@@ -328,17 +361,41 @@ class HiveMCPServer:
             hits.append({"episode_id": h.episode_id, "text": h.text,
                          "sim": float(h.sim), "trust": h.trust, "ts": h.ts,
                          "polarity": h.polarity, "kind": h.kind, "anchor": h.anchor})
+            if getattr(self.conflict, "enabled", False):
+                items.append(ConflictItem(
+                    episode_id=ep.id, vector=ep.value, polarity=ep.polarity,
+                    anchor=ep.anchor, ts=ep.ts, trust=ep.trust))
         # an empty post-belt set is an ABSTAIN, never a confident-empty (never-hallucinate)
         abstained = (result.state != CONFIDENT) or (not hits)
         env: dict = {"reference_context": hits, "abstained": abstained,
                      "trace_id": result.trace_id, "state": result.state,
                      "entropy_norm": float(result.entropy_norm)}
+        # conflict carrier: a DISTINCT envelope key referencing IDS ONLY (never text, never
+        # reference_context — Law 4). Byte-inert when off (no key) AND when no near-dup pair
+        # is co-present (lean by default). Fail-OPEN: a detector fault never breaks the read.
+        if getattr(self.conflict, "enabled", False) and len(items) >= 2:
+            conflicts = self._recall_conflicts(items)
+            if conflicts:                                    # ← merging into reference_context ⇒ mut
+                env["conflicts"] = conflicts
         if abstained:
             _log.info("mcp.recall_abstain", extra={"event": "mcp.recall_abstain",
                       "trace_id": result.trace_id, "state": result.state,
                       "entropy_norm": float(result.entropy_norm)})
             env["note"] = _abstain_note(result.state)
         return env
+
+    def _recall_conflicts(self, items: "list[ConflictItem]") -> list[dict]:
+        """Run the pure detector over the co-served items and render the ids-only wire list.
+        FAIL-OPEN: any detector fault degrades to [] — a conflict-surfacing fault must NEVER
+        break the recall that carries it (a side-channel, THEORY Law 6)."""
+        try:
+            notes = detect_conflicts(items, tau=float(self.conflict.tau),
+                                     top_n=int(self.conflict.top_n))
+            return [_conflict_note_to_wire(n) for n in notes]
+        except Exception:                                    # noqa: BLE001 — fail open
+            _log.warning("mcp.recall_conflict_detect_failed", extra={
+                "event": "mcp.recall_conflict_detect_failed"}, exc_info=True)
+            return []
 
     def _handle_supersede(self, args: dict, identity: ServerIdentity) -> dict:
         """The human-vouched resolution verb (ALWAYS on — Law 3). Thin wrapper over the
