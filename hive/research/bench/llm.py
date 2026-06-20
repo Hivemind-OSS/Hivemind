@@ -29,6 +29,48 @@ from typing import Callable, Optional, Protocol, runtime_checkable
 
 _DEFAULT_TIMEOUT_S = 120
 
+# The four token counters accumulate as ints; cost accumulates as a float. Kept as a single
+# tuple so the accumulate/normalize helpers and the zero shape cannot drift apart.
+_TOKEN_FIELDS = ("input_tokens", "output_tokens",
+                 "cache_creation_input_tokens", "cache_read_input_tokens")
+
+
+def zero_usage() -> dict:
+    """A costless usage snapshot — the fallback for a double lacking ``usage_totals()``.
+    A FRESH dict each call (never a shared mutable constant). ``n_live_calls`` is included
+    so the shape matches ``usage_totals()`` exactly."""
+    return {f: 0 for f in _TOKEN_FIELDS} | {"total_cost_usd": 0.0, "n_live_calls": 0}
+
+
+def _zero_accum() -> dict:
+    """The 5-field accumulator shape (4 token counters + cost) — no ``n_live_calls`` (that is
+    counted separately so a replayed entry can add usage WITHOUT counting as a spent call)."""
+    return {f: 0 for f in _TOKEN_FIELDS} | {"total_cost_usd": 0.0}
+
+
+def _normalize_usage(d: Optional[dict]) -> dict:
+    """Coerce a flat usage dict to the 5-field shape with numeric zero defaults — fail-OPEN
+    on a missing/old-CLI field (a missing cost figure must never abort a run; only a missing
+    *answer* does — that stays fail-CLOSED in ``_invoke``). The BUG-002 lesson, on the cost axis."""
+    d = d or {}
+    return {f: int(d.get(f, 0) or 0) for f in _TOKEN_FIELDS} | {
+        "total_cost_usd": float(d.get("total_cost_usd", 0.0) or 0.0)}
+
+
+def _parse_usage(env: dict) -> dict:
+    """Harvest the 5-field usage from a SUCCESS envelope: token counters from ``env['usage']``,
+    cost from the top-level ``env['total_cost_usd']``. Called ONLY after the error gate."""
+    merged = dict(env.get("usage") or {})
+    merged["total_cost_usd"] = env.get("total_cost_usd", 0.0)
+    return _normalize_usage(merged)
+
+
+def _add_usage_into(total: dict, delta: dict) -> None:
+    """Accumulate ``delta`` (a 5-field usage dict) into ``total`` in place. // O(1)."""
+    for f in _TOKEN_FIELDS:
+        total[f] += int(delta.get(f, 0) or 0)
+    total["total_cost_usd"] += float(delta.get("total_cost_usd", 0.0) or 0.0)
+
 
 @dataclass(frozen=True)
 class RunResult:
@@ -70,18 +112,33 @@ class ClaudeSubscriptionLLM:
         self._max_retries = int(max_retries)
         self._log_path = Path(log_path) if log_path else None
         self._cache: dict[str, str] = {}
+        # usage provenance: per-key usage (for digest + replay reproduction), a running cold-cost
+        # total (real calls AND replayed entries), and a count of calls actually SPENT this
+        # invocation (real calls only — a replay/cache hit costs nothing, so it never bumps).
+        self._usage_by_key: dict[str, dict] = {}
+        self._usage_total: dict = _zero_accum()
+        self._n_live_calls: int = 0
         if self._log_path and self._log_path.exists():
             self._load_log()
 
     # ── public surface ──────────────────────────────────────────────────────────
     def complete(self, prompt: str, *, system: Optional[str] = None) -> str:
         key = self._key(prompt, system)
-        if key in self._cache:                          # replay / dedup — no call
+        if key in self._cache:                          # replay / dedup — no call, no usage
             return self._cache[key]
-        text = self._invoke(self._build_argv(prompt, system))
+        text, usage = self._invoke(self._build_argv(prompt, system))
         self._cache[key] = text
-        self._append_log(key, prompt, system, text)
+        self._usage_by_key[key] = usage
+        _add_usage_into(self._usage_total, usage)
+        self._n_live_calls += 1                         # a real call was spent
+        self._append_log(key, prompt, system, text, usage)
         return text
+
+    def usage_totals(self) -> dict:
+        """The accumulated COLD-reproduction cost (a fully-replayed run reproduces it) plus
+        ``n_live_calls`` = calls actually spent THIS invocation. The two are never conflated:
+        a replayed log entry adds usage but NOT a live call."""
+        return {**self._usage_total, "n_live_calls": self._n_live_calls}
 
     def preflight(self) -> None:
         """Fail fast unless the subscription CLI is present AND authenticated."""
@@ -95,8 +152,11 @@ class ClaudeSubscriptionLLM:
             raise RuntimeError(f"claude preflight failed (unauthenticated or CLI error): {e}") from e
 
     def digest(self) -> str:
-        """A stable, content-sensitive hash of the call log — provenance for the report."""
-        canon = json.dumps(sorted(self._cache.items()), ensure_ascii=False)
+        """A stable, content-sensitive hash over ``(key, output, usage)`` per entry — so a
+        tampered or absent usage value CHANGES the provenance digest (cost is a reproducibility
+        guarantee, not decoration). Entries sorted by key for determinism."""
+        entries = [[k, self._cache[k], self._usage_by_key.get(k, {})] for k in sorted(self._cache)]
+        canon = json.dumps(entries, ensure_ascii=False, sort_keys=True)
         return hashlib.sha256(canon.encode("utf-8")).hexdigest()
 
     # ── internals ────────────────────────────────────────────────────────────────
@@ -112,7 +172,7 @@ class ClaudeSubscriptionLLM:
             argv += ["--model", self._model]
         return argv
 
-    def _invoke(self, argv: list[str]) -> str:
+    def _invoke(self, argv: list[str]) -> tuple[str, dict]:
         last = "unknown error"
         for _ in range(self._max_retries + 1):
             res = self._runner(argv)
@@ -131,7 +191,9 @@ class ClaudeSubscriptionLLM:
                 raise RuntimeError(                      # definitive model error — do NOT retry
                     f"claude -p returned an error envelope (subtype={env.get('subtype')!r}, "
                     f"is_error={env.get('is_error')!r}): {env.get('result')!r}")
-            return str(env["result"])
+            # usage is harvested ONLY past the error gate — an error envelope never yields a
+            # usage tuple (moving this above the raise would let a failure's tokens be counted).
+            return str(env["result"]), _parse_usage(env)
         raise RuntimeError(f"claude -p failed after {self._max_retries + 1} attempt(s): {last}")
 
     def _load_log(self) -> None:
@@ -141,25 +203,42 @@ class ClaudeSubscriptionLLM:
                 continue
             e = json.loads(line)
             self._cache[e["key"]] = e["output"]
+            # a replayed entry reproduces the cold cost (accumulate usage) but spends NO live
+            # call (no n_live_calls bump) — older logs lacking "usage" normalize to zeros.
+            usage = _normalize_usage(e.get("usage"))
+            self._usage_by_key[e["key"]] = usage
+            _add_usage_into(self._usage_total, usage)
 
-    def _append_log(self, key: str, prompt: str, system: Optional[str], output: str) -> None:
+    def _append_log(self, key: str, prompt: str, system: Optional[str], output: str,
+                    usage: dict) -> None:
         if not self._log_path:
             return
         self._log_path.parent.mkdir(parents=True, exist_ok=True)
         entry = {"key": key, "prompt": prompt, "system": system,
-                 "model": self._model, "output": output}
+                 "model": self._model, "output": output, "usage": usage}
         with self._log_path.open("a", encoding="utf-8") as fh:
             fh.write(json.dumps(entry, ensure_ascii=False) + "\n")
 
 
 class FakeLLM:
-    """The deterministic double for gate / extractor tests. ``responder(prompt, system) -> str``
-    scripts the reply; every call is recorded in ``calls`` for assertions."""
+    """The deterministic double for gate / extractor / agent-loop tests. ``responder(prompt,
+    system) -> str`` scripts the reply; every call is recorded in ``calls`` for assertions.
+    Optional scripted ``usage`` (a per-``complete`` usage dict, default zeros) accumulates so the
+    token-attribution tests have a non-trivial spend to assert against."""
 
-    def __init__(self, responder: Optional[Callable[[str, Optional[str]], str]] = None) -> None:
+    def __init__(self, responder: Optional[Callable[[str, Optional[str]], str]] = None, *,
+                 usage: Optional[dict] = None) -> None:
         self._responder = responder or (lambda prompt, system: "")
         self.calls: list[tuple[str, Optional[str]]] = []
+        self._usage_per_call = _normalize_usage(usage)   # None ⇒ zeros
+        self._usage_total: dict = _zero_accum()
+        self._n_live_calls: int = 0
 
     def complete(self, prompt: str, *, system: Optional[str] = None) -> str:
         self.calls.append((prompt, system))
+        _add_usage_into(self._usage_total, self._usage_per_call)
+        self._n_live_calls += 1
         return self._responder(prompt, system)
+
+    def usage_totals(self) -> dict:
+        return {**self._usage_total, "n_live_calls": self._n_live_calls}

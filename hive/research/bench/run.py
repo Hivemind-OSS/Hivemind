@@ -26,7 +26,7 @@ from typing import Callable, Optional, Sequence
 
 from hive.research.bench.backends import MemoryBackend, RecallObs
 from hive.research.bench.dataset import Case, gold_relevant, load_longmemeval
-from hive.research.bench.llm import LLM
+from hive.research.bench.llm import LLM, zero_usage
 from hive.research.bench.orchestrator import (
     AllowAllGate, GatePolicy, LLMOrchestratorGate, OracleEvidenceGate,
     extract_facts, run_ingestion, run_queries,
@@ -84,6 +84,9 @@ class VerbatimLLM:
 
     def digest(self) -> str:
         return "verbatim"
+
+    def usage_totals(self) -> dict:
+        return zero_usage()                          # offline, costless — the agent-loop plumbing
 
 
 # ── scoring one arm + comparing two ────────────────────────────────────────────

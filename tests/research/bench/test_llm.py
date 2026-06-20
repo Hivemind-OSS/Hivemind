@@ -158,3 +158,104 @@ def test_fakellm_scripts_responses_and_records_calls():
 
 def test_fakellm_default_is_empty_string():
     assert FakeLLM().complete("anything") == ""
+
+
+# ── usage capture (ABSTAIN-TOKEN C1: real agent spend, not a proxy) ─────────────
+def _env_usage(result: str, *, input_tokens: int = 0, output_tokens: int = 0,
+               cache_creation: int = 0, cache_read: int = 0, cost: float = 0.0,
+               is_error: bool = False, subtype: str = "success") -> str:
+    """An envelope carrying a `usage` block + top-level `total_cost_usd` (the real shape)."""
+    return json.dumps({
+        "type": "result", "subtype": subtype, "is_error": is_error, "result": result,
+        "usage": {"input_tokens": input_tokens, "output_tokens": output_tokens,
+                  "cache_creation_input_tokens": cache_creation,
+                  "cache_read_input_tokens": cache_read},
+        "total_cost_usd": cost, "session_id": "x"})
+
+
+def test_usage_accumulates_across_real_calls():
+    r = _Runner(RunResult(0, _env_usage("a", input_tokens=10, output_tokens=3, cost=0.001), ""),
+                RunResult(0, _env_usage("b", input_tokens=20, output_tokens=5, cost=0.002), ""))
+    llm = ClaudeSubscriptionLLM(runner=r)
+    llm.complete("one"); llm.complete("two")
+    u = llm.usage_totals()
+    assert u["input_tokens"] == 30 and u["output_tokens"] == 8
+    assert u["total_cost_usd"] == pytest.approx(0.003)
+    assert u["n_live_calls"] == 2
+
+
+def test_cache_hit_adds_no_usage_and_no_live_call():
+    r = _Runner(RunResult(0, _env_usage("cached", input_tokens=10, cost=0.5), ""))
+    llm = ClaudeSubscriptionLLM(runner=r)
+    llm.complete("same"); llm.complete("same")            # second served from cache
+    assert len(r.calls) == 1
+    u = llm.usage_totals()
+    assert u["input_tokens"] == 10 and u["total_cost_usd"] == pytest.approx(0.5)
+    assert u["n_live_calls"] == 1                          # a cache hit spends nothing
+
+
+def test_missing_usage_envelope_yields_zeros_no_raise():
+    # the legacy envelope (no `usage` block) must accumulate zeros, NEVER crash (BUG-002 class)
+    r = _Runner(RunResult(0, _envelope("ok"), ""))
+    llm = ClaudeSubscriptionLLM(runner=r)
+    assert llm.complete("q") == "ok"
+    u = llm.usage_totals()
+    assert u["input_tokens"] == 0 and u["total_cost_usd"] == 0.0 and u["n_live_calls"] == 1
+
+
+def test_error_envelope_with_usage_still_raises_and_harvests_nothing():
+    # usage is parsed ONLY after the error gate — an error envelope never yields a usage tuple
+    r = _Runner(RunResult(0, _env_usage("nope", input_tokens=999, cost=9.0,
+                                        is_error=True, subtype="error_during_execution"), ""))
+    llm = ClaudeSubscriptionLLM(runner=r, max_retries=0)
+    with pytest.raises(RuntimeError, match="error_during_execution|is_error"):
+        llm.complete("q")
+    assert llm.usage_totals()["input_tokens"] == 0        # nothing harvested from a failure
+    assert llm.usage_totals()["total_cost_usd"] == 0.0
+
+
+def test_replay_log_reproduces_usage_total_without_recalling(tmp_path):
+    log = tmp_path / "calls.jsonl"
+    r1 = _Runner(RunResult(0, _env_usage("first", input_tokens=42, output_tokens=7, cost=0.01), ""))
+    ClaudeSubscriptionLLM(runner=r1, log_path=log).complete("q")
+    # a fresh instance replays the log — runner never called, cold-cost total reproduced
+    r2 = _Runner(RunResult(0, _env_usage("SHOULD-NOT", input_tokens=999), ""))
+    llm2 = ClaudeSubscriptionLLM(runner=r2, log_path=log)
+    assert llm2.complete("q") == "first" and len(r2.calls) == 0
+    u = llm2.usage_totals()
+    assert u["input_tokens"] == 42 and u["output_tokens"] == 7
+    assert u["total_cost_usd"] == pytest.approx(0.01)
+    assert u["n_live_calls"] == 0                          # replay spends nothing
+
+
+def _digest_for_input_tokens(input_tokens: int) -> str:
+    r = _Runner(RunResult(0, _env_usage("out", input_tokens=input_tokens), ""))
+    llm = ClaudeSubscriptionLLM(runner=r)
+    llm.complete("q")
+    return llm.digest()
+
+
+def test_digest_covers_usage_so_a_tampered_cost_changes_provenance():
+    # same prompt + same output, different usage ⇒ different provenance digest
+    assert _digest_for_input_tokens(10) != _digest_for_input_tokens(20)
+    assert _digest_for_input_tokens(10) == _digest_for_input_tokens(10)   # stable when equal
+
+
+def test_fakellm_usage_totals_default_zero_and_scripted():
+    assert FakeLLM().usage_totals() == {
+        "input_tokens": 0, "output_tokens": 0, "cache_creation_input_tokens": 0,
+        "cache_read_input_tokens": 0, "total_cost_usd": 0.0, "n_live_calls": 0}
+    f = FakeLLM(usage={"input_tokens": 5, "output_tokens": 2, "total_cost_usd": 0.001})
+    f.complete("a"); f.complete("b")
+    u = f.usage_totals()
+    assert u["input_tokens"] == 10 and u["output_tokens"] == 4
+    assert u["total_cost_usd"] == pytest.approx(0.002) and u["n_live_calls"] == 2
+
+
+def test_zero_usage_helper_is_a_fresh_full_shape():
+    from hive.research.bench.llm import zero_usage
+    z = zero_usage()
+    assert z == {"input_tokens": 0, "output_tokens": 0, "cache_creation_input_tokens": 0,
+                 "cache_read_input_tokens": 0, "total_cost_usd": 0.0, "n_live_calls": 0}
+    z["input_tokens"] = 99
+    assert zero_usage()["input_tokens"] == 0              # fresh dict each call (no shared mutation)
