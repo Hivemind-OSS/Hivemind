@@ -25,8 +25,8 @@ from hive.research.bench.substrate import TaskCase
 
 # Frozen, versioned templates — never tuned on reported questions (anti-reward-hacking). Bump the
 # version to change behavior. The notes header is FIXED; only the served block varies across arms.
-_TASK_PROMPT_VERSION = "task.v1"
-_SUCCESS_VERSION = "success.v1"
+TASK_PROMPT_VERSION = "task.v1"
+SUCCESS_VERSION = "success.v1"
 
 # A correct decline on an unanswerable query (the model was given no answering note). Frozen set.
 _REFUSAL_MARKERS = (
