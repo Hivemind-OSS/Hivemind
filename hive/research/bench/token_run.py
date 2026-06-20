@@ -62,6 +62,7 @@ def _arm_summary(obs: ArmTokenObs) -> dict:
             "n": len(rt),
             "input_tokens": sum(t.input_tokens for t in rt),
             "served_text_count": sum(t.served_text_count for t in rt),
+            "served_gold": sum(1 for t in rt if t.served_gold),
             "success_rate": (sum(1 for t in rt if t.success) / len(rt)) if rt else None,
             "abstained_on_answerable": sum(1 for t in rt if t.abstained_on_answerable),
         }
@@ -69,6 +70,7 @@ def _arm_summary(obs: ArmTokenObs) -> dict:
         "n": len(tasks),
         "input_tokens_total": sum(t.input_tokens for t in tasks),
         "served_text_count": sum(t.served_text_count for t in tasks),
+        "served_gold": sum(1 for t in tasks if t.served_gold),
         "success_rate": (sum(1 for t in tasks if t.success) / len(tasks)) if tasks else None,
         "abstained_on_answerable": sum(1 for t in tasks if t.abstained_on_answerable),
         "usage_total": dict(obs.usage_total),         # cost + n_live_calls + token breakdown
@@ -129,7 +131,7 @@ def build_token_report(*, arms: dict, deltas: dict, provenance: dict) -> dict:
     if not arms:
         raise ValueError("refusing to emit a token report with no arms")
     for name, a in arms.items():
-        if "success_rate" not in a:
+        if a.get("success_rate") is None:    # missing key OR a degenerate empty (zero-task) arm
             raise ValueError(f"refusing to emit: arm {name!r} is missing its success vector")
     return {"provenance": dict(provenance), "arms": arms, "deltas": deltas}
 
@@ -151,8 +153,9 @@ def _default_backend_factory(cfg) -> Callable[[str], MemoryBackend]:
 def _default_llm_factory(cfg) -> Callable[[str], LLM]:
     from hive.research.bench.llm import ClaudeSubscriptionLLM
     def make(arm: str) -> LLM:
-        # a SEPARATE log/cache per arm (and per the preflight probe) so no arm's cache zeroes
-        # another's genuine spend; same agent model across arms (equal footing).
+        # a SEPARATE log/cache per arm so no arm's cache zeroes another's genuine spend; same agent
+        # model across arms (equal footing). The preflight probe shares the mem0 arm's instance —
+        # its spend is excluded from that arm's total by run_arm's post-preflight `before` snapshot.
         log = f"{cfg.llm_log}.{arm}.jsonl" if cfg.llm_log else None
         return ClaudeSubscriptionLLM(log_path=log, model=cfg.model)
     return make
@@ -218,7 +221,7 @@ def main(argv: Optional[Sequence[str]] = None, *,
         backend.reset()
         pre = preload(backend, memories, approver=_APPROVER)
         arm_obs[arm] = run_arm(backend, llms[arm], task_cases, seat=_READER_SEAT,
-                               served_text=pre.mem_text, arm=arm)
+                               served_text=pre.mem_text, mem_source=pre.mem_source, arm=arm)
 
     scored = score_token_arms(arm_obs, seed=seed)
     provenance = {

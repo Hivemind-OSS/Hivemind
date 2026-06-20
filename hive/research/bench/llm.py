@@ -42,6 +42,13 @@ def zero_usage() -> dict:
     return {f: 0 for f in _TOKEN_FIELDS} | {"total_cost_usd": 0.0, "n_live_calls": 0}
 
 
+def zero_served_usage() -> dict:
+    """A costless SERVED-usage snapshot (advances on every served result, real or replay) — the
+    fallback for a double lacking ``served_usage_totals()``. ``n_served`` counts served results,
+    NOT live calls (a replay/cache hit serves but spends nothing)."""
+    return {f: 0 for f in _TOKEN_FIELDS} | {"total_cost_usd": 0.0, "n_served": 0}
+
+
 def _zero_accum() -> dict:
     """The 5-field accumulator shape (4 token counters + cost) — no ``n_live_calls`` (that is
     counted separately so a replayed entry can add usage WITHOUT counting as a spent call)."""
@@ -118,19 +125,28 @@ class ClaudeSubscriptionLLM:
         self._usage_by_key: dict[str, dict] = {}
         self._usage_total: dict = _zero_accum()
         self._n_live_calls: int = 0
+        # the SERVED total (advances on EVERY served result — real call, cache hit, OR replay hit)
+        # is the measurement axis the agent loop differences; unlike _usage_total it is NOT
+        # pre-loaded from the log, so a re-run reproduces the per-call spend as it is served.
+        self._served_usage: dict = _zero_accum()
+        self._served_calls: int = 0
         if self._log_path and self._log_path.exists():
             self._load_log()
 
     # ── public surface ──────────────────────────────────────────────────────────
     def complete(self, prompt: str, *, system: Optional[str] = None) -> str:
         key = self._key(prompt, system)
-        if key in self._cache:                          # replay / dedup — no call, no usage
+        if key in self._cache:                          # replay / dedup — no live call
+            _add_usage_into(self._served_usage, self._usage_by_key.get(key, {}))
+            self._served_calls += 1                     # ...but the result WAS served (it has a cost)
             return self._cache[key]
         text, usage = self._invoke(self._build_argv(prompt, system))
         self._cache[key] = text
         self._usage_by_key[key] = usage
         _add_usage_into(self._usage_total, usage)
+        _add_usage_into(self._served_usage, usage)
         self._n_live_calls += 1                         # a real call was spent
+        self._served_calls += 1
         self._append_log(key, prompt, system, text, usage)
         return text
 
@@ -139,6 +155,13 @@ class ClaudeSubscriptionLLM:
         ``n_live_calls`` = calls actually spent THIS invocation. The two are never conflated:
         a replayed log entry adds usage but NOT a live call."""
         return {**self._usage_total, "n_live_calls": self._n_live_calls}
+
+    def served_usage_totals(self) -> dict:
+        """The usage of every SERVED result this invocation (real call, cache hit, OR replay hit) —
+        the agent-loop measurement axis. Reproducible across a cold run and a log replay: the spend
+        is attributed when the result is served, never pre-loaded, so a `--llm-log` re-run yields the
+        SAME per-task tokens instead of zero. ``n_served`` counts served results, not live calls."""
+        return {**self._served_usage, "n_served": self._served_calls}
 
     def preflight(self) -> None:
         """Fail fast unless the subscription CLI is present AND authenticated."""
@@ -242,3 +265,7 @@ class FakeLLM:
 
     def usage_totals(self) -> dict:
         return {**self._usage_total, "n_live_calls": self._n_live_calls}
+
+    def served_usage_totals(self) -> dict:
+        # FakeLLM has no cache, so every complete is a served real call.
+        return {**self._usage_total, "n_served": self._n_live_calls}

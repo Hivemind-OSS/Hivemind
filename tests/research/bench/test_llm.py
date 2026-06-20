@@ -259,3 +259,38 @@ def test_zero_usage_helper_is_a_fresh_full_shape():
                  "cache_read_input_tokens": 0, "total_cost_usd": 0.0, "n_live_calls": 0}
     z["input_tokens"] = 99
     assert zero_usage()["input_tokens"] == 0              # fresh dict each call (no shared mutation)
+
+
+# ── served usage (the MEASUREMENT axis: advances on EVERY served result) ────────
+# usage_totals() is the cold-reproduction cost (cache/replay hit adds nothing); served_usage_totals()
+# is what the agent loop measures — it must advance on a cache OR replay hit too, else a re-run from
+# the log (or a within-arm duplicate) would report ZERO injected tokens for the served call.
+def test_served_usage_counts_a_within_arm_cache_hit_unlike_cold_usage():
+    r = _Runner(RunResult(0, _env_usage("x", input_tokens=10, cost=0.5), ""))
+    llm = ClaudeSubscriptionLLM(runner=r)
+    llm.complete("same"); llm.complete("same")           # 1 real call + 1 cache hit
+    assert llm.usage_totals()["input_tokens"] == 10      # cold: the unique call only
+    sv = llm.served_usage_totals()
+    assert sv["input_tokens"] == 20 and sv["n_served"] == 2   # served: BOTH serves counted
+    assert sv["total_cost_usd"] == pytest.approx(1.0)
+
+
+def test_served_usage_reproduces_on_a_replay_run(tmp_path):
+    log = tmp_path / "calls.jsonl"
+    ClaudeSubscriptionLLM(runner=_Runner(RunResult(0, _env_usage("first", input_tokens=42), "")),
+                          log_path=log).complete("q")
+    # a fresh instance over the same log: served is ZERO until it serves, then reproduces the spend
+    llm2 = ClaudeSubscriptionLLM(runner=_Runner(RunResult(0, _env_usage("X", input_tokens=999), "")),
+                                 log_path=log)
+    assert llm2.served_usage_totals()["input_tokens"] == 0      # nothing served yet
+    assert llm2.complete("q") == "first"                         # replay hit (no runner call)
+    assert llm2.served_usage_totals()["input_tokens"] == 42      # served spend reproduced on replay
+    assert llm2.served_usage_totals()["n_served"] == 1
+    assert llm2.usage_totals()["n_live_calls"] == 0              # ...but no live call was spent
+
+
+def test_fakellm_served_usage_tracks_completes():
+    f = FakeLLM(usage={"input_tokens": 3})
+    f.complete("a"); f.complete("b")
+    sv = f.served_usage_totals()
+    assert sv["input_tokens"] == 6 and sv["n_served"] == 2

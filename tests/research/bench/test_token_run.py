@@ -24,14 +24,21 @@ _FIX = Path(__file__).parent / "fixtures" / "longmemeval_tiny.json"
 
 # ── arm builders for score_token_arms ──────────────────────────────────────────
 def _arm(name: str, specs) -> ArmTokenObs:
-    """specs: list of (regime, input_tokens, answer_match, abstained_on_answerable)."""
-    tasks = tuple(
-        TaskObs(query=f"q{i}", regime=r, served_text_count=(0 if abst else 1),
-                input_tokens=tk, answer_match=am, abstained_on_answerable=abst)
-        for i, (r, tk, am, abst) in enumerate(specs))
+    """specs: list of (regime, input_tokens, answer_match, abstained_on_answerable). A served
+    answerable task is taken to have served its gold (served_gold), so success == answer_match
+    there; an answerable-abstain has served nothing (served_gold False) ⇒ a counted failure."""
+    tasks = []
+    for i, (r, tk, am, abst) in enumerate(specs):
+        answerable = r != "no-relevant"
+        served_ct = 0 if abst else 1
+        served_gold = answerable and not abst
+        tasks.append(TaskObs(query=f"q{i}", regime=r, answerable=answerable,
+                             served_text_count=served_ct, input_tokens=tk, answer_match=am,
+                             served_gold=served_gold, abstained_on_answerable=abst))
+    tasks = tuple(tasks)
     usage = {"input_tokens": sum(t.input_tokens for t in tasks), "output_tokens": 0,
              "cache_creation_input_tokens": 0, "cache_read_input_tokens": 0,
-             "total_cost_usd": 0.0, "n_live_calls": len(tasks)}
+             "total_cost_usd": 0.0, "n_served": len(tasks)}
     return ArmTokenObs(arm=name, tasks=tasks, usage_total=usage)
 
 
@@ -53,6 +60,24 @@ def test_token_delta_does_not_claim_savings_when_tokens_tie():
     assert sc["deltas"]["C-B"]["tokens"]["saves"] is False               # a tie is not a saving
 
 
+def test_token_delta_flags_costs_more_when_an_arm_spends_strictly_more():
+    A = _arm(ARM_MEM0, [("no-relevant", 10, True, False)] * 5)
+    B = _arm(ARM_OFF, [("no-relevant", 10, True, False)] * 5)
+    C = _arm(ARM_ON, [("no-relevant", 100, True, False)] * 5)            # C spends MORE than B
+    sc = score_token_arms({ARM_MEM0: A, ARM_OFF: B, ARM_ON: C}, seed=0)
+    cb = sc["deltas"]["C-B"]["tokens"]
+    assert cb["costs_more"] is True and cb["saves"] is False             # R1/R3: the symmetric verdict
+
+
+def test_success_delta_flags_an_improvement():
+    A = _arm(ARM_MEM0, [("single-answer", 50, True, False)] * 5)
+    B = _arm(ARM_OFF, [("single-answer", 50, False, False)] * 5)         # B never answers correctly
+    C = _arm(ARM_ON, [("single-answer", 50, True, False)] * 5)           # C always does
+    sc = score_token_arms({ARM_MEM0: A, ARM_OFF: B, ARM_ON: C}, seed=0)
+    cb = sc["deltas"]["C-B"]["success"]
+    assert cb["improves"] is True and cb["regresses"] is False
+
+
 def test_success_delta_flags_a_regression():
     # C abstains on answerable queries (success 0) while B serves them (success 1) ⇒ C regresses
     B = _arm(ARM_OFF, [("single-answer", 100, True, False)] * 5)
@@ -72,6 +97,30 @@ def test_per_arm_summary_breaks_tokens_and_success_down_by_regime():
     assert sm["by_regime"]["broad-relevant"]["success_rate"] == pytest.approx(0.0)
     assert sm["input_tokens_total"] == 120 and sm["success_rate"] == pytest.approx(2 / 3)
     assert sm["served_text_count"] == 3 and sm["by_regime"]["single-answer"]["served_text_count"] == 1
+    assert sm["served_gold"] == 2 and sm["by_regime"]["single-answer"]["served_gold"] == 1
+
+
+def test_per_regime_abstained_on_answerable_is_tallied():
+    # an answerable-abstain in the broad-relevant regime must be machine-readable per-regime (AC10)
+    A = _arm(ARM_MEM0, [("single-answer", 10, True, False), ("broad-relevant", 0, False, True)])
+    sc = score_token_arms({ARM_MEM0: A, ARM_OFF: A, ARM_ON: A}, seed=0)
+    sm = sc["arms"][ARM_MEM0]
+    assert sm["by_regime"]["broad-relevant"]["abstained_on_answerable"] == 1
+    assert sm["abstained_on_answerable"] == 1
+
+
+def test_combined_digest_changes_when_any_arm_differs():
+    from hive.research.bench.llm import FakeLLM
+    from hive.research.bench.token_run import _combined_digest
+
+    class _D(FakeLLM):
+        def __init__(self, d): super().__init__(); self._d = d
+        def digest(self): return self._d
+    base = {ARM_MEM0: _D("x"), ARM_OFF: _D("y"), ARM_ON: _D("z")}
+    same = {ARM_MEM0: _D("x"), ARM_OFF: _D("y"), ARM_ON: _D("z")}
+    one_diff = {ARM_MEM0: _D("x"), ARM_OFF: _D("CHANGED"), ARM_ON: _D("z")}
+    assert _combined_digest(base) == _combined_digest(same)          # stable when identical
+    assert _combined_digest(base) != _combined_digest(one_diff)      # a tamper in ANY arm shows
 
 
 def test_score_token_arms_requires_aligned_arms():
@@ -99,6 +148,13 @@ def test_build_token_report_refuses_without_success_vectors():
     with pytest.raises(ValueError, match="success"):
         build_token_report(arms={ARM_MEM0: {"input_tokens_total": 1}}, deltas={},
                            provenance=_complete_provenance())
+
+
+def test_build_token_report_refuses_a_degenerate_empty_arm():
+    # _arm_summary emits success_rate=None for a zero-task arm; that must not slip past the guard
+    with pytest.raises(ValueError, match="success"):
+        build_token_report(arms={ARM_MEM0: {"success_rate": None, "input_tokens_total": 0}},
+                           deltas={}, provenance=_complete_provenance())
 
 
 def test_build_token_report_emits_with_complete_inputs():
