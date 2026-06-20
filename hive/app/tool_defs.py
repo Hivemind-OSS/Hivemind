@@ -91,6 +91,21 @@ TOOL_DEFINITIONS: list[dict] = [
                      "properties": {"loser": {"type": "integer"},
                                     "winner": {"type": "integer"},
                                     "approved_by": {"type": "string"}}}},
+    {"name": "hive_flag",
+     "description": "Advisory ONLY: flag two recalled memories as in conflict or one "
+                    "superseding the other. It NEVER retires anything — it records a note "
+                    "surfaced in hive_health(include_conflicts=true) for a human to resolve "
+                    "(via hive_supersede). kind='conflict' (they disagree, winner unknown) or "
+                    "kind='supersedes' (winner names the surviving memory). Use for the "
+                    "semantic cases the automatic near-dup scan can't reach (different wording "
+                    "or location). Pass resolution to record your rationale (it is "
+                    "secret-scanned).",
+     "inputSchema": {"type": "object", "required": ["a", "b", "kind"],
+                     "properties": {"a": {"type": "integer"}, "b": {"type": "integer"},
+                                    "kind": {"type": "string",
+                                             "enum": ["conflict", "supersedes"]},
+                                    "winner": {"type": "integer"},
+                                    "resolution": {"type": "string"}}}},
     {"name": "hive_health",
      "description": "Cheap liveness/identity snapshot (+ trust_counts, n_misses_7d). "
                     "Fail-closed {ok:false,error,db_path} on a probe failure. "

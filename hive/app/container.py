@@ -29,6 +29,7 @@ from hive.app import registry
 from hive.app.config import Config
 from hive.app.mcp_server import HiveMCPServer, ServerIdentity
 from hive.domain.admission import AdmissionService
+from hive.domain.conflict import ConflictFlagService
 from hive.domain.lifecycle import DemandRule, LifecycleService
 from hive.domain.recall import RecallPipeline
 
@@ -225,6 +226,11 @@ def build_container(cfg: Config, *, tenant_id: str, agent_id: str,
         lifecycle=lifecycle, autonomy_enabled=aut.enabled)
     admission = AdmissionService(store, scanner, embedder, now=clock.now,
                                  lifecycle=lifecycle, autonomy_enabled=aut.enabled)
+    # the advisory conflict-flag service (Layer 2): reuses the store (ConflictFlagStore +
+    # EpisodeReader) + scanner; gated by conflict.enabled. Holds NO retirement handle.
+    flag_service = ConflictFlagService(
+        flag_store=store, scanner=scanner, reader=store, now=clock.now,
+        enabled=cfg.conflict.enabled)
 
     identity = ServerIdentity(tenant_id=tenant_id, agent_id=agent_id)
 
@@ -235,4 +241,5 @@ def build_container(cfg: Config, *, tenant_id: str, agent_id: str,
         cfg=cfg, conn=conn, index=index, store=store, token_store=token_store,
         embedder=embedder, scanner=scanner, clock=clock, gate=gate,
         recall=recall, admission=admission,
-        identity=identity, started_ts=int(clock.now()), lifecycle=lifecycle)
+        identity=identity, started_ts=int(clock.now()), lifecycle=lifecycle,
+        flag_service=flag_service)

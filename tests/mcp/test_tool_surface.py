@@ -18,9 +18,10 @@ from hive.domain.secret_scan import scan as _scan
 from tests.fakes._fakes import FakeIndex
 from tests.mcp._helpers import build_real_server, content, is_error, tool_call
 
-# net-5: the original 4 verbs + the always-on resolution verb hive_supersede
-# (the advisory hive_flag is added in its own chunk → net-6).
-_TOOLS = {"hive_write", "hive_capture", "hive_recall", "hive_supersede", "hive_health"}
+# net-6: the original 4 verbs + the conflict surface — hive_supersede (always-on
+# human-vouched resolution) + hive_flag (advisory, gated by conflict.enabled).
+_TOOLS = {"hive_write", "hive_capture", "hive_recall", "hive_supersede",
+          "hive_flag", "hive_health"}
 _DROPPED = {"hive_init", "hive_fetch", "hive_pending", "hive_approve", "hive_reject",
             "hive_evidence", "hive_consolidate", "hive_schemas", "hive_recall_cold",
             "hive_restore_cold", "hive_reconsolidate", "hive_audit", "hive_outcome"}

@@ -236,6 +236,7 @@ class HiveMCPServer:
             "hive_capture": self._handle_capture,
             "hive_recall": self._handle_recall,
             "hive_supersede": self._handle_supersede,
+            "hive_flag": self._handle_flag,
             "hive_health": self._handle_health,
         }
 
@@ -424,6 +425,34 @@ class HiveMCPServer:
                     "approved_by": approved_by}
         return {"status": "noop", "loser": loser, "winner": winner,
                 "reason": "unknown id or self-supersede — nothing retired"}
+
+    def _handle_flag(self, args: dict, identity: ServerIdentity) -> dict:
+        """The advisory Layer-2 verb (gated by conflict.enabled). Records an UNTRUSTED
+        conflict/supersedes marker via the ConflictFlagService — it NEVER retires (resolution
+        stays the human hive_supersede). ``proposed_by`` is the transport identity (INV-2,
+        never a tool field). A validation failure is a clean ``rejected`` envelope; a secret in
+        the resolution is ``refused`` (0 rows)."""
+        if self.flag_service is None:
+            return {"status": "disabled"}
+        a = int(args.get("a"))                       # required+integer (schema belt)
+        b = int(args.get("b"))
+        winner = args.get("winner")
+        try:
+            res = self.flag_service.flag(
+                kind=args.get("kind"), a_id=a, b_id=b,
+                winner_id=(int(winner) if winner is not None else None),
+                resolution=args.get("resolution") or "",
+                proposed_by=identity.agent_id)
+        except SecretRefused as e:
+            return {"status": "refused", "reason": str(e),
+                    "scan": {"action": "refuse", "rules": e.rules,
+                             "n_findings": e.n_findings}}
+        except ValueError as e:
+            return {"status": "rejected", "reason": str(e)}
+        if res.status == "disabled":
+            return {"status": "disabled"}
+        return {"status": res.status, "kind": res.kind, "recorded": res.recorded,
+                "a": a, "b": b}
 
     def _handle_health(self, args: dict, identity: ServerIdentity) -> dict:
         try:
