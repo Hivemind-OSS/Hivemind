@@ -78,7 +78,7 @@ def test_final_user_is_non_root(image):
 def test_weights_loadable_with_network_none(image):
     # the structural invariant: the model loads with the network namespace REMOVED.
     code = ("from sentence_transformers import SentenceTransformer;"
-            "SentenceTransformer('BAAI/bge-small-en-v1.5');print('LOADED_OFFLINE')")
+            "SentenceTransformer('Qwen/Qwen3-Embedding-0.6B');print('LOADED_OFFLINE')")
     r = subprocess.run(["docker", "run", "--rm", "--network", "none",
                         "--entrypoint", "python", image, "-c", code],
                        capture_output=True, text=True, timeout=300)

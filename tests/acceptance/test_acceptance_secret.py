@@ -6,8 +6,12 @@ from __future__ import annotations
 import json
 import logging
 
+import pytest
+
 from hive.app.mcp_server import MCPRequest
 from tests.acceptance.conftest import build_acc
+
+pytestmark = pytest.mark.embed   # loads the real Qwen3 model (gated heavy tier)
 
 # A realistic AWS access-key shape (a secret-floor rule family). Not a real credential.
 _PLANTED = "deploy creds: AKIAIOSFODNN7EXAMPLE / wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"

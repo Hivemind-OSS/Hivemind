@@ -60,7 +60,7 @@ def test_runtime_healthcheck_runs_healthcheck_module():
 def test_weights_baked_in_builder():
     builder = _stages()["builder"]
     assert "hive.tools.bake_model" in builder
-    assert "BAAI/bge-small-en-v1.5" in builder
+    assert "Qwen/Qwen3-Embedding-0.6B" in builder
 
 
 def test_bake_dest_matches_runtime_hub_resolution():

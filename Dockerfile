@@ -16,12 +16,13 @@ RUN pip install --no-cache-dir ".[embed]"
 COPY hive/ ./hive/
 RUN pip install --no-cache-dir ".[embed]" \
  && python -m compileall -q hive
-# Bake the bge-small weights OFFLINE into an image layer (no hot-path download).
+# Bake the Qwen3-Embedding-0.6B weights OFFLINE into an image layer (no hot-path download).
+# This is a ~1.2 GB weights layer (fp32; budget ~2.5–3 GB resident RAM on CPU at runtime).
 # --dest is the HF HUB cache dir ($HF_HOME/hub), which is EXACTLY where the offline runtime
 # (HF_HOME=/opt/hf-cache, cache_folder unset) resolves the model — bake and load must agree
 # on the same root or the runtime finds nothing under --network none.
 ENV HF_HOME=/opt/hf-cache
-RUN python -m hive.tools.bake_model --model BAAI/bge-small-en-v1.5 --dest /opt/hf-cache/hub
+RUN python -m hive.tools.bake_model --model Qwen/Qwen3-Embedding-0.6B --dest /opt/hf-cache/hub
 
 # ---------- runtime ----------
 FROM python:3.12-slim AS runtime

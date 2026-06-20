@@ -4,6 +4,10 @@ and reference-context framing. Wired through the real build_container; FakeOutco
 is not needed here (no producer)."""
 from __future__ import annotations
 
+import pytest
+
+pytestmark = pytest.mark.embed   # loads the real Qwen3 model (gated heavy tier)
+
 import json
 
 import pytest

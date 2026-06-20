@@ -17,7 +17,8 @@ hive = "hive.tools.cli:main"
 
 [project.optional-dependencies]
 # Real embedder adapter (Phase 1); the pure domain + slice need none of these.
-embed = ["sentence-transformers>=2.2"]
+# Qwen3-Embedding needs sentence-transformers 5.x.
+embed = ["sentence-transformers>=5.0"]
 dev = ["pytest>=7"]
 # Dev-time benchmark harness (hive/research/bench): the LongMemEval head-to-head vs mem0.
 # mem0 is run offline (local embedder, infer=False) — never a runtime dependency of the server.
@@ -32,3 +33,6 @@ exclude = ["hive.research*"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-q"
+markers = [
+    "embed: loads the real embedding model (~1.2 GB Qwen3-Embedding); deselect the heavy tier with -m 'not embed'",
+]
