@@ -204,6 +204,26 @@ class SqliteEpisodeStore:
                 out.append((r["id"], np.frombuffer(r["value"], dtype=np.float32).copy()))
         return out
 
+    def scan_servable_labeled(
+            self, *, now: int, provisional_ttl_s: int,
+    ) -> list[tuple[int, "np.ndarray", str, str, int, str]]:
+        """The conflict scan's candidate source: every SERVABLE row with the labels the
+        detector classifies by — ``(id, value, polarity, anchor, ts, trust)``. Same SQL
+        prefilter + ONE ``lifecycle.is_servable`` decision as ``scan_servable`` (so a
+        deprecated / quarantined / stale-provisional row is NEVER surfaced for a
+        conflict — a superseded row already retired can't reappear).  // O(N) time."""
+        out: list[tuple[int, np.ndarray, str, str, int, str]] = []
+        for r in self.conn.execute(
+                f"SELECT id, value, status, trust, last_active_ts, polarity, anchor, ts "
+                f"FROM episodes WHERE {_RECALL_PREDICATE}"):
+            if is_servable(status=r["status"], trust=r["trust"],
+                           last_active_ts=r["last_active_ts"], now=now,
+                           provisional_ttl_s=provisional_ttl_s):
+                out.append((r["id"],
+                            np.frombuffer(r["value"], dtype=np.float32).copy(),
+                            r["polarity"], r["anchor"], int(r["ts"]), r["trust"]))
+        return out
+
     def scan_approved(self) -> list[tuple[int, "np.ndarray"]]:
         """Compat alias — the no-clock FAIL-CLOSED reading of ``scan_servable``: with
         ``now`` pushed to the far future a provisional row can never prove freshness,

@@ -162,6 +162,31 @@ def test_rebuild_indexes_exactly_servable_set():
     assert _index_ids(s) == {e_est}
 
 
+# ── scan_servable_labeled (the conflict scan's candidate source) ───────────────
+def test_scan_servable_labeled_is_exactly_the_servable_set():
+    # same is_servable filter as scan_servable: established always, provisional iff
+    # fresh; quarantined / lapsed-provisional / deprecated are EXCLUDED.
+    s = _store()
+    e_est, e_fresh, e_lapsed, e_q, e_dep = _mixed_fixture(s)
+    rows = s.scan_servable_labeled(now=NOW, provisional_ttl_s=P_TTL)
+    assert {r[0] for r in rows} == {e_est, e_fresh}
+    by_id = {r[0]: r for r in rows}
+    assert by_id[e_est][5] == ESTABLISHED and by_id[e_fresh][5] == PROVISIONAL
+    # the vector rides position 1 (the conflict detector compares it)
+    val = by_id[e_est][1]
+    assert isinstance(val, np.ndarray) and val.shape == (DIM,)
+
+
+def test_scan_servable_labeled_carries_polarity_anchor_ts():
+    s = _store()
+    eid, _ = s.stage(text="dont run as root", weight=1.0, source="m", tags="",
+                     proposed_by="w", ts=7, polarity="dont", anchor="Dockerfile")
+    s.approve(eid, "human", _VECS[0], expected_version=0, approved_ts=7)
+    (rid, _val, pol, anc, ts, trust), = s.scan_servable_labeled(
+        now=NOW, provisional_ttl_s=P_TTL)
+    assert (rid, pol, anc, ts, trust) == (eid, "dont", "Dockerfile", 7, ESTABLISHED)
+
+
 # ── ExposureLedger write side ──────────────────────────────────────────────────
 def test_store_conforms_to_exposure_ledger():
     assert isinstance(SqliteEpisodeStore(connect(":memory:")), ExposureLedger)
