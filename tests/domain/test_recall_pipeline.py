@@ -130,6 +130,24 @@ def test_happy_path_returns_confident_hits():
     assert 0.0 <= r.entropy_norm <= 1.0
 
 
+def test_confident_hit_carries_kind_and_anchor():
+    # the resolved episode's carried labels ride every hit (kind/anchor are read off
+    # the resolved Episode, parallel to trust/ts/polarity).
+    index, reader = FakeIndex(), FakeEpisodeReader()
+    reader.add(1, "the gold memory", weight=1.0, kind="bug",
+               anchor="hive/domain/recall.py")
+    reader.add(2, "distractor a", weight=1.0)            # no labels ⇒ under-claims
+    index.add(1, _e(0))
+    index.add(2, _cos_vec(0.1))
+    index.add(3, _cos_vec(0.05))
+    reader.add(3, "distractor b", weight=1.0)
+    r = _pipe(index=index, reader=reader, query_vec=_e(0)).recall("q", agent_id="A")
+    assert r.state == CONFIDENT
+    by_id = {h.episode_id: h for h in r.hits}
+    assert by_id[1].kind == "bug" and by_id[1].anchor == "hive/domain/recall.py"
+    assert by_id[2].kind == "note" and by_id[2].anchor == ""   # fail-safe defaults
+
+
 def test_recall_at_5_over_held_out_pairs_meets_floor():
     # 6 planted golds; each query points exactly at one gold ⟹ that gold is top.
     index, reader = FakeIndex(), FakeEpisodeReader()

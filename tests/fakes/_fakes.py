@@ -9,6 +9,7 @@ from typing import Iterator, Optional, Sequence
 
 import numpy as np
 
+from hive.domain.kinds import DEFAULT_KIND
 from hive.domain.models import Episode, content_hash
 from hive.domain.secret_scan import REFUSE, ScanVerdict
 from hive.domain.secret_scan import scan as _scan
@@ -119,7 +120,8 @@ class FakeIndex:
 def make_episode(episode_id: int, text: str, weight: float = 1.0,
                  *, status: str = "approved", trust: Optional[str] = None,
                  last_active_ts: int = 0, ts: int = 0,
-                 value: Optional[np.ndarray] = None) -> Episode:
+                 value: Optional[np.ndarray] = None,
+                 kind: str = DEFAULT_KIND, anchor: str = "") -> Episode:
     """A valid (self-asserting) Episode for resolve-seam tests — content_hash binds
     text. An approved episode defaults to trust='established' (mirroring the real
     store, where the human-vouched flip stamps established); pass ``trust`` to model
@@ -136,6 +138,7 @@ def make_episode(episode_id: int, text: str, weight: float = 1.0,
         approved_by="approver" if approved else None,
         approved_ts=0 if approved else None, version=0,
         trust=trust, last_active_ts=int(last_active_ts),
+        kind=kind, anchor=anchor,
         value=None if value is None else np.asarray(value, dtype=np.float32),
     )
 
