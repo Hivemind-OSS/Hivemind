@@ -61,12 +61,14 @@ def _arm_summary(obs: ArmTokenObs) -> dict:
         by_regime[r] = {
             "n": len(rt),
             "input_tokens": sum(t.input_tokens for t in rt),
+            "served_text_count": sum(t.served_text_count for t in rt),
             "success_rate": (sum(1 for t in rt if t.success) / len(rt)) if rt else None,
             "abstained_on_answerable": sum(1 for t in rt if t.abstained_on_answerable),
         }
     return {
         "n": len(tasks),
         "input_tokens_total": sum(t.input_tokens for t in tasks),
+        "served_text_count": sum(t.served_text_count for t in tasks),
         "success_rate": (sum(1 for t in tasks if t.success) / len(tasks)) if tasks else None,
         "abstained_on_answerable": sum(1 for t in tasks if t.abstained_on_answerable),
         "usage_total": dict(obs.usage_total),         # cost + n_live_calls + token breakdown

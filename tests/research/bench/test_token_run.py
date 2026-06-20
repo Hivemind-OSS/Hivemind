@@ -71,6 +71,7 @@ def test_per_arm_summary_breaks_tokens_and_success_down_by_regime():
     assert sm["by_regime"]["single-answer"]["input_tokens"] == 50
     assert sm["by_regime"]["broad-relevant"]["success_rate"] == pytest.approx(0.0)
     assert sm["input_tokens_total"] == 120 and sm["success_rate"] == pytest.approx(2 / 3)
+    assert sm["served_text_count"] == 3 and sm["by_regime"]["single-answer"]["served_text_count"] == 1
 
 
 def test_score_token_arms_requires_aligned_arms():
