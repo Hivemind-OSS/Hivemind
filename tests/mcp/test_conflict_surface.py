@@ -101,3 +101,81 @@ def test_detector_fault_still_returns_hits():
         mod.detect_conflicts = orig
     assert r["abstained"] is False and len(r["reference_context"]) >= 1   # hits survive
     assert "conflicts" not in r                      # fault ⇒ [] ⇒ no key, no crash
+
+
+# ── C5: the health conflict worklist (include_conflicts) ───────────────────────
+def test_health_report_surfaces_mechanical_redundancy():
+    server, _ = _srv(enabled=True)
+    a = _write(server, "cid=7 cache evictions hurt the queue", anchor="redis.conf")["id"]
+    b = _write(server, "cid=7 queue keys must not be evicted", anchor="redis.conf")["id"]
+    snap = content(tool_call(server, "hive_health", {"include_conflicts": True}))
+    assert "conflicts" in snap
+    mech = [c for c in snap["conflicts"] if c["source"] == "mechanical"]
+    assert any({c["a_id"], c["b_id"]} == {a, b} for c in mech)
+
+
+def test_health_report_anchor_scopes_buckets():
+    # the offline report compares WITHIN an anchor bucket: same cluster but DIFFERENT
+    # anchors is NOT a mechanical conflict here (it would still surface at recall time).
+    server, _ = _srv(enabled=True)
+    _write(server, "cid=8 first about deploys", anchor="deploy.py")
+    _write(server, "cid=8 second about deploys", anchor="ci.yml")
+    snap = content(tool_call(server, "hive_health", {"include_conflicts": True}))
+    mech = [c for c in snap.get("conflicts", []) if c["source"] == "mechanical"]
+    assert mech == []                                # different anchors ⇒ different buckets
+
+
+def test_health_conflicts_absent_unless_requested():
+    server, _ = _srv(enabled=True)
+    _write(server, "cid=9 a memory", anchor="x.py")
+    _write(server, "cid=9 another memory", anchor="x.py")
+    snap = content(tool_call(server, "hive_health", {}))   # no include_conflicts
+    assert "conflicts" not in snap                          # ← drop the gate ⇒ this REDs
+
+
+def test_health_conflicts_absent_when_disabled():
+    server, _ = _srv(enabled=False)
+    _write(server, "cid=10 a memory", anchor="x.py")
+    _write(server, "cid=10 another memory", anchor="x.py")
+    snap = content(tool_call(server, "hive_health", {"include_conflicts": True}))
+    assert "conflicts" not in snap                          # OFF ⇒ byte-inert
+
+
+def test_health_report_merges_open_advisory_flag():
+    server, _ = _srv(enabled=True)
+    # two DISTINCT-cluster memories (no mechanical near-dup) flagged advisory by an agent
+    a = _write(server, "cid=11 deploy uses make", anchor="deploy.py")["id"]
+    b = _write(server, "cid=12 deploy uses ship.sh", anchor="release.md")["id"]
+    lo, hi = sorted((a, b))
+    server.store.record_conflict_flag(kind="conflict", a_id=lo, b_id=hi, winner_id=None,
+                                      resolution="agent thinks these disagree",
+                                      proposed_by="agent-A", ts=1)
+    snap = content(tool_call(server, "hive_health", {"include_conflicts": True}))
+    adv = [c for c in snap["conflicts"] if c["source"] == "advisory"]
+    assert any({c["a_id"], c["b_id"]} == {a, b} and c["kind"] == "conflict" for c in adv)
+
+
+def test_advisory_flag_autoclears_when_episode_retired():
+    server, _ = _srv(enabled=True)
+    a = _write(server, "cid=13 alpha", anchor="a.py")["id"]
+    b = _write(server, "cid=14 beta", anchor="b.py")["id"]
+    lo, hi = sorted((a, b))
+    server.store.record_conflict_flag(kind="supersedes", a_id=lo, b_id=hi, winner_id=hi,
+                                      resolution="", proposed_by="agent-A", ts=1)
+    # retire one side → the flag must drop off the worklist (read-time servable-both filter)
+    tool_call(server, "hive_supersede", {"loser": a, "winner": b, "approved_by": "human"})
+    snap = content(tool_call(server, "hive_health", {"include_conflicts": True}))
+    adv = [c for c in snap.get("conflicts", []) if c["source"] == "advisory"]
+    assert adv == []                                       # auto-cleared (no status flip needed)
+
+
+def test_health_report_fail_open_returns_empty_conflicts():
+    server, _ = _srv(enabled=True)
+    _write(server, "cid=15 a", anchor="z.py")
+    _write(server, "cid=15 b", anchor="z.py")
+
+    def _boom(*a, **k):
+        raise RuntimeError("scan exploded")
+    server.store.scan_servable_labeled = _boom
+    snap = content(tool_call(server, "hive_health", {"include_conflicts": True}))
+    assert snap["ok"] is True and snap["conflicts"] == []   # degrades, health still ok

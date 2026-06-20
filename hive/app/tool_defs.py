@@ -97,12 +97,16 @@ TOOL_DEFINITIONS: list[dict] = [
                     "include_gaps=true adds the clustered demand-gap report. "
                     "include_trends=true adds current-vs-previous 7d demand-health "
                     "trends (confident rate + demand entropy). "
+                    "include_conflicts=true adds the conflict/redundancy worklist "
+                    "(near-dup contradictions + supersession candidates + agent-flagged "
+                    "advisories) to resolve via hive_supersede. "
                     "embedder_loaded reports whether this process's embedder is resident "
                     "(the container HEALTHCHECK is a separate process reading boot markers)."
                     "\n\n" + ONBOARDING_REFERENCE,
      "inputSchema": {"type": "object", "required": [],
                      "properties": {"include_gaps": {"type": "boolean"},
-                                    "include_trends": {"type": "boolean"}}}},
+                                    "include_trends": {"type": "boolean"},
+                                    "include_conflicts": {"type": "boolean"}}}},
 ]
 
 # The canonical tool name set — the dropped-verb guard reads this.

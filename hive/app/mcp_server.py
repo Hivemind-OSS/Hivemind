@@ -191,6 +191,16 @@ def _conflict_note_to_wire(note) -> dict:
     return d
 
 
+def _flag_to_wire(flag: dict) -> dict:
+    """An open advisory ``conflict_flags`` row → the worklist wire dict. ``kind`` is the
+    advisory vocabulary (conflict|supersedes); ``resolution`` is the flagger's secret-scanned
+    rationale. ids only — no memory text rides it."""
+    return {"a_id": flag["a_id"], "b_id": flag["b_id"], "kind": flag["kind"],
+            "winner_id": flag["winner_id"], "resolution": flag["resolution"],
+            "proposed_by": flag["proposed_by"], "source": "advisory",
+            "note": "agent-flagged advisory; a human resolves it via hive_supersede"}
+
+
 class HiveMCPServer:
     """JSON-RPC 2.0 over stdio. One process == one ``ServerIdentity``."""
 
@@ -445,6 +455,10 @@ class HiveMCPServer:
                 snap["trends"] = self._trends_report()       # CV4: the convergence KPI
             if args.get("include_gaps"):
                 snap["gaps"] = self._gap_report()
+            # the conflict worklist is gated by BOTH the request flag AND conflict.enabled
+            # (OFF ⇒ byte-inert, no key); dropping the request flag ⇒ always-emits mutation.
+            if self.conflict.enabled and args.get("include_conflicts"):
+                snap["conflicts"] = self._conflict_report()
             return snap
         except Exception as e:                               # fail-closed subset ONLY
             _log.error("mcp.health_probe_fail", extra={"event": "mcp.health_probe_fail",
@@ -507,6 +521,41 @@ class HiveMCPServer:
             _log.warning("mcp.trends_report_failed", extra={
                 "event": "mcp.trends_report_failed"}, exc_info=True)
             return {}
+
+    def _conflict_report(self) -> list[dict]:
+        """The conflict/redundancy worklist (THEORY I1/I2 — detection, never resolution):
+        mechanical near-dup detections over the SERVABLE set (anchor-bucketed for precision +
+        bound — a cross-anchor near-dup still surfaces at recall, just not here) MERGED with
+        open advisory flags whose BOTH episodes are still servable. The servable-both filter is
+        how a flag auto-clears the instant either side is retired (no status flip needed).
+        Mechanical entries are globally capped at conflict.top_n by cosine. Degrades to [] on a
+        probe fault (a side-channel, fail-open — never breaks health)."""
+        try:
+            now = int(self.now())
+            ttl_s = int(self.autonomy.provisional_ttl_days) * _DAY_S
+            labeled = self.store.scan_servable_labeled(now=now, provisional_ttl_s=ttl_s)
+            servable_ids = {row[0] for row in labeled}
+            buckets: dict[str, list[ConflictItem]] = {}
+            for eid, value, polarity, anchor, ts, trust in labeled:
+                buckets.setdefault(anchor, []).append(ConflictItem(
+                    episode_id=eid, vector=value, polarity=polarity, anchor=anchor,
+                    ts=ts, trust=trust))
+            top_n = int(self.conflict.top_n)
+            notes = []
+            for items in buckets.values():
+                notes.extend(detect_conflicts(items, tau=float(self.conflict.tau),
+                                              top_n=top_n))
+            notes.sort(key=lambda n: -n.cosine)          # global cap across all buckets
+            out = [_conflict_note_to_wire(n) for n in notes[:top_n]]
+            # merge open advisory flags, filtered to both-episodes-still-servable
+            for flag in self.store.open_conflict_flags():
+                if flag["a_id"] in servable_ids and flag["b_id"] in servable_ids:
+                    out.append(_flag_to_wire(flag))
+            return out
+        except Exception:                                # noqa: BLE001 — telemetry only
+            _log.warning("mcp.conflict_report_failed", extra={
+                "event": "mcp.conflict_report_failed"}, exc_info=True)
+            return []
 
     def _db_size(self) -> int:
         try:
