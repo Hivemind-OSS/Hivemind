@@ -45,7 +45,7 @@ def _build_local_st(cfg: "Config", *, head_bytes=None, model=None):
 def build_embedder(cfg: "Config", **kwargs: Any):
     """Construct the configured embedder; fail fast (ValueError) on any provider other than
     the one measured-right default — the likely agent typo, caught at startup not at first
-    recall. ``kwargs`` (e.g. ``head_bytes`` — the persisted PCA geometry — or ``model`` — a
+    recall. ``kwargs`` (e.g. ``head_bytes`` — the persisted truncation geometry — or ``model`` — a
     test seam) are forwarded; the composition root threads them, the registry only selects +
     fails fast."""
     name = cfg.embedding.provider
