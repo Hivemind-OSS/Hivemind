@@ -120,6 +120,5 @@ tests/                the test suite
 compose.yaml          the single-service stack (+ opt-in ngrok tunnel profile)
 Dockerfile            the hermetically-offline server image (embedder baked at build)
 HOWTO.md              operator guide
-ADMINSKILLS.md        admin-agent lifecycle skills
 THIRD_PARTY_NOTICES.md / LICENSES/   embedding-model attribution + license
 ```
