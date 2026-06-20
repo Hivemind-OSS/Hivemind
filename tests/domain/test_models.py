@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import pytest
 
+from hive.domain.kinds import KIND_NAMES
 from hive.domain.models import Episode, RecallHit, content_hash
 
 
@@ -42,3 +43,37 @@ def test_recall_hit_defaults_polarity_neutral():
 def test_recall_hit_carries_each_polarity():
     for p in ("do", "dont", "neutral"):
         assert RecallHit(episode_id=1, text="t", sim=0.9, polarity=p).polarity == p
+
+
+# ── Episode.kind / .anchor: carried labels validated like polarity ──
+def test_episode_defaults_kind_note_and_anchor_empty():
+    ep = _ep()
+    assert ep.kind == "note"                      # fail-safe under-claiming default
+    assert ep.anchor == ""
+
+
+def test_episode_accepts_every_registered_kind():
+    for k in KIND_NAMES:
+        assert _ep(kind=k).kind == k
+
+
+def test_episode_rejects_an_unknown_kind():
+    with pytest.raises(ValueError):
+        _ep(kind="rumor")                         # out-of-enum ⇒ unconstructable
+
+
+def test_episode_carries_the_anchor_verbatim():
+    assert _ep(anchor="hive/domain/recall.py").anchor == "hive/domain/recall.py"
+
+
+# ── RecallHit.kind / .anchor: defaulted fail-safe like polarity (no __post_init__) ──
+def test_recall_hit_defaults_kind_note_and_anchor_empty():
+    h = RecallHit(episode_id=1, text="t", sim=0.9)
+    assert h.kind == "note"
+    assert h.anchor == ""
+
+
+def test_recall_hit_carries_kind_and_anchor():
+    h = RecallHit(episode_id=1, text="t", sim=0.9, kind="bug", anchor="x.py")
+    assert h.kind == "bug"
+    assert h.anchor == "x.py"

@@ -12,6 +12,7 @@ from typing import Optional
 
 import numpy as np
 
+from hive.domain.kinds import DEFAULT_KIND, KIND_NAMES
 from hive.domain.lifecycle import ESTABLISHED, PROVISIONAL, QUARANTINED, TRUST_STATES
 
 
@@ -63,6 +64,8 @@ class RecallHit:
     trust: str = QUARANTINED
     ts: int = 0
     polarity: str = "neutral"
+    kind: str = DEFAULT_KIND
+    anchor: str = ""
 
 
 @dataclass(frozen=True, slots=True)
@@ -128,12 +131,16 @@ class Episode:
     superseded_by: Optional[int] = None   # latest applied successor (None = live)
     last_active_ts: int = 0            # liveness clock: capture/write, promotion, exposure
     polarity: str = "neutral"         # do|dont|neutral — carried-not-interpreted consumer label
+    kind: str = DEFAULT_KIND          # category label (kinds.py); carried-not-interpreted, never embedded
+    anchor: str = ""                  # the WHERE: file/module/symbol; carried, never embedded
 
     def __post_init__(self) -> None:
         if self.content_hash != content_hash(self.text):
             raise ValueError("content_hash does not bind text (hash≠sha256(text))")
         if self.polarity not in ("do", "dont", "neutral"):
             raise ValueError(f"bad polarity {self.polarity!r}")
+        if self.kind not in KIND_NAMES:
+            raise ValueError(f"bad kind {self.kind!r}")
         if self.status not in ("pending", "approved"):
             raise ValueError(f"bad status {self.status!r}")
         if self.trust not in TRUST_STATES:
