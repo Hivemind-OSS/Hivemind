@@ -18,21 +18,23 @@ from hive.domain.secret_scan import scan as _scan
 from tests.fakes._fakes import FakeIndex
 from tests.mcp._helpers import build_real_server, content, is_error, tool_call
 
-_FOUR = {"hive_write", "hive_capture", "hive_recall", "hive_health"}
+# net-5: the original 4 verbs + the always-on resolution verb hive_supersede
+# (the advisory hive_flag is added in its own chunk → net-6).
+_TOOLS = {"hive_write", "hive_capture", "hive_recall", "hive_supersede", "hive_health"}
 _DROPPED = {"hive_init", "hive_fetch", "hive_pending", "hive_approve", "hive_reject",
             "hive_evidence", "hive_consolidate", "hive_schemas", "hive_recall_cold",
             "hive_restore_cold", "hive_reconsolidate", "hive_audit", "hive_outcome"}
 
 
-def test_tool_list_is_exactly_4():
+def test_tool_list_is_the_expected_verb_set():
     server, _ = build_real_server()
     resp = server.handle(MCPRequest(1, "tools/list", {}))
     names = {t["name"] for t in resp.result["tools"]}
-    assert names == _FOUR
-    assert len(resp.result["tools"]) == 4
+    assert names == _TOOLS
+    assert len(resp.result["tools"]) == len(_TOOLS)
     assert names.isdisjoint(_DROPPED)
     # the static table and the live reply are the same source
-    assert {t["name"] for t in TOOL_DEFINITIONS} == _FOUR
+    assert {t["name"] for t in TOOL_DEFINITIONS} == _TOOLS
 
 
 def test_write_description_generalizes_the_approver():

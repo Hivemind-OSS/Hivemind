@@ -195,6 +195,7 @@ class HiveMCPServer:
             "hive_write": self._handle_write,
             "hive_capture": self._handle_capture,
             "hive_recall": self._handle_recall,
+            "hive_supersede": self._handle_supersede,
             "hive_health": self._handle_health,
         }
 
@@ -338,6 +339,24 @@ class HiveMCPServer:
                       "entropy_norm": float(result.entropy_norm)})
             env["note"] = _abstain_note(result.state)
         return env
+
+    def _handle_supersede(self, args: dict, identity: ServerIdentity) -> dict:
+        """The human-vouched resolution verb (ALWAYS on — Law 3). Thin wrapper over the
+        ONE retirement owner ``store.supersede``: retire the loser in favor of the winner,
+        recording ``actor=approved_by`` as the human vouch. ``store.supersede`` owns the
+        existence + self-supersede guards (False ⇒ a no-op envelope, nothing retired); the
+        loser drops out of serving on success."""
+        loser = int(args.get("loser"))               # required+integer (schema belt)
+        winner = int(args.get("winner"))
+        approved_by = args.get("approved_by") or ""
+        ok = self.store.supersede(loser, winner, actor=approved_by, ts=int(self.now()))
+        if ok:
+            _log.info("mcp.superseded", extra={"event": "mcp.superseded",
+                      "loser": loser, "winner": winner, "agent_id": identity.agent_id})
+            return {"status": "superseded", "loser": loser, "winner": winner,
+                    "approved_by": approved_by}
+        return {"status": "noop", "loser": loser, "winner": winner,
+                "reason": "unknown id or self-supersede — nothing retired"}
 
     def _handle_health(self, args: dict, identity: ServerIdentity) -> dict:
         try:

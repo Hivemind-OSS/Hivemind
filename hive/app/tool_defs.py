@@ -80,6 +80,17 @@ TOOL_DEFINITIONS: list[dict] = [
                     + QUERY_GUIDANCE,
      "inputSchema": {"type": "object", "required": ["query"],
                      "properties": {"query": {"type": "string"}}}},
+    {"name": "hive_supersede",
+     "description": "Retire one existing memory in favor of another (human-vouched). The "
+                    "loser is deprecated immediately; nothing new is written. Use to resolve a "
+                    "redundancy / supersession candidate surfaced by "
+                    "hive_health(include_conflicts=true). For a NEW corrected memory that "
+                    "retires an old one, use hive_write(replaces=) instead. approved_by is the "
+                    "approver (your human's in-chat yes, or an orchestrator's sign-off).",
+     "inputSchema": {"type": "object", "required": ["loser", "winner", "approved_by"],
+                     "properties": {"loser": {"type": "integer"},
+                                    "winner": {"type": "integer"},
+                                    "approved_by": {"type": "string"}}}},
     {"name": "hive_health",
      "description": "Cheap liveness/identity snapshot (+ trust_counts, n_misses_7d). "
                     "Fail-closed {ok:false,error,db_path} on a probe failure. "
@@ -94,5 +105,5 @@ TOOL_DEFINITIONS: list[dict] = [
                                     "include_trends": {"type": "boolean"}}}},
 ]
 
-# The canonical net-4 name set — the dropped-verb guard reads this.
+# The canonical tool name set — the dropped-verb guard reads this.
 TOOL_NAMES: frozenset[str] = frozenset(t["name"] for t in TOOL_DEFINITIONS)

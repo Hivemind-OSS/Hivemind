@@ -32,8 +32,11 @@ def _count(server, table: str) -> int:
 
 
 # ── surface ────────────────────────────────────────────────────────────────────
-def test_tool_list_is_exactly_4():
-    assert TOOL_NAMES == {"hive_write", "hive_capture", "hive_recall", "hive_health"}
+def test_tool_list_is_the_expected_verb_set():
+    # net-5 here: the conflict surfacing/resolution verbs (hive_supersede now, hive_flag
+    # in its chunk) join the original 4. The DROPPED set must stay absent.
+    assert "hive_supersede" in TOOL_NAMES           # the human-vouched resolution verb
+    assert {"hive_write", "hive_capture", "hive_recall", "hive_health"} <= TOOL_NAMES
     assert "hive_evidence" not in TOOL_NAMES        # no client-fed evidence exists
     assert "hive_init" not in TOOL_NAMES            # onboarding is a static health-desc reference
     assert "hive_fetch" not in TOOL_NAMES           # fetch dropped (recall inlines verbatim text)
