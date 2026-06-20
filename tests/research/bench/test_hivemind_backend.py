@@ -78,3 +78,16 @@ def test_commit_handles_a_refused_write_without_crashing():
     mid = b.commit(Proposal(proposal_id="1", seat="sub-a", text="sk-proj-xxxx", source_id="s1"),
                    approver="orchestrator")
     assert mid == ""
+
+
+def test_call_raises_runtime_error_on_a_jsonrpc_error_envelope():
+    # a protocol-error reply has error=... and NO result; _call must raise the intended RuntimeError,
+    # never KeyError on an unconditional result["content"] index (BUG-003 / BUG-002 class).
+    import pytest
+
+    class _ErrServer:
+        def handle(self, req, *, identity):
+            return SimpleNamespace(result=None, error={"code": -32601, "message": "method not found"})
+    b = HivemindBackend(lambda: _ErrServer())
+    with pytest.raises(RuntimeError, match="hivemind .* error"):
+        b.recall("sub-a", "anything")

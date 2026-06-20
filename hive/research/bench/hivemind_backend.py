@@ -35,8 +35,15 @@ class HivemindBackend:
         resp = self._server.handle(
             MCPRequest(next(self._ids), "tools/call", {"name": tool, "arguments": args}),
             identity=ServerIdentity("default", seat))
+        # Coerce shape BEFORE indexing: a JSON-RPC error reply carries `error` and NO `result`, so an
+        # unconditional result["content"] would KeyError instead of raising the intended RuntimeError
+        # (BUG-002 defensive-envelope-parse class). Tool results always carry `content`; only the
+        # protocol-error paths (unknown method/tool, internal error) hit the empty branch.
         result = resp.result or {}
-        text = result["content"][0]["text"]
+        content = result.get("content") or []
+        if not content:
+            raise RuntimeError(f"hivemind {tool} error: {getattr(resp, 'error', None) or 'empty result'}")
+        text = content[0].get("text", "")
         if result.get("isError"):
             raise RuntimeError(f"hivemind {tool} error: {text}")
         return json.loads(text)
