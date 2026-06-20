@@ -104,6 +104,16 @@ See **[HOWTO.md](HOWTO.md)** for the full operator guide (setup, tunneling, KPIs
 **[CONTEXT/THEORY.md](CONTEXT/THEORY.md)** for the design theory — the master laws, the
 hexagonal architecture, and the rules any change must follow.
 
+## Embedding model & attribution
+
+Recall is powered by [**Qwen3-Embedding-0.6B**](https://huggingface.co/Qwen/Qwen3-Embedding-0.6B)
+(© Alibaba Cloud / the Qwen Team), used unmodified and baked into the image at build time. Its
+1024-dim output is Matryoshka-truncated to 768 dims at inference (no weight modification). The
+model is licensed under the [Apache License 2.0](https://www.apache.org/licenses/LICENSE-2.0); the
+full text and attribution travel with this repository in
+[`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md) and
+[`LICENSES/`](LICENSES/Qwen3-Embedding-0.6B-Apache-2.0.txt).
+
 ## Repository layout
 
 ```
