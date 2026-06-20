@@ -6,9 +6,11 @@ from __future__ import annotations
 
 import json
 
+from hive.app import onboard_ref
 from hive.app.onboard_ref import (
-    CAPTURE_TAXONOMY, CLAUDE_CODE_HOOKS, ONBOARDING_RULES_BLOCK, SERVER_INSTRUCTIONS,
+    CAPTURE_TAXONOMY, CLAUDE_CODE_HOOKS, ONBOARDING_REFERENCE, SERVER_INSTRUCTIONS,
 )
+from hive.domain.kinds import render_taxonomy
 
 
 def test_server_instructions_cover_the_verbs_and_search_first_timing():
@@ -29,22 +31,35 @@ def test_instructions_convey_capture_default_vs_approved_fastpath_strategy():
     assert "orchestrator" in s                       # approver isn't only a human
 
 
-def test_capture_taxonomy_names_the_fleet_high_signal_categories():
-    """The dev-team categories the user asked for must be named, or agents won't know what's
-    worth storing — and the noise floor must be explicit, or recall fills with junk."""
+def test_capture_taxonomy_names_the_kind_vocabulary_and_noise_floor():
+    """The taxonomy renders the kind vocabulary (so agents know what's worth storing AND which
+    kind labels it), plus the write discipline and an explicit noise floor — or recall fills
+    with junk."""
     t = CAPTURE_TAXONOMY.lower()
-    for needle in ("bug + fix", "open", "design choice", "where", "convention",
-                   "gotcha", "dead-end", "interface", "env"):
-        assert needle in t, f"missing capture category: {needle!r}"
-    # the signal/noise discipline is part of the contract
-    assert "do not capture" in t and "litmus" in t and "secret" in t
+    for kind in ("bug", "gotcha", "convention", "design_choice", "contract",
+                 "dead_end", "env_fact", "note"):
+        assert kind in t, f"missing kind: {kind!r}"
+    assert "polar language" in t and "density" in t        # the write discipline
+    assert "do not capture" in t and "litmus" in t and "secret" in t   # the noise floor
 
 
-def test_taxonomy_is_single_sourced_into_both_surfaces():
-    # one definition, embedded verbatim → the always-delivered instructions and the persisted
-    # rules block can never disagree about what to store.
+def test_taxonomy_is_rendered_from_the_registry_and_served():
+    # the kind vocabulary has ONE source (hive.domain.kinds.render_taxonomy); the taxonomy embeds
+    # it verbatim and is itself embedded in the always-delivered instructions, so the advertised /
+    # served / enforced copies cannot drift.
+    assert render_taxonomy() in CAPTURE_TAXONOMY
     assert CAPTURE_TAXONOMY in SERVER_INSTRUCTIONS
-    assert CAPTURE_TAXONOMY in ONBOARDING_RULES_BLOCK
+
+
+def test_onboarding_is_served_only_no_self_install():
+    # the single-source switch: there is NO self-installed rules block — the symbol is gone and
+    # the served reference never tells an agent to write a block into its rules file.
+    assert not hasattr(onboard_ref, "ONBOARDING_RULES_BLOCK")
+    assert "hive-init" not in ONBOARDING_REFERENCE                 # no marker block
+    assert "write this block" not in ONBOARDING_REFERENCE.lower()  # no self-install instruction
+    # but the served reference still carries the identity/auth notes + the optional hooks
+    assert "Mcp-Session-Id" in ONBOARDING_REFERENCE
+    assert CLAUDE_CODE_HOOKS in ONBOARDING_REFERENCE
 
 
 def test_claude_code_hooks_is_valid_json_with_the_three_nudge_events():

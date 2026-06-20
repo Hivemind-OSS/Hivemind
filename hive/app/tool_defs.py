@@ -1,8 +1,8 @@
 """TOOL_DEFINITIONS — the static ``tools/list`` schema table for the MCP surface.
 EXACTLY 4 tools: hive_write / hive_capture / hive_recall / hive_health. The onboarding
-handshake (``hive_init``) is gone — onboarding is a STATIC reference carried in the
-``hive_health`` description (a connected agent self-installs the rules block), not a
-server-driven InstallPlanner step. ``hive_evidence`` deliberately does NOT exist (no
+handshake (``hive_init``) is gone — onboarding is SERVED-ONLY: the contract reaches every
+agent via the ``initialize`` instructions, with a secondary reference carried in the
+``hive_health`` description (it installs nothing), not a server-driven InstallPlanner step. ``hive_evidence`` deliberately does NOT exist (no
 client-fed evidence in this build); the server-side approval QUEUE (hive_pending /
 hive_approve / hive_reject) was removed with the move to client-gated capture; and the
 AgentCortex-era 7 (consolidate/schemas/recall_cold/restore_cold/reconsolidate/audit/

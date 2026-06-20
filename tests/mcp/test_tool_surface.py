@@ -43,18 +43,17 @@ def test_write_description_generalizes_the_approver():
     assert "orchestrat" in desc.lower()                  # approver isn't only a human
 
 
-def test_health_description_carries_onboarding_reference():
-    """Onboarding option C: with hive_init gone, the static onboarding rules block is the
-    payload of the hive_health DESCRIPTION — the only discovery path a connected agent has.
-    Stripping it from the description leaves a fleet with no way to self-install."""
+def test_health_description_carries_served_reference_not_a_self_install_block():
+    """Onboarding is served-only: the hive_health DESCRIPTION carries the identity/auth +
+    optional-hooks reference, NOT a self-installed rules block — no marker block and no 'write
+    this block' instruction. The full contract rides the initialize instructions instead."""
     server, _ = build_real_server()
     resp = server.handle(MCPRequest(1, "tools/list", {}))
     health = next(t for t in resp.result["tools"] if t["name"] == "hive_health")
     desc = health["description"]
-    # the marker-delimited block the agent writes into its rules file...
-    assert "<!-- hive-init:start -->" in desc and "<!-- hive-init:end -->" in desc
-    # ...and the load-bearing directives (capture-without-asking + recall-as-reference)
-    assert "hive_capture" in desc and "reference" in desc.lower()
+    assert "<!-- hive-init:start -->" not in desc         # no self-installed marker block
+    assert "write this block" not in desc.lower()          # no self-install instruction
+    assert "Mcp-Session-Id" in desc                        # the served identity/auth reference
     server, _ = build_real_server()
     init = server.handle(MCPRequest(1, "initialize", {}))
     assert init.result["serverInfo"]["name"] == "hive"
