@@ -43,7 +43,7 @@ def stack(tmp_path):
     per-session identity — not the token label — is observable)."""
     cfg = Config.load(db_path=str(tmp_path / "shared.db"))
     c = build_container(cfg, tenant_id="default", agent_id="process-default",
-                        embedder=FakeWarmProvider(d=256))
+                        embedder=FakeWarmProvider(d=768))
     c.warm_embedder()
     c.build_index()
     server = c.make_server()

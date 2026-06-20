@@ -21,10 +21,11 @@ from hive.app.config import Config
 # ── happy path / defaults ─────────────────────────────────────────────────────
 def test_defaults_match_spec_geometry():
     cfg = Config.load(db_path=":memory:")
-    assert cfg.geometry.d == 256
+    assert cfg.geometry.d == 768
+    assert cfg.geometry.W_version == 2
     assert cfg.recall.H_frac_max == 0.5
     assert cfg.recall.recall_top_n == 10
-    assert cfg.embedding.model == "BAAI/bge-small-en-v1.5"
+    assert cfg.embedding.model == "Qwen/Qwen3-Embedding-0.6B"
     assert cfg.retention.backup_keep == 30
 
 
@@ -46,7 +47,7 @@ def test_env_noncoercible_value_skipped_with_warn(caplog):
     # a non-int for an int field is skipped (logged), never crashes; default survives
     env = {"HIVE_GEOMETRY__D": "not-an-int"}
     cfg = Config.load(db_path=":memory:", env=env)
-    assert cfg.geometry.d == 256
+    assert cfg.geometry.d == 768
 
 
 # ── 3-layer precedence: defaults < HIVE_* env < explicit overrides ────────────

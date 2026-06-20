@@ -50,8 +50,10 @@ class GeometryConfig:
     # the stored vectors were projected through the old geometry.
     # `d` is the projected/compression dim the embedder reduces native embeddings down to —
     # the stored-vector dim (single source; the head no longer carries its own copy).
-    d: int = 256
-    W_version: int = 1
+    # W_version rolls on ANY geometry change — a new model, a new dim, OR a new head method —
+    # not only a head-algorithm change; a bump invalidates any persisted head (refit at warm).
+    d: int = 768
+    W_version: int = 2
 
     def __post_init__(self) -> None:
         if self.d <= 0:
@@ -62,11 +64,12 @@ class GeometryConfig:
 
 @dataclass(frozen=True)
 class EmbeddingConfig:
-    # The projection head is FIXED to PCA — not a config knob. Random JL was measured
-    # worse at every d, so the decision is encoded in code (the local_st adapter builds
-    # PCA unconditionally), never offered as a choice an operator could mis-set.
+    # The projection head is FIXED to truncation — not a config knob. For an MRL-trained model
+    # the leading dims are a trained lower-dim embedding, so the compression is the model's own
+    # Matryoshka prefix; the decision is encoded in code (the local_st adapter builds the
+    # truncation head unconditionally), never offered as a choice an operator could mis-set.
     provider: str = "local_st"
-    model: str = "BAAI/bge-small-en-v1.5"
+    model: str = "Qwen/Qwen3-Embedding-0.6B"
 
     def __post_init__(self) -> None:
         if self.provider != "local_st":

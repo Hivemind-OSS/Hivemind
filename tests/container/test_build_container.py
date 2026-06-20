@@ -25,7 +25,7 @@ def _cfg(tmp_path=None, **over) -> Config:
 
 def _build(tmp_path=None, *, embedder=None, **over) -> Container:
     return build_container(_cfg(tmp_path, **over), tenant_id="t1", agent_id="a1",
-                           embedder=embedder or FakeWarmProvider(d=256))
+                           embedder=embedder or FakeWarmProvider(d=768))
 
 
 def _call(server, name, args):
@@ -130,7 +130,7 @@ def test_d_mismatch_fails_fast():
     at construction, never a garbage search at first recall."""
     with pytest.raises(ValueError, match="must agree"):
         build_container(_cfg(), tenant_id="t1", agent_id="a1",
-                        embedder=FakeWarmProvider(d=128))   # geometry.d defaults to 256
+                        embedder=FakeWarmProvider(d=128))   # geometry.d defaults to 768
 
 
 # ── hybrid + FTS lexical mirror CUT: no hybrid/lexical surface anywhere ─────────
