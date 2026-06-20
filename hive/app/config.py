@@ -128,6 +128,26 @@ class AutonomyConfig:
 
 
 @dataclass(frozen=True)
+class ConflictConfig:
+    """Conflict/redundancy SURFACING knobs (detection + the advisory flag). ``enabled``
+    gates DETECTION (the recall carrier + the health worklist) and the ``hive_flag``
+    advisory verb ONLY — the resolution verb ``hive_supersede`` is ALWAYS on (Law 3 human
+    vouch). Default OFF ⇒ byte-inert (no ``conflicts`` key, ``hive_flag`` → disabled). The
+    detection METHOD (cosine+polarity) is encoded in code, never a swap knob (THEORY §14);
+    ``tau`` is the one genuinely-empirical knob (the near-dup cosine floor, ``competitor_tau``
+    semantic)."""
+    enabled: bool = False
+    tau: float = 0.85
+    top_n: int = 10
+
+    def __post_init__(self) -> None:
+        if not (math.isfinite(self.tau) and 0.0 < self.tau <= 1.0):
+            raise ValueError(f"conflict.tau must be finite in (0, 1] (got {self.tau})")
+        if self.top_n < 1:
+            raise ValueError(f"conflict.top_n must be >= 1 (got {self.top_n})")
+
+
+@dataclass(frozen=True)
 class RetentionConfig:
     backup_keep: int = 30
     backup_dir: str = ""                 # "" ⇒ computed as <db_dir>/backups at load()
@@ -155,13 +175,14 @@ _GROUP_TYPES: dict[str, type] = {
     "embedding": EmbeddingConfig,
     "recall": RecallConfig,
     "autonomy": AutonomyConfig,
+    "conflict": ConflictConfig,
     "retention": RetentionConfig,
     "obs": ObservabilityConfig,
 }
 # field-groups constructed (and thus validated) BEFORE runtime, so a field-level error
 # (e.g. recall.H_frac_max) surfaces ahead of the db_path-required check.
 _FIELD_GROUP_ORDER = ("geometry", "embedding", "recall",
-                      "autonomy", "retention", "obs")
+                      "autonomy", "conflict", "retention", "obs")
 
 
 @dataclass(frozen=True)
@@ -171,6 +192,7 @@ class Config:
     embedding: EmbeddingConfig
     recall: RecallConfig
     autonomy: AutonomyConfig
+    conflict: ConflictConfig
     retention: RetentionConfig
     obs: ObservabilityConfig
 

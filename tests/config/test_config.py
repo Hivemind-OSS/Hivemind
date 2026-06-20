@@ -162,6 +162,39 @@ def test_backup_keep_at_least_one():
         Config.load(retention={"backup_keep": 0})
 
 
+# ── ConflictConfig group (default OFF; one empirical knob τ) ───────────────────
+def test_conflict_defaults_off_and_inert():
+    cfg = Config.load(db_path=":memory:")
+    assert cfg.conflict.enabled is False          # default OFF (byte-inert)
+    assert cfg.conflict.tau == 0.85               # reuse the near-dup competitor_tau semantic
+    assert cfg.conflict.top_n == 10
+
+
+def test_conflict_enabled_via_env():
+    cfg = Config.load(db_path=":memory:", env={"HIVE_CONFLICT__ENABLED": "true"})
+    assert cfg.conflict.enabled is True
+
+
+def test_conflict_tau_bounds_rejected():
+    with pytest.raises(ValueError, match=r"conflict\.tau|tau"):
+        Config.load(conflict={"tau": 0.0})
+    with pytest.raises(ValueError, match=r"conflict\.tau|tau"):
+        Config.load(conflict={"tau": 1.5})
+    # the boundary 1.0 is legal (identical-only near-dup)
+    assert Config.load(conflict={"tau": 1.0}).conflict.tau == 1.0
+
+
+def test_conflict_top_n_at_least_one():
+    with pytest.raises(ValueError, match=r"top_n"):
+        Config.load(conflict={"top_n": 0})
+
+
+def test_conflict_group_is_frozen():
+    cfg = Config.load(db_path=":memory:")
+    with pytest.raises(dataclasses.FrozenInstanceError):
+        cfg.conflict.enabled = True   # type: ignore[misc]
+
+
 # ── config → embedder threading (torch-free: construction does not load the model) ────
 def test_build_provider_threads_config_d():
     # the embedder's compression dim is sourced from geometry.d, not a head constant —
