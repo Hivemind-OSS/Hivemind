@@ -176,6 +176,19 @@ def test_pool_is_byte_inert_when_kinds_empty():
     assert all(not c.false_source_ids for c in poison_cases)
 
 
+# ── robustness: an unsynthesizable falsehood keeps its case clean, never crashes ─
+def test_build_poison_substrate_falls_back_to_clean_on_unsynthesizable_falsehood(monkeypatch):
+    # A falsehood that would lexically telegraph itself (or fail the token-disjoint guard) on a given
+    # case must keep THAT case clean — never abort the whole build. Real oracle property at larger n:
+    # a verbose gold answer whose tokens recur in the gold turn. Force every synthesis to raise and
+    # assert the build survives with all cases fallen back to clean.
+    import hive.research.bench.poison_substrate as ps
+    monkeypatch.setattr(ps, "_false_value_for", lambda true_value, seed_key: true_value)  # collides ⇒ raises
+    mems, poison_cases, specs = ps.build_poison_substrate(_cases(), seed=0, poison_frac=1.0)
+    assert specs == ()                                   # nothing synthesizable ⇒ no spec, no crash
+    assert all(c.regime == "clean" for c in poison_cases)
+
+
 # ── backend layer: planting / demand-promotion / supersede / falsity ────────────
 # The data-layer tests above are model-free; the helpers below drive the REAL in-process
 # server (a FakeClusterProvider for controllable geometry) and a FakeMem0Client, so the

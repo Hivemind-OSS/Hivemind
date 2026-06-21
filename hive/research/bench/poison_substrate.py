@@ -289,15 +289,25 @@ def build_poison_substrate(
 
         gold_source_id, turn_text = evidence
         kind = kinds[kind_cycle % len(kinds)]
-        kind_cycle += 1
-        false_value = _false_value_for(true_value, seed ^ hash(tc.query) & 0x7FFFFFFF)
-        false_text = _mutate_value(turn_text, true_value, false_value)
-        _assert_not_telegraphed(false_text, true_value=true_value)
         false_source_id = f"poison::{gold_source_id}"
-
-        spec = PoisonSpec(
-            gold_source_id=gold_source_id, false_source_id=false_source_id,
-            true_value=true_value, false_value=false_value, false_text=false_text, kind=kind)
+        try:
+            false_value = _false_value_for(true_value, seed ^ hash(tc.query) & 0x7FFFFFFF)
+            false_text = _mutate_value(turn_text, true_value, false_value)
+            _assert_not_telegraphed(false_text, true_value=true_value)
+            spec = PoisonSpec(
+                gold_source_id=gold_source_id, false_source_id=false_source_id,
+                true_value=true_value, false_value=false_value, false_text=false_text, kind=kind)
+        except ValueError:
+            # This case cannot carry a SOUND falsehood — the synthesized false value would lexically
+            # telegraph itself or fails the token-disjoint guard (a real corpus property: a verbose
+            # gold answer whose content tokens recur in the gold turn). Keep the case CLEAN rather
+            # than aborting the whole build; the answerable slice simply has one fewer poisoned task.
+            poison_cases.append(PoisonTaskCase(
+                query=tc.query, regime="clean", kind="mistake",
+                gold_source_ids=tc.gold_source_ids, false_source_ids=frozenset(),
+                true_value=None, false_value=None, expected=tc.expected))
+            continue
+        kind_cycle += 1
         specs.append(spec)
         overlay.append((false_source_id, false_text))
         poison_cases.append(PoisonTaskCase(
