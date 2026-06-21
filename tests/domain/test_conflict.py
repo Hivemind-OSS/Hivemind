@@ -11,6 +11,7 @@ import numpy as np
 
 from hive.domain.conflict import (
     CONTRADICTION, REDUNDANCY, ConflictItem, ConflictNote, detect_conflicts,
+    suppression_targets,
 )
 
 ESTABLISHED, PROVISIONAL = "established", "provisional"
@@ -143,3 +144,54 @@ def test_top_n_caps_output():
 def test_empty_and_singleton_yield_nothing():
     assert detect_conflicts([], tau=0.85) == ()
     assert detect_conflicts([_item(1, _V_A)], tau=0.85) == ()
+
+
+# ── suppression_targets: the strictly-lower-trust member, tied → no target ──────
+def _note(a_id, b_id, *, relation=REDUNDANCY, loser_hint=None):
+    """A canonical note for the suppression rule (it reads trust off ``trust_by_id``,
+    not the note — so ``loser_hint`` / ``relation`` do not steer the target)."""
+    return ConflictNote(a_id=a_id, b_id=b_id, relation=relation, cosine=0.95,
+                        anchor="f.py", loser_hint=loser_hint)
+
+
+def test_suppression_drops_the_provisional_against_established():
+    # established(10) + provisional(20) ⇒ the strictly-lower-trust member (20) is dropped.
+    trust = {10: ESTABLISHED, 20: PROVISIONAL}
+    assert suppression_targets([_note(10, 20)], trust) == frozenset({20})
+
+
+def test_suppression_drops_provisional_regardless_of_note_order_or_hint():
+    # the rule is by trust rank ONLY: a misleading loser_hint pointing at the established
+    # member must NOT flip the target away from the strictly-lower-trust provisional.
+    trust = {10: PROVISIONAL, 20: ESTABLISHED}
+    assert suppression_targets([_note(10, 20, loser_hint=20)], trust) == frozenset({10})
+
+
+def test_suppression_no_target_on_established_tie():
+    # established + established ⇒ tied rank ⇒ geometry cannot decide ⇒ drop nothing
+    # (the human/worklist path; the strict-dominance rule never coin-flips the gold away).
+    trust = {10: ESTABLISHED, 20: ESTABLISHED}
+    assert suppression_targets([_note(10, 20)], trust) == frozenset()
+
+
+def test_suppression_no_target_on_provisional_tie():
+    trust = {10: PROVISIONAL, 20: PROVISIONAL}
+    assert suppression_targets([_note(10, 20)], trust) == frozenset()
+
+
+def test_suppression_no_target_on_unknown_equal_ranks():
+    # a missing/unknown trust ranks 0; two unknown-equal members tie ⇒ no arbitrary drop.
+    assert suppression_targets([_note(10, 20)], {}) == frozenset()
+    # established outranks an unknown (rank 0) ⇒ the unknown is the strict loser.
+    assert suppression_targets([_note(10, 20)], {10: ESTABLISHED}) == frozenset({20})
+
+
+def test_suppression_unions_strict_losers_across_notes():
+    # multiple notes ⇒ the union of each note's strict-lower member; a tied note adds nothing.
+    trust = {10: ESTABLISHED, 20: PROVISIONAL, 30: ESTABLISHED, 40: PROVISIONAL, 50: ESTABLISHED}
+    notes = [_note(10, 20), _note(30, 40), _note(10, 50)]   # 50 vs 10 both established ⇒ tie
+    assert suppression_targets(notes, trust) == frozenset({20, 40})
+
+
+def test_suppression_empty_notes_is_empty():
+    assert suppression_targets([], {10: ESTABLISHED}) == frozenset()

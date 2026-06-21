@@ -115,6 +115,27 @@ def _loser_hint(x: ConflictItem, y: ConflictItem) -> int:
     return x.episode_id if kx < ky else y.episode_id
 
 
+def suppression_targets(notes: Sequence[ConflictNote],
+                        trust_by_id: dict[int, str]) -> frozenset[int]:
+    """The episode ids a serve-time filter may PRUNE: for each detected note, the member
+    whose ``_TRUST_RANK`` is STRICTLY lower than its partner's (a provisional loses to an
+    established). A tie — equal trust, or two unknown-equal ranks — yields NO target: geometry
+    cannot decide which co-present fact is true, so the strict-dominance rule refuses to
+    coin-flip one away (that stays the human ``hive_supersede`` / worklist path). The target is
+    read from ``trust_by_id`` ONLY, never the note's ``loser_hint`` (which breaks ts/id ties the
+    filter must not act on). Pure, total, never raises.  // O(notes)."""
+    drop: set[int] = set()
+    for note in notes:
+        ra = _TRUST_RANK.get(trust_by_id.get(note.a_id, ""), 0)
+        rb = _TRUST_RANK.get(trust_by_id.get(note.b_id, ""), 0)
+        if ra < rb:
+            drop.add(note.a_id)
+        elif rb < ra:
+            drop.add(note.b_id)
+        # ra == rb ⇒ undecidable by trust ⇒ no target (human/worklist path)
+    return frozenset(drop)
+
+
 def detect_conflicts(items: Sequence[ConflictItem], *, tau: float,
                      top_n: int = 10) -> tuple[ConflictNote, ...]:
     """All pairs i<j whose cosine ≥ ``tau``, classified by polarity: opposing (do↔dont)
