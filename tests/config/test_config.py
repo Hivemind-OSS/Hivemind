@@ -170,11 +170,20 @@ def test_conflict_defaults_off_and_inert():
     # genuine paraphrase/contradiction pairs (~0.81-0.87) — calibratable per deployment.
     assert cfg.conflict.tau == 0.80
     assert cfg.conflict.top_n == 10
+    assert cfg.conflict.suppress is False         # serve-time pruning OFF by default
 
 
 def test_conflict_enabled_via_env():
     cfg = Config.load(db_path=":memory:", env={"HIVE_CONFLICT__ENABLED": "true"})
     assert cfg.conflict.enabled is True
+
+
+def test_conflict_suppress_via_env_is_independent_of_enabled():
+    # suppress (serve-time pruning) and enabled (detection surfaces) are orthogonal knobs:
+    # suppression can run without the recall conflicts carrier / health worklist being on.
+    cfg = Config.load(db_path=":memory:", env={"HIVE_CONFLICT__SUPPRESS": "true"})
+    assert cfg.conflict.suppress is True
+    assert cfg.conflict.enabled is False
 
 
 def test_conflict_tau_bounds_rejected():

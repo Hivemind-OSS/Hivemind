@@ -131,8 +131,11 @@ class AutonomyConfig:
 class ConflictConfig:
     """Conflict/redundancy SURFACING knobs (detection + the advisory flag). ``enabled``
     gates DETECTION (the recall carrier + the health worklist) and the ``hive_flag``
-    advisory verb ONLY — the resolution verb ``hive_supersede`` is ALWAYS on (Law 3 human
-    vouch). Default OFF ⇒ byte-inert (no ``conflicts`` key, ``hive_flag`` → disabled). The
+    advisory verb ONLY. The orthogonal ``suppress`` switch gates SERVE-TIME PRUNING (recall
+    drops the strictly-lower-trust member of a detected near-dup/contradiction pair) — transient
+    per-query presentation (the §8.4 dedup/shadow slot), never O7 auto-resolution; the resolution
+    verb ``hive_supersede`` is ALWAYS on (Law 3 human vouch) and retirement stays human under
+    either switch. Default OFF ⇒ byte-inert (no ``conflicts`` key, ``hive_flag`` → disabled). The
     detection METHOD (cosine+polarity) is encoded in code, never a swap knob (THEORY §14);
     ``tau`` is the one genuinely-empirical knob (the near-dup cosine floor). Default 0.80:
     measured Qwen3 cosines put genuine paraphrase/contradiction pairs at ~0.81-0.87 while
@@ -144,6 +147,7 @@ class ConflictConfig:
     enabled: bool = False
     tau: float = 0.80
     top_n: int = 10
+    suppress: bool = False
 
     def __post_init__(self) -> None:
         if not (math.isfinite(self.tau) and 0.0 < self.tau <= 1.0):
