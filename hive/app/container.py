@@ -223,7 +223,9 @@ def build_container(cfg: Config, *, tenant_id: str, agent_id: str,
         recall_top_n=cfg.recall.recall_top_n,
         ledger=store, clock_now=clock.now, scanner=scanner,
         provisional_ttl_s=aut.provisional_ttl_days * _DAY_S,
-        lifecycle=lifecycle, autonomy_enabled=aut.enabled)
+        lifecycle=lifecycle, autonomy_enabled=aut.enabled,
+        suppress_conflicts=cfg.conflict.suppress, conflict_tau=cfg.conflict.tau,
+        conflict_classifier=None)             # Phase 2 semantic classifier seam
     admission = AdmissionService(store, scanner, embedder, now=clock.now,
                                  lifecycle=lifecycle, autonomy_enabled=aut.enabled)
     # the advisory conflict-flag service (Layer 2): reuses the store (ConflictFlagStore +

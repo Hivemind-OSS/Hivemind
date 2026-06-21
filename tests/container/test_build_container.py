@@ -69,6 +69,16 @@ def test_recall_top_n_from_config():
     assert c.recall.recall_top_n == 7
 
 
+def test_suppress_conflicts_wired_from_config():
+    # the serve-time suppression switch + its near-dup tau flow from ConflictConfig into the
+    # pipeline (default OFF / byte-inert; the Phase-2 classifier seam stays None).
+    assert _build().recall.suppress_conflicts is False
+    c = _build(conflict={"suppress": True})
+    assert c.recall.suppress_conflicts is True
+    assert c.recall.conflict_tau == c.cfg.conflict.tau
+    assert c.recall.conflict_classifier is None
+
+
 def test_identity_carries_tenant_and_agent():
     c = _build()
     assert (c.identity.tenant_id, c.identity.agent_id) == ("t1", "a1")
