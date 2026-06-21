@@ -89,18 +89,21 @@ def test_e2e_offline_three_arm_token_report(tmp_path):
     assert prov["h_frac_on"] == 0.5 and prov["h_frac_off"] == 1.0
     assert prov["embedder_model"] == "Qwen/Qwen3-Embedding-0.6B"
     assert prov["dataset_hash"] and prov["extractor"] == "substrate-raw-turns"
+    assert prov["served_tokenizer"]                 # the served-token axis is tokenizer-stamped
     # the tiny fixture carries exactly one question of each regime
     assert set(prov["regime_mix"]) == {"single-answer", "broad-relevant", "no-relevant"}
 
-    # zero-cost plumbing: VerbatimLLM ⇒ no input tokens, no spend anywhere
+    # zero-cost plumbing: VerbatimLLM ⇒ no actual claude spend (the cost DIAGNOSTIC is zero); the
+    # served-token axis, by contrast, is a real deterministic count of injected content.
     for arm in rep["arms"].values():
-        assert arm["input_tokens_total"] == 0
-        assert arm["usage_total"]["total_cost_usd"] == 0.0
-    assert all(t == 0 for t in prov["token_totals"].values())
+        assert arm["actual_claude_usage"]["total_cost_usd"] == 0.0
+        assert arm["served_tokens_total"] >= 0
 
     # the abstain gate IS active on the real recall path: at the same store/embedder/top_n, the
-    # production gate (C) can only serve a SUBSET of what the threshold-off gate (B) serves.
+    # production gate (C) can only serve a SUBSET of what the threshold-off gate (B) serves — visible
+    # in BOTH the served-memory count AND the deterministic token axis.
     assert rep["arms"][ARM_ON]["served_text_count"] <= rep["arms"][ARM_OFF]["served_text_count"]
+    assert rep["arms"][ARM_ON]["served_tokens_total"] <= rep["arms"][ARM_OFF]["served_tokens_total"]
 
     # every delta carries BOTH Pareto axes with a CI (tokens + success), each a valid interval
     for d in rep["deltas"].values():

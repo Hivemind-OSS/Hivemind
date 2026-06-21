@@ -33,7 +33,7 @@ from hive.research.bench.run import EMBEDDER_MODEL, _file_sha256, preflight as r
 from hive.research.bench.scoring import paired_delta_ci
 from hive.research.bench.substrate import assert_model_parity, build_substrate, preload
 from hive.research.bench.task_agent import (
-    SUCCESS_VERSION, TASK_PROMPT_VERSION, ArmTokenObs, run_arm,
+    SUCCESS_VERSION, TASK_PROMPT_VERSION, ArmTokenObs, run_arm, tokenizer_name,
 )
 
 ARM_MEM0 = "mem0"
@@ -60,7 +60,7 @@ def _arm_summary(obs: ArmTokenObs) -> dict:
         rt = [t for t in tasks if t.regime == r]
         by_regime[r] = {
             "n": len(rt),
-            "input_tokens": sum(t.input_tokens for t in rt),
+            "served_tokens": sum(t.served_tokens for t in rt),
             "served_text_count": sum(t.served_text_count for t in rt),
             "served_gold": sum(1 for t in rt if t.served_gold),
             "success_rate": (sum(1 for t in rt if t.success) / len(rt)) if rt else None,
@@ -68,12 +68,14 @@ def _arm_summary(obs: ArmTokenObs) -> dict:
         }
     return {
         "n": len(tasks),
-        "input_tokens_total": sum(t.input_tokens for t in tasks),
+        "served_tokens_total": sum(t.served_tokens for t in tasks),
         "served_text_count": sum(t.served_text_count for t in tasks),
         "served_gold": sum(1 for t in tasks if t.served_gold),
         "success_rate": (sum(1 for t in tasks if t.success) / len(tasks)) if tasks else None,
         "abstained_on_answerable": sum(1 for t in tasks if t.abstained_on_answerable),
-        "usage_total": dict(obs.usage_total),         # cost + n_live_calls + token breakdown
+        # the ACTUAL claude usage — a labelled, cache-order-confounded cost DIAGNOSTIC, NOT the
+        # headline token axis (BUG-004: input_tokens is defeated by prompt caching + base prompt).
+        "actual_claude_usage": dict(obs.usage_total),
         "by_regime": by_regime,
     }
 
@@ -82,8 +84,8 @@ def _delta(x: ArmTokenObs, y: ArmTokenObs, *, seed: int) -> dict:
     """Task-paired bootstrap CI of (x − y) on BOTH axes. Tokens: lower is better ⇒ a saving iff the
     CI lies below 0 (``hi < 0``). Success: a regression iff the CI lies below 0 (``hi < 0``), an
     improvement iff above (``lo > 0``)."""
-    tp, tlo, thi = paired_delta_ci([t.input_tokens for t in x.tasks],
-                                   [t.input_tokens for t in y.tasks], seed=seed)
+    tp, tlo, thi = paired_delta_ci([t.served_tokens for t in x.tasks],
+                                   [t.served_tokens for t in y.tasks], seed=seed)
     sp, slo, shi = paired_delta_ci([1.0 if t.success else 0.0 for t in x.tasks],
                                    [1.0 if t.success else 0.0 for t in y.tasks], seed=seed)
     return {
@@ -110,15 +112,15 @@ def score_token_arms(arm_obs: dict[str, ArmTokenObs], *, seed: int = 0) -> dict:
               "B-A": _delta(b, a, seed=seed),       # store / geometry difference
               "C-A": _delta(c, a, seed=seed)}       # total
     arms = {name: _arm_summary(obs) for name, obs in arm_obs.items()}
-    token_totals = {name: arms[name]["input_tokens_total"] for name in arm_obs}
+    token_totals = {name: arms[name]["served_tokens_total"] for name in arm_obs}
     return {"arms": arms, "deltas": deltas, "token_totals": token_totals}
 
 
 # ── provenance-stamped report (refuse on incomplete) ───────────────────────────
 
 _REQUIRED_PROVENANCE = (
-    "token_totals", "h_frac_on", "h_frac_off", "dataset_hash", "embedder_model",
-    "extractor", "llm_digest", "seeds", "regime_mix")
+    "token_totals", "served_tokenizer", "h_frac_on", "h_frac_off", "dataset_hash",
+    "embedder_model", "extractor", "llm_digest", "seeds", "regime_mix")
 
 
 def build_token_report(*, arms: dict, deltas: dict, provenance: dict) -> dict:
@@ -231,6 +233,7 @@ def main(argv: Optional[Sequence[str]] = None, *,
         "embedder_model": EMBEDDER_MODEL, "extractor": _EXTRACTOR,
         "llm_digest": _combined_digest(llms), "seeds": cfg.seeds,
         "regime_mix": {r: sum(1 for c in task_cases if c.regime == r) for r in _REGIMES},
+        "served_tokenizer": tokenizer_name(),
         "task_prompt_version": TASK_PROMPT_VERSION, "success_version": SUCCESS_VERSION,
         "agent_model": cfg.model or "default", "top_k": _TOP_K, "arms": list(_ARMS),
     }

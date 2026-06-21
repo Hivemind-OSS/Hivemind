@@ -24,7 +24,7 @@ _FIX = Path(__file__).parent / "fixtures" / "longmemeval_tiny.json"
 
 # ── arm builders for score_token_arms ──────────────────────────────────────────
 def _arm(name: str, specs) -> ArmTokenObs:
-    """specs: list of (regime, input_tokens, answer_match, abstained_on_answerable). A served
+    """specs: list of (regime, served_tokens, answer_match, abstained_on_answerable). A served
     answerable task is taken to have served its gold (served_gold), so success == answer_match
     there; an answerable-abstain has served nothing (served_gold False) ⇒ a counted failure."""
     tasks = []
@@ -32,13 +32,13 @@ def _arm(name: str, specs) -> ArmTokenObs:
         answerable = r != "no-relevant"
         served_ct = 0 if abst else 1
         served_gold = answerable and not abst
+        served_tokens = 0 if abst else tk
         tasks.append(TaskObs(query=f"q{i}", regime=r, answerable=answerable,
-                             served_text_count=served_ct, input_tokens=tk, answer_match=am,
+                             served_text_count=served_ct, served_tokens=served_tokens, answer_match=am,
                              served_gold=served_gold, abstained_on_answerable=abst))
     tasks = tuple(tasks)
-    usage = {"input_tokens": sum(t.input_tokens for t in tasks), "output_tokens": 0,
-             "cache_creation_input_tokens": 0, "cache_read_input_tokens": 0,
-             "total_cost_usd": 0.0, "n_served": len(tasks)}
+    usage = {"input_tokens": 0, "output_tokens": 0, "cache_creation_input_tokens": 0,
+             "cache_read_input_tokens": 0, "total_cost_usd": 0.0, "n_served": len(tasks)}
     return ArmTokenObs(arm=name, tasks=tasks, usage_total=usage)
 
 
@@ -93,9 +93,9 @@ def test_per_arm_summary_breaks_tokens_and_success_down_by_regime():
     sc = score_token_arms({ARM_MEM0: A, ARM_OFF: A, ARM_ON: A}, seed=0)
     sm = sc["arms"][ARM_MEM0]
     assert set(sm["by_regime"]) == {"single-answer", "broad-relevant", "no-relevant"}
-    assert sm["by_regime"]["single-answer"]["input_tokens"] == 50
+    assert sm["by_regime"]["single-answer"]["served_tokens"] == 50
     assert sm["by_regime"]["broad-relevant"]["success_rate"] == pytest.approx(0.0)
-    assert sm["input_tokens_total"] == 120 and sm["success_rate"] == pytest.approx(2 / 3)
+    assert sm["served_tokens_total"] == 120 and sm["success_rate"] == pytest.approx(2 / 3)
     assert sm["served_text_count"] == 3 and sm["by_regime"]["single-answer"]["served_text_count"] == 1
     assert sm["served_gold"] == 2 and sm["by_regime"]["single-answer"]["served_gold"] == 1
 
@@ -132,7 +132,8 @@ def test_score_token_arms_requires_aligned_arms():
 
 # ── build_token_report: refuse on incomplete inputs ────────────────────────────
 def _complete_provenance() -> dict:
-    return {"token_totals": {ARM_MEM0: 1}, "h_frac_on": 0.5, "h_frac_off": 1.0,
+    return {"token_totals": {ARM_MEM0: 1}, "served_tokenizer": "regex-wordpunct",
+            "h_frac_on": 0.5, "h_frac_off": 1.0,
             "dataset_hash": "abc", "embedder_model": EMBEDDER_MODEL,
             "extractor": "substrate-raw-turns", "llm_digest": "d", "seeds": [0],
             "regime_mix": {"single-answer": 1}}
@@ -205,7 +206,7 @@ def test_main_offline_writes_a_provenance_stamped_token_report(tmp_path):
     prov = rep["provenance"]
     assert prov["h_frac_on"] == 0.5 and prov["h_frac_off"] == 1.0
     assert prov["token_totals"] and prov["regime_mix"] and prov["dataset_hash"]
-    assert prov["embedder_model"] == EMBEDDER_MODEL
-    # every arm carries both axes (Pareto): tokens AND success, per regime
+    assert prov["embedder_model"] == EMBEDDER_MODEL and prov["served_tokenizer"]
+    # every arm carries both axes (Pareto): served tokens AND success, per regime
     for arm in rep["arms"].values():
-        assert "input_tokens_total" in arm and "success_rate" in arm and "by_regime" in arm
+        assert "served_tokens_total" in arm and "success_rate" in arm and "by_regime" in arm

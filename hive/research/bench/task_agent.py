@@ -1,25 +1,29 @@
 """C3 — the agent-loop task driver for the abstain-token benchmark.
 
 Per task: recall → inject the served content into ONE frozen task-prompt scaffold → the agent
-answers via the LLM seam → return a frozen ``TaskObs``. The scaffold (``task.v1``) is byte-identical
-across all arms EXCEPT the served block, so the real ``claude -p`` ``input_tokens`` delta ACROSS
-arms is precisely the injected-content delta — actual agent spend, not a proxy. The per-task spend
-is measured from ``served_usage_totals()`` (which advances on every served result — real call, cache
-hit, OR log replay), so a ``--llm-log`` re-run reproduces the SAME per-task tokens instead of zeroing
-them.
+answers via the LLM seam → return a frozen ``TaskObs``.
 
-Honesty (guards 1/6 / AC4): a token saving may never come from under-serving a needed fact. Two
-mechanisms enforce it structurally: ``abstained_on_answerable`` flags an answerable query the gate
-served NOTHING for, and ``served_gold`` records whether the gold memory was actually among the served
-ids. ``TaskObs.success`` for an answerable task requires BOTH a correct answer AND that the gold was
-served — so neither an empty serve, a confident serve that DROPS the gold, nor a parametric-memory
-guess can read as success.
+THE TOKEN AXIS IS A DETERMINISTIC COUNT OF THE SERVED MEMORY BLOCK (``served_tokens``), not the
+``claude -p`` ``input_tokens``. The first real run proved the latter is unrecoverable: prompt caching
+routes injected content into the cache-token counters and Claude Code's own ~70k-token system prompt
+dwarfs the served memory, so ``input_tokens`` reads a tiny uncached residual identical across arms
+(BUG-004). ``served_tokens`` is the honest "injected memory volume" the abstain gate actually
+controls — deterministic, replay-invariant, tokenizer-stamped. The agent's REAL ``claude`` usage/cost
+is still captured (``ArmTokenObs.usage_total``) but only as a labelled, cache-order-confounded
+diagnostic, never the headline.
+
+Honesty (guards 1/6 / AC4): a token saving may never come from under-serving a needed fact.
+``abstained_on_answerable`` flags an answerable query the gate served NOTHING for; ``served_gold``
+records whether the gold memory was actually served; ``TaskObs.success`` for an answerable task
+requires BOTH a correct answer AND that the gold was served — so neither an empty serve, a
+gold-dropping serve, nor a parametric guess can read as success.
 
 Dev-time only (under ``hive.research``). No kernel change — it drives the shipped recall + LLM seams
 read-only.
 """
 from __future__ import annotations
 
+import functools
 import re
 from dataclasses import dataclass
 from typing import Sequence
@@ -45,17 +49,43 @@ _REFUSAL_MARKERS = (
 _STOPWORDS = frozenset(
     "a an the of on in at to is are was were be and or for with by from it i my you your this that".split())
 _TOKEN_RX = re.compile(r"[a-z0-9]+")
+_WORDPUNCT_RX = re.compile(r"\w+|[^\w\s]")
+
+
+@functools.lru_cache(maxsize=1)
+def _tokenizer():
+    """The served-token counter, chosen ONCE per process and stamped in provenance: a real BPE
+    (tiktoken cl100k_base) when importable, else a deterministic dependency-free word/punct proxy.
+    The cross-arm delta is meaningful under either — the absolute unit is disclosed via its name."""
+    try:
+        import tiktoken
+        enc = tiktoken.get_encoding("cl100k_base")
+        return (lambda t: len(enc.encode(t))), "tiktoken-cl100k_base"
+    except Exception:
+        return (lambda t: len(_WORDPUNCT_RX.findall(t))), "regex-wordpunct"
+
+
+def count_tokens(text: str) -> int:
+    return _tokenizer()[0](text)
+
+
+def tokenizer_name() -> str:
+    return _tokenizer()[1]
+
+
+def _served_block(served: Sequence[str]) -> str:
+    """The injected memory block — the ONLY arm-varying part of the scaffold. Single source for both
+    the prompt and the token count, so the two can never drift."""
+    return "".join(f"- {s}\n" for s in served)
 
 
 def inject_scaffold(query: str, served: Sequence[str]) -> str:
     """The ONE task-prompt template (``task.v1``). The fixed prefix/suffix is constant across arms;
-    ONLY ``served_block`` (the recall content, empty when nothing was served) varies — so the
-    cross-arm ``input_tokens`` delta isolates served content exactly."""
-    served_block = "".join(f"- {s}\n" for s in served)            # "" when nothing served
+    ONLY the served block varies."""
     return (
         "You are answering a question using your team's shared memory.\n"
         "Notes retrieved from memory:\n"
-        f"{served_block}"
+        f"{_served_block(served)}"
         f"\nQuestion: {query}\n"
         "Answer concisely using ONLY the notes above. "
         "If the notes do not contain the answer, reply exactly: I don't know.\n"
@@ -86,25 +116,27 @@ def _score_answer(case: TaskCase, answer: str) -> bool:
 
 @dataclass(frozen=True)
 class TaskObs:
-    """One task's outcome. ``input_tokens`` is THIS task's served spend. ``answer_match`` is the raw
-    deterministic match; ``served_gold`` records whether a gold memory was actually served;
-    ``abstained_on_answerable`` marks an empty serve on an answerable query. ``success`` is the SCORED
-    success — for an answerable task it requires BOTH a correct answer AND that the gold was served,
-    so a saving can never be bought by under-serving (empty serve, gold-dropping serve, or a guess)."""
+    """One task's outcome. ``served_tokens`` is the DETERMINISTIC token count of the injected memory
+    block (the honest injected-volume axis — NOT claude usage; see module docstring / BUG-004).
+    ``answer_match`` is the raw deterministic match; ``served_gold`` records whether a gold memory was
+    actually served; ``abstained_on_answerable`` marks an empty serve on an answerable query.
+    ``success`` for an answerable task requires BOTH a correct answer AND that the gold was served."""
     query: str
     regime: str
     answerable: bool
     served_text_count: int
-    input_tokens: int
+    served_tokens: int
     answer_match: bool
     served_gold: bool
     abstained_on_answerable: bool
 
     def __post_init__(self) -> None:
-        if self.input_tokens < 0:
-            raise ValueError(f"input_tokens cannot be negative, got {self.input_tokens}")
+        if self.served_tokens < 0:
+            raise ValueError(f"served_tokens cannot be negative, got {self.served_tokens}")
         if self.served_text_count < 0:
             raise ValueError(f"served_text_count cannot be negative, got {self.served_text_count}")
+        if self.served_text_count == 0 and self.served_tokens != 0:
+            raise ValueError("served_tokens must be 0 when nothing is served")
         if self.abstained_on_answerable and self.served_text_count:
             raise ValueError("an abstained task cannot have served content")
         if self.served_gold and not self.served_text_count:
@@ -120,36 +152,35 @@ class TaskObs:
 
 
 def _usage(llm: LLM) -> dict:
-    """The LLM's cumulative SERVED-usage snapshot — degrades to zeros for a double lacking it."""
+    """The LLM's cumulative SERVED-usage snapshot (for the cost DIAGNOSTIC) — zeros for a double
+    lacking it."""
     fn = getattr(llm, "served_usage_totals", None)
     return fn() if fn is not None else zero_served_usage()
 
 
 def run_task(backend: MemoryBackend, llm: LLM, case: TaskCase, *,
              seat: str, served_text: dict[str, str], mem_source: dict[str, str]) -> TaskObs:
-    """Recall → resolve served ids to text via the arm's serving map → inject → complete. The arm's
-    ``mem_source`` (mem_id → source session) lets the loop tell whether the GOLD memory was among the
-    served ids. Per-task ``input_tokens`` is the served-usage delta around the one ``complete``."""
+    """Recall → resolve served ids to text → count the served block (the token axis) → complete (for
+    the success axis). ``mem_source`` lets the loop tell whether the GOLD memory was served."""
     obs = backend.recall(seat, case.query)
     served_ids = obs.ranked_ids
     served = [served_text[mid] for mid in served_ids if mid in served_text]
     gold_mem_ids = {mid for mid, src in mem_source.items() if src in case.gold_source_ids}
     served_gold = bool(set(served_ids) & gold_mem_ids)
-    scaffold = inject_scaffold(case.query, served)
-    before = _usage(llm)["input_tokens"]
-    answer = llm.complete(scaffold)
-    after = _usage(llm)["input_tokens"]
+    served_tokens = count_tokens(_served_block(served))
+    answer = llm.complete(inject_scaffold(case.query, served))
     return TaskObs(
         query=case.query, regime=case.regime, answerable=case.answerable,
-        served_text_count=len(served), input_tokens=after - before,
+        served_text_count=len(served), served_tokens=served_tokens,
         answer_match=_score_answer(case, answer), served_gold=served_gold,
         abstained_on_answerable=(case.answerable and obs.abstained))
 
 
 @dataclass(frozen=True)
 class ArmTokenObs:
-    """One arm's per-task observations + the arm-total served usage (the ``served_usage_totals()``
-    delta over the whole arm — input/output/cache tokens, cost, and ``n_served``)."""
+    """One arm's per-task observations + the arm-total ACTUAL claude usage (the ``served_usage_totals``
+    delta over the arm — cost/cache/n_served). The usage is a labelled cost DIAGNOSTIC only; the
+    headline token axis is the per-task ``served_tokens``, never this (BUG-004)."""
     arm: str
     tasks: tuple[TaskObs, ...]
     usage_total: dict
@@ -158,8 +189,8 @@ class ArmTokenObs:
 def run_arm(backend: MemoryBackend, llm: LLM, cases: Sequence[TaskCase], *,
             seat: str, served_text: dict[str, str], mem_source: dict[str, str],
             arm: str = "arm") -> ArmTokenObs:
-    """Run every task through one arm; snapshot the LLM served-usage around the whole arm for the arm
-    total (the per-task ``input_tokens`` sum equals it by construction)."""
+    """Run every task through one arm; snapshot the LLM usage around the whole arm for the cost
+    diagnostic (the token axis is the deterministic per-task served_tokens, not this)."""
     before = _usage(llm)
     tasks = tuple(run_task(backend, llm, c, seat=seat, served_text=served_text, mem_source=mem_source)
                   for c in cases)
