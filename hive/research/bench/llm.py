@@ -188,7 +188,14 @@ class ClaudeSubscriptionLLM:
         return hashlib.sha256(canon.encode("utf-8")).hexdigest()
 
     def _build_argv(self, prompt: str, system: Optional[str]) -> list[str]:
-        argv = [self._bin, "-p", prompt, "--output-format", "json"]
+        # --strict-mcp-config: load ONLY MCP servers from --mcp-config (none here) ⇒ ignore the
+        # operator's ~/.claude.json / project .mcp.json. A bench task call answers from the injected
+        # memory block alone and needs zero MCP servers; without this flag every call boots the
+        # operator's MCP servers (e.g. a ~500 MB node MCP process) that are NOT torn down per call,
+        # leaking GBs across a long run until the host OOMs (it killed a full n=60 run). The cache key
+        # (_key) is prompt/system/model-based, NOT argv-based, so adding this flag does not invalidate
+        # any existing --llm-log replay cache.
+        argv = [self._bin, "-p", prompt, "--output-format", "json", "--strict-mcp-config"]
         if system:
             argv += ["--append-system-prompt", system]
         if self._model:

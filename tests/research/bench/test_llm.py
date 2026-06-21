@@ -42,6 +42,9 @@ def test_complete_builds_headless_json_argv():
     argv = r.calls[0]
     assert argv[:2] == ["claude", "-p"] and "a question" in argv
     assert argv[argv.index("--output-format") + 1] == "json"
+    # the bench answers from injected memory alone — load NO MCP servers, so a long run never leaks
+    # the operator's un-reaped MCP subprocesses into an OOM (the n=60 host-kill).
+    assert "--strict-mcp-config" in argv
     assert "--append-system-prompt" not in argv          # none supplied
 
 
