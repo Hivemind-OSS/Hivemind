@@ -223,12 +223,16 @@ class HiveMCPServer:
             from hive.app.config import AutonomyConfig   # noqa: PLC0415 — lazy default
             autonomy = AutonomyConfig()
         self.autonomy = autonomy
-        # conflict surfacing (duck-typed ConflictConfig); None ⇒ defaults (OFF ⇒ byte-inert:
-        # no ``conflicts`` key, no health worklist). ``flag_service`` (ConflictFlagService or
-        # None) backs the advisory hive_flag verb — gated by conflict.enabled.
+        # conflict surfacing (duck-typed ConflictConfig). The PRODUCT default is ON: the real
+        # ConflictConfig the container wires from config enables detection (the ``conflicts``
+        # carrier + the health worklist + the advisory hive_flag). But a server built with NO
+        # conflict config has no ``flag_service`` to back the advisory verb, so the bare-
+        # construction fallback stays byte-inert (enabled=False ⇒ no key, no worklist) rather than
+        # surfacing a carrier the flag verb cannot service. ``flag_service`` (ConflictFlagService
+        # or None) backs hive_flag — gated by conflict.enabled.
         if conflict is None:
             from hive.app.config import ConflictConfig   # noqa: PLC0415 — lazy default
-            conflict = ConflictConfig()
+            conflict = ConflictConfig(enabled=False)
         self.conflict = conflict
         self.flag_service = flag_service
         self._tool_handlers: dict[str, Callable[[dict, ServerIdentity], dict]] = {

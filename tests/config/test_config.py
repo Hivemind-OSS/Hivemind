@@ -163,14 +163,14 @@ def test_backup_keep_at_least_one():
 
 
 # ── ConflictConfig group (default OFF; one empirical knob τ) ───────────────────
-def test_conflict_defaults_off_and_inert():
+def test_conflict_detection_on_suppression_off_by_default():
     cfg = Config.load(db_path=":memory:")
-    assert cfg.conflict.enabled is False          # default OFF (byte-inert)
+    assert cfg.conflict.enabled is True           # detection surfaces ship ON (fleet flags conflicts)
     # 0.80: measured to sit in the gap between distinct same-subsystem facts (~0.69) and
     # genuine paraphrase/contradiction pairs (~0.81-0.87) — calibratable per deployment.
     assert cfg.conflict.tau == 0.80
     assert cfg.conflict.top_n == 10
-    assert cfg.conflict.suppress is False         # serve-time pruning OFF by default
+    assert cfg.conflict.suppress is False         # serve-time pruning stays OPT-IN
 
 
 def test_conflict_enabled_via_env():
@@ -178,10 +178,11 @@ def test_conflict_enabled_via_env():
     assert cfg.conflict.enabled is True
 
 
-def test_conflict_suppress_via_env_is_independent_of_enabled():
-    # suppress (serve-time pruning) and enabled (detection surfaces) are orthogonal knobs:
-    # suppression can run without the recall conflicts carrier / health worklist being on.
-    cfg = Config.load(db_path=":memory:", env={"HIVE_CONFLICT__SUPPRESS": "true"})
+def test_conflict_suppress_is_independent_of_enabled():
+    # suppress (serve-time pruning) and enabled (detection surfaces) are orthogonal: suppression
+    # can run with detection OFF, proving the two knobs do not imply each other.
+    cfg = Config.load(db_path=":memory:",
+                      env={"HIVE_CONFLICT__SUPPRESS": "true", "HIVE_CONFLICT__ENABLED": "false"})
     assert cfg.conflict.suppress is True
     assert cfg.conflict.enabled is False
 

@@ -135,7 +135,10 @@ class ConflictConfig:
     drops the strictly-lower-trust member of a detected near-dup/contradiction pair) — transient
     per-query presentation (the §8.4 dedup/shadow slot), never O7 auto-resolution; the resolution
     verb ``hive_supersede`` is ALWAYS on (Law 3 human vouch) and retirement stays human under
-    either switch. Default OFF ⇒ byte-inert (no ``conflicts`` key, ``hive_flag`` → disabled). The
+    either switch. DETECTION (``enabled``) ships ON by default — the recall ``conflicts`` carrier,
+    the ``hive_health`` worklist, and the ``hive_flag`` advisory verb are live so the fleet surfaces
+    conflicts for human resolution by default; ``suppress`` ships OFF (opt-in). Set ``enabled=false``
+    to restore the byte-inert envelope (no ``conflicts`` key, ``hive_flag`` → disabled). The
     detection METHOD (cosine+polarity) is encoded in code, never a swap knob (THEORY §14);
     ``tau`` is the one genuinely-empirical knob (the near-dup cosine floor). Default 0.80:
     measured Qwen3 cosines put genuine paraphrase/contradiction pairs at ~0.81-0.87 while
@@ -144,7 +147,7 @@ class ConflictConfig:
     ceiling). It stays a per-deployment knob — recalibrate on the real corpus via the
     benchmark; the asymmetric cost (a false positive can lead a human to retire a real
     memory) argues for keeping margin rather than chasing the lowest-cosine conflicts."""
-    enabled: bool = False
+    enabled: bool = True
     tau: float = 0.80
     top_n: int = 10
     suppress: bool = False

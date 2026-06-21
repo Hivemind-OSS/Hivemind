@@ -15,8 +15,7 @@ def _srv(*, enabled=True, h=1.0):
     # h=1.0 ⇒ the entropy gate never suppresses, so two near-dup hits are served confidently
     # (a flat 2-hit distribution would otherwise abstain — that path is tested elsewhere).
     return build_real_server(d=D, h=h, embedder=FakeClusterProvider(d=D),
-                             conflict=ConflictConfig(enabled=enabled) if enabled else
-                             ConflictConfig())
+                             conflict=ConflictConfig(enabled=enabled))
 
 
 def _write(server, text, **kw):
