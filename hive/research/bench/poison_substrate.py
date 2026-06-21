@@ -234,7 +234,7 @@ def build_poison_substrate(
     if not kinds:
         passthrough = [
             PoisonTaskCase(
-                query=tc.query, regime=("clean" if tc.answerable else "credential"),
+                query=tc.query, regime="clean",
                 kind="mistake", gold_source_ids=tc.gold_source_ids,
                 false_source_ids=frozenset(), true_value=None, false_value=None,
                 expected=tc.expected)
@@ -262,9 +262,10 @@ def build_poison_substrate(
     kind_cycle = 0
     for tc in base_cases:
         if not tc.answerable:
-            # Unanswerable base cases pass through as credential-regime diagnostics (no value pair).
+            # Unanswerable base cases are clean controls (the agent should correctly refuse); they
+            # carry no falsehood, so they neither false-serve nor pair against the headline slice.
             poison_cases.append(PoisonTaskCase(
-                query=tc.query, regime="credential", kind="mistake",
+                query=tc.query, regime="clean", kind="mistake",
                 gold_source_ids=tc.gold_source_ids, false_source_ids=frozenset(),
                 true_value=None, false_value=None, expected=tc.expected))
             continue

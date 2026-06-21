@@ -47,8 +47,8 @@ from hive.research.bench.dataset import load_longmemeval
 from hive.research.bench.llm import LLM
 from hive.research.bench.poison_agent import PoisonArmObs, run_poison_arm
 from hive.research.bench.poison_substrate import (
-    POISON_VERSION, build_poison_substrate, drive_demand,
-    plant_falsehood_unvouched, plant_falsehood_vouched, supersede_falsehood,
+    POISON_VERSION, build_poison_substrate, drive_demand, make_credential_text,
+    plant_falsehood_unvouched, supersede_falsehood,
 )
 from hive.research.bench.run import EMBEDDER_MODEL, _file_sha256, preflight as run_preflight
 from hive.research.bench.scoring import paired_delta_ci
@@ -60,7 +60,7 @@ ARM_OFF = "abstain-off"
 ARM_ON = "abstain-on"
 ARM_SUP = "hivemind-supersede"
 _ARMS = (ARM_MEM0, ARM_OFF, ARM_ON, ARM_SUP)       # A, B, C, D
-_REGIMES = ("corrected", "credential", "clean")
+_REGIMES = ("corrected", "clean")
 
 _READER_SEAT = "reader"
 _APPROVER = "orchestrator"
@@ -386,45 +386,29 @@ def main(argv: Optional[Sequence[str]] = None, *,
         cases, seed=seed, poison_frac=cfg.poison_frac, kinds=cfg.poison_kinds)
     gold_text_for = _gold_text_for(specs, memories)
 
-    cred_specs = tuple(s for s in specs if s.kind == "credential")
     arm_obs: dict[str, PoisonArmObs] = {}
-    # the set of SERVABLE false SOURCES per arm — compared by source (not mem-id, which never matches
-    # across distinct backends) for the secret-floor asymmetry.
-    servable_false_sources: dict[str, frozenset[str]] = {}
     for arm in _ARMS:
         backend = make_backend(arm)
         backend.reset()
-        # the augmented pool (clean + falsehoods), all orchestrator-vouched ⇒ the falsehood is
-        # SERVABLE in every arm, so the headline measures SELECTION, never admission-absence.
+        # The augmented pool (clean + the committed-servable falsehoods) is loaded through the SAME
+        # orchestrator-vouched seam in EVERY arm — so the falsehood is servable everywhere and the
+        # headline measures serve-time SELECTION, never admission-absence. preload maps each false
+        # mem-id to its "poison::<gold>" source; the agent loop resolves a served false id by
+        # PROVENANCE (mem_source ∩ case.false_source_ids), never by text. No second plant — a double
+        # plant would give a no-dedup store (mem0) the falsehood twice, a serve-volume confound.
         pre = preload(backend, memories, approver=_APPROVER)
-        # plant the committed-servable falsehood and fold each handle into the serving maps so the
-        # agent loop can resolve a served false id (recall surfaces it) to its text AND its false
-        # source (provenance, not text). The plant returns false_source_id → mem_id.
-        planted = plant_falsehood_vouched(backend, specs, approver=_APPROVER)
-        false_source_of = {s.false_source_id: s for s in specs}
-        for false_source_id, mid in planted.items():
-            spec = false_source_of[false_source_id]
-            pre.mem_text[mid] = spec.false_text
-            pre.mem_source[mid] = false_source_id
         if arm == ARM_SUP:
             supersede_falsehood(backend, specs, pre, approver=_APPROVER,
                                 gold_text_for=gold_text_for)
-        # a credential is the secret-floor diagnostic: it is NOT in the vouched plant (that skips
-        # credentials), so preload it through the same seam and observe whether it became servable.
-        cred_pre = preload(backend, [(s.false_source_id, s.false_text) for s in cred_specs],
-                           approver=_APPROVER) if cred_specs else None
-        servable_false_sources[arm] = frozenset(
-            src for src in pre.mem_source.values() if src in false_source_of) | (
-            frozenset(cred_pre.mem_source.values()) if cred_pre else frozenset())
         arm_obs[arm] = run_poison_arm(backend, llms[arm], poison_cases, seat=_READER_SEAT,
                                       served_text=pre.mem_text, mem_source=pre.mem_source, arm=arm)
 
     scored = score_poison_arms(arm_obs, seed=seed)
 
-    # secret floor (DISCLOSED, never headline): a credential refused on Hivemind never becomes a
-    # servable false source; on mem0 it is stored+servable. Observe the asymmetry as the rate of false
-    # sources mem0 holds servable that the Hivemind arm refused.
-    secret_floor_observed = _secret_floor_rate(servable_false_sources)
+    # secret floor (DISCLOSED, never headline): Hivemind refuses a credential-shaped fact at the
+    # write boundary (never servable); mem0 stores+serves it. Measured as a standalone write-path
+    # probe — a credential is not a recall task, and the asymmetry is a backend CAPABILITY difference.
+    secret_floor_observed = measure_secret_floor(make_backend)
 
     # the anti-gaming admission probe (DISCLOSED, never headline). On a demand-tuned factory the
     # offline fixture may be inconclusive (the text won't cluster under a hash embedder) — that is an
@@ -451,17 +435,27 @@ def main(argv: Optional[Sequence[str]] = None, *,
     return 0
 
 
-def _secret_floor_rate(by_arm: dict[str, frozenset[str]]) -> float:
-    """The DISCLOSED secret-floor line: the fraction of servable false SOURCES the mem0 arm holds that
-    a Hivemind arm refused. Keyed on SOURCE id (stable across backends), never mem-id (which never
-    matches across distinct backends). 0.0 when mem0 stored none (no credential in the slice) — a
-    capability asymmetry, never the headline FSR."""
-    mem0 = by_arm.get(ARM_MEM0, frozenset())
-    if not mem0:
-        return 0.0
-    hive = by_arm.get(ARM_OFF, frozenset())
-    refused = sum(1 for src in mem0 if src not in hive)
-    return min(1.0, refused / len(mem0))
+def measure_secret_floor(make_backend: Callable[[str], MemoryBackend]) -> dict:
+    """The DISCLOSED secret-floor line: write a credential-shaped fact into a Hivemind arm and into
+    mem0 and observe servability. Hivemind refuses it at the secret floor (the write never stores ⇒
+    never servable); mem0 has no such floor, so it stores+serves it. ``conclusive`` requires mem0 to
+    have stored it (else the probe says nothing). A standalone write-path probe — a credential is not
+    a recall task, and the refusal is a backend CAPABILITY difference reported alongside, NEVER folded
+    into the headline FSR. Offline a fake backend that does not model the scanner reads not-refused —
+    an honest inconclusive, exactly like the anti-gaming probe."""
+    cred = make_credential_text("deploy")
+    hive = make_backend(ARM_OFF)
+    hive.reset()
+    hp = hive.propose(_READER_SEAT, cred, source_id="cred::probe")
+    hive_mid = hive.commit(hp, approver=_APPROVER) if hp.proposal_id else ""
+    refused_by_hive = (not hive_mid) or hive.recall(_READER_SEAT, cred).abstained
+    mem0 = make_backend(ARM_MEM0)
+    mem0.reset()
+    mp = mem0.propose(_READER_SEAT, cred, source_id="cred::probe")
+    mem0_mid = mem0.commit(mp, approver=_APPROVER) if mp.proposal_id else ""
+    stored_by_mem0 = bool(mem0_mid) and not mem0.recall(_READER_SEAT, cred).abstained
+    return {"refused_by_hive": bool(refused_by_hive), "stored_by_mem0": bool(stored_by_mem0),
+            "conclusive": bool(stored_by_mem0)}
 
 
 def _measure_promotion(cfg, *, backend_factory) -> dict:

@@ -38,7 +38,7 @@ def _task(query: str, *, served: int = 1, served_false: int = 0, served_gold: bo
     ``success`` follow from the carrier's own invariants/derivation."""
     abstained = served == 0
     return PoisonTaskObs(
-        query=query, regime=regime, kind="mistake", answerable=(regime != "credential"),
+        query=query, regime=regime, kind="mistake", answerable=(regime == "corrected"),
         served_text_count=served, served_false_count=served_false,
         served_gold=served_gold and served > 0, false_served=(served_false > 0),
         emitted_false=emitted_false, emitted_true=emitted_true,
@@ -162,7 +162,9 @@ def _complete_provenance() -> dict:
             "poison_frac": 0.5, "poison_kinds": ["mistake", "stale"],
             "poison_value_map_hash": "deadbeef", "h_frac_on": 0.5, "h_frac_off": 1.0,
             "llm_digest": "d", "seeds": [0], "regime_mix": {"corrected": 1},
-            "matched_serve_point": 3, "secret_floor_observed": 0.0,
+            "matched_serve_point": 3,
+            "secret_floor_observed": {"refused_by_hive": True, "stored_by_mem0": True,
+                                      "conclusive": True},
             "poison_promotion": {"two_seat_promoted": False, "self_demand_blocked": False,
                                  "conclusive": False}}
 
@@ -255,9 +257,12 @@ def test_main_offline_writes_a_provenance_stamped_poison_report(tmp_path):
     assert prov["embedder_model"] == EMBEDDER_MODEL and prov["served_tokenizer"]
     assert prov["dataset_hash"] and prov["poison_version"] == "poison.v1"
     assert prov["poison_value_map_hash"] and "matched_serve_point" in prov
-    assert set(prov["regime_mix"]) == {"corrected", "credential", "clean"}
-    # secret_floor_observed is a top-level rate (0.0 here: no credential in the offline slice).
-    assert isinstance(prov["secret_floor_observed"], float)
+    assert set(prov["regime_mix"]) == {"corrected", "clean"}
+    # secret_floor_observed is a DISCLOSED top-level write-path probe (a fake backend that does not
+    # model the scanner reads not-refused offline — an honest inconclusive, like the anti-gaming line).
+    sf = prov["secret_floor_observed"]
+    assert set(sf) == {"refused_by_hive", "stored_by_mem0", "conclusive"}
+    assert all(isinstance(v, bool) for v in sf.values())
     # the anti-gaming probe is PRESENT and well-formed; offline it is inconclusive (no real demand).
     pp = prov["poison_promotion"]
     assert set(pp) == {"two_seat_promoted", "self_demand_blocked", "conclusive"}
@@ -266,3 +271,29 @@ def test_main_offline_writes_a_provenance_stamped_poison_report(tmp_path):
     for arm in rep["arms"].values():
         assert "false_serve_rate" in arm and "success_rate" in arm and "by_regime" in arm
         assert "per_served_false_rate_full" in arm and "per_served_false_rate_matched" in arm
+
+
+def test_main_does_not_double_plant_the_falsehood(tmp_path):
+    # The falsehood is loaded ONCE through preload (the augmented pool already contains it); a second
+    # vouched plant would give a no-dedup store (mem0) the falsehood TWICE — a serve-volume confound
+    # the benchmark must not have. Pin it behaviorally: within any single arm's backend, no text is
+    # committed more than once.
+    backends: list = []
+
+    class _CountingBackend(_FakeBackend):
+        def __init__(self, arm: str) -> None:
+            super().__init__(arm)
+            self.commit_counts: dict[str, int] = {}
+            backends.append(self)
+
+        def commit(self, proposal, *, approver: str) -> str:
+            self.commit_counts[proposal.text] = self.commit_counts.get(proposal.text, 0) + 1
+            return super().commit(proposal, approver=approver)
+
+    out = tmp_path / "p.json"
+    rc = main(["--dataset", str(_FIX), "--out", str(out)],
+              backend_factory=lambda arm: _CountingBackend(arm),
+              llm_factory=lambda arm: FakeLLM(usage={"input_tokens": 7}))
+    assert rc == 0 and backends
+    # a double-plant would make some text's count 2 in an arm backend.
+    assert all(max(b.commit_counts.values(), default=0) <= 1 for b in backends)
