@@ -24,6 +24,7 @@ import math
 import uuid
 from typing import Callable, Optional, Sequence
 
+from hive.domain.conflict import ConflictItem, detect_conflicts, suppression_targets
 from hive.domain.lifecycle import is_servable
 from hive.domain.models import (
     CONFIDENT, Episode, RecallHit, RecallResult, Scored,
@@ -169,6 +170,9 @@ class RecallPipeline:
         recall_top_n: int, ledger: ExposureLedger, clock_now: Callable[[], int],
         scanner, provisional_ttl_s: int, lifecycle=None,
         autonomy_enabled: bool = True,
+        suppress_conflicts: bool = False,
+        conflict_tau: float = 0.80,
+        conflict_classifier=None,
     ) -> None:
         self.embedder = embedder
         self.index = index
@@ -189,6 +193,15 @@ class RecallPipeline:
         self.provisional_ttl_s = int(provisional_ttl_s)
         self.lifecycle = lifecycle        # LifecycleService or None: on_miss trigger
         self.autonomy_enabled = bool(autonomy_enabled)
+        # serve-time conflict suppression (post-gate, OFF by default ⇒ byte-inert): when on,
+        # the already-confident shortlist is pruned of the strictly-lower-trust member of any
+        # detected near-dup/contradiction pair, so a low-trust poison co-served with a vouched
+        # fact is dropped WITHOUT touching the abstain decision and WITHOUT retiring the row
+        # (resolution stays human). conflict_tau is the near-dup cosine floor (single-owned by
+        # ConflictConfig.tau); conflict_classifier is the Phase-2 semantic seam, unused while None.
+        self.suppress_conflicts = bool(suppress_conflicts)
+        self.conflict_tau = float(conflict_tau)
+        self.conflict_classifier = conflict_classifier
 
     def recall(self, query: str, *, agent_id: str) -> RecallResult:
         trace_id = uuid.uuid4().hex
@@ -272,6 +285,24 @@ class RecallPipeline:
                     continue
                 resolved.append(
                     (Scored(eid, float(ep.weight), sim_by_eid[eid]), mass, ep))
+
+            # post-gate conflict suppression (§8.4 dedup/shadow slot): prune the
+            # strictly-lower-trust member of any near-dup/contradiction pair among the resolved
+            # set. Runs AFTER the gate (never touches the abstain decision) and BEFORE the
+            # empty-check + exposure below, so a pruned row is never surfaced or liveness-
+            # refreshed (belt-ordering). It only REMOVES — no resurrection. A detector/rule
+            # fault raises into this block's enclosing try ⇒ EMPTY_NO_DATA (fail-closed). OFF
+            # ⇒ byte-inert (no detector call). conflict_classifier is reserved for Phase 2.
+            if self.suppress_conflicts and len(resolved) >= 2:
+                citems = [ConflictItem(episode_id=ep.id, vector=ep.value,
+                                       polarity=ep.polarity, anchor=ep.anchor,
+                                       ts=ep.ts, trust=ep.trust)
+                          for _s, _m, ep in resolved]
+                drop = suppression_targets(
+                    detect_conflicts(citems, tau=self.conflict_tau, top_n=len(citems)),
+                    {it.episode_id: it.trust for it in citems})
+                if drop:
+                    resolved = [r for r in resolved if r[2].id not in drop]
 
             if not resolved:
                 _log.error("gate passed but 0 candidates resolved → EMPTY_NO_DATA "
