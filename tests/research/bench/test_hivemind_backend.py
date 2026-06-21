@@ -91,3 +91,59 @@ def test_call_raises_runtime_error_on_a_jsonrpc_error_envelope():
     b = HivemindBackend(lambda: _ErrServer())
     with pytest.raises(RuntimeError, match="hivemind .* error"):
         b.recall("sub-a", "anything")
+
+
+class _ReplyServer:
+    """A server whose tool result is a fixed JSON dict, capturing the last (tool, args, seat)."""
+    def __init__(self, reply: dict) -> None:
+        self._reply = reply
+        self.calls: list = []
+
+    def handle(self, req, *, identity):
+        import json
+        p = req.params if hasattr(req, "params") else req["params"]
+        self.calls.append((p["name"], p["arguments"], identity.agent_id))
+        return SimpleNamespace(result={"content": [{"text": json.dumps(self._reply)}]})
+
+
+def test_propose_skips_a_no_id_status_without_crashing():
+    # hive_capture OMITS "id" when autonomy is disabled (status="disabled") — not just on "refused".
+    # propose must signal "not stored" with an empty handle, never KeyError on res["id"] (BUG-005).
+    srv = _ReplyServer({"status": "disabled"})
+    p = HivemindBackend(lambda: srv).propose("sub-a", "anything", source_id="s1")
+    assert p.proposal_id == ""                              # skipped, not a crash
+    assert p.seat == "sub-a" and p.source_id == "s1"
+
+
+def test_supersede_threads_replaces_as_int_and_returns_the_new_id():
+    srv = _ReplyServer({"status": "approved", "id": 42, "superseded": 7})
+    new = HivemindBackend(lambda: srv).supersede("7", "the corrected fact", approver="orchestrator")
+    assert new == "42"
+    tool, args, seat = srv.calls[-1]
+    assert tool == "hive_write" and seat == "orchestrator"
+    assert args["replaces"] == 7 and isinstance(args["replaces"], int)   # int, not "7"
+    assert args["text"] == "the corrected fact" and args["approved_by"] == "orchestrator"
+
+
+def test_supersede_returns_empty_handle_on_a_refused_write():
+    srv = _ReplyServer({"status": "refused", "reason": "secret-shaped"})   # no "id"
+    assert HivemindBackend(lambda: srv).supersede("7", "sk-proj-xxxx", approver="orchestrator") == ""
+
+
+def test_supersede_establishes_the_correction_and_deindexes_the_loser_on_the_real_server():
+    b = _backend()
+    stale = "the api listens on port 8080"
+    loser = b.commit(b.propose("sub-a", stale, source_id="s1"), approver="orchestrator")
+    assert b.recall("sub-b", stale).abstained is False             # the stale fact is servable
+    fresh = b.supersede(loser, "the api listens on port 9090", approver="orchestrator")
+    assert fresh and fresh != loser                               # a new, distinct row
+    won = b.recall("sub-b", "the api listens on port 9090")
+    assert won.abstained is False and fresh in won.ranked_ids     # the correction serves
+    assert loser not in won.ranked_ids                            # the stale loser is de-indexed
+
+
+def test_commit_signature_has_no_replaces_param():
+    # supersede is a SEPARATE concrete method; commit() must stay the 4-method Protocol shape
+    # (no port widening). A regression that threads replaces= into commit is caught here.
+    import inspect
+    assert "replaces" not in inspect.signature(HivemindBackend.commit).parameters

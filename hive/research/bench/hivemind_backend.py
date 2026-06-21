@@ -64,8 +64,12 @@ class HivemindBackend:
 
     def propose(self, seat: str, text: str, *, source_id: str) -> Proposal:
         res = self._call("hive_capture", {"text": text}, seat)
-        # the secret floor may refuse a candidate ⇒ empty handle (the driver skips commit on "").
-        pid = "" if res.get("status") == "refused" else str(res["id"])
+        # hive_capture OMITS "id" on ANY non-storing status — the secret floor refused the text
+        # (status="refused"), OR autonomy is disabled (status="disabled"). Read defensively and
+        # signal "not stored" with an empty handle (driver skips commit on ""), never KeyError on
+        # res["id"] (BUG-002/005 defensive-envelope class).
+        mid = res.get("id")
+        pid = str(mid) if mid is not None else ""
         return Proposal(proposal_id=pid, seat=seat, text=text, source_id=source_id)
 
     def commit(self, proposal: Proposal, *, approver: str) -> str:
@@ -74,6 +78,19 @@ class HivemindBackend:
         # hive_write OMITS "id" when the write doesn't establish — the secret scanner refused the
         # text (status="refused", real with conversational data) or autonomy is disabled. The fact
         # simply isn't stored; signal "not committed" with an empty handle, never KeyError on ["id"].
+        mid = res.get("id")
+        return str(mid) if mid is not None else ""
+
+    def supersede(self, loser_id: str, winner_text: str, *, approver: str) -> str:
+        """Human-vouched correction: establish ``winner_text`` AND retire ``loser_id`` in one call
+        via the shipped hive_write ``replaces=`` path — ``store.supersede`` deprecates and de-indexes
+        the loser so it can never be recalled again, while the correction serves. A concrete-adapter
+        method, deliberately NOT on the ``MemoryBackend`` Protocol (mem0 has no retraction analog);
+        the bench reaches it through a getattr probe. Returns the new episode id, or "" if the write
+        was refused (same defensive parse as ``commit``)."""
+        res = self._call("hive_write",
+                         {"text": winner_text, "approved_by": approver, "replaces": int(loser_id)},
+                         _ORCHESTRATOR_SEAT)
         mid = res.get("id")
         return str(mid) if mid is not None else ""
 
