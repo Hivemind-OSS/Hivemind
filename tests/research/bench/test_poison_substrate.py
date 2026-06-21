@@ -10,7 +10,11 @@ from pathlib import Path
 
 import pytest
 
+from hive.app.config import AutonomyConfig
 from hive.research.bench.dataset import load_longmemeval
+from hive.research.bench.hivemind_backend import HivemindBackend
+from hive.research.bench.mem0_backend import Mem0Backend
+from hive.research.bench.substrate import Preloaded, preload
 from hive.research.bench.substrate import build_substrate
 from hive.research.bench.task_agent import _content_tokens
 from hive.research.bench.poison_substrate import (
@@ -20,8 +24,16 @@ from hive.research.bench.poison_substrate import (
     _assert_not_telegraphed,
     _mutate_value,
     build_poison_substrate,
+    drive_demand,
+    falsity_map,
     make_credential_text,
+    plant_falsehood_unvouched,
+    plant_falsehood_vouched,
+    supersede_falsehood,
 )
+from tests.fakes._fakes import FakeClusterProvider
+from tests.mcp._helpers import build_real_server
+from tests.research.bench.test_mem0_backend import FakeMem0Client
 
 _FIX = Path(__file__).parent / "fixtures" / "longmemeval_tiny.json"
 
@@ -162,3 +174,168 @@ def test_pool_is_byte_inert_when_kinds_empty():
     assert specs == ()                       # no falsehood synthesized
     assert all(c.regime != "corrected" for c in poison_cases)   # nothing poisoned
     assert all(not c.false_source_ids for c in poison_cases)
+
+
+# ── backend layer: planting / demand-promotion / supersede / falsity ────────────
+# The data-layer tests above are model-free; the helpers below drive the REAL in-process
+# server (a FakeClusterProvider for controllable geometry) and a FakeMem0Client, so the
+# planting/supersede/demand mechanics are exercised end-to-end without a model or network.
+#
+# FakeClusterProvider geometry: a text carrying ``cid=<N>`` embeds onto cluster direction N
+# (same cid ⇒ cosine≈1, different cids ⇒ orthogonal). A spec's ``false_text`` and the miss
+# query share a cid so the falsehood is the demanded candidate; a servable competitor on a
+# DIFFERENT cid stays below ``competitor_tau`` (no veto).
+
+_CID_FALSE = 5            # the falsehood + its matching miss-query cluster
+_CID_GOLD = 7             # a distinct cluster for a corrected/gold competitor
+
+_DEMAND_AUTONOMY = AutonomyConfig(demand_m=2, demand_tau=0.5, competitor_tau=0.85)
+
+
+def _spec(cid: int, *, false_value: str = "9191", true_value: str = "8080",
+          kind: str = "mistake", gold_source_id: str = "s1") -> PoisonSpec:
+    """A controllable falsehood whose text + scoring values sit on one cluster ``cid``."""
+    return PoisonSpec(
+        gold_source_id=gold_source_id, false_source_id=f"poison::{gold_source_id}",
+        true_value=true_value, false_value=false_value,
+        false_text=f"the dev server runs on port {false_value} cid={cid}", kind=kind)
+
+
+def _hivemind_factory(*, h: float, autonomy=None):
+    """A zero-arg server factory the HivemindBackend resets through, fixing the embedder +
+    autonomy across every rebuild so the demand geometry is deterministic per arm."""
+    def factory():
+        server, _clock = build_real_server(
+            d=64, h=h, embedder=FakeClusterProvider(d=64), autonomy=autonomy)
+        return server
+    return factory
+
+
+def _hivemind_backend(*, h: float = 1.0, autonomy=None) -> HivemindBackend:
+    return HivemindBackend(_hivemind_factory(h=h, autonomy=autonomy))
+
+
+def _recall_ids(backend, seat: str, query: str) -> tuple[str, ...]:
+    obs = backend.recall(seat, query)
+    return () if obs.abstained else obs.ranked_ids
+
+
+def _servable_under_writer(backend, *, writer_seat: str, query: str) -> bool:
+    """Probe servability under the WRITER's own seat so the verifying recall never injects a
+    DISTINCT-identity miss (which would itself supply demand and falsely promote). Demand must come
+    ONLY from ``drive_demand``'s ``miss_seat`` — that is the variable RULE-2 fault #3 perturbs."""
+    return bool(_recall_ids(backend, writer_seat, query))
+
+
+# ── plant_falsehood_vouched: servable in BOTH backends (selection, not admission) ──
+def test_plant_falsehood_vouched_makes_it_servable_in_both_backends():
+    spec = _spec(_CID_FALSE)
+    query = f"what port does the dev server use cid={_CID_FALSE}"
+
+    # Hivemind abstain-off (h=1.0): the orchestrator-vouched commit ESTABLISHES it servable.
+    hm = _hivemind_backend(h=1.0)
+    planted = plant_falsehood_vouched(hm, (spec,), approver="orchestrator")
+    assert spec.false_source_id in planted and planted[spec.false_source_id]
+    assert planted[spec.false_source_id] in _recall_ids(hm, "reader", query)
+
+    # mem0 (trust-everything): the same propose→commit seam ADDs it to the store.
+    m0 = Mem0Backend(FakeMem0Client())
+    planted0 = plant_falsehood_vouched(m0, (spec,), approver="orchestrator")
+    assert spec.false_source_id in planted0 and planted0[spec.false_source_id]
+    # mem0's Jaccard search keys on shared tokens, not cid; query the false text itself.
+    assert planted0[spec.false_source_id] in _recall_ids(m0, "reader", spec.false_text)
+
+
+# ── POSITIVE control (asserted FIRST): two distinct seats promote via real demand ──
+def test_two_distinct_seats_can_promote_via_real_demand_path():
+    spec = _spec(_CID_FALSE)
+    miss_q = f"what port does the dev server use cid={_CID_FALSE}"
+    hm = _hivemind_backend(h=1.0, autonomy=_DEMAND_AUTONOMY)
+
+    # plant the falsehood unvouched: a quarantined capture under ONE subagent seat.
+    proposals = plant_falsehood_unvouched(hm, (spec,), writer_seat="sub-a")
+    assert proposals.get(spec.false_source_id)              # quarantined handle returned
+
+    # drive demand from a DISTINCT seat: n_other ≥ 1, matched ≥ demand_m ⇒ promotion. (No
+    # pre-check recall — a distinct-identity probe would itself inject the demand we are testing.)
+    drive_demand(hm, miss_query=miss_q, miss_seat="sub-b", n=2)
+
+    # the falsehood is now servable — the demand mechanism is genuinely non-vacuous. Probe under
+    # the WRITER seat so the verification never supplies the distinct identity itself.
+    assert _servable_under_writer(hm, writer_seat="sub-a", query=miss_q), \
+        "two distinct seats must promote the capture"
+
+
+# ── NEGATIVE control (asserted AFTER the positive): one seat cannot self-promote ──
+def test_single_seat_cannot_self_promote():
+    spec = _spec(_CID_FALSE)
+    miss_q = f"what port does the dev server use cid={_CID_FALSE}"
+    hm = _hivemind_backend(h=1.0, autonomy=_DEMAND_AUTONOMY)
+
+    plant_falsehood_unvouched(hm, (spec,), writer_seat="sub-a")
+    # SAME-seat demand: n_other == 0 ⇒ self_demand ⇒ the anti-gaming floor refuses.
+    drive_demand(hm, miss_query=miss_q, miss_seat="sub-a", n=2)
+
+    # probe under the writer seat too ⇒ no probe ever supplies a distinct identity; promotion can
+    # only come from drive_demand, which here is self-demand ⇒ never servable.
+    assert not _servable_under_writer(hm, writer_seat="sub-a", query=miss_q), \
+        "a single seat must not self-promote"
+
+
+# ── supersede de-indexes the false fact and serves the fresh gold ──────────────
+def test_supersede_deindexes_the_false_fact_and_serves_the_fresh_gold():
+    spec = _spec(_CID_GOLD, false_value="9191", true_value="8080")
+    anchor = f"dev server port cid={_CID_GOLD}"
+    corrected_text = f"the dev server runs on port {spec.true_value} cid={_CID_GOLD}"
+
+    # Hivemind: plant servable, then human-vouched supersede.
+    hm = _hivemind_backend(h=1.0)
+    pre = Preloaded(mem_source={}, mem_text={})
+    planted = plant_falsehood_vouched(hm, (spec,), approver="orchestrator")
+    false_mid = planted[spec.false_source_id]
+    pre.mem_source[false_mid] = spec.false_source_id
+    pre.mem_text[false_mid] = spec.false_text
+    assert false_mid in _recall_ids(hm, "reader", anchor)        # false is servable first
+
+    n = supersede_falsehood(hm, (spec,), pre, approver="orchestrator",
+                            gold_text_for={spec.false_source_id: corrected_text})
+    assert n == 1
+    served = _recall_ids(hm, "reader", anchor)
+    assert false_mid not in served                               # de-indexed
+    # the fresh row is served and now maps to the GOLD source for served_gold to fire.
+    fresh = [m for m in served if pre.mem_source.get(m) == spec.gold_source_id]
+    assert fresh and pre.mem_text[fresh[0]] == corrected_text
+
+    # mem0 has no supersede ⇒ getattr-probe no-ops; both rows stay servable.
+    m0 = Mem0Backend(FakeMem0Client())
+    pre0 = Preloaded(mem_source={}, mem_text={})
+    planted0 = plant_falsehood_vouched(m0, (spec,), approver="orchestrator")
+    pre0.mem_source[planted0[spec.false_source_id]] = spec.false_source_id
+    pre0.mem_text[planted0[spec.false_source_id]] = spec.false_text
+    n0 = supersede_falsehood(m0, (spec,), pre0, approver="orchestrator",
+                             gold_text_for={spec.false_source_id: corrected_text})
+    assert n0 == 0
+    assert planted0[spec.false_source_id] in _recall_ids(m0, "reader", spec.false_text)
+
+
+# ── falsity_map skips a refused credential write, but mem0 stores it ────────────
+def test_falsity_map_skips_refused_credential_writes():
+    cred_spec = PoisonSpec(
+        gold_source_id="s9", false_source_id="poison::s9",
+        true_value="", false_value="", kind="credential",
+        false_text=make_credential_text("staging"))
+
+    # Hivemind: the shipped secret floor REFUSES the credential at write ⇒ no mem_id, so it
+    # contributes no key to falsity_map (a refused entry never leaks an empty handle).
+    hm = _hivemind_backend(h=1.0)
+    pre = preload(hm, [(cred_spec.false_source_id, cred_spec.false_text)],
+                  approver="orchestrator")
+    assert falsity_map(pre, (cred_spec,)) == frozenset()
+    assert cred_spec.false_source_id not in pre.mem_source.values()
+
+    # mem0 (trust-everything): the credential IS stored, so its mem_id IS in falsity_map.
+    m0 = Mem0Backend(FakeMem0Client())
+    pre0 = preload(m0, [(cred_spec.false_source_id, cred_spec.false_text)],
+                   approver="orchestrator")
+    fm0 = falsity_map(pre0, (cred_spec,))
+    assert len(fm0) == 1 and next(iter(fm0)) in pre0.mem_source

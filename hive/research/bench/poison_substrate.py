@@ -31,11 +31,18 @@ import random
 from dataclasses import dataclass
 from typing import Sequence
 
+from hive.research.bench.backends import MemoryBackend
 from hive.research.bench.dataset import Case
-from hive.research.bench.substrate import build_substrate
+from hive.research.bench.substrate import Preloaded, build_substrate
 from hive.research.bench.task_agent import _content_tokens
 
 POISON_VERSION = "poison.v1"
+
+# The orchestrator-vouched plant lands the falsehood servable in BOTH backends through the same
+# propose→commit seam that loads the clean pool — so the headline win measures serve-time SELECTION
+# (supersession de-index, gate suppression) on a fact every arm holds servable, never structural
+# admission-absence. A fixed planter seat keeps the unvouched (anti-gaming) plant single-writer.
+_PLANTER_SEAT = "planter"
 
 _KINDS = ("mistake", "stale", "credential")
 _REGIMES = ("corrected", "credential", "clean")
@@ -300,3 +307,100 @@ def build_poison_substrate(
 
     augmented = list(base_memories) + overlay
     return augmented, poison_cases, tuple(specs)
+
+
+# ── backend layer: planting / demand-promotion / supersede / falsity ────────────
+# These drive the shipped MemoryBackend seams read-only (no kernel change). Optional capabilities
+# (supersede) are reached via the getattr-probe idiom so the runner stays Protocol-typed and mem0
+# no-ops. Every empty/refused handle is SKIPPED — a refused write never leaks an empty key.
+
+def plant_falsehood_vouched(backend: MemoryBackend, specs: Sequence[PoisonSpec], *,
+                            approver: str) -> dict[str, str]:
+    """Establish each non-credential falsehood SERVABLE via the orchestrator-vouched propose→commit
+    seam — the SAME seam that loads the clean pool, so the headline measures serve-time selection on
+    a servable fact, never admission-absence. On Hivemind the commit establishes the quarantined
+    capture in place; on mem0 it ``add``s to the store. Returns ``false_source_id → mem_id`` over
+    what actually became servable; a stage refused at the secret floor (empty proposal_id) or a write
+    refused at commit (empty handle) is SKIPPED — never leaked as an empty key (BUG-002 class)."""
+    planted: dict[str, str] = {}
+    for spec in specs:
+        if spec.kind == "credential":
+            continue                                 # a credential is the secret-floor diagnostic
+        proposal = backend.propose(_PLANTER_SEAT, spec.false_text,
+                                   source_id=spec.false_source_id)
+        if not proposal.proposal_id:                 # refused at stage ⇒ never staged
+            continue
+        mem_id = backend.commit(proposal, approver=approver)
+        if not mem_id:                               # refused at commit ⇒ never stored
+            continue
+        planted[spec.false_source_id] = mem_id
+    return planted
+
+
+def plant_falsehood_unvouched(backend: MemoryBackend, specs: Sequence[PoisonSpec], *,
+                              writer_seat: str) -> dict[str, str]:
+    """The anti-gaming probe: ``propose`` ONLY under ``writer_seat`` (no commit). On Hivemind the
+    falsehood lands QUARANTINED — structurally unservable until measured demand from a DISTINCT
+    identity promotes it; on mem0 it is HELD out of the store (unservable). Returns
+    ``false_source_id → proposal_id``; an empty (refused) handle is SKIPPED."""
+    proposals: dict[str, str] = {}
+    for spec in specs:
+        if spec.kind == "credential":
+            continue
+        proposal = backend.propose(writer_seat, spec.false_text,
+                                   source_id=spec.false_source_id)
+        if not proposal.proposal_id:
+            continue
+        proposals[spec.false_source_id] = proposal.proposal_id
+    return proposals
+
+
+def drive_demand(backend: MemoryBackend, *, miss_query: str, miss_seat: str, n: int) -> None:
+    """Accrue demand by issuing ``n`` recalls of ``miss_query`` under ``miss_seat``. Each recall on
+    a query with no confident servable answer records a miss and fires the synchronous on_miss
+    promotion trigger, which scans live quarantined candidates: a quarantined capture matching
+    enough misses from at least one identity OTHER than its writer auto-promotes to servable. Drive
+    from a seat DISTINCT from the unvouched writer to satisfy the identity-diversity floor."""
+    for _ in range(int(n)):
+        backend.recall(miss_seat, miss_query)
+
+
+def supersede_falsehood(backend: MemoryBackend, specs: Sequence[PoisonSpec], pre: Preloaded, *,
+                        approver: str, gold_text_for: dict[str, str]) -> int:
+    """The supersede arm: for each spec whose servable falsehood is recorded in ``pre.mem_source``,
+    human-vouched ``backend.supersede(loser_id, winner_text, approver=...)`` retires + de-indexes the
+    false row while the correction serves. ``loser_id`` is the falsehood's ``mem_id`` read directly
+    from ``pre.mem_source`` (commit returned the episode_id == mem_id — no re-recall); the winner is
+    ``gold_text_for[false_source_id]``. On success the NEW mem_id is registered into ``pre.mem_source``
+    → the spec's GOLD source_id (so ``served_gold`` fires on the fresh row) and ``pre.mem_text`` → the
+    correction. A backend WITHOUT ``supersede`` (mem0) is a no-op (getattr-probe) — count 0. Returns
+    the number of falsehoods superseded."""
+    fn = getattr(backend, "supersede", None)
+    if not callable(fn):
+        return 0
+    superseded = 0
+    by_source = {src: mid for mid, src in pre.mem_source.items()}
+    for spec in specs:
+        loser_id = by_source.get(spec.false_source_id)
+        if loser_id is None:                         # never became servable ⇒ nothing to retire
+            continue
+        winner_text = gold_text_for.get(spec.false_source_id)
+        if not winner_text:                          # no correction supplied ⇒ skip (never blank-write)
+            continue
+        new_mid = fn(loser_id, winner_text, approver=approver)
+        if not new_mid:                              # the correction write was refused ⇒ skip
+            continue
+        del pre.mem_source[loser_id]                 # the retired loser is no longer servable
+        pre.mem_text.pop(loser_id, None)
+        pre.mem_source[new_mid] = spec.gold_source_id
+        pre.mem_text[new_mid] = winner_text
+        superseded += 1
+    return superseded
+
+
+def falsity_map(pre: Preloaded, specs: Sequence[PoisonSpec]) -> frozenset[str]:
+    """The set of SERVABLE mem-ids that map to a falsehood source — the provenance count for the
+    ``secret_floor_observed`` line. A credential refused at the secret floor has no mem_id, so it
+    contributes no key (no empty-handle leak, BUG-002 class)."""
+    false_sources = {s.false_source_id for s in specs}
+    return frozenset(mid for mid, src in pre.mem_source.items() if src in false_sources)

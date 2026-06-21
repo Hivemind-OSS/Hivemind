@@ -17,6 +17,7 @@ gate by hiding the questions it curated away.
 from __future__ import annotations
 
 import argparse
+import dataclasses
 import hashlib
 import json
 import os
@@ -180,23 +181,38 @@ def _build_llm(extractor: str):
     raise ValueError(f"unknown extractor {extractor!r} (use 'claude' or 'verbatim')")
 
 
-def _hivemind_server_factory(h_frac_max: float = 0.9) -> Callable[[], object]:
+def _hivemind_server_factory(h_frac_max: float = 0.9, *, autonomy=None,
+                             embedder=None) -> Callable[[], object]:
     """A factory booting a real Qwen3-backed in-process server. The embedder is warmed ONCE and
     shared across every per-case rebuild (so Qwen3 loads a single time, not once per question);
-    ``demand_m`` huge makes the orchestrator commit the sole promotion authority; an ephemeral
-    ``:memory:`` store guarantees the bench never touches a persistent operator DB.
+    an ephemeral ``:memory:`` store guarantees the bench never touches a persistent operator DB.
 
     ``h_frac_max`` is the recall entropy-gate threshold: the production default (0.5) abstains on
     LongMemEval's multi-evidence/aggregation questions (the relevant facts spread the probability
     mass ⇒ high entropy), collapsing coverage to ~0. It is exposed so it can be calibrated on a dev
-    slice and stamped into the report — never silently tuned to a flattering value."""
-    from hive.app import registry
-    from hive.app.config import Config
+    slice and stamped into the report — never silently tuned to a flattering value.
+
+    ``autonomy`` defaults to ``{"demand_m": 10**9}`` — the orchestrator commit is the SOLE promotion
+    authority (demand never fires) for the headline arms; pass an ``AutonomyConfig`` or a dict to
+    tune the demand knobs for the anti-gaming probe. ``embedder`` defaults to a freshly warmed Qwen3;
+    pass a pre-built embedder (e.g. a scripted-geometry provider) to skip the registry build."""
+    from hive.app.config import AutonomyConfig, Config
     from hive.app.container import build_container
-    cfg = Config.load(db_path=":memory:", autonomy={"demand_m": 10**9},
-                      recall={"H_frac_max": h_frac_max})
-    embedder = registry.build_embedder(cfg, head_bytes=None)
-    embedder.load()                                    # warm Qwen3 + freeze the truncation head ONCE
+    if autonomy is None:
+        autonomy = {"demand_m": 10**9}
+    elif isinstance(autonomy, AutonomyConfig):
+        autonomy = {f.name: getattr(autonomy, f.name)
+                    for f in dataclasses.fields(AutonomyConfig)}
+    # a passed embedder fixes the store geometry to ITS projection dim (the index/store dim must
+    # agree with the embedder); the default Qwen3 path keeps geometry.d at its config default.
+    overrides = {"autonomy": autonomy, "recall": {"H_frac_max": h_frac_max}}
+    if embedder is not None and hasattr(embedder, "d"):
+        overrides["geometry"] = {"d": int(embedder.d)}
+    cfg = Config.load(db_path=":memory:", **overrides)
+    if embedder is None:
+        from hive.app import registry
+        embedder = registry.build_embedder(cfg, head_bytes=None)
+        embedder.load()                                # warm Qwen3 + freeze the truncation head ONCE
 
     def factory():
         c = build_container(cfg, tenant_id="default", agent_id="bench-orchestrator",
