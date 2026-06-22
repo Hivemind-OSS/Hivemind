@@ -6,10 +6,6 @@ class HiveError(Exception):
     """Base for all hive domain errors."""
 
 
-class AbstainNoData(HiveError):
-    """Recall has no confident answer (never-hallucinate). Carries no hits."""
-
-
 class SecretRefused(HiveError):
     """A write was refused because the deterministic scan found a raw credential.
 
@@ -25,21 +21,5 @@ class SecretRefused(HiveError):
         self.n_findings: int = int(n_findings)
 
 
-class NotApproved(HiveError):
-    """An operation requires an approved episode; the row is still pending."""
-
-
 class GeometryError(HiveError):
     """A value vector's dim does not match the live geometry (the model's native dim)."""
-
-
-class CASConflictError(HiveError):
-    """Optimistic single-writer CAS lost the race (cas_version mismatch)."""
-
-
-class ReembedError(HiveError):
-    """A re-embed migration could not round-trip the store."""
-
-
-class SqliteBusyExhausted(HiveError):
-    """BEGIN IMMEDIATE retries were exhausted under contention."""

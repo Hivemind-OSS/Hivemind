@@ -16,7 +16,6 @@ from typing import Iterator, Optional, Sequence
 import numpy as np
 
 from hive.adapters.sqlite_db import tx
-from hive.domain.errors import SqliteBusyExhausted
 from hive.domain.kinds import DEFAULT_KIND, KIND_NAMES
 from hive.domain.lifecycle import (
     DEPRECATED, ESTABLISHED, PROVISIONAL, QUARANTINED, TRUST_STATES,
