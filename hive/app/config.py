@@ -153,9 +153,6 @@ class RetentionConfig:
 @dataclass(frozen=True)
 class ObservabilityConfig:
     log_level: int = logging.INFO
-    log_max_bytes: int = 10 * 1024 * 1024
-    log_backup_count: int = 5
-    log_file: Optional[str] = None
 
 
 # ── the root ──────────────────────────────────────────────────────────────────
