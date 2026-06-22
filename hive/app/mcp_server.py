@@ -467,7 +467,6 @@ class HiveMCPServer:
                 "n_pending": n_pending,
                 "embedder": str(getattr(self.embedder, "name", "unknown")),
                 "embedder_loaded": bool(getattr(self.embedder, "loaded", True)),
-                "embedder_projection": "none",
                 "d": int(getattr(self.embedder, "d", 0)),
                 "index_authoritative": bool(self.recall.index.is_authoritative()),
                 "uptime_s": max(0, int(self.now()) - self.started_ts)}
