@@ -7,7 +7,7 @@ import numpy as np
 import pytest
 
 from hive.research.gate_eval import (
-    GateEvalSpec, LabeledMiss, label_misses, run_gate_eval, spec_from_store,
+    GateEvalSpec, label_misses, run_gate_eval, spec_from_store,
 )
 
 D = 8

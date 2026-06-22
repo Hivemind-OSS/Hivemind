@@ -16,8 +16,6 @@ the rule (cosine ≥ demand_tau) is what is under test, not semantic quality (th
 is the real-embedder acceptance suite's job)."""
 from __future__ import annotations
 
-import pytest
-
 from hive.app.config import Config
 from hive.app.container import build_container
 from hive.app.mcp_server import MCPRequest, ServerIdentity
@@ -110,7 +108,7 @@ def test_acceptance_disabled_byte_stable():
     assert hit["abstained"] is False
     assert hit["reference_context"][0]["trust"] == "established"  # labels: additive only
     # an unanswered recall leaves NO trace: the read path writes zero new rows
-    miss = _call(server, "agent-B", "hive_recall", {"query": "an unanswered question"})
+    _call(server, "agent-B", "hive_recall", {"query": "an unanswered question"})
     assert _count(c, "recall_misses") == 0
     assert _count(c, "exposure") == 0
     assert c.store.trust_counts()[QUARANTINED] == 0

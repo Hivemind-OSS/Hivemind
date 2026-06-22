@@ -61,7 +61,6 @@ def test_client_is_stdlib_only_by_ast() -> None:
 def test_research_not_imported_by_runtime() -> None:
     offenders: dict[str, set[str]] = {}
     for path in _full_module_paths("domain", "adapters", "app"):
-        imports = _module_imports(path)
         # detect `import hive.research...` / `from hive.research import ...`
         tree = ast.parse(path.read_text(), filename=str(path))
         hits = set()

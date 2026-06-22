@@ -12,7 +12,7 @@ import re
 
 import pytest
 
-from hive.research.bench.backends import MemoryBackend, RecallObs
+from hive.research.bench.backends import MemoryBackend
 from hive.research.bench.mem0_backend import Mem0Backend, Mem0Client, Mem0Hit
 
 

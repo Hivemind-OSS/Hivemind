@@ -15,7 +15,7 @@ from hive.research.bench.backends import MemoryBackend, Proposal, RecallObs
 from hive.research.bench.dataset import load_longmemeval
 from hive.research.bench.run import EMBEDDER_MODEL
 from hive.research.bench.substrate import (
-    Preloaded, TaskCase, assert_model_parity, build_substrate, preload,
+    Preloaded, assert_model_parity, build_substrate, preload,
 )
 
 _FIX = Path(__file__).parent / "fixtures" / "longmemeval_tiny.json"

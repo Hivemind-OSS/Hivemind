@@ -8,7 +8,6 @@ successor verbs (e.g. `credit`) add their argv tests here against the same fake.
 from __future__ import annotations
 
 import io
-import json
 import subprocess
 
 import pytest

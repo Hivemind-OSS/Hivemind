@@ -17,7 +17,7 @@ from hive.domain.errors import SecretRefused
 from hive.domain.models import CONFIDENT, content_hash
 from hive.research.metrics_ir import abstention_auroc, recall_at_k
 from tests.acceptance.conftest import (
-    CORPUS, HIT_QUERIES, MISS_QUERIES, build_acc, seed_corpus,
+    HIT_QUERIES, MISS_QUERIES, build_acc, seed_corpus,
 )
 
 

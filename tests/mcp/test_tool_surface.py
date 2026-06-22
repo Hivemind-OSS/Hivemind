@@ -16,7 +16,7 @@ from hive.domain.admission import WriteResult
 from hive.domain.kinds import KIND_NAMES
 from hive.domain.secret_scan import scan as _scan
 from tests.fakes._fakes import FakeIndex
-from tests.mcp._helpers import build_real_server, content, is_error, tool_call
+from tests.mcp._helpers import build_real_server, is_error, tool_call
 
 # net-6: the original 4 verbs + the conflict surface — hive_supersede (always-on
 # human-vouched resolution) + hive_flag (advisory, gated by conflict.enabled).
