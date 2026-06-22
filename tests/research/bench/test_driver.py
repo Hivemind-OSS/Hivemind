@@ -11,7 +11,7 @@ from hive.research.bench.backends import Proposal, RecallObs
 from hive.research.bench.dataset import Case, Question, Session, Turn, gold_relevant
 from hive.research.bench.llm import FakeLLM
 from hive.research.bench.orchestrator import (
-    AllowAllGate, GateContext, IngestionTrace, OracleEvidenceGate,
+    AllowAllGate, IngestionTrace, OracleEvidenceGate,
     extract_facts, run_ingestion, run_queries,
 )
 
@@ -129,7 +129,7 @@ def test_no_seats_raises():
 def test_trace_feeds_gold_relevant():
     b = _FakeBackend()
     tr = run_ingestion(b, AllowAllGate(), _FACTS, ["sub-a"])
-    case = Case(question=Question(question_id="q", question_type="t", text="?", answer="a",
+    case = Case(question=Question(question_id="q", text="?", answer="a",
                                   date="d", is_unanswerable=False,
                                   evidence_session_ids=frozenset({"s1"})),
                 sessions=())

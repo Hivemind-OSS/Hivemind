@@ -39,7 +39,6 @@ class Session:
 @dataclass(frozen=True)
 class Question:
     question_id: str
-    question_type: str
     text: str
     answer: str
     date: str
@@ -73,7 +72,7 @@ def _parse_instance(inst: dict, idx: int) -> Case:
         for sid, date, sess in zip(sids, dates, sessions_raw))
     qid = str(inst["question_id"])
     q = Question(
-        question_id=qid, question_type=str(inst["question_type"]),
+        question_id=qid,
         text=str(inst["question"]), answer=str(inst["answer"]),
         date=str(inst["question_date"]),
         is_unanswerable=qid.endswith("_abs"),
