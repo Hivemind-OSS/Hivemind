@@ -19,22 +19,20 @@ from hive.app.config import Config
 
 
 # ── happy path / defaults ─────────────────────────────────────────────────────
-def test_defaults_match_spec_geometry():
+def test_defaults_match_spec():
     cfg = Config.load(db_path=":memory:")
-    assert cfg.geometry.d == 768
-    assert cfg.geometry.W_version == 2
     assert cfg.recall.H_frac_max == 0.5
     assert cfg.recall.recall_top_n == 10
     assert cfg.embedding.model == "Qwen/Qwen3-Embedding-0.6B"
     assert cfg.retention.backup_keep == 30
 
 
-# ── env namespacing closes the CORTEX_D collision ─────────────────────────────
+# ── env namespacing: the `__` split keeps two groups' fields distinct ──────────
 def test_env_namespacing_no_collision():
-    env = {"HIVE_RECALL__H_FRAC_MAX": "0.4", "HIVE_GEOMETRY__D": "384"}
+    env = {"HIVE_RECALL__H_FRAC_MAX": "0.4", "HIVE_AUTONOMY__DEMAND_M": "5"}
     cfg = Config.load(db_path=":memory:", env=env)
     assert cfg.recall.H_frac_max == 0.4   # field on the RECALL group
-    assert cfg.geometry.d == 384          # field on the GEOMETRY group — no CORTEX_D collapse
+    assert cfg.autonomy.demand_m == 5     # field on the AUTONOMY group — distinct, no collapse
 
 
 def test_env_unknown_key_ignored_not_crash():
@@ -45,18 +43,18 @@ def test_env_unknown_key_ignored_not_crash():
 
 def test_env_noncoercible_value_skipped_with_warn(caplog):
     # a non-int for an int field is skipped (logged), never crashes; default survives
-    env = {"HIVE_GEOMETRY__D": "not-an-int"}
+    env = {"HIVE_RECALL__RECALL_TOP_N": "not-an-int"}
     cfg = Config.load(db_path=":memory:", env=env)
-    assert cfg.geometry.d == 768
+    assert cfg.recall.recall_top_n == 10
 
 
 # ── 3-layer precedence: defaults < HIVE_* env < explicit overrides ────────────
 def test_layering_precedence():
     # explicit beats env; env beats the default.
-    env = {"HIVE_GEOMETRY__D": "384", "HIVE_RECALL__RECALL_TOP_N": "11"}
+    env = {"HIVE_AUTONOMY__DEMAND_M": "7", "HIVE_RECALL__RECALL_TOP_N": "11"}
     cfg = Config.load(db_path=":memory:", env=env, recall={"recall_top_n": 13})
     assert cfg.recall.recall_top_n == 13   # explicit override beats env
-    assert cfg.geometry.d == 384           # env value applied (no explicit override)
+    assert cfg.autonomy.demand_m == 7      # env value applied (no explicit override)
 
 
 def test_env_applies_every_knob():
@@ -152,9 +150,11 @@ def test_db_path_required():
         Config.load(db_path="")
 
 
-def test_geometry_d_positive():
-    with pytest.raises(ValueError, match=r"geometry\.d|\bd\b"):
-        Config.load(geometry={"d": 0})
+def test_geometry_group_is_gone():
+    # the compression-dim group was removed (the embedder emits the model's native dim) — an
+    # override naming it is now an unknown-group error, proving the knob can't be set.
+    with pytest.raises(ValueError, match=r"unknown config group|geometry"):
+        Config.load(geometry={"d": 768})
 
 
 def test_backup_keep_at_least_one():

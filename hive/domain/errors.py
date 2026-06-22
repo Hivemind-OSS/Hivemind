@@ -30,7 +30,7 @@ class NotApproved(HiveError):
 
 
 class GeometryError(HiveError):
-    """A value vector's dim/W_version does not match the live geometry."""
+    """A value vector's dim does not match the live geometry (the model's native dim)."""
 
 
 class CASConflictError(HiveError):

@@ -16,8 +16,8 @@ Grounded deviations (built-decision-wins):
   "no silent default" prose guards a *persistent* store; `:memory:` is not one.
 - env field/group tokens are matched case-INSENSITIVELY (upper-fold) against the dataclass
   names — the `__` separator namespaces group from field, structurally closing the old
-  upper-case `CORTEX_D` collision (and sparse `geometry.D` is dropped, so no case-clash
-  survives within any group).
+  upper-case `CORTEX_D` collision — the `__` group/field split prevents any case-clash
+  within a group.
 """
 from __future__ import annotations
 
@@ -45,29 +45,10 @@ class RuntimeConfig:
 
 
 @dataclass(frozen=True)
-class GeometryConfig:
-    # Changing d or W_version needs a re-embed, not just a restart —
-    # the stored vectors were projected through the old geometry.
-    # `d` is the projected/compression dim the embedder reduces native embeddings down to —
-    # the stored-vector dim (single source; the head no longer carries its own copy).
-    # W_version rolls on ANY geometry change — a new model, a new dim, OR a new head method —
-    # not only a head-algorithm change; a bump invalidates any persisted head (refit at warm).
-    d: int = 768
-    W_version: int = 2
-
-    def __post_init__(self) -> None:
-        if self.d <= 0:
-            raise ValueError(f"geometry.d must be > 0 (got {self.d})")
-        if self.W_version < 1:
-            raise ValueError(f"geometry.W_version must be >= 1 (got {self.W_version})")
-
-
-@dataclass(frozen=True)
 class EmbeddingConfig:
-    # The projection head is FIXED to truncation — not a config knob. For an MRL-trained model
-    # the leading dims are a trained lower-dim embedding, so the compression is the model's own
-    # Matryoshka prefix; the decision is encoded in code (the local_st adapter builds the
-    # truncation head unconditionally), never offered as a choice an operator could mis-set.
+    # The embedder emits the model's NATIVE vector unchanged — there is no projection head and
+    # no dimension knob. The native (stored-vector) dim is a property of the model, resolved by
+    # native_dim_for and asserted against the model at load(), never an operator-settable choice.
     provider: str = "local_st"
     model: str = "Qwen/Qwen3-Embedding-0.6B"
 
@@ -183,7 +164,6 @@ class ObservabilityConfig:
 # HIVE_AUTH__MODE switch to resolve here.
 _GROUP_TYPES: dict[str, type] = {
     "runtime": RuntimeConfig,
-    "geometry": GeometryConfig,
     "embedding": EmbeddingConfig,
     "recall": RecallConfig,
     "autonomy": AutonomyConfig,
@@ -193,14 +173,13 @@ _GROUP_TYPES: dict[str, type] = {
 }
 # field-groups constructed (and thus validated) BEFORE runtime, so a field-level error
 # (e.g. recall.H_frac_max) surfaces ahead of the db_path-required check.
-_FIELD_GROUP_ORDER = ("geometry", "embedding", "recall",
+_FIELD_GROUP_ORDER = ("embedding", "recall",
                       "autonomy", "conflict", "retention", "obs")
 
 
 @dataclass(frozen=True)
 class Config:
     runtime: RuntimeConfig
-    geometry: GeometryConfig
     embedding: EmbeddingConfig
     recall: RecallConfig
     autonomy: AutonomyConfig

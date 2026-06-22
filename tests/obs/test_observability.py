@@ -52,7 +52,7 @@ def test_configure_is_idempotent_no_handler_pileup():
 def test_secret_never_logged():
     # the env-coercion-failure path is the one that omits the raw value (could be a secret).
     secret = "sk-LIVESECRET_ghp_AKIA_payload_99887766"
-    env = {"HIVE_GEOMETRY__D": secret}   # non-coercible to int → WARN, value must be withheld
+    env = {"HIVE_RECALL__RECALL_TOP_N": secret}   # non-coercible to int → WARN, value withheld
 
     lines = _emit_and_capture(lambda _log: Config.load(db_path=":memory:", env=env))
 
@@ -62,4 +62,4 @@ def test_secret_never_logged():
     assert "ghp_" not in blob
     assert secret not in blob          # the WHOLE raw value, not just canary prefixes
     # but the field name (safe) MUST be present so the warning is actionable
-    assert any("D" in ln or "geometry" in ln.lower() for ln in lines)
+    assert any("recall_top_n" in ln.lower() for ln in lines)

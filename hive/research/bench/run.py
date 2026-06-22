@@ -203,11 +203,9 @@ def _hivemind_server_factory(h_frac_max: float = 0.9, *, autonomy=None,
     elif isinstance(autonomy, AutonomyConfig):
         autonomy = {f.name: getattr(autonomy, f.name)
                     for f in dataclasses.fields(AutonomyConfig)}
-    # a passed embedder fixes the store geometry to ITS projection dim (the index/store dim must
-    # agree with the embedder); the default Qwen3 path keeps geometry.d at its config default.
+    # the index/store dim is sourced from the embedder's native dim inside build_container, so a
+    # passed scripted embedder fixes the store geometry to its own dim with no extra wiring.
     overrides = {"autonomy": autonomy, "recall": {"H_frac_max": h_frac_max}}
-    if embedder is not None and hasattr(embedder, "d"):
-        overrides["geometry"] = {"d": int(embedder.d)}
     cfg = Config.load(db_path=":memory:", **overrides)
     if embedder is None:
         from hive.app import registry
