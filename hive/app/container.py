@@ -49,7 +49,7 @@ _REQUIRED_TABLES = frozenset({
 class Container:
     """The assembled, wired system. Implements the ``Boot`` protocol the entrypoint drives;
     also exposes every domain object so acceptance/e2e tests drive the true end-to-end path
-    (write→approve→recall, re-embed) without re-deriving the wiring."""
+    (write→approve→recall) without re-deriving the wiring."""
 
     def __init__(
         self, *, cfg: Config, conn, index, store, token_store, embedder, scanner,
