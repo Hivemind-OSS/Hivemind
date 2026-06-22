@@ -1,4 +1,4 @@
-"""run_http — the two-door endpoint contract in front of HiveMCPServer.
+"""run_http_dual — the two-door endpoint contract in front of HiveMCPServer.
 
 Drives the REAL handler (``_build_handler``) on a real loopback ``ThreadingHTTPServer`` at
 127.0.0.1:0, with a SpyServer standing in for HiveMCPServer so the transport obligations are

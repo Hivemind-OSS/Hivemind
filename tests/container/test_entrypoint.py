@@ -9,7 +9,7 @@ an injected fake boot — no Docker required. Two deliberate mutations live in t
 Part S: the HTTP listen port (8765) and the rate-limit belt are FIXED; the one surviving
 boot knob is `HIVE_HTTP_MAX_BODY_BYTES` (malformed→EX_CONFIG before assembly, never a raise
 out of boot). `_make_http_serve` constructs a real `TokenBucketLimiter` from its fixed
-defaults and threads `limiter=`/`max_body_bytes=` into `run_http`.
+defaults and threads `limiter=`/`max_body_bytes=` into `run_http_dual`.
 """
 from __future__ import annotations
 

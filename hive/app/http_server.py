@@ -1,4 +1,4 @@
-"""run_http — the warm HTTP daemon: a two-door endpoint in front of HiveMCPServer.
+"""run_http_dual — the warm HTTP daemon: a two-door endpoint in front of HiveMCPServer.
 
 The natural generalization of ``run_stdio``: stdio is "one process, one identity"; this is
 "one process, PER-AGENT-SESSION identity." Auth is a property of the listening SOCKET, not a
@@ -20,7 +20,7 @@ for simplicity (escape valve: WAL read-concurrency). The daemon never crashes on
 (INV-3) — the HTTP analog of "the stdio loop never crashes on a bad line".
 
 Stdlib only (``http.server``) — zero new dependencies. The endpoint contract lives in
-``_build_handler`` (unit-tested against a real loopback server on 127.0.0.1:0); ``run_http``
+``_build_handler`` (unit-tested against a real loopback server on 127.0.0.1:0); ``run_http_dual``
 is the thin, blocking bind+serve wrapper.
 
 Part S adds the two self-defense belts a tunnel-exposed endpoint
@@ -104,8 +104,8 @@ def _build_handler(server: HiveMCPServer,
                    max_body_bytes: int = _DEFAULT_MAX_BODY,
                    auth_required: bool = True) -> type:
     """Build the ``BaseHTTPRequestHandler`` subclass that enforces the endpoint contract.
-    Factored out of ``run_http`` so the contract is unit-testable against a real loopback
-    ``ThreadingHTTPServer`` on an ephemeral port (``run_http`` only binds + serve_forever).
+    Factored out of ``run_http_dual`` so the contract is unit-testable against a real loopback
+    ``ThreadingHTTPServer`` on an ephemeral port (``run_http_dual`` only binds + serve_forever).
     The Part S belts are keyword-only and defaulted OFF/generous (``limiter=None`` ⇒ no
     429 path exists; AC6). ``limiter.check`` runs under the SAME global lock as ``verify``
     — the limiter has no internal locking by contract. The deliberate mutations (skip the
@@ -241,25 +241,6 @@ def _build_handler(server: HiveMCPServer,
             return
 
     return _Handler
-
-
-def run_http(server: HiveMCPServer, *, host: str, port: int,
-             verify: Callable[[str], Optional[str]],
-             lock: threading.Lock,
-             limiter: Optional[TokenBucketLimiter] = None,
-             max_body_bytes: int = _DEFAULT_MAX_BODY,
-             auth_required: bool = True) -> None:  # pragma: no cover — blocking serve
-    """Bind a ``ThreadingHTTPServer`` on ``(host, port)`` and serve the endpoint contract forever.
-    The blocking serve loop is the (uncovered) transport wrapper; the contract itself lives in
-    ``_build_handler``, exercised on a real loopback server in the tests. The Part S belts
-    (``limiter`` / ``max_body_bytes``) thread through defaulted-off (AC6); ``auth_required``
-    defaults to the safe ``True`` (the token-gated tunnel door)."""
-    httpd = ThreadingHTTPServer((host, port),
-                                _build_handler(server, verify, lock,
-                                               limiter=limiter, max_body_bytes=max_body_bytes,
-                                               auth_required=auth_required))
-    _log.info("http.serving host=%s port=%d auth_required=%s", host, port, auth_required)
-    httpd.serve_forever()
 
 
 def run_http_dual(server: HiveMCPServer, *, host: str,
