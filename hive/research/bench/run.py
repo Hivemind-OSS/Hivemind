@@ -25,6 +25,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Optional, Sequence
 
+from hive.adapters.embedding.factory import native_dim_for
 from hive.research.bench.backends import MemoryBackend, RecallObs
 from hive.research.bench.dataset import Case, gold_relevant, load_longmemeval
 from hive.research.bench.llm import LLM, zero_served_usage, zero_usage
@@ -35,6 +36,7 @@ from hive.research.bench.orchestrator import (
 from hive.research.bench.scoring import paired_delta_ci, score_abstention, score_retrieval
 
 EMBEDDER_MODEL = "Qwen/Qwen3-Embedding-0.6B"  # the base model pinned for BOTH backends (isolated)
+EMBEDDER_DIMS = native_dim_for(EMBEDDER_MODEL)  # native dim, sourced from the canonical resolver
 _SEATS = ("sub-a", "sub-b", "sub-c", "sub-d")  # the N≥4 subagent fleet
 _KS = (5, 10)
 
@@ -181,8 +183,7 @@ def _build_llm(extractor: str):
     raise ValueError(f"unknown extractor {extractor!r} (use 'claude' or 'verbatim')")
 
 
-def _hivemind_server_factory(h_frac_max: float = 0.9, *, autonomy=None,
-                             embedder=None) -> Callable[[], object]:
+def _hivemind_server_factory(h_frac_max: float = 0.9, *, autonomy=None) -> Callable[[], object]:
     """A factory booting a real Qwen3-backed in-process server. The embedder is warmed ONCE and
     shared across every per-case rebuild (so Qwen3 loads a single time, not once per question);
     an ephemeral ``:memory:`` store guarantees the bench never touches a persistent operator DB.
@@ -194,8 +195,8 @@ def _hivemind_server_factory(h_frac_max: float = 0.9, *, autonomy=None,
 
     ``autonomy`` defaults to ``{"demand_m": 10**9}`` — the orchestrator commit is the SOLE promotion
     authority (demand never fires) for the headline arms; pass an ``AutonomyConfig`` or a dict to
-    tune the demand knobs for the anti-gaming probe. ``embedder`` defaults to a freshly warmed Qwen3;
-    pass a pre-built embedder (e.g. a scripted-geometry provider) to skip the registry build."""
+    tune the demand knobs for the anti-gaming probe."""
+    from hive.app import registry
     from hive.app.config import AutonomyConfig, Config
     from hive.app.container import build_container
     if autonomy is None:
@@ -203,14 +204,10 @@ def _hivemind_server_factory(h_frac_max: float = 0.9, *, autonomy=None,
     elif isinstance(autonomy, AutonomyConfig):
         autonomy = {f.name: getattr(autonomy, f.name)
                     for f in dataclasses.fields(AutonomyConfig)}
-    # the index/store dim is sourced from the embedder's native dim inside build_container, so a
-    # passed scripted embedder fixes the store geometry to its own dim with no extra wiring.
     overrides = {"autonomy": autonomy, "recall": {"H_frac_max": h_frac_max}}
     cfg = Config.load(db_path=":memory:", **overrides)
-    if embedder is None:
-        from hive.app import registry
-        embedder = registry.build_embedder(cfg)
-        embedder.load()                                # warm Qwen3 + verify native dim ONCE
+    embedder = registry.build_embedder(cfg)
+    embedder.load()                                    # warm Qwen3 + verify native dim ONCE
 
     def factory():
         c = build_container(cfg, tenant_id="default", agent_id="bench-orchestrator",
@@ -225,7 +222,7 @@ def _hivemind_server_factory(h_frac_max: float = 0.9, *, autonomy=None,
 def _build_backend(name: str, *, recall_hfrac: float = 0.9) -> MemoryBackend:
     if name == "mem0":
         from hive.research.bench.mem0_backend import Mem0Backend, RealMem0Client
-        return Mem0Backend(RealMem0Client(model=EMBEDDER_MODEL, dims=1024))
+        return Mem0Backend(RealMem0Client(model=EMBEDDER_MODEL, dims=EMBEDDER_DIMS))
     if name == "hivemind":
         from hive.research.bench.hivemind_backend import HivemindBackend
         return HivemindBackend(_hivemind_server_factory(recall_hfrac))

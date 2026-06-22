@@ -29,7 +29,8 @@ from typing import Callable, Optional, Sequence
 from hive.research.bench.backends import MemoryBackend
 from hive.research.bench.dataset import load_longmemeval
 from hive.research.bench.llm import LLM
-from hive.research.bench.run import EMBEDDER_MODEL, _file_sha256, preflight as run_preflight
+from hive.research.bench.run import (
+    EMBEDDER_DIMS, EMBEDDER_MODEL, _file_sha256, preflight as run_preflight)
 from hive.research.bench.scoring import paired_delta_ci
 from hive.research.bench.substrate import assert_model_parity, build_substrate, preload
 from hive.research.bench.task_agent import (
@@ -144,7 +145,7 @@ def _default_backend_factory(cfg) -> Callable[[str], MemoryBackend]:
     def make(arm: str) -> MemoryBackend:
         if arm == ARM_MEM0:
             from hive.research.bench.mem0_backend import Mem0Backend, RealMem0Client
-            return Mem0Backend(RealMem0Client(model=EMBEDDER_MODEL, dims=1024), top_k=_TOP_K)
+            return Mem0Backend(RealMem0Client(model=EMBEDDER_MODEL, dims=EMBEDDER_DIMS), top_k=_TOP_K)
         from hive.research.bench.hivemind_backend import HivemindBackend
         from hive.research.bench.run import _hivemind_server_factory
         h = cfg.h_frac_off if arm == ARM_OFF else cfg.h_frac_on   # B vs C — the ONLY difference
