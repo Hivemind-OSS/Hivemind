@@ -32,9 +32,6 @@ class _MetaStore:
     def meta_set(self, key: str, value: str) -> None:
         self.meta[key] = value
 
-    def meta_get(self, key: str):
-        return self.meta.get(key)
-
 
 class _TokenStore:
     """Boot.token_store stub — the HTTP daemon's verify seam. Present so the fake conforms to

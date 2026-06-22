@@ -21,9 +21,6 @@ class _Store:
     def meta_set(self, k, v):
         self.meta[k] = v
 
-    def meta_get(self, k):
-        return self.meta.get(k)
-
 
 class _Boot:
     def __init__(self):

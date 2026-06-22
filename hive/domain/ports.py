@@ -2,13 +2,13 @@
 axis is an adapter behind one of these. runtime_checkable so fakes can be
 isinstance-checked in tests. Method bodies are ``...`` — contracts only.
 
-Episode-CRUD/admission methods live on the concrete EpisodeStore adapter; this port
-pins the swap-seam contract only (the swap seam does not move as the adapter grows).
+Episode-CRUD/admission methods live on the concrete store adapter (SqliteEpisodeStore);
+this port pins the swap-seam contract only (the swap seam does not move as the adapter grows).
 """
 from __future__ import annotations
 
 from typing import (
-    Iterable, Mapping, Optional, Protocol, Sequence, runtime_checkable,
+    Iterable, Optional, Protocol, Sequence, runtime_checkable,
 )
 
 import numpy as np  # permitted in domain (not in the forbidden I/O set)
@@ -55,7 +55,7 @@ class MutableVectorIndex(VectorIndex, Protocol):
 class EpisodeReader(Protocol):
     """Narrow read seam the RecallPipeline uses to resolve a search hit (eid, sim)
     to its full candidate — the ``weight`` (surfacer base multiplier) and ``text``
-    (the surfaced memory). A subset of EpisodeStore (the SqliteEpisodeStore's
+    (the surfaced memory). A subset of the store adapter's surface (the SqliteEpisodeStore's
     ``get_episode`` already satisfies it); the pipeline never sees the schema."""
     def get_episode(self, episode_id: int) -> "Optional[Episode]": ...
 
@@ -86,14 +86,11 @@ class ConflictFlagStore(Protocol):
 
 
 @runtime_checkable
-class EpisodeStore(Protocol):
-    """The durable single-writer store. The exposure table is the recall side-channel
-    (record_exposure / record_miss) — the demand signal that drives promotion. The slice
-    contract is the transaction lane + the meta kv; episode CRUD / admission live on the
-    concrete adapter."""
-    def transaction(self): ...                              # contextmanager: the single-writer tick lane
-    # meta kv (watermark / link records / readiness markers)
-    def meta_get(self, key: str) -> Optional[str]: ...
+class MetaStore(Protocol):
+    """The durable meta key-value WRITE seam (watermark / link records / readiness markers).
+    The single-writer transaction lane is ``sqlite_db.tx()``, used directly by each mutating
+    store method; meta reads go through raw SQL at the healthcheck boundary. Episode CRUD /
+    admission live on the concrete store adapter."""
     def meta_set(self, key: str, value: str) -> None: ...
 
 

@@ -1,5 +1,5 @@
 """SqliteEpisodeStore — the durable episode store + meta watermark in ONE WAL DB.
-``transaction()`` is the single BEGIN IMMEDIATE lane.
+``sqlite_db.tx()`` is the single BEGIN IMMEDIATE lane, used directly by each mutating method.
 
 The ``exposure`` table is the recall side-channel (``record_exposure`` / ``record_miss``):
 WHO was served WHAT and which queries got no answer — the demand signal that drives
@@ -10,8 +10,7 @@ from __future__ import annotations
 import json
 import logging
 import sqlite3
-from contextlib import contextmanager
-from typing import Iterator, Optional, Sequence
+from typing import Optional, Sequence
 
 import numpy as np
 
@@ -113,11 +112,6 @@ class SqliteEpisodeStore:
                 f"episodes table predates the current schema (no {missing} column); "
                 "this build has no migration — start from a clean store/volume")
         conn.executescript(_SCHEMA)
-
-    @contextmanager
-    def transaction(self) -> Iterator[None]:
-        with tx(self.conn):
-            yield
 
     # ── episodes / blob group (admission CAS state machine) ───────────────────
     def stage(self, *, text: str, weight: float, source: str, tags: str,
@@ -543,11 +537,7 @@ class SqliteEpisodeStore:
                 for r in self.conn.execute(
                     "SELECT * FROM conflict_flags WHERE status='open' ORDER BY id")]
 
-    # ── meta watermark kv ─────────────────────────────────────────────────────
-    def meta_get(self, key: str) -> Optional[str]:
-        r = self.conn.execute("SELECT value FROM meta WHERE key=?", (key,)).fetchone()
-        return r["value"] if r else None
-
+    # ── meta watermark kv (write seam; reads go through raw SQL at healthcheck) ──
     def meta_set(self, key: str, value: str) -> None:
         self.conn.execute(
             "INSERT INTO meta(key, value) VALUES(?,?) "

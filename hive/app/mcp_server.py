@@ -210,7 +210,7 @@ class HiveMCPServer:
                  conflict=None, flag_service=None) -> None:
         self.admission = admission          # AdmissionService: write + capture
         self.recall = recall                # RecallPipeline: recall(query, *, agent_id)
-        self.store = store                  # EpisodeStore: get_episode (belt) / counts
+        self.store = store                  # the store adapter: get_episode (belt) / counts
         self.embedder = embedder            # EmbeddingProvider: health probes (d, name)
         self.identity = identity
         self.now = now

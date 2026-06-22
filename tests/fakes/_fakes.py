@@ -4,8 +4,7 @@ behavior is added as later chunks require it). NO sqlite/git/torch/wall-clock.""
 from __future__ import annotations
 
 import hashlib
-from contextlib import contextmanager
-from typing import Iterator, Optional, Sequence
+from typing import Optional, Sequence
 
 import numpy as np
 
@@ -219,17 +218,10 @@ class FakeQuarantineReader:
 
 
 class FakeStore:
-    """EpisodeStore slice (transaction + meta kv), in-memory. The exposure /
-    task_outcomes ledger methods were removed with the producer subsystem."""
+    """MetaStore: the in-memory meta-kv write seam. The exposure / task_outcomes ledger
+    methods were removed with the producer subsystem."""
     def __init__(self) -> None:
         self._meta: dict[str, str] = {}
-
-    @contextmanager
-    def transaction(self) -> Iterator[None]:
-        yield  # fakes are single-threaded in-memory; no real tx needed
-
-    def meta_get(self, key: str) -> Optional[str]:
-        return self._meta.get(key)
 
     def meta_set(self, key: str, value: str) -> None:
         self._meta[key] = value

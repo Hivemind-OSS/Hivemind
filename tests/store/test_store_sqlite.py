@@ -8,7 +8,7 @@ from hive.adapters.index_exhaustive import ExhaustiveCosineIndex
 from hive.adapters.sqlite_db import connect
 from hive.adapters.store_sqlite import SqliteEpisodeStore, _RECALL_PREDICATE
 from hive.domain.models import Episode, content_hash
-from hive.domain.ports import EpisodeStore
+from hive.domain.ports import MetaStore
 from tests.fakes import FakeStore
 
 DIM = 4
@@ -197,5 +197,5 @@ def test_legacy_store_without_polarity_is_refused_at_open():
 
 # ── port conformance [C1] ─────────────────────────────────────────────────────
 def test_fake_and_sqlite_store_satisfy_protocol():
-    assert isinstance(FakeStore(), EpisodeStore)
-    assert isinstance(SqliteEpisodeStore(connect(":memory:")), EpisodeStore)
+    assert isinstance(FakeStore(), MetaStore)
+    assert isinstance(SqliteEpisodeStore(connect(":memory:")), MetaStore)

@@ -13,7 +13,7 @@ caller passes that approver as ``approved_by`` and the server records it. There 
 ``list_pending`` / ``approve`` / ``reject`` surface — the ONE non-bypassable gate that
 remains is the deterministic secret scan (refuse is fail-closed, never optional).
 
-PURE domain: depends only on injected ports (SecretScanner, EpisodeStore,
+PURE domain: depends only on injected ports (SecretScanner, the store,
 EmbeddingProvider) + an injected ``now`` clock. Imports no sqlite/torch/os/time —
 the purity gate enforces it. Admission is deliberately NOT swappable (the approved-only
 recall boundary is the one structural guarantee); only the SecretScanner under it is a
@@ -65,7 +65,7 @@ class AdmissionService:
 
     def __init__(self, store, scanner, embedder, *, now: Callable[[], int],
                  lifecycle=None, autonomy_enabled: bool = True) -> None:
-        self._store = store              # EpisodeStore (+ its warm VectorIndex)
+        self._store = store              # the store adapter (+ its warm VectorIndex)
         self._scanner = scanner          # SecretScanner
         self._embedder = embedder        # EmbeddingProvider (text -> value[d])
         self._now = now

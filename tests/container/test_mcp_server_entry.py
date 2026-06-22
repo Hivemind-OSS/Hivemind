@@ -37,9 +37,6 @@ class _MetaStore:
     def meta_set(self, key: str, value: str) -> None:
         self.meta[key] = value
 
-    def meta_get(self, key: str):
-        return self.meta.get(key)
-
 
 class _RecordingContainer:
     """Records boot-call order; ``fail_on`` makes one step raise; ``embedder`` controls the
