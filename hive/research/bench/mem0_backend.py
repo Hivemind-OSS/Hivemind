@@ -15,11 +15,9 @@ The orchestrator-in-loop workflow maps onto mem0 (which has NO two-phase write /
               dependent separability signal, NOT a calibration claim).
     reset   → drop every memory for the shared user.
 
-Embedder asymmetry (disclosed, intentional): both sides use the SAME base model
-``Qwen/Qwen3-Embedding-0.6B``. Hivemind truncates Qwen3's native 1024 through a frozen Matryoshka
-head to 768 (its store's geometry); mem0 keeps native 1024. The base MODEL is identical — the
-plan's ISOLATED contract — and the truncation is Hivemind's own (lossy) engineering, so it counts
-for/against Hivemind, never a thumb on the scale.
+Embedder parity: both sides use the SAME base model ``Qwen/Qwen3-Embedding-0.6B`` at its native
+1024 dim — Hivemind no longer truncates, so the geometry is identical on both sides. The store is
+the only difference under test (the plan's ISOLATED contract).
 """
 from __future__ import annotations
 

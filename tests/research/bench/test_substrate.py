@@ -2,7 +2,7 @@
 the per-question ``TaskCase``s (three regimes) from a LongMemEval slice; ``preload`` establishes
 that content through the backend's propose→commit seam (BUG-002-hardened: refused stages/commits
 are skipped, never leaked as empty handles); ``assert_model_parity`` is the equal-footing belt
-(MODEL must match; the 1024-vs-768 geometry asymmetry is intended, NOT asserted). Fully offline:
+(MODEL must match; both sides use the model's native dim, so the geometry is identical). Fully offline:
 a fake backend, no model, no network."""
 from __future__ import annotations
 
@@ -129,16 +129,16 @@ def test_preload_skips_refused_stages_and_commits_without_leaking_handles():
     assert "" not in pre.mem_source and "" not in pre.mem_text
 
 
-# ── assert_model_parity: MODEL must match; dims may differ (geometry asymmetry) ─
-def _cfg(model: str, d: int = 768):
-    return SimpleNamespace(embedding=SimpleNamespace(model=model), geometry=SimpleNamespace(d=d))
+# ── assert_model_parity: the MODEL must match (the native dim follows from it) ──
+def _cfg(model: str):
+    return SimpleNamespace(embedding=SimpleNamespace(model=model))
 
 
-def test_model_parity_passes_on_same_model_even_with_different_dims():
-    # Hivemind truncates to 768 while mem0 keeps native 1024 — the disclosed asymmetry, NOT a drift
-    assert_model_parity(_cfg(EMBEDDER_MODEL, d=768))         # must NOT raise
+def test_model_parity_passes_on_same_model():
+    # both sides use the model's native dim now — same model ⇒ same geometry, no drift
+    assert_model_parity(_cfg(EMBEDDER_MODEL))               # must NOT raise
 
 
 def test_model_parity_fails_fast_on_model_drift():
     with pytest.raises(ValueError, match="equal-footing|model"):
-        assert_model_parity(_cfg("some/other-embedder", d=768))
+        assert_model_parity(_cfg("some/other-embedder"))

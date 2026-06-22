@@ -16,8 +16,8 @@ token win really comes from:
 Queries are the independently-authored QUESTIONS, never lifted from a memory's own tokens
 (deriving a query from stored text bakes in lexical overlap — a reward-hack). Equal footing is a
 CHECKED invariant: ``assert_model_parity`` fails fast unless the Hivemind embedder MODEL equals
-mem0's; the 1024-vs-768 dimensionality difference is Hivemind's own disclosed Matryoshka geometry
-and is NOT asserted.
+mem0's. Both sides now use the same native 1024-dim Qwen3 vectors (Hivemind no longer truncates),
+so the geometry is identical and the store is the only difference under test.
 
 Dev-time only (under ``hive.research`` — the purity fence forbids the runtime importing it). No
 kernel change: it drives the shipped ``MemoryBackend`` propose→commit seam, read-only.
@@ -123,11 +123,11 @@ def preload(backend: MemoryBackend, memories: Sequence[tuple[str, str]], *,
 
 def assert_model_parity(cfg, *, mem0_model: str = EMBEDDER_MODEL) -> None:
     """Equal-footing belt: the Hivemind embedder MODEL must equal mem0's, else fail fast (a silent
-    model drift would make the comparison meaningless). The dimensionality difference (mem0 native
-    1024 vs Hivemind Matryoshka-truncated ``cfg.geometry.d``) is the disclosed, intended geometry
-    asymmetry and is deliberately NOT asserted — asserting it would false-fail the intended setup."""
+    model drift would make the comparison meaningless). Both sides use the model's native dim
+    (Hivemind no longer truncates), so the geometry is identical and the store is the only
+    difference under test — only the MODEL is asserted (the dim follows from it)."""
     actual = cfg.embedding.model
     if actual != mem0_model:
         raise ValueError(
             f"equal-footing violation: Hivemind embedder model {actual!r} != mem0 model "
-            f"{mem0_model!r} — the MODEL must match (dims may differ; that asymmetry is intended)")
+            f"{mem0_model!r} — the MODEL (and thus the native dim) must match")

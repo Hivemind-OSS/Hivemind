@@ -10,7 +10,7 @@ The three arms isolate the gate, not just A-vs-C:
                         geometry as C. A config of the shipped gate — no kernel change.
   * C ``abstain-on``  — the production gate (``H_frac_max=0.5``).
 Deltas, each a task-paired bootstrap CI: (C−B) is the gate's PURE contribution, (B−A) the
-store/geometry difference, (C−A) the total. Tokens are a Pareto co-axis — reported ALONGSIDE
+store difference (mem0 and Hivemind now share the native 1024 geometry), (C−A) the total. Tokens are a Pareto co-axis — reported ALONGSIDE
 success (and per-regime), never folded into a scalar; a token saving counts only at
 equal-or-better success.
 
@@ -109,7 +109,7 @@ def score_token_arms(arm_obs: dict[str, ArmTokenObs], *, seed: int = 0) -> dict:
         if [t.regime for t in other.tasks] != regimes:
             raise ValueError("arms are not task-aligned (a paired CI requires identical task order)")
     deltas = {"C-B": _delta(c, b, seed=seed),       # the abstain gate's PURE contribution
-              "B-A": _delta(b, a, seed=seed),       # store / geometry difference
+              "B-A": _delta(b, a, seed=seed),       # store difference (shared native geometry)
               "C-A": _delta(c, a, seed=seed)}       # total
     arms = {name: _arm_summary(obs) for name, obs in arm_obs.items()}
     token_totals = {name: arms[name]["served_tokens_total"] for name in arm_obs}
