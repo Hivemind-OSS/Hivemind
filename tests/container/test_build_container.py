@@ -120,8 +120,8 @@ def test_migrate_raises_on_stored_vector_dim_mismatch(tmp_path):
     fails fast (→ EX_SOFTWARE) rather than silently serving/searching mixed-dim garbage
     (Law 5 + Law 6)."""
     import numpy as np
-    c = _build(tmp_path)                                       # FakeWarmProvider d defaults to 768
-    wrong = np.zeros(256, dtype=np.float32).tobytes()          # 256-wide blob != 768
+    c = _build(tmp_path)                  # FakeWarmProvider d=768: an arbitrary test width, not native 1024
+    wrong = np.zeros(256, dtype=np.float32).tobytes()          # 256-wide blob != the embedder's 768
     c.conn.execute(
         "INSERT INTO episodes (tenant_id, text, value, weight, ts, content_hash, status) "
         "VALUES ('default','t',?,1.0,0,'h','approved')", (wrong,))

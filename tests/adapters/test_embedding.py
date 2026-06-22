@@ -53,8 +53,10 @@ class _StubModel:
         return np.stack([self._vec(t) for t in rows], axis=0)
 
 
-def _emb(*, d: int = _NATIVE, native: int = _NATIVE, **kw) -> LocalSTEmbedder:
-    return LocalSTEmbedder(model=_StubModel(native=native), d=d, **kw).load()
+def _emb(*, d: int = _NATIVE, **kw) -> LocalSTEmbedder:
+    # the stub's native dim tracks d so load()'s native==d assertion passes; the mismatch
+    # case is exercised by constructing the embedder directly (see the d != native test).
+    return LocalSTEmbedder(model=_StubModel(native=d), d=d, **kw).load()
 
 
 def test_encode_returns_unit_norm_float32_native_d():
