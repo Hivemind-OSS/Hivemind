@@ -172,9 +172,9 @@ _GROUP_TYPES: dict[str, type] = {
     "obs": ObservabilityConfig,
 }
 # field-groups constructed (and thus validated) BEFORE runtime, so a field-level error
-# (e.g. recall.H_frac_max) surfaces ahead of the db_path-required check.
-_FIELD_GROUP_ORDER = ("embedding", "recall",
-                      "autonomy", "conflict", "retention", "obs")
+# (e.g. recall.H_frac_max) surfaces ahead of the db_path-required check. Derived from
+# _GROUP_TYPES (its insertion order) minus runtime — one source of truth for the group set.
+_FIELD_GROUP_ORDER = tuple(g for g in _GROUP_TYPES if g != "runtime")
 
 
 @dataclass(frozen=True)
@@ -286,8 +286,10 @@ def _type_name(decl: Any) -> str:
 
 
 def _coerce(value: str, decl: Any, field_name: str) -> Any:
-    """Coerce a string env value to a declared field type (int/float/bool/str/tuple)."""
-    t = decl if isinstance(decl, type) else _annotation_base(decl)
+    """Coerce a string env value to a declared field type (int/float/bool/str). ``decl`` is the
+    field's annotation, which under ``from __future__ import annotations`` is always a string, so
+    the base type is resolved from that string."""
+    t = _annotation_base(decl)
     if t is bool:
         low = value.strip().lower()
         if low in ("1", "true", "yes", "on"):
