@@ -6,10 +6,11 @@ hint) in BOTH the recall carrier and the hive_health worklist; an advisory hive_
 the worklist; and a human hive_supersede makes the pair vanish from every surface (the loser
 deprecates → non-servable → the servable-both filter auto-clears any flag touching it).
 
-Empirically measured real cosines (this model, d=768): container root/non-root ≈ 0.860,
-pooling paraphrase ≈ 0.858, off-topic ≈ 0.24. The test runs conflict.tau=0.80 — comfortably
-below the conflict pairs and far above off-topic — so detection is deterministic across minor
-model jitter. (The DEFAULT tau=0.85 is stricter; its calibration is the benchmark's job.)
+Empirically measured real cosines (this model, prior d=768 geometry): container root/non-root
+≈ 0.860, pooling paraphrase ≈ 0.858, off-topic ≈ 0.24. At the now-native 1024 dim the absolute
+values shift, but the GAP (strong near-dups vs off-topic) stays wide, so conflict.tau=0.80 still
+sits comfortably between — detection is deterministic across minor model jitter. (The DEFAULT
+tau=0.85 is stricter; its calibration is the benchmark's job.)
 H_frac_max=1.0 makes recall serve the co-present near-dups confidently (a flat 2-hit
 distribution would otherwise abstain — the gate is proven elsewhere)."""
 from __future__ import annotations

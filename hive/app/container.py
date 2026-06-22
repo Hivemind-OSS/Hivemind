@@ -12,13 +12,13 @@ The ``Boot`` contract (consumed by ``hive.tools.entrypoint``):
     store               — the durable store (the entrypoint stamps readiness markers on it)
     migrate()           — ensure/verify the schema is migrated (WAL + tables) — EX_SOFTWARE
     build_index()       — warm the in-RAM index from the store's approved-only rows
-    warm_embedder()     — load the model + freeze the head (resident) — EX_UNAVAILABLE
+    warm_embedder()     — load the model + verify the native dim (resident) — EX_UNAVAILABLE
     make_server()       — assemble the HiveMCPServer (embedder resident)
 """
 from __future__ import annotations
 
 import logging
-from typing import Any, Optional
+from typing import Any
 
 from hive.adapters.auth_store_sqlite import SqliteTokenStore
 from hive.adapters.clock_system import SystemClock
@@ -37,11 +37,6 @@ _log = logging.getLogger("hive.container")
 
 _MEMORY_DB = ":memory:"
 _DAY_S = 86_400
-
-# Persisted PCA geometry (so a restart reuses the SAME basis ⇒ byte-stable recall). Stored
-# in the episode store's meta kv under the strict-prefix discipline.
-_HEAD_BYTES_KEY = "embedding:head:bytes"
-_HEAD_WVER_KEY = "embedding:head:w_version"
 
 # The tables migrate() asserts are present — a missing one is a botched migration (EX_SOFTWARE),
 # caught at boot rather than at first recall.
@@ -94,14 +89,14 @@ class Container:
             if str(mode).lower() != "wal":
                 _log.error("container.wal_pragma_mismatch observed=%s expected=wal", mode)
                 raise RuntimeError(f"WAL pragma mismatch: journal_mode={mode!r} (expected wal)")
-        self._assert_stored_vectors_match_geometry()
+        self._assert_stored_vectors_match_embedder_dim()
         _log.info("container.migrate_done tables=%d db_path=%s",
                   len(present), self.cfg.db_path)
 
-    def _assert_stored_vectors_match_geometry(self) -> None:
-        """Law 5 + Law 6 boot guard: any persisted episode vector whose width != geometry.d
-        means the store was written under a DIFFERENT geometry (a forgotten `hive nuke` after a
-        model/dim swap). Fail fast at boot (→ EX_SOFTWARE) rather than build the index from
+    def _assert_stored_vectors_match_embedder_dim(self) -> None:
+        """Law 5 + Law 6 boot guard: any persisted episode vector whose width != the embedder's
+        native dim means the store was written under a DIFFERENT geometry (a forgotten `hive nuke`
+        after a model/dim swap). Fail fast at boot (→ EX_SOFTWARE) rather than build the index from
         mixed-dim rows and serve garbage. A fresh store (no vectors) passes trivially; values are
         float32 BLOBs, so the width is the byte length / 4."""
         row = self.conn.execute(
@@ -109,12 +104,12 @@ class Container:
         if row is None or row["value"] is None:
             return
         width = len(row["value"]) // 4
-        if width != int(self.cfg.geometry.d):
-            _log.error("container.stored_dim_mismatch width=%d geometry_d=%d",
-                       width, self.cfg.geometry.d)
+        d = int(self.embedder.d)
+        if width != d:
+            _log.error("container.stored_dim_mismatch width=%d embedder_d=%d", width, d)
             raise RuntimeError(
-                f"stored vector dim {width} != geometry.d {self.cfg.geometry.d} — the store was "
-                "written under a different geometry; re-initialise it (hive nuke) before serving")
+                f"stored vector dim {width} != embedder dim {d} — the store was written under a "
+                "different geometry; re-initialise it (hive nuke) before serving")
 
     def build_index(self) -> None:
         """Boot order: decay sweep FIRST (materialize lazy TTL deaths so the
@@ -128,19 +123,11 @@ class Container:
         _log.info("container.index_built size=%d swept=%s", self.index.size(), swept)
 
     def warm_embedder(self) -> Any:
-        """Bring the embedder RESIDENT (model loaded + head frozen) and persist the frozen
-        head bytes so a restart reuses the SAME geometry. Returns the embedder; the
-        entrypoint maps a raise / not-loaded to EX_UNAVAILABLE."""
+        """Bring the embedder RESIDENT (model loaded + native dim verified). Returns the
+        embedder; the entrypoint maps a raise / not-loaded to EX_UNAVAILABLE."""
         self.embedder.load()
-        head_fn = getattr(self.embedder, "head_bytes", None)
-        if head_fn is not None:
-            try:
-                self.store.meta_set(_HEAD_BYTES_KEY, head_fn().hex())
-                self.store.meta_set(_HEAD_WVER_KEY, str(int(self.embedder.w_version)))
-            except Exception as exc:        # noqa: BLE001 — persistence is best-effort
-                _log.warning("container.head_persist_failed kind=%s", type(exc).__name__)
-        _log.info("container.embedder_warm name=%s w_version=%s loaded=%s",
-                  getattr(self.embedder, "name", "?"), self.embedder.w_version,
+        _log.info("container.embedder_warm name=%s d=%s loaded=%s",
+                  getattr(self.embedder, "name", "?"), getattr(self.embedder, "d", "?"),
                   getattr(self.embedder, "loaded", "?"))
         return self.embedder
 
@@ -161,24 +148,6 @@ class Container:
             _log.warning("container.close_failed")
 
 
-def _load_head_bytes(store, cfg: Config) -> Optional[bytes]:
-    """The persisted PCA head for THIS geometry (W_version), if any — so a restart reuses
-    the frozen basis instead of re-fitting (and recall stays byte-stable). A W_version bump
-    invalidates it (different geometry ⇒ refit at warm)."""
-    try:
-        raw = store.meta_get(_HEAD_BYTES_KEY)
-        wver = store.meta_get(_HEAD_WVER_KEY)
-    except Exception:                       # noqa: BLE001 — a meta read fault ⇒ refit
-        return None
-    if not raw or wver is None or int(wver) != int(cfg.geometry.W_version):
-        return None
-    try:
-        return bytes.fromhex(raw)
-    except ValueError:
-        _log.warning("container.head_bytes_corrupt — refitting")
-        return None
-
-
 def build_container(cfg: Config, *, tenant_id: str, agent_id: str,
                     embedder: Any = None, clock: Any = None) -> Container:
     """Assemble the full system for ``cfg``. ``embedder`` / ``clock`` are injection seams
@@ -186,23 +155,19 @@ def build_container(cfg: Config, *, tenant_id: str, agent_id: str,
     clock). Returns a ``Container`` ready for the boot sequence
     ``migrate → build_index → warm_embedder → make_server``.
 
-    // construction is torch-cheap: the heavy SentenceTransformer load + PCA fit are
-    deferred to ``warm_embedder``; here we only open the DB, apply schema, and wire."""
+    // construction is torch-cheap: the heavy SentenceTransformer load is deferred to
+    ``warm_embedder``; here we only open the DB, apply schema, and wire."""
     conn = connect(cfg.db_path, check_same_thread=False)   # shared across HTTP handler threads (lock-serialized)
-    index = registry.build_index(cfg)
+    # The embedder is built FIRST (torch-cheap — the model load is deferred to warm): its native
+    # ``d`` is the SINGLE source of the store/index vector width, so they can never disagree.
+    if embedder is None:
+        embedder = registry.build_embedder(cfg)
+    index = registry.build_index(dim=int(embedder.d))
     store = SqliteEpisodeStore(conn, index=index)
     # Auth token store: owns its own `access_tokens` table — built anywhere after conn.
     token_store = SqliteTokenStore(conn)
     scanner = DefaultSecretScanner()
     clock = clock or SystemClock()
-
-    if embedder is None:
-        head_bytes = _load_head_bytes(store, cfg)
-        embedder = registry.build_embedder(cfg, head_bytes=head_bytes)
-    if int(getattr(embedder, "d", cfg.geometry.d)) != int(cfg.geometry.d):
-        raise ValueError(
-            f"embedder.d={getattr(embedder, 'd', None)} != geometry.d={cfg.geometry.d} "
-            "— the index/store dim and the embedder projection must agree")
 
     gate = registry.build_gate(cfg)
     # The mechanical lifecycle: pure DemandRule + the trigger service, wired into
@@ -237,7 +202,7 @@ def build_container(cfg: Config, *, tenant_id: str, agent_id: str,
     identity = ServerIdentity(tenant_id=tenant_id, agent_id=agent_id)
 
     _log.info("container.assembled tenant_id=%s db_path=%s d=%d provider=%s "
-              "autonomy=%s", tenant_id, cfg.db_path, cfg.geometry.d,
+              "autonomy=%s", tenant_id, cfg.db_path, int(embedder.d),
               cfg.embedding.provider, aut.enabled)
     return Container(
         cfg=cfg, conn=conn, index=index, store=store, token_store=token_store,

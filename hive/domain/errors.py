@@ -33,10 +33,6 @@ class GeometryError(HiveError):
     """A value vector's dim/W_version does not match the live geometry."""
 
 
-class HeadCodecError(HiveError):
-    """A projection-head byte payload is malformed or version-incompatible."""
-
-
 class CASConflictError(HiveError):
     """Optimistic single-writer CAS lost the race (cas_version mismatch)."""
 

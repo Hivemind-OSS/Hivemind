@@ -16,8 +16,7 @@ from hive.domain.recall import NormalizedEntropyGate
 
 # ── build_* defaults satisfy their port ───────────────────────────────────────
 def test_build_index_default_and_authoritative():
-    cfg = Config.load(db_path=":memory:")
-    idx = registry.build_index(cfg)
+    idx = registry.build_index(dim=768)
     # exhaustive is AUTHORITATIVE, never silently ANN (the silent-ANN-fallback trap) — build-time postcondition
     assert idx.is_authoritative() is True
 
@@ -52,9 +51,8 @@ def test_build_index_postcondition_fires(monkeypatch):
             return False
 
     monkeypatch.setattr(index_exhaustive, "build_index", lambda *_a, **_k: _FakeIdx())
-    cfg = Config.load(db_path=":memory:")
     with pytest.raises(AssertionError, match=r"authoritative"):
-        registry.build_index(cfg)
+        registry.build_index(dim=4)
 
 
 # ── floor-by-identity: the gate holds the SAME frozen recall object ───────────

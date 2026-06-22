@@ -1,7 +1,7 @@
 """Shared fixtures for the acceptance gate — the REAL stack end-to-end.
 
-A real Qwen3-Embedding-0.6B ``LocalSTEmbedder`` (loaded once per session; truncation head
-built once), a real ``SqliteEpisodeStore`` / ``ExhaustiveCosineIndex`` / ``DefaultSecretScanner``
+A real Qwen3-Embedding-0.6B ``LocalSTEmbedder`` (loaded once per session; native 1024-dim,
+no projection), a real ``SqliteEpisodeStore`` / ``ExhaustiveCosineIndex`` / ``DefaultSecretScanner``
 wired by the real ``build_container``, on a fresh ``:memory:`` store per test. A small, controlled
 corpus + labelled query set makes recall@5 and the abstention AUROC meaningful and
 deterministic without LongMemEval. Network-free: the model is baked/cached (the suite runs
@@ -65,8 +65,8 @@ def st_model():
 @pytest.fixture(scope="session")
 def embedder_v1(st_model):
     """The shipping embedder, resident. Shared (encode is stateless/read-only) so the model
-    + truncation head load once for the whole acceptance suite."""
-    return LocalSTEmbedder(model=st_model, w_version=2, d=768).load()
+    loads once for the whole acceptance suite."""
+    return LocalSTEmbedder(model=st_model, d=1024).load()
 
 
 def build_acc(embedder, *, db_path: str = ":memory:", clock=None,

@@ -31,9 +31,8 @@ class FakeClock:
 
 class FakeProvider:
     """Deterministic hash-based unit vectors — similar text → similar vectors."""
-    def __init__(self, d: int = 256, w_version: int = 1) -> None:
+    def __init__(self, d: int = 256) -> None:
         self.d = int(d)
-        self.w_version = int(w_version)
 
     def _vec(self, text: str) -> np.ndarray:
         h = hashlib.sha256(text.encode()).digest()
@@ -51,23 +50,18 @@ class FakeProvider:
 
 class FakeWarmProvider:
     """A deterministic hash-based ``EmbeddingProvider`` that ALSO satisfies the M12 warm
-    contract (``.loaded`` / ``.load()`` / ``.name`` / ``.head_bytes()``) — for fast
-    container-WIRING tests that must not pay the real model load. Hash-per-text means
-    only IDENTICAL text matches (semantic recall quality is proven against the real
-    embedder in tests/acceptance/*)."""
+    contract (``.loaded`` / ``.load()`` / ``.name``) — for fast container-WIRING tests that
+    must not pay the real model load. Hash-per-text means only IDENTICAL text matches (semantic
+    recall quality is proven against the real embedder in tests/acceptance/*)."""
     name = "fake-warm"
 
-    def __init__(self, d: int = 256, w_version: int = 1, loaded: bool = False) -> None:
+    def __init__(self, d: int = 256, loaded: bool = False) -> None:
         self.d = int(d)
-        self.w_version = int(w_version)
         self.loaded = bool(loaded)
 
     def load(self) -> "FakeWarmProvider":
         self.loaded = True
         return self
-
-    def head_bytes(self) -> bytes:
-        return b"FAKEHEAD\x00" + self.w_version.to_bytes(2, "big")
 
     def _vec(self, text: str) -> np.ndarray:
         h = hashlib.sha256(text.encode()).digest()
@@ -99,10 +93,9 @@ class FakeClusterProvider:
     singleton cluster). Also satisfies the warm contract (``loaded``/``load``/``name``)."""
     name = "fake-cluster"
 
-    def __init__(self, d: int = 64, w_version: int = 1, eps: float = 0.02,
+    def __init__(self, d: int = 64, eps: float = 0.02,
                  loaded: bool = True) -> None:
         self.d = int(d)
-        self.w_version = int(w_version)
         self._eps = float(eps)
         self.loaded = bool(loaded)
 

@@ -26,11 +26,10 @@ class Clock(Protocol):
 
 @runtime_checkable
 class EmbeddingProvider(Protocol):
-    """text → value[d] (embed → truncation head → L2-normalize). The SINGLE encode chain
-    used by both capture and recall [D2]. ``d`` is the projected dim (the stored-vector
-    dim, currently 768); ``w_version`` versions the frozen head for re-embed safety."""
+    """text → value[d] (embed → L2-normalize). The SINGLE encode chain used by both capture
+    and recall [D2]. ``d`` is the model's NATIVE dim (the stored-vector dim) — emitted
+    unchanged, with no projection or dimension reduction."""
     d: int
-    w_version: int
     def encode(self, text: str) -> "np.ndarray": ...
     def encode_batch(self, texts: Sequence[str]) -> "np.ndarray": ...
 

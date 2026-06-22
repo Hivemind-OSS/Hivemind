@@ -211,7 +211,7 @@ class HiveMCPServer:
         self.admission = admission          # AdmissionService: write + capture
         self.recall = recall                # RecallPipeline: recall(query, *, agent_id)
         self.store = store                  # EpisodeStore: get_episode (belt) / counts
-        self.embedder = embedder            # EmbeddingProvider: health probes (d, w_version, name)
+        self.embedder = embedder            # EmbeddingProvider: health probes (d, name)
         self.identity = identity
         self.now = now
         self.started_ts = int(started_ts)
@@ -467,8 +467,7 @@ class HiveMCPServer:
                 "n_pending": n_pending,
                 "embedder": str(getattr(self.embedder, "name", "unknown")),
                 "embedder_loaded": bool(getattr(self.embedder, "loaded", True)),
-                "embedder_projection": "pca",
-                "W_version": int(getattr(self.embedder, "w_version", 0)),
+                "embedder_projection": "none",
                 "d": int(getattr(self.embedder, "d", 0)),
                 "index_authoritative": bool(self.recall.index.is_authoritative()),
                 "uptime_s": max(0, int(self.now()) - self.started_ts)}

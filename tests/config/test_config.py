@@ -208,9 +208,9 @@ def test_conflict_group_is_frozen():
 
 
 # ── config → embedder threading (torch-free: construction does not load the model) ────
-def test_build_provider_threads_config_d():
-    # the embedder's compression dim is sourced from geometry.d, not a head constant —
-    # construction is lazy (no model load), so this proves the wiring without bge.
-    from hive.adapters.embedding.factory import build_provider
-    cfg = Config.load(db_path=":memory:", geometry={"d": 200})
-    assert build_provider(cfg).d == 200
+def test_build_provider_sources_native_dim():
+    # the embedder's d is the model's NATIVE dim (sourced from native_dim_for), not a config
+    # knob — construction is lazy (no model load), so this proves the wiring without the model.
+    from hive.adapters.embedding.factory import build_provider, native_dim_for
+    cfg = Config.load(db_path=":memory:")
+    assert build_provider(cfg).d == native_dim_for(cfg.embedding.model) == 1024

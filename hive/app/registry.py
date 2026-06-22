@@ -26,11 +26,11 @@ _log = logging.getLogger("hive.registry")
 
 
 # ── embedder seam (C1) ────────────────────────────────────────────────────────
-def _build_local_st(cfg: "Config", *, head_bytes=None, model=None):
+def _build_local_st(cfg: "Config", *, model=None):
     """Default embedder (M01 LocalSTEmbedder, Qwen3-Embedding-0.6B). Lazy: the factory import
     is torch-free and the heavy SentenceTransformer load is deferred to ``load()``/warm, so
-    Config validation + ``build_container`` construction stay light. ``head_bytes`` (the
-    persisted truncation geometry) and ``model`` (a test seam) are threaded through when given."""
+    Config validation + ``build_container`` construction stay light. ``model`` (a test seam) is
+    threaded through when given."""
     try:
         from hive.adapters.embedding.factory import build_provider  # noqa: PLC0415 — lazy
     except ImportError as exc:
@@ -39,15 +39,14 @@ def _build_local_st(cfg: "Config", *, head_bytes=None, model=None):
         raise RuntimeError(
             "embedding.provider='local_st' needs sentence-transformers; install hive[embed] "
             "(the M01 adapter), or register another provider") from exc
-    return build_provider(cfg, head_bytes=head_bytes, model=model)
+    return build_provider(cfg, model=model)
 
 
 def build_embedder(cfg: "Config", **kwargs: Any):
     """Construct the configured embedder; fail fast (ValueError) on any provider other than
     the one measured-right default — the likely agent typo, caught at startup not at first
-    recall. ``kwargs`` (e.g. ``head_bytes`` — the persisted truncation geometry — or ``model`` — a
-    test seam) are forwarded; the composition root threads them, the registry only selects +
-    fails fast."""
+    recall. ``kwargs`` (e.g. ``model`` — a test seam) are forwarded; the composition root
+    threads them, the registry only selects + fails fast."""
     name = cfg.embedding.provider
     if name != "local_st":
         raise ValueError(
@@ -57,11 +56,11 @@ def build_embedder(cfg: "Config", **kwargs: Any):
 
 
 # ── vector-index seam (C5/C3) ─────────────────────────────────────────────────
-def build_index(cfg: "Config"):
-    """Construct the exhaustive index; ASSERT the authoritative-index property holds
-    (exhaustive never silently flips to ANN — the build-time closure of the
-    approx_threshold trap; Law 5 never-flip-to-ANN guard)."""
-    idx = index_exhaustive.build_index("exhaustive", cfg.geometry.d)
+def build_index(*, dim: int):
+    """Construct the exhaustive index at the embedder's native ``dim``; ASSERT the
+    authoritative-index property holds (exhaustive never silently flips to ANN — the
+    build-time closure of the approx_threshold trap; Law 5 never-flip-to-ANN guard)."""
+    idx = index_exhaustive.build_index("exhaustive", dim)
     if idx.is_authoritative() is not True:
         raise AssertionError(
             "build_index postcondition violated: exhaustive backend is not authoritative")

@@ -18,7 +18,7 @@ def test_health_happy_snapshot():
     assert snap["n_episodes"] == 2 and snap["n_pending"] == 0
     assert snap["index_authoritative"] is True
     assert snap["embedder_loaded"] is True
-    assert snap["d"] == 64 and snap["W_version"] == 1
+    assert snap["d"] == 64
     assert snap["uptime_s"] >= 0
 
 

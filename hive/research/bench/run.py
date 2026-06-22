@@ -211,8 +211,8 @@ def _hivemind_server_factory(h_frac_max: float = 0.9, *, autonomy=None,
     cfg = Config.load(db_path=":memory:", **overrides)
     if embedder is None:
         from hive.app import registry
-        embedder = registry.build_embedder(cfg, head_bytes=None)
-        embedder.load()                                # warm Qwen3 + freeze the truncation head ONCE
+        embedder = registry.build_embedder(cfg)
+        embedder.load()                                # warm Qwen3 + verify native dim ONCE
 
     def factory():
         c = build_container(cfg, tenant_id="default", agent_id="bench-orchestrator",

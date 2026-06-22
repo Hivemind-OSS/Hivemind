@@ -1,7 +1,7 @@
 """P1.14 — hive.app.container.build_container: the composition-root wiring contract.
 
 Fast (a fake warm embedder, no model load): proves the Boot conformance, the Phase-1
-utility-inert policy, the floor-by-identity gate wiring, the warm/persist-head step, the
+utility-inert policy, the floor-by-identity gate wiring, the warm step, the
 migrate schema/WAL assertion, the approved-only index warm, and — the load-bearing wiring
 fact — the SqliteUtilityStore-before-SqliteEpisodeStore order that guardrail-2 needs.
 The real-embedder end-to-end geometry gates live in tests/acceptance/*.
@@ -85,13 +85,11 @@ def test_identity_carries_tenant_and_agent():
 
 
 # ── warm / migrate / index (the boot steps) ───────────────────────────────────
-def test_warm_embedder_sets_loaded_and_persists_head(tmp_path):
+def test_warm_embedder_sets_loaded(tmp_path):
     c = _build(tmp_path)
     assert c.embedder.loaded is False
     c.warm_embedder()
     assert c.embedder.loaded is True
-    assert c.store.meta_get("embedding:head:bytes")            # persisted for restart reuse
-    assert c.store.meta_get("embedding:head:w_version") == str(c.embedder.w_version)
 
 
 def test_migrate_ok_and_wal_active_on_file_db(tmp_path):
@@ -117,11 +115,12 @@ def test_migrate_passes_dim_guard_on_fresh_store(tmp_path):
 
 
 def test_migrate_raises_on_stored_vector_dim_mismatch(tmp_path):
-    """A persisted episode vector whose width != geometry.d means the store was written under a
-    DIFFERENT geometry (a forgotten `hive nuke` after a model/dim swap). Boot fails fast
-    (→ EX_SOFTWARE) rather than silently serving/searching mixed-dim garbage (Law 5 + Law 6)."""
+    """A persisted episode vector whose width != the embedder's native dim means the store was
+    written under a DIFFERENT geometry (a forgotten `hive nuke` after a model/dim swap). Boot
+    fails fast (→ EX_SOFTWARE) rather than silently serving/searching mixed-dim garbage
+    (Law 5 + Law 6)."""
     import numpy as np
-    c = _build(tmp_path)                                       # geometry.d defaults to 768
+    c = _build(tmp_path)                                       # FakeWarmProvider d defaults to 768
     wrong = np.zeros(256, dtype=np.float32).tobytes()          # 256-wide blob != 768
     c.conn.execute(
         "INSERT INTO episodes (tenant_id, text, value, weight, ts, content_hash, status) "
@@ -156,12 +155,12 @@ def test_make_server_round_trips_write_recall():
     assert any(h["text"] == text for h in r["reference_context"])
 
 
-def test_d_mismatch_fails_fast():
-    """An embedder whose projection dim disagrees with geometry.d is a wiring error caught
-    at construction, never a garbage search at first recall."""
-    with pytest.raises(ValueError, match="must agree"):
-        build_container(_cfg(), tenant_id="t1", agent_id="a1",
-                        embedder=FakeWarmProvider(d=128))   # geometry.d defaults to 768
+def test_index_dim_follows_injected_embedder():
+    """The store/index vector width is sourced from the embedder's native ``d`` (the SINGLE
+    source), so they can never disagree — an injected embedder of any dim sizes the index.
+    (Re-introducing a separate geometry-dim source would let these diverge again.)"""
+    c = _build(embedder=FakeWarmProvider(d=128))
+    assert c.index.dim == 128
 
 
 # ── hybrid + FTS lexical mirror CUT: no hybrid/lexical surface anywhere ─────────

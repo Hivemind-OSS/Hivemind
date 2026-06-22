@@ -40,10 +40,9 @@ def _cos_vec(c: float, d: int = D) -> np.ndarray:
 
 class _StubProvider:
     """Returns a FIXED query vector for any text (decouples from hash randomness)."""
-    def __init__(self, vec: np.ndarray, d: int = D, w_version: int = 1) -> None:
+    def __init__(self, vec: np.ndarray, d: int = D) -> None:
         self._vec = np.asarray(vec, dtype=np.float32)
         self.d = d
-        self.w_version = w_version
 
     def encode(self, text: str) -> np.ndarray:
         return self._vec
