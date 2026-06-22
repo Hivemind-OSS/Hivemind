@@ -67,6 +67,15 @@ class RecallConfig:
     # below tau_top1. Ships inert (0.0 ⇒ never fires, masses ∈ [0,1]); only ADDS abstentions.
     # No upper clamp — a value > 1 is a legal permanent-abstain config.
     tau_top1: float = 0.0
+    # Flat-field relevance threshold. Affects ONLY the would-abstain (flat) case: a flat field is
+    # served iff its top-1 absolute cosine >= tau_thresh, else abstain. 1.0 ⇒ abstain on every flat
+    # case (today's gate); lower ⇒ more permissive. DISTINCT axis from tau_top1 (a mass floor).
+    # PRECEDENCE: tau_top1 is unconditional — when both are set, a flat field with low top-1 mass is
+    #   still suppressed by tau_top1 even if tau_thresh would serve it (the override relaxes only the
+    #   entropy term). Calibrate the production value via gate_eval; it RE-ADMITS cosine-twin
+    #   poison/stale serves on flat fields, so pair it with conflict.suppress + human supersession.
+    # Absolute-cosine meaningful only because stored/searched vectors are EXACT unit-norm (BUG-008).
+    tau_thresh: float = 0.70
 
     def __post_init__(self) -> None:
         if not (0.0 < self.H_frac_max <= 1.0):
@@ -80,6 +89,9 @@ class RecallConfig:
         if not (math.isfinite(self.tau_top1) and self.tau_top1 >= 0.0):
             raise ValueError(
                 f"recall.tau_top1 must be finite and >= 0.0 (got {self.tau_top1})")
+        if not (math.isfinite(self.tau_thresh) and 0.0 < self.tau_thresh <= 1.0):
+            raise ValueError(
+                f"recall.tau_thresh must be finite in (0.0, 1.0] (got {self.tau_thresh})")
 
 
 @dataclass(frozen=True)

@@ -143,3 +143,77 @@ def test_tau_top1_ctor_rejects_negative():
         NormalizedEntropyGate(0.5, 16.0, -0.1)
     with pytest.raises(ValueError):
         NormalizedEntropyGate(0.5, 16.0, float("inf"))
+
+
+# ── tau_thresh flat-field relevance override (domain default 1.0 ⇒ no effect) ──
+# A FLAT field (entropy_norm > h_frac_max) is served instead of abstained iff its top-1
+# ABSOLUTE cosine ≥ tau_thresh — an orthogonal axis from tau_top1 (a softmax-MASS floor).
+def test_flat_relevant_serves_below_thresh():
+    # flat (h_norm≈0.99 > 0.5) but the best candidate is absolutely relevant (cos 0.85 ≥ 0.70):
+    # the override serves what the entropy gate alone would have abstained on.
+    flat_relevant = [0.85, 0.84, 0.83]
+    assert NormalizedEntropyGate(0.5, 16.0).evaluate(flat_relevant)[0] is True   # abstains w/o override
+    suppress, h_norm, _ = NormalizedEntropyGate(0.5, 16.0, 0.0, 0.70).evaluate(flat_relevant)
+    assert h_norm > 0.5            # genuinely flat
+    assert suppress is False       # served by the absolute-cosine override
+
+
+def test_flat_weak_still_abstains():
+    # flat AND low-relevance (top cos 0.30 < 0.70) ⇒ the override does NOT fire; still abstain.
+    flat_weak = [0.30, 0.29, 0.28]
+    suppress, h_norm, _ = NormalizedEntropyGate(0.5, 16.0, 0.0, 0.70).evaluate(flat_weak)
+    assert h_norm > 0.5 and suppress is True
+
+
+def test_tau_thresh_1p0_is_todays_behavior():
+    # tau_thresh=1.0 (the domain default) ⇒ byte-identical tuple to the no-arg gate on BOTH a
+    # flat-weak and a flat-strong field — the override never fires (top cos < 1.0), so the
+    # off path is provably today's entropy gate.
+    for sims in ([0.30, 0.29, 0.28], [0.85, 0.84, 0.83]):
+        base = NormalizedEntropyGate(0.5, 16.0).evaluate(sims)
+        assert NormalizedEntropyGate(0.5, 16.0, 0.0, 1.0).evaluate(sims) == base, sims
+
+
+def test_non_flat_field_unaffected_by_tau_thresh():
+    # a PEAKED field (entropy_norm 0.39 < 0.5) is decided by the entropy branch alone; the
+    # override only touches the flat branch, so the decision is identical across tau_thresh values.
+    peaked = [0.85, 0.70, 0.65]
+    base = NormalizedEntropyGate(0.5, 16.0).evaluate(peaked)
+    assert base[0] is False
+    for tau in (1.0, 0.70, 0.2):
+        assert NormalizedEntropyGate(0.5, 16.0, 0.0, tau).evaluate(peaked) == base, tau
+
+
+def test_tau_thresh_boundary_is_inclusive():
+    # the override is a `>=` (top cos AT the threshold serves): a flat field whose top cos is
+    # EXACTLY 0.85 serves at tau_thresh=0.85. (`>` would abstain here — the boundary mutation.)
+    flat_at = [0.85, 0.84, 0.83]            # max is exactly 0.85
+    suppress, h_norm, _ = NormalizedEntropyGate(0.5, 16.0, 0.0, 0.85).evaluate(flat_at)
+    assert h_norm > 0.5 and suppress is False
+
+
+def test_override_does_not_rescue_nonfinite():
+    # Law 1: a non-finite sim raises in _softmax_mass_from_sims BEFORE top_cos=max(sims) is read,
+    # so the fail-closed except still wins WITH the override armed — the override never sees a
+    # non-finite sim and cannot fabricate a served result on an undecidable set.
+    nan = float("nan")
+    g = NormalizedEntropyGate(0.5, 16.0, 0.0, 0.70)
+    for sims in ([1.0, nan], [nan, 1.0], [0.85, 0.84, nan]):
+        assert g.evaluate(sims) == (True, 1.0, 0.0), sims
+
+
+def test_override_does_not_relax_tau_top1():
+    # PRECEDENCE: tau_top1 is unconditional. A flat field whose top cos clears tau_thresh but whose
+    # top-1 MASS is below tau_top1 is STILL suppressed — the override relaxes only the entropy term.
+    flat_relevant = [0.85, 0.84, 0.83]      # top cos 0.85 ≥ tau_thresh, but masses are near-uniform
+    suppress, _h, _m = NormalizedEntropyGate(0.5, 16.0, 0.95, 0.70).evaluate(flat_relevant)
+    assert suppress is True                 # tau_top1 floor abstains despite the relevance override
+
+
+def test_tau_thresh_ctor_rejects_out_of_range():
+    for bad in (0.0, 1.5, float("inf"), float("nan")):
+        with pytest.raises(ValueError):
+            NormalizedEntropyGate(0.5, 16.0, 0.0, bad)
+    # the in-range endpoints construct (1.0 = no effect, 0.70 = the product posture)
+    assert NormalizedEntropyGate(0.5, 16.0, 0.0, 1.0).tau_thresh == 1.0
+    assert NormalizedEntropyGate(0.5, 16.0, 0.0, 0.70).tau_thresh == 0.70

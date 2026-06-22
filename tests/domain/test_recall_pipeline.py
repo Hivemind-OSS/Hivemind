@@ -88,12 +88,12 @@ class _ListIndex:
 
 
 def _pipe(*, index, reader, query_vec,
-          recall_top_n=10, h=0.5, beta=16.0, embedder=None, ledger=None,
+          recall_top_n=10, h=0.5, beta=16.0, tau_thresh=1.0, embedder=None, ledger=None,
           suppress_conflicts=False, conflict_tau=0.80, conflict_classifier=None):
     return RecallPipeline(
         embedder=embedder or _StubProvider(query_vec),
         index=index,
-        gate=NormalizedEntropyGate(h, beta),
+        gate=NormalizedEntropyGate(h, beta, 0.0, tau_thresh),
         reader=reader,
         recall_top_n=recall_top_n,
         ledger=ledger if ledger is not None else FakeLedger(),
@@ -413,3 +413,35 @@ def test_conflict_classifier_is_unused_in_phase1():
             raise AssertionError("classifier must not be called in Phase 1")
     r = _trust_pair_pipe(suppress=True, classifier=_BoomClassifier()).recall("q", agent_id="A")
     assert {h.episode_id for h in r.hits} == {1}
+
+
+# ── tau_thresh: a FLAT-but-relevant field serves at the product default, abstains at 1.0 ──
+def _flat_relevant_pipe(*, tau_thresh):
+    """Three candidates at cosines 0.85/0.84/0.83 to the query ⇒ near-uniform mass (flat,
+    entropy_norm > H_frac_max=0.5) but all absolutely relevant (top cos 0.85). The entropy
+    gate alone abstains; the absolute-cosine override serves iff tau_thresh ≤ 0.85."""
+    index, reader = FakeIndex(), FakeEpisodeReader()
+    for eid, c, text in ((1, 0.85, "the gold fact"),
+                         (2, 0.84, "a sibling fact"),
+                         (3, 0.83, "another sibling")):
+        index.add(eid, _cos_vec(c))
+        reader.add(eid, text)
+    return _pipe(index=index, reader=reader, query_vec=_e(0), tau_thresh=tau_thresh)
+
+
+def test_flat_relevant_field_serves_at_product_default():
+    # at tau_thresh=0.70 the flat-relevant field is SERVED — CONFIDENT with the gold + siblings,
+    # the biconditional honored (hits non-empty), exposure recorded for the served set.
+    led = FakeLedger()
+    pipe = _flat_relevant_pipe(tau_thresh=0.70)
+    pipe.ledger = led
+    r = pipe.recall("q", agent_id="A")
+    assert r.state == CONFIDENT
+    assert {h.episode_id for h in r.hits} == {1, 2, 3}
+    assert {e for ex in led.exposures for e, _m in ex["items"]} == {1, 2, 3}
+
+
+def test_flat_relevant_field_abstains_at_tau_thresh_1p0():
+    # the off path (tau_thresh=1.0, byte-identical to today's gate): the SAME flat field abstains.
+    r = _flat_relevant_pipe(tau_thresh=1.0).recall("q", agent_id="A")
+    assert r.state == ABSTAIN and r.hits == ()

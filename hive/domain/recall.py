@@ -90,14 +90,20 @@ class NormalizedEntropyGate:
 
     `evaluate(sims) -> (suppress, entropy_norm, top_margin)`. The sims→mass step
     is `softmax(beta·sim)` (new code, β in the constructor); everything downstream
-    is byte-identical to the reference. `suppress` iff `entropy_norm > h_frac_max`
-    OR `top1 < tau_top1` (the top-1 score-gap floor — an additive abstention, inert
-    at the `tau_top1=0.0` default since masses ∈ [0,1]). Empty ⇒ `(False, 0.0, 0.0)`.
-    Any internal failure ⇒ fail-closed `(True, 1.0, 0.0)` — a gate that cannot decide
-    MUST abstain, never fabricate.
+    is byte-identical to the reference. `suppress` iff `(flat AND not serve_relev)`
+    OR `top1 < tau_top1`, where `flat = entropy_norm > h_frac_max` and `serve_relev =
+    top1_absolute_cosine >= tau_thresh` (the flat-field relevance override — a FLAT
+    field is SERVED when its best candidate is absolutely relevant; consulted only on
+    the flat branch, inert at the `tau_thresh=1.0` default since cosines ≤ 1). `top1 <
+    tau_top1` is the top-1 softmax-MASS floor — an unconditional additive abstention,
+    inert at the `tau_top1=0.0` default since masses ∈ [0,1] — so it suppresses even a
+    flat field the relevance override would serve. Empty ⇒ `(False, 0.0, 0.0)`. Any
+    internal failure ⇒ fail-closed `(True, 1.0, 0.0)` — a gate that cannot decide MUST
+    abstain, never fabricate.
     """
 
-    def __init__(self, h_frac_max: float, beta: float, tau_top1: float = 0.0) -> None:
+    def __init__(self, h_frac_max: float, beta: float, tau_top1: float = 0.0,
+                 tau_thresh: float = 1.0) -> None:
         if not math.isfinite(h_frac_max):
             raise ValueError("h_frac_max must be finite")
         if not (math.isfinite(beta) and beta > 0.0):
@@ -108,22 +114,31 @@ class NormalizedEntropyGate:
             # the top-1 floor is only ever an additive abstention; a non-finite or
             # negative threshold is undecidable — fail fast at construction.
             raise ValueError("tau_top1 must be finite and >= 0")
+        if not (math.isfinite(tau_thresh) and 0.0 < tau_thresh <= 1.0):
+            # the absolute top-1 cosine at/above which a FLAT field is served instead of
+            # abstained. 1.0 ⇒ flat always abstains (today's gate); lower ⇒ more permissive.
+            # A distinct axis from tau_top1 (a softmax-MASS floor). Validated finite in (0, 1].
+            raise ValueError("tau_thresh must be finite in (0, 1]")
         self.h_frac_max = float(h_frac_max)
         self.beta = float(beta)
         self.tau_top1 = float(tau_top1)
+        self.tau_thresh = float(tau_thresh)
         self._recall = None              # set by from_recall() to the frozen config object
 
     @classmethod
     def from_recall(cls, recall, beta: float) -> "NormalizedEntropyGate":
         """Construct the gate BY IDENTITY from the single frozen recall-config object
         (CONFIG_DRIFT killed structurally — M11). The floor is read off
-        ``recall.H_frac_max`` (+ the additive ``tau_top1`` top-1 floor, getattr-defaulted so
-        the duck-typed contract survives an older config) and the object itself is retained at
-        ``self._recall`` so a future second gate cannot fork the float. ``recall`` is duck-typed
-        (any frozen object exposing ``H_frac_max``) — the domain stays unaware of ``app.Config``.
+        ``recall.H_frac_max`` (+ the additive ``tau_top1`` top-1 floor and the ``tau_thresh``
+        flat-field relevance override, both getattr-defaulted so the duck-typed contract survives
+        an older config — ``tau_thresh`` defaults to 1.0 ⇒ no flat-serve override) and the object
+        itself is retained at ``self._recall`` so a future second gate cannot fork the float.
+        ``recall`` is duck-typed (any frozen object exposing ``H_frac_max``) — the domain stays
+        unaware of ``app.Config``.
         """
         gate = cls(float(recall.H_frac_max), beta,
-                   float(getattr(recall, "tau_top1", 0.0)))
+                   float(getattr(recall, "tau_top1", 0.0)),
+                   float(getattr(recall, "tau_thresh", 1.0)))
         gate._recall = recall
         return gate
 
@@ -143,10 +158,15 @@ class NormalizedEntropyGate:
                 h = -math.fsum(p * math.log(p) for p in mass if p > 0.0)
                 entropy_norm = h / math.log(n_eff)
             entropy_norm = max(0.0, min(1.0, entropy_norm))   # [0,1] clamp
-            # the floor is the SAME try as the entropy decision: a non-finite sim raises in
-            # _softmax_mass_from_sims above (before mass_sorted), so the except still returns
-            # the fail-closed SUPPRESS — Law 1 holds. At tau_top1=0.0 the OR term is inert.
-            suppress = (entropy_norm > self.h_frac_max) or (top1 < self.tau_top1)
+            # flat-field relevance override (read AFTER _softmax_mass_from_sims, so a non-finite
+            # sim has already raised ⇒ top_cos never sees one and the except's fail-closed SUPPRESS
+            # still wins — Law 1 holds): a FLAT field (entropy too high) is served ONLY on positive
+            # evidence — a present, absolutely-relevant top-1 cosine ≥ tau_thresh — never on
+            # absence/weakness. tau_top1 stays unconditional, so the override relaxes only entropy.
+            top_cos = max(sims)
+            flat = entropy_norm > self.h_frac_max
+            serve_relev = top_cos >= self.tau_thresh
+            suppress = (flat and not serve_relev) or (top1 < self.tau_top1)
             return (suppress, entropy_norm, top_margin)
         except Exception:                     # noqa: BLE001 — fail-closed by contract
             _log.warning("entropy gate internal failure (n=%s) → fail-closed SUPPRESS",

@@ -145,6 +145,31 @@ def test_tau_top1_rejects_negative_and_nonfinite():
     assert Config.load(recall={"tau_top1": 1.5}).recall.tau_top1 == 1.5
 
 
+def test_tau_thresh_default_is_product_posture():
+    # the flat-field relevance threshold ships ACTIVE (the 2nd sanctioned default-ON product
+    # knob): a default load is 0.70 — flat fields with a top-1 cosine ≥ 0.70 serve, weaker
+    # flat fields still abstain. (1.0 would be byte-identical to the entropy gate alone.)
+    assert Config.load(db_path=":memory:").recall.tau_thresh == 0.70
+
+
+def test_tau_thresh_accepts_endpoints_rejects_out_of_range():
+    # accepted: the inert endpoint (1.0 ⇒ today's gate) and an interior value.
+    assert Config.load(recall={"tau_thresh": 1.0}).recall.tau_thresh == 1.0
+    assert Config.load(recall={"tau_thresh": 0.70}).recall.tau_thresh == 0.70
+    # rejected: 0.0 (a flat field would serve unconditionally — never), >1 (unreachable cosine),
+    # and non-finite — fail fast at boot.
+    for bad in (0.0, 1.5, float("nan")):
+        with pytest.raises(ValueError, match=r"tau_thresh"):
+            Config.load(recall={"tau_thresh": bad})
+
+
+def test_tau_thresh_env_coerces_to_float():
+    # HIVE_RECALL__TAU_THRESH is coerced to float by the existing _annotation_base("float") path
+    # (no coercer change), proving the operator can calibrate it from the environment.
+    cfg = Config.load(db_path=":memory:", env={"HIVE_RECALL__TAU_THRESH": "0.70"})
+    assert cfg.recall.tau_thresh == 0.70
+
+
 def test_db_path_required():
     with pytest.raises(ValueError, match=r"db_path"):
         Config.load(db_path="")
