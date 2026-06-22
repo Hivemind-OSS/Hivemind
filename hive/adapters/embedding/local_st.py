@@ -63,7 +63,11 @@ class LocalSTEmbedder:
             from sentence_transformers import SentenceTransformer  # noqa: PLC0415 — lazy/heavy
             _log.info("embedding.model_load name=%s", self.name)
             self._model = SentenceTransformer(self.name, device="cpu")
-        native = int(self._model.get_sentence_embedding_dimension())
+        # sentence-transformers renamed get_sentence_embedding_dimension → get_embedding_dimension;
+        # prefer the new name, fall back to the old, so we span versions without a FutureWarning.
+        get_dim = (getattr(self._model, "get_embedding_dimension", None)
+                   or self._model.get_sentence_embedding_dimension)
+        native = int(get_dim())
         if native != self.d:
             raise GeometryError(
                 f"model native dim {native} != declared d {self.d} — the embedder emits the "

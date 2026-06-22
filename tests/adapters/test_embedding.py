@@ -34,7 +34,10 @@ class _StubModel:
         self._native = int(native)
         self._fixed = None if fixed is None else np.asarray(fixed, dtype=np.float32)
 
-    def get_sentence_embedding_dimension(self) -> int:
+    def get_embedding_dimension(self) -> int:            # current sentence-transformers name
+        return self._native
+
+    def get_sentence_embedding_dimension(self) -> int:   # deprecated alias (real ST keeps both)
         return self._native
 
     def _vec(self, text: str) -> np.ndarray:
@@ -190,7 +193,9 @@ class TestRealQwen3:
     def test_native_discovered_is_1024_and_emitted_unchanged(self, emb, st_model):
         """Headline acceptance: native is DISCOVERED from the real model (1024), equals the
         declared d, and is emitted unchanged (unit-norm, no projection)."""
-        assert emb.d == st_model.get_sentence_embedding_dimension() == _NATIVE
+        get_dim = (getattr(st_model, "get_embedding_dimension", None)
+                   or st_model.get_sentence_embedding_dimension)
+        assert emb.d == int(get_dim()) == _NATIVE
         v = emb.encode("the recall gate degrades to identity when uncertain")
         assert v.shape == (_NATIVE,) and abs(float(np.linalg.norm(v)) - 1.0) < 1e-5
 
