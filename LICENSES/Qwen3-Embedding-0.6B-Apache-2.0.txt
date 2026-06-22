@@ -3,7 +3,7 @@ Source: https://huggingface.co/Qwen/Qwen3-Embedding-0.6B
 Copyright (c) Alibaba Cloud / the Qwen Team.
 
 The model is redistributed unmodified inside the Hivemind container image. At inference its
-embeddings are Matryoshka-truncated to 768 dimensions and L2-normalized; no model weights are
+embeddings are used at the native 1024 dimensions and L2-normalized; no model weights are
 modified. The full license text follows.
 
                                  Apache License

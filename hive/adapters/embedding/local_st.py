@@ -2,9 +2,9 @@
 baked, CPU) behind the embedding swap seam [B2/D2].
 
 The SINGLE encode chain for BOTH capture and recall (no encode/encode_batch split-brain):
-every text goes Qwen3-Embedding → the model's NATIVE vector (L2-normalized) → emitted
-UNCHANGED. There is no projection head and no dimension reduction — the stored-vector dim IS
-the model's native dim. Encoding is SYMMETRIC and prompt-free — the same text always yields the
+every text goes Qwen3-Embedding → the model's NATIVE vector → L2-renormalized to exact unit
+norm. There is no projection head and no dimension reduction — the stored-vector dim IS the
+model's native dim; the only transform is the unit-norm tightening the index cosine relies on. Encoding is SYMMETRIC and prompt-free — the same text always yields the
 same vector, which the trust lifecycle's demand_tau/competitor_tau cosines depend on (the model's
 asymmetric query instruction is deferred; see TODOS.md TODO 7).
 
@@ -44,7 +44,7 @@ def _require_finite(v: np.ndarray) -> np.ndarray:
 
 
 class LocalSTEmbedder:
-    """``text → value[d]`` (Qwen3-Embedding native vector, unit-norm, emitted unchanged). The
+    """``text → value[d]`` (Qwen3-Embedding native vector, L2-renormalized to unit norm). The
     shipping embedder; satisfies the ``EmbeddingProvider`` Protocol (``d``, ``encode``,
     ``encode_batch``) plus the M12 warm contract (``load``, ``loaded``, ``name``)."""
 
@@ -89,8 +89,14 @@ class LocalSTEmbedder:
 
     # ── internals ────────────────────────────────────────────────────────────────
     def _encode_native(self, texts: list[str]) -> np.ndarray:
-        """Qwen3-Embedding native embeddings (L2-normalized, float32, (n, d)). No prompt is
-        passed, so capture and recall encode symmetrically (same text → same vector)."""
-        vecs = self._model.encode(
-            texts, normalize_embeddings=True, convert_to_numpy=True)
-        return np.ascontiguousarray(np.asarray(vecs, dtype=np.float32))
+        """Qwen3-Embedding native embeddings, RE-NORMALIZED to exact unit norm in float32,
+        (n, d). The model's own ``normalize_embeddings=True`` is unit only to ~1e-3 at 1024 dims
+        (float32 accumulation), and the index treats ``mat @ q`` AS cosine, so the producer
+        tightens the magnitude to exactly 1.0 — the renorm the now-removed truncation head used to
+        perform. No prompt is passed, so capture and recall encode symmetrically (same text → same
+        vector)."""
+        vecs = np.asarray(self._model.encode(
+            texts, normalize_embeddings=True, convert_to_numpy=True), dtype=np.float32)
+        norms = np.linalg.norm(vecs, axis=1, keepdims=True)
+        norms[norms == 0] = 1.0
+        return np.ascontiguousarray(vecs / norms, dtype=np.float32)

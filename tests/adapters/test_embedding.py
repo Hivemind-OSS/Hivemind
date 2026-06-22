@@ -24,10 +24,11 @@ _NATIVE = 1024   # Qwen3-Embedding-0.6B native dim
 
 # ── FAST tier: a stub SentenceTransformer (no model download) ──────────────────
 class _StubModel:
-    """A SentenceTransformer double: a fixed native dim and deterministic, L2-NORMALIZED
-    per-text native vectors — faithful to ``normalize_embeddings=True`` (the embedder trusts the
-    model to return unit vectors now that no head renormalizes). ``fixed`` pins the returned
-    matrix for the exact-passthrough assertion."""
+    """A SentenceTransformer double: a fixed native dim and deterministic per-text native
+    vectors. The ``_vec`` path L2-normalizes; the ``fixed`` path returns the matrix VERBATIM, so a
+    test can feed a NON-unit vector and prove the embedder re-normalizes. Models
+    ``normalize_embeddings=True`` (unit only to ~1e-3 at 1024 dims in the real model); the embedder
+    re-normalizes to exact unit norm regardless."""
 
     def __init__(self, *, native: int = _NATIVE, fixed: np.ndarray | None = None) -> None:
         self._native = int(native)
@@ -89,6 +90,28 @@ def test_encode_is_native_passthrough():
     out = emb.encode("anything — the stub ignores the text")
     assert out.shape == (_NATIVE,)
     assert np.allclose(out, native, atol=1e-6)
+
+
+def test_encode_renormalizes_to_exact_unit_norm():
+    """The model's ``normalize_embeddings=True`` is unit only to ~1e-3 at 1024 dims, so the
+    embedder RE-NORMALIZES at the producer to EXACT unit norm — the index treats ``mat @ q`` AS
+    cosine and the trust-lifecycle cosines assume unit vectors. A NON-unit model vector must come
+    out unit. Deleting the renorm in ``_encode_native`` REDS this."""
+    raw = np.full(_NATIVE, 2.0, dtype=np.float32)          # ||raw|| = 2*sqrt(1024) = 64, not unit
+    emb = LocalSTEmbedder(model=_StubModel(fixed=raw[None, :]), d=_NATIVE).load()
+    v = emb.encode("x")
+    assert abs(float(np.linalg.norm(v)) - 1.0) < 1e-6
+    M = emb.encode_batch(["a", "b"])
+    assert np.allclose(np.linalg.norm(M, axis=1), 1.0, atol=1e-6)
+
+
+def test_native_dim_for_raises_on_unknown_model():
+    """``native_dim_for`` fails fast on an unregistered model — its native dim must be registered
+    (and weights baked) before it can ship, so a typo never silently picks a wrong store width."""
+    from hive.adapters.embedding.factory import native_dim_for
+    assert native_dim_for(DEFAULT_MODEL) == _NATIVE
+    with pytest.raises(ValueError, match="unknown embedding model|native_dim_for"):
+        native_dim_for("ghost/not-a-real-model")
 
 
 def test_d_is_ctor_arg():
