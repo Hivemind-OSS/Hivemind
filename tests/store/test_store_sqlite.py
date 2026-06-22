@@ -70,7 +70,7 @@ def test_stage_dedup_same_text():
     s = _store()
     a, d1 = s.stage(text="same", weight=1.0, source="m", tags="", proposed_by="a")
     b, d2 = s.stage(text="same", weight=2.0, source="m", tags="", proposed_by="a")
-    assert a == b and d2 is True and len(s.list_pending()) == 1
+    assert a == b and d2 is True and s.counts()[1] == 1   # one pending row ⇒ dedup, no 2nd insert
 
 
 def test_approve_flips_and_indexes():

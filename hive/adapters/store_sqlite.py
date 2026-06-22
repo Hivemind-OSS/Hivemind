@@ -247,14 +247,6 @@ class SqliteEpisodeStore:
             self.index.rebuild_from_store(
                 self.scan_servable(now=now, provisional_ttl_s=provisional_ttl_s))
 
-    def list_pending(self, since: int = 0) -> list[dict]:
-        """Pending proposals with ts >= since (the durable cursor for hive_pending),
-        ordered by id. since=0 ⇒ all pending."""
-        return [{"id": r["id"], "text": r["text"], "proposed_by": r["proposed_by"], "ts": r["ts"]}
-                for r in self.conn.execute(
-                    "SELECT id, text, proposed_by, ts FROM episodes "
-                    "WHERE status='pending' AND ts>=? ORDER BY id", (since,))]
-
     def get_episode(self, episode_id: int) -> Optional[Episode]:
         r = self.conn.execute("SELECT * FROM episodes WHERE id=?", (episode_id,)).fetchone()
         if r is None:
