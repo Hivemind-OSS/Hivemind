@@ -23,10 +23,8 @@ _log = logging.getLogger("hive.backup")
 
 @dataclass(frozen=True)
 class BackupRecord:
-    src_path: str
     dest_path: str
     bytes_copied: int
-    duration_s: float
     ts: float
 
 
@@ -74,8 +72,8 @@ def backup(src: str, dest: str) -> BackupRecord:
     bytes_copied = Path(dest).stat().st_size
     dt = time.perf_counter() - t0
     _log.info("backup.ok src=%s dest=%s bytes=%d dt=%.3fs", src, dest, bytes_copied, dt)
-    return BackupRecord(src_path=src, dest_path=dest,
-                        bytes_copied=bytes_copied, duration_s=dt, ts=time.time())
+    return BackupRecord(dest_path=dest,
+                        bytes_copied=bytes_copied, ts=time.time())
 
 
 def prune_backups(backup_dir: str, keep: int = 30) -> list[str]:
