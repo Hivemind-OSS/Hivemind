@@ -68,8 +68,9 @@ class RecallConfig:
     # No upper clamp — a value > 1 is a legal permanent-abstain config.
     tau_top1: float = 0.0
     # Flat-field relevance threshold. Affects ONLY the would-abstain (flat) case: a flat field is
-    # served iff its top-1 absolute cosine >= tau_thresh, else abstain. 1.0 ⇒ abstain on every flat
-    # case (today's gate); lower ⇒ more permissive. DISTINCT axis from tau_top1 (a mass floor).
+    # served iff its top-1 absolute cosine > tau_thresh, else abstain. 1.0 ⇒ abstain on every flat
+    # case by construction (a cosine ≤ 1 can never exceed it ⇒ today's gate); lower ⇒ more
+    # permissive. DISTINCT axis from tau_top1 (a mass floor).
     # PRECEDENCE: tau_top1 is unconditional — when both are set, a flat field with low top-1 mass is
     #   still suppressed by tau_top1 even if tau_thresh would serve it (the override relaxes only the
     #   entropy term). Calibrate the production value via gate_eval; it RE-ADMITS cosine-twin

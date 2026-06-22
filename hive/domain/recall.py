@@ -92,9 +92,10 @@ class NormalizedEntropyGate:
     is `softmax(beta·sim)` (new code, β in the constructor); everything downstream
     is byte-identical to the reference. `suppress` iff `(flat AND not serve_relev)`
     OR `top1 < tau_top1`, where `flat = entropy_norm > h_frac_max` and `serve_relev =
-    top1_absolute_cosine >= tau_thresh` (the flat-field relevance override — a FLAT
+    top1_absolute_cosine > tau_thresh` (the flat-field relevance override — a FLAT
     field is SERVED when its best candidate is absolutely relevant; consulted only on
-    the flat branch, inert at the `tau_thresh=1.0` default since cosines ≤ 1). `top1 <
+    the flat branch, inert at the `tau_thresh=1.0` default since a cosine ≤ 1 can never
+    exceed it ⇒ a flat field always abstains there). `top1 <
     tau_top1` is the top-1 softmax-MASS floor — an unconditional additive abstention,
     inert at the `tau_top1=0.0` default since masses ∈ [0,1] — so it suppresses even a
     flat field the relevance override would serve. Empty ⇒ `(False, 0.0, 0.0)`. Any
@@ -115,8 +116,9 @@ class NormalizedEntropyGate:
             # negative threshold is undecidable — fail fast at construction.
             raise ValueError("tau_top1 must be finite and >= 0")
         if not (math.isfinite(tau_thresh) and 0.0 < tau_thresh <= 1.0):
-            # the absolute top-1 cosine at/above which a FLAT field is served instead of
-            # abstained. 1.0 ⇒ flat always abstains (today's gate); lower ⇒ more permissive.
+            # the absolute top-1 cosine ABOVE which a FLAT field is served instead of
+            # abstained. 1.0 ⇒ flat always abstains (today's gate, by construction since a
+            # cosine ≤ 1 can never exceed it); lower ⇒ more permissive.
             # A distinct axis from tau_top1 (a softmax-MASS floor). Validated finite in (0, 1].
             raise ValueError("tau_thresh must be finite in (0, 1]")
         self.h_frac_max = float(h_frac_max)
@@ -161,11 +163,11 @@ class NormalizedEntropyGate:
             # flat-field relevance override (read AFTER _softmax_mass_from_sims, so a non-finite
             # sim has already raised ⇒ top_cos never sees one and the except's fail-closed SUPPRESS
             # still wins — Law 1 holds): a FLAT field (entropy too high) is served ONLY on positive
-            # evidence — a present, absolutely-relevant top-1 cosine ≥ tau_thresh — never on
+            # evidence — a present, absolutely-relevant top-1 cosine > tau_thresh — never on
             # absence/weakness. tau_top1 stays unconditional, so the override relaxes only entropy.
             top_cos = max(sims)
             flat = entropy_norm > self.h_frac_max
-            serve_relev = top_cos >= self.tau_thresh
+            serve_relev = top_cos > self.tau_thresh
             suppress = (flat and not serve_relev) or (top1 < self.tau_top1)
             return (suppress, entropy_norm, top_margin)
         except Exception:                     # noqa: BLE001 — fail-closed by contract

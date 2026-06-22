@@ -184,12 +184,16 @@ def test_non_flat_field_unaffected_by_tau_thresh():
         assert NormalizedEntropyGate(0.5, 16.0, 0.0, tau).evaluate(peaked) == base, tau
 
 
-def test_tau_thresh_boundary_is_inclusive():
-    # the override is a `>=` (top cos AT the threshold serves): a flat field whose top cos is
-    # EXACTLY 0.85 serves at tau_thresh=0.85. (`>` would abstain here — the boundary mutation.)
-    flat_at = [0.85, 0.84, 0.83]            # max is exactly 0.85
-    suppress, h_norm, _ = NormalizedEntropyGate(0.5, 16.0, 0.0, 0.85).evaluate(flat_at)
-    assert h_norm > 0.5 and suppress is False
+def test_tau_thresh_boundary_is_exclusive():
+    # the override is a strict `>` (serve only ABOVE the threshold): a flat field whose top cos is
+    # EXACTLY tau_thresh abstains; lowering tau_thresh below the top cos serves. So tau_thresh=1.0
+    # abstains on every flat field BY CONSTRUCTION (a cosine ≤ 1 can never exceed it). (`>=` would
+    # serve at the boundary — the boundary mutation.)
+    flat = [0.85, 0.84, 0.83]                                          # top cos is exactly 0.85
+    at = NormalizedEntropyGate(0.5, 16.0, 0.0, 0.85).evaluate(flat)    # tau_thresh == top cos
+    below = NormalizedEntropyGate(0.5, 16.0, 0.0, 0.84).evaluate(flat)  # tau_thresh < top cos
+    assert at[1] > 0.5 and at[0] is True        # genuinely flat; boundary abstains
+    assert below[0] is False                    # threshold below the top cos: served
 
 
 def test_override_does_not_rescue_nonfinite():
