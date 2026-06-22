@@ -46,6 +46,15 @@ def test_write_description_generalizes_the_approver():
     assert "orchestrat" in desc.lower()                  # approver isn't only a human
 
 
+def test_write_description_directs_recall_before_write():
+    """The call-adjacent reminder: a write serves immediately, so recall the topic first to
+    skip a duplicate and correct in place (replaces=) instead of adding a rival to an existing
+    or conflicting memory."""
+    desc = next(t["description"] for t in TOOL_DEFINITIONS if t["name"] == "hive_write").lower()
+    assert "recall the topic" in desc       # recall-before-write at the call site
+    assert "replaces" in desc               # correct in place rather than duplicate
+
+
 def test_health_description_carries_served_reference_not_a_self_install_block():
     """Onboarding is served-only: the hive_health DESCRIPTION carries the identity/auth +
     optional-hooks reference, NOT a self-installed rules block — no marker block and no 'write

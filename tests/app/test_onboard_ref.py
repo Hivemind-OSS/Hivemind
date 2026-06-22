@@ -31,6 +31,31 @@ def test_instructions_cover_the_conflict_surface():
     assert "conflict" in low and "advisory" in low   # the two classes are named
 
 
+def test_instructions_require_recall_before_write():
+    """A write serves IMMEDIATELY at established trust, so the writer must recall the topic
+    first and act on what already exists — skip a duplicate, correct in place with replaces=,
+    or resolve a contradiction — instead of adding a rival memory to the store."""
+    s = SERVER_INSTRUCTIONS
+    low = s.lower()
+    assert "before you write" in low     # recall-before-write is mandatory, not optional
+    assert "don't duplicate" in low      # discovery 1: an already-captured fact
+    assert "replaces" in s               # discovery 2: correct in place (a required supersession)
+    assert "rival" in low                # discovery 3: don't add a rival to a conflicting memory
+
+
+def test_instructions_make_conflict_escalation_explicit():
+    """Surfacing a conflict is not enough — the agent must ALERT the human and request a
+    resolution, and for a symmetric contradiction (no obvious loser) ask which memory wins
+    before retiring; it must never retire on its own judgment (Law 3: retirement is
+    human-vouched)."""
+    s = SERVER_INSTRUCTIONS
+    low = s.lower()
+    assert "alert your human" in low          # raise it to the human, don't sit on it
+    assert "your own judgment" in low         # never retire autonomously
+    assert "symmetric contradiction" in low   # the no-obvious-loser case
+    assert "which memory wins" in low         # ask the human to pick the winner
+
+
 def test_instructions_convey_capture_default_vs_approved_fastpath_strategy():
     """Agents must learn the STRATEGY, not just the mechanism: capture is the cheap default
     (let demand/recall-counts promote), and the approved write is the immediate-serve fast-path
