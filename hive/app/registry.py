@@ -14,7 +14,7 @@ SentenceTransformer load happens when `build_embedder` actually invokes.
 from __future__ import annotations
 
 import logging
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 
 from hive.adapters import index_exhaustive
 from hive.domain.recall import NormalizedEntropyGate
@@ -26,11 +26,10 @@ _log = logging.getLogger("hive.registry")
 
 
 # ── embedder seam (C1) ────────────────────────────────────────────────────────
-def _build_local_st(cfg: "Config", *, model=None):
+def _build_local_st(cfg: "Config"):
     """Default embedder (M01 LocalSTEmbedder, Qwen3-Embedding-0.6B). Lazy: the factory import
     is torch-free and the heavy SentenceTransformer load is deferred to ``load()``/warm, so
-    Config validation + ``build_container`` construction stay light. ``model`` (a test seam) is
-    threaded through when given."""
+    Config validation + ``build_container`` construction stay light."""
     try:
         from hive.adapters.embedding.factory import build_provider  # noqa: PLC0415 — lazy
     except ImportError as exc:
@@ -39,20 +38,20 @@ def _build_local_st(cfg: "Config", *, model=None):
         raise RuntimeError(
             "embedding.provider='local_st' needs sentence-transformers; install hive[embed] "
             "(the M01 adapter), or register another provider") from exc
-    return build_provider(cfg, model=model)
+    return build_provider(cfg)
 
 
-def build_embedder(cfg: "Config", **kwargs: Any):
+def build_embedder(cfg: "Config"):
     """Construct the configured embedder; fail fast (ValueError) on any provider other than
     the one measured-right default — the likely agent typo, caught at startup not at first
-    recall. ``kwargs`` (e.g. ``model`` — a test seam) are forwarded; the composition root
-    threads them, the registry only selects + fails fast."""
+    recall. A test that needs an embedder double injects it directly at the composition root
+    (``build_container(embedder=...)``), not through here — the registry only selects + fails fast."""
     name = cfg.embedding.provider
     if name != "local_st":
         raise ValueError(
             f"unknown embedding provider {name!r}; valid=['local_st']")
     _log.info("registry.build_embedder provider=%s model=%s", name, cfg.embedding.model)
-    return _build_local_st(cfg, **kwargs)
+    return _build_local_st(cfg)
 
 
 # ── vector-index seam (C5/C3) ─────────────────────────────────────────────────
