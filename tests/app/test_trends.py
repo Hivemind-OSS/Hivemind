@@ -45,7 +45,7 @@ def _trends(s, now=NOW):
 
 
 def _episode(s, text, *, ts, approver=None, vec=U) -> int:
-    eid, _ = s.stage(text=text, weight=1.0, source="t", tags="",
+    eid, _ = s.stage(text=text, weight=1.0, tags="",
                      proposed_by="writer", ts=ts)
     assert s.complete(eid, vec, expected_version=0, trust="established",
                       approver=approver, approved_ts=ts, last_active_ts=ts)

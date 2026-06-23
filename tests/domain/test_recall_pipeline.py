@@ -144,6 +144,21 @@ def test_confident_hit_carries_kind_and_anchor():
     assert by_id[2].kind == "note" and by_id[2].anchor == ""   # fail-safe defaults
 
 
+def test_confident_hit_carries_provenance():
+    # the resolved episode's provenance (its ORIGIN) rides every served hit, parallel to
+    # kind/anchor; an unwired episode under-claims `agent_reasoned`, never `human`.
+    index, reader = FakeIndex(), FakeEpisodeReader()
+    reader.add(1, "the human-vouched memory", weight=1.0, provenance="human")
+    reader.add(2, "an agent-reasoned distractor", weight=1.0)   # default ⇒ agent_reasoned
+    index.add(1, _e(0))
+    index.add(2, _cos_vec(0.1))
+    r = _pipe(index=index, reader=reader, query_vec=_e(0)).recall("q", agent_id="A")
+    assert r.state == CONFIDENT
+    by_id = {h.episode_id: h for h in r.hits}
+    assert by_id[1].provenance == "human"
+    assert by_id[2].provenance == "agent_reasoned"             # fail-safe default
+
+
 def test_recall_at_5_over_held_out_pairs_meets_floor():
     # 6 planted golds; each query points exactly at one gold ⟹ that gold is top (cos 1).
     index, reader = FakeIndex(), FakeEpisodeReader()
@@ -344,7 +359,7 @@ def _S(eid, sim):
 
 def _ep(eid, vec, *, trust="established", polarity="neutral", ts=0, text=None):
     text = text or f"memory-{eid}"
-    return Episode(id=eid, tenant_id="t", text=text, weight=1.0, ts=ts, source="",
+    return Episode(id=eid, tenant_id="t", text=text, weight=1.0, ts=ts,
                    tags="", content_hash=content_hash(text), status="approved",
                    proposed_by="x", value=vec, trust=trust, polarity=polarity)
 

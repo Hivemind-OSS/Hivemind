@@ -162,7 +162,7 @@ def test_spec_from_store_reads_real_rows():
     from hive.adapters.store_sqlite import SqliteEpisodeStore
     s = SqliteEpisodeStore(connect(":memory:"), index=ExhaustiveCosineIndex(D))
     vec = np.eye(D, dtype=np.float32)[0]
-    eid, _ = s.stage(text="row", weight=1.0, source="t", tags="",
+    eid, _ = s.stage(text="row", weight=1.0, tags="",
                      proposed_by="w", ts=10)
     s.complete(eid, vec, expected_version=0, trust="established",
                approver="h", approved_ts=10, last_active_ts=10)

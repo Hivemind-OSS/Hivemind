@@ -13,7 +13,7 @@ from hive.domain.models import Episode, RecallHit, content_hash
 
 
 def _ep(**kw):
-    base = dict(id=1, tenant_id="t", text="hello", weight=1.0, ts=0, source="s", tags="",
+    base = dict(id=1, tenant_id="t", text="hello", weight=1.0, ts=0, tags="",
                 content_hash=content_hash("hello"), status="pending", proposed_by="a")
     base.update(kw)
     return Episode(**base)
@@ -77,3 +77,29 @@ def test_recall_hit_carries_kind_and_anchor():
     h = RecallHit(episode_id=1, text="t", sim=0.9, kind="bug", anchor="x.py")
     assert h.kind == "bug"
     assert h.anchor == "x.py"
+
+
+# ── Episode.provenance: the ORIGIN label, validated like kind (provenance.py) ──
+def test_episode_defaults_provenance_agent_reasoned():
+    # the fail-safe under-claiming default: a forgotten origin never over-claims `human`
+    assert _ep().provenance == "agent_reasoned"
+
+
+def test_episode_accepts_every_registered_provenance():
+    for p in ("agent_reasoned", "human", "artifact_ingested"):
+        assert _ep(provenance=p).provenance == p
+
+
+def test_episode_rejects_an_unknown_provenance():
+    with pytest.raises(ValueError):
+        _ep(provenance="self_evident")            # out-of-enum ⇒ unconstructable
+
+
+# ── RecallHit.provenance: defaulted fail-safe like kind (no __post_init__) ──
+def test_recall_hit_defaults_provenance_agent_reasoned():
+    assert RecallHit(episode_id=1, text="t", sim=0.9).provenance == "agent_reasoned"
+
+
+def test_recall_hit_carries_provenance():
+    h = RecallHit(episode_id=1, text="t", sim=0.9, provenance="human")
+    assert h.provenance == "human"

@@ -68,7 +68,7 @@ def test_recall_filters_to_approved_only():
     # a genuine PENDING row via the store substrate (the tool path always approves now);
     # the belt must still drop a non-approved candidate the stub recall surfaces.
     eid, _ = server.store.stage(text="staged but NOT approved", weight=1.0,
-                                source="", tags="", proposed_by="x")
+                                tags="", proposed_by="x")
     server.recall = _StubRecall(_confident(eid, "staged but NOT approved"))
     env = content(tool_call(server, "hive_recall", {"query": "q"}))
     assert env["reference_context"] == []                  # pending row filtered out

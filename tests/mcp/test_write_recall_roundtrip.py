@@ -59,6 +59,40 @@ def test_recall_hit_defaults_polarity_neutral():
     assert hit["polarity"] == "neutral"
 
 
+# ── provenance: the ORIGIN is transport-set by the door, never a caller field ──
+def test_write_stamps_human_provenance():
+    # hive_write is the human-vouched door (carries approved_by) ⇒ origin = human.
+    server, _ = build_real_server()
+    w = write_text(server, "a human-authored convention", approved_by="alice")
+    assert server.store.get_episode(w["id"]).provenance == "human"
+
+
+def test_capture_stamps_agent_reasoned_provenance():
+    # hive_capture is the autonomous path ⇒ origin = agent_reasoned (the fail-safe
+    # under-claim — an agent reasoned the content, no human vouched it).
+    server, _ = build_real_server()
+    env = content(tool_call(server, "hive_capture", {"text": "an agent-reasoned insight"}))
+    assert server.store.get_episode(env["id"]).provenance == "agent_reasoned"
+
+
+def test_caller_cannot_assert_provenance_on_write():
+    # INV-2: provenance is NOT a caller field. A `provenance` key in the arguments dict
+    # is ignored — the door's transport-set `human` stands, never the caller's claim.
+    server, _ = build_real_server()
+    w = write_text(server, "caller tries to forge origin", approved_by="alice",
+                   provenance="artifact_ingested")
+    assert server.store.get_episode(w["id"]).provenance == "human"   # caller value ignored
+
+
+def test_caller_cannot_assert_provenance_on_capture():
+    server, _ = build_real_server()
+    env = content(tool_call(server, "hive_capture",
+                            {"text": "caller forges capture origin",
+                             "provenance": "human"}))
+    # the caller's `human` is ignored — capture's transport-set agent_reasoned stands
+    assert server.store.get_episode(env["id"]).provenance == "agent_reasoned"
+
+
 # ── approve-failure relay: a store CAS failure is a tool error, never a phantom write ──
 def test_store_approve_failure_surfaces_as_tool_error_and_leaves_no_row():
     server, _ = build_real_server()

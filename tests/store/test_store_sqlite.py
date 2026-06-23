@@ -25,7 +25,7 @@ def _store():
 
 
 def _ep(**kw):
-    base = dict(id=1, tenant_id="t", text="hello", weight=1.0, ts=0, source="s", tags="",
+    base = dict(id=1, tenant_id="t", text="hello", weight=1.0, ts=0, tags="",
                 content_hash=content_hash("hello"), status="pending", proposed_by="a")
     base.update(kw)
     return Episode(**base)
@@ -56,7 +56,7 @@ def test_episode_rejects_approver_status_mismatch():
 # ── stage / approve / reject ──────────────────────────────────────────────────
 def test_stage_never_indexes():
     s = _store()
-    eid, deduped = s.stage(text="db pool exhausted", weight=1.0, source="mark", tags="", proposed_by="a")
+    eid, deduped = s.stage(text="db pool exhausted", weight=1.0, tags="", proposed_by="a")
     assert not deduped
     ep = s.get_episode(eid)
     assert ep.status == "pending" and ep.version == 0 and ep.value is None
@@ -68,14 +68,14 @@ def test_stage_never_indexes():
 
 def test_stage_dedup_same_text():
     s = _store()
-    a, d1 = s.stage(text="same", weight=1.0, source="m", tags="", proposed_by="a")
-    b, d2 = s.stage(text="same", weight=2.0, source="m", tags="", proposed_by="a")
+    a, d1 = s.stage(text="same", weight=1.0, tags="", proposed_by="a")
+    b, d2 = s.stage(text="same", weight=2.0, tags="", proposed_by="a")
     assert a == b and d2 is True and s.counts()[1] == 1   # one pending row ⇒ dedup, no 2nd insert
 
 
 def test_approve_flips_and_indexes():
     s = _store()
-    eid, _ = s.stage(text="x", weight=1.0, source="m", tags="", proposed_by="a")
+    eid, _ = s.stage(text="x", weight=1.0, tags="", proposed_by="a")
     assert s.approve(eid, "human", _unit(1, 0, 0, 0), expected_version=0) is True
     ep = s.get_episode(eid)
     assert ep.status == "approved" and ep.approved_by == "human" and ep.value is not None
@@ -84,7 +84,7 @@ def test_approve_flips_and_indexes():
 
 def test_approve_is_idempotent():
     s = _store()
-    eid, _ = s.stage(text="x", weight=1.0, source="m", tags="", proposed_by="a")
+    eid, _ = s.stage(text="x", weight=1.0, tags="", proposed_by="a")
     s.approve(eid, "human", _unit(1, 0, 0, 0), expected_version=0)
     assert s.approve(eid, "human2", _unit(0, 1, 0, 0), expected_version=0) is True  # no-op
     assert s.get_episode(eid).approved_by == "human"             # unchanged
@@ -92,14 +92,14 @@ def test_approve_is_idempotent():
 
 def test_cas_blocks_stale_approve():
     s = _store()
-    eid, _ = s.stage(text="x", weight=1.0, source="m", tags="", proposed_by="a")
+    eid, _ = s.stage(text="x", weight=1.0, tags="", proposed_by="a")
     assert s.approve(eid, "human", _unit(1, 0, 0, 0), expected_version=99) is False  # stale
     assert s.get_episode(eid).status == "pending"               # no flip
 
 
 def test_reject_drops_and_never_indexes():
     s = _store()
-    eid, _ = s.stage(text="x", weight=1.0, source="m", tags="", proposed_by="a")
+    eid, _ = s.stage(text="x", weight=1.0, tags="", proposed_by="a")
     s.reject(eid)
     assert s.get_episode(eid) is None and s.index.size() == 0
 
@@ -107,8 +107,8 @@ def test_reject_drops_and_never_indexes():
 # ── approved-only recall (two fail-closed defenses) ───────────────────────────
 def test_pending_never_in_candidates_single_predicate():
     s = _store()
-    a, _ = s.stage(text="approved one", weight=1.0, source="m", tags="", proposed_by="a")
-    p, _ = s.stage(text="pending one", weight=1.0, source="m", tags="", proposed_by="a")
+    a, _ = s.stage(text="approved one", weight=1.0, tags="", proposed_by="a")
+    p, _ = s.stage(text="pending one", weight=1.0, tags="", proposed_by="a")
     s.approve(a, "human", _unit(1, 0, 0, 0), expected_version=0)
     ids = {eid for eid, _ in s.scan_approved()}
     assert ids == {a} and p not in ids
@@ -120,15 +120,15 @@ def test_pending_never_in_candidates_single_predicate():
 
 def test_pending_value_is_null():
     s = _store()
-    eid, _ = s.stage(text="x", weight=1.0, source="m", tags="", proposed_by="a")
+    eid, _ = s.stage(text="x", weight=1.0, tags="", proposed_by="a")
     assert s.get_episode(eid).value is None           # value computed at approve, not stage
 
 
 # ── boot-rebuild crash recovery [B3] ──────────────────────────────────────────
 def test_rebuild_recovers_after_crash_between_commit_and_add():
     s = _store()
-    e1, _ = s.stage(text="one", weight=1.0, source="m", tags="", proposed_by="a")
-    e2, _ = s.stage(text="two", weight=1.0, source="m", tags="", proposed_by="a")
+    e1, _ = s.stage(text="one", weight=1.0, tags="", proposed_by="a")
+    e2, _ = s.stage(text="two", weight=1.0, tags="", proposed_by="a")
     s.approve(e1, "human", _unit(1, 0, 0, 0), expected_version=0)
     # simulate a crash: the index add for e2 raises AFTER the row is durably approved
     orig = s.index.sync_approved
@@ -166,15 +166,37 @@ def test_polarity_check_rejects_out_of_enum_value():
 
 def test_stage_roundtrips_polarity_default_neutral():
     s = _store()
-    eid, _ = s.stage(text="default polarity", weight=1.0, source="m", tags="", proposed_by="a")
+    eid, _ = s.stage(text="default polarity", weight=1.0, tags="", proposed_by="a")
     assert s.get_episode(eid).polarity == "neutral"     # fail-safe default
 
 
 def test_stage_roundtrips_explicit_dont():
     s = _store()
-    eid, _ = s.stage(text="never run rm -rf on the volume", weight=1.0, source="m",
-                     tags="", proposed_by="a", polarity="dont")
+    eid, _ = s.stage(text="never run rm -rf on the volume", weight=1.0, tags="", proposed_by="a", polarity="dont")
     assert s.get_episode(eid).polarity == "dont"        # the prohibition survives the round-trip
+
+
+def test_stage_roundtrips_provenance_default_agent_reasoned():
+    s = _store()
+    eid, _ = s.stage(text="default provenance", weight=1.0, tags="", proposed_by="a")
+    assert s.get_episode(eid).provenance == "agent_reasoned"   # fail-safe default
+
+
+def test_stage_roundtrips_explicit_human_provenance():
+    s = _store()
+    eid, _ = s.stage(text="a human authored this", weight=1.0, tags="",
+                     proposed_by="a", provenance="human")
+    assert s.get_episode(eid).provenance == "human"           # origin survives the round-trip
+
+
+def test_ddl_check_rejects_a_bad_provenance():
+    # the DDL CHECK is the last line of defense — a direct INSERT of an off-enum
+    # provenance is refused at the database even with no domain guard above it.
+    s = _store()
+    with pytest.raises(Exception):
+        s.conn.execute(
+            "INSERT INTO episodes(tenant_id, text, weight, ts, content_hash, status, "
+            "version, provenance) VALUES('t','x',1.0,0,'h','pending',0,'overheard')")
 
 
 def test_legacy_store_without_polarity_is_refused_at_open():

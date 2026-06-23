@@ -50,6 +50,26 @@ CREATE TABLE IF NOT EXISTS episodes(
 """
 
 
+# The schema BEFORE the provenance column — has every lifecycle + kind/anchor column
+# but lacks provenance; used ONLY to prove a store predating provenance is refused.
+_NO_PROVENANCE_EPISODES_SCHEMA = """
+CREATE TABLE IF NOT EXISTS episodes(
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  tenant_id TEXT NOT NULL, text TEXT NOT NULL, value BLOB,
+  weight REAL NOT NULL, ts INTEGER NOT NULL, source TEXT, tags TEXT,
+  content_hash TEXT NOT NULL,
+  status TEXT NOT NULL CHECK(status IN ('pending','approved')),
+  proposed_by TEXT, approved_by TEXT, approved_ts INTEGER,
+  version INTEGER NOT NULL DEFAULT 0,
+  trust TEXT NOT NULL DEFAULT 'quarantined',
+  superseded_by INTEGER,
+  last_active_ts INTEGER NOT NULL DEFAULT 0,
+  polarity TEXT NOT NULL DEFAULT 'neutral' CHECK(polarity IN ('do','dont','neutral')),
+  kind TEXT NOT NULL DEFAULT 'note',
+  anchor TEXT NOT NULL DEFAULT '');
+"""
+
+
 def _cols(conn, table: str) -> dict[str, dict]:
     return {r["name"]: dict(r) for r in conn.execute(f"PRAGMA table_info({table})")}
 
@@ -124,19 +144,41 @@ def test_store_missing_kind_refused():
         SqliteEpisodeStore(conn)
 
 
+def test_provenance_column_present_and_constrained():
+    conn = connect(":memory:")
+    SqliteEpisodeStore(conn)
+    ep_cols = _cols(conn, "episodes")
+    assert "provenance" in ep_cols
+    assert ep_cols["provenance"]["dflt_value"] == "'agent_reasoned'"  # fail-safe under-claim
+    assert ep_cols["provenance"]["notnull"] == 1
+    # provenance is CHECK-constrained to the registry vocabulary — a bad value is refused at the DDL
+    with pytest.raises(Exception):
+        conn.execute("INSERT INTO episodes(tenant_id, text, weight, ts, content_hash, "
+                     "status, provenance) VALUES('t','x',1.0,0,'h','pending','rumored')")
+
+
+def test_store_missing_provenance_refused():
+    # A store with every lifecycle + kind/anchor column but no provenance predates the
+    # current schema: the CREATE IF NOT EXISTS would no-op and the store would limp to a
+    # mid-read "no such column" crash. The predates guard must refuse it loudly.
+    conn = connect(":memory:")
+    conn.executescript(_NO_PROVENANCE_EPISODES_SCHEMA)
+    with pytest.raises(RuntimeError, match="provenance"):
+        SqliteEpisodeStore(conn)
+
+
 def test_default_insert_lands_quarantined():
     # stage() names no trust ⇒ the column default applies: a forgotten future
     # write-site fails SAFE (lands unserved, never over-served).
     conn = connect(":memory:")
     s = SqliteEpisodeStore(conn)
-    eid, _ = s.stage(text="x", weight=1.0, source="m", tags="", proposed_by="a")
+    eid, _ = s.stage(text="x", weight=1.0, tags="", proposed_by="a")
     assert s.get_episode(eid).trust == QUARANTINED
 
 
 # ── Episode invariants v2 ──────────────────────────────────────────────────────
 def _ep(**kw) -> Episode:
-    base = dict(id=1, tenant_id="t", text="hello", weight=1.0, ts=0, source="s",
-                tags="", content_hash=content_hash("hello"), status="pending",
+    base = dict(id=1, tenant_id="t", text="hello", weight=1.0, ts=0, tags="", content_hash=content_hash("hello"), status="pending",
                 proposed_by="a")
     base.update(kw)
     return Episode(**base)

@@ -14,6 +14,7 @@ import numpy as np
 
 from hive.domain.kinds import DEFAULT_KIND, KIND_NAMES
 from hive.domain.lifecycle import ESTABLISHED, PROVISIONAL, QUARANTINED, TRUST_STATES
+from hive.domain.provenance import DEFAULT_PROVENANCE, PROVENANCE_NAMES
 
 
 def content_hash(text: str) -> str:
@@ -56,8 +57,9 @@ class RecallHit:
     content and order coexisting versions (immutable rows + dedup mean an "update"
     always coexists as a second row). ``polarity`` (do|dont|neutral) is a third
     carried-not-interpreted label so a recalled prohibition is never pattern-matched
-    as a ``do``. Defaults are FAIL-SAFE: a construction site that forgets to wire
-    them under-claims (quarantined/epoch-0/neutral), never over-claims."""
+    as a ``do``. ``provenance`` carries the memory's ORIGIN (provenance.py), orthogonal
+    to trust. Defaults are FAIL-SAFE: a construction site that forgets to wire them
+    under-claims (quarantined/epoch-0/neutral/agent_reasoned), never over-claims."""
     episode_id: int
     text: str
     sim: float
@@ -66,6 +68,7 @@ class RecallHit:
     polarity: str = "neutral"
     kind: str = DEFAULT_KIND
     anchor: str = ""
+    provenance: str = DEFAULT_PROVENANCE
 
 
 @dataclass(frozen=True, slots=True)
@@ -127,7 +130,6 @@ class Episode:
     text: str
     weight: float
     ts: int
-    source: str
     tags: str
     content_hash: str
     status: str                        # 'pending' | 'approved'  (materialization)
@@ -142,6 +144,7 @@ class Episode:
     polarity: str = "neutral"         # do|dont|neutral — carried-not-interpreted consumer label
     kind: str = DEFAULT_KIND          # category label (kinds.py); carried-not-interpreted, never embedded
     anchor: str = ""                  # the WHERE: file/module/symbol; carried, never embedded
+    provenance: str = DEFAULT_PROVENANCE  # the ORIGIN (provenance.py); orthogonal to trust, never embedded
 
     def __post_init__(self) -> None:
         if self.content_hash != content_hash(self.text):
@@ -150,6 +153,8 @@ class Episode:
             raise ValueError(f"bad polarity {self.polarity!r}")
         if self.kind not in KIND_NAMES:
             raise ValueError(f"bad kind {self.kind!r}")
+        if self.provenance not in PROVENANCE_NAMES:
+            raise ValueError(f"bad provenance {self.provenance!r}")
         if self.status not in ("pending", "approved"):
             raise ValueError(f"bad status {self.status!r}")
         if self.trust not in TRUST_STATES:

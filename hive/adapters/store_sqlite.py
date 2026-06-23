@@ -21,6 +21,7 @@ from hive.domain.lifecycle import (
     MissRow, decayed, is_servable,
 )
 from hive.domain.models import Episode, content_hash
+from hive.domain.provenance import DEFAULT_PROVENANCE, PROVENANCE_NAMES
 
 _log = logging.getLogger("hive.store")
 
@@ -41,6 +42,12 @@ _FAR_FUTURE = 1 << 62
 _KIND_COLUMN_DDL = ("kind TEXT NOT NULL DEFAULT '%s' CHECK(kind IN (%s))" % (
     DEFAULT_KIND, ", ".join(f"'{k}'" for k in sorted(KIND_NAMES))))
 
+# The provenance column DDL is built from the registry the same way (sorted for a stable
+# CHECK) so the stored origin vocabulary cannot drift from hive.domain.provenance.
+_PROVENANCE_COLUMN_DDL = (
+    "provenance TEXT NOT NULL DEFAULT '%s' CHECK(provenance IN (%s))" % (
+        DEFAULT_PROVENANCE, ", ".join(f"'{p}'" for p in sorted(PROVENANCE_NAMES))))
+
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS blobs(
   content_hash TEXT PRIMARY KEY, text TEXT NOT NULL);
@@ -48,7 +55,7 @@ CREATE TABLE IF NOT EXISTS episodes(
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   tenant_id TEXT NOT NULL,   -- constant label, never a query filter (single-tenant)
   text TEXT NOT NULL, value BLOB,
-  weight REAL NOT NULL, ts INTEGER NOT NULL, source TEXT, tags TEXT,
+  weight REAL NOT NULL, ts INTEGER NOT NULL, __PROVENANCE_COLUMN__, tags TEXT,
   content_hash TEXT NOT NULL,
   status TEXT NOT NULL CHECK(status IN ('pending','approved')),
   proposed_by TEXT, approved_by TEXT, approved_ts INTEGER,
@@ -91,7 +98,8 @@ CREATE TABLE IF NOT EXISTS conflict_flags(
   status TEXT NOT NULL DEFAULT 'open' CHECK(status IN ('open','dismissed')));
 CREATE UNIQUE INDEX IF NOT EXISTS idx_conflict_flags_pair
   ON conflict_flags(a_id, b_id, kind);
-""".replace("__KIND_COLUMN__", _KIND_COLUMN_DDL)
+""".replace("__KIND_COLUMN__", _KIND_COLUMN_DDL).replace(
+    "__PROVENANCE_COLUMN__", _PROVENANCE_COLUMN_DDL)
 
 
 class SqliteEpisodeStore:
@@ -105,7 +113,8 @@ class SqliteEpisodeStore:
         # clear message. An absent table is fine — the script creates the v2 shape.
         cols = {r["name"] for r in conn.execute("PRAGMA table_info(episodes)")}
         missing = next(
-            (c for c in ("trust", "polarity", "kind", "anchor") if c not in cols), None)
+            (c for c in ("trust", "polarity", "kind", "anchor", "provenance")
+             if c not in cols), None)
         if cols and missing:
             _log.error("store.schema_predates_lifecycle missing_column=%s", missing)
             raise RuntimeError(
@@ -114,18 +123,20 @@ class SqliteEpisodeStore:
         conn.executescript(_SCHEMA)
 
     # ── episodes / blob group (admission CAS state machine) ───────────────────
-    def stage(self, *, text: str, weight: float, source: str, tags: str,
+    def stage(self, *, text: str, weight: float, tags: str,
               proposed_by: str, tenant_id: str = "default", ts: int = 0,
+              provenance: str = DEFAULT_PROVENANCE,
               polarity: str = "neutral", kind: str = DEFAULT_KIND,
               anchor: str = "") -> tuple[int, bool]:
         """Insert a PENDING row (value NULL — not recallable, not indexed) + its blob.
         Dedup by content_hash: a repeat of identical text returns the existing id,
-        deduped=True, no second row. ``polarity`` (do|dont|neutral), ``kind`` (registry
-        vocabulary), and ``anchor`` (the WHERE — file/module/symbol) are the
-        carried-not-interpreted consumer labels, never embedded; they default fail-safe
-        (neutral / note / empty). ``kind`` is CHECK-constrained by the DDL; ``anchor`` is
-        free text. On dedup the existing row's labels are preserved (identity is the text
-        hash alone, never the labels)."""
+        deduped=True, no second row. ``provenance`` (the ORIGIN — provenance.py),
+        ``polarity`` (do|dont|neutral), ``kind`` (registry vocabulary), and ``anchor``
+        (the WHERE — file/module/symbol) are the carried-not-interpreted consumer labels,
+        never embedded; they default fail-safe (agent_reasoned / neutral / note / empty).
+        ``provenance`` and ``kind`` are CHECK-constrained by the DDL; ``anchor`` is free
+        text. On dedup the existing row's labels are preserved (identity is the text hash
+        alone, never the labels)."""
         h = content_hash(text)
         with tx(self.conn):
             existing = self.conn.execute(
@@ -135,10 +146,10 @@ class SqliteEpisodeStore:
             self.conn.execute(
                 "INSERT OR IGNORE INTO blobs(content_hash, text) VALUES(?,?)", (h, text))
             cur = self.conn.execute(
-                "INSERT INTO episodes(tenant_id, text, value, weight, ts, source, tags, "
+                "INSERT INTO episodes(tenant_id, text, value, weight, ts, provenance, tags, "
                 "content_hash, status, proposed_by, version, polarity, kind, anchor) "
                 "VALUES(?,?,NULL,?,?,?,?,?,'pending',?,0,?,?,?)",
-                (tenant_id, text, weight, ts, source, tags, h, proposed_by, polarity,
+                (tenant_id, text, weight, ts, provenance, tags, h, proposed_by, polarity,
                  kind, anchor))
             return int(cur.lastrowid), False
 
@@ -254,12 +265,12 @@ class SqliteEpisodeStore:
         value = np.frombuffer(r["value"], dtype=np.float32).copy() if r["value"] is not None else None
         return Episode(
             id=r["id"], tenant_id=r["tenant_id"], text=r["text"], value=value,
-            weight=r["weight"], ts=r["ts"], source=r["source"] or "", tags=r["tags"] or "",
+            weight=r["weight"], ts=r["ts"], tags=r["tags"] or "",
             content_hash=r["content_hash"], status=r["status"], proposed_by=r["proposed_by"] or "",
             approved_by=r["approved_by"], approved_ts=r["approved_ts"], version=r["version"],
             trust=r["trust"], superseded_by=r["superseded_by"],
             last_active_ts=r["last_active_ts"], polarity=r["polarity"],
-            kind=r["kind"], anchor=r["anchor"])
+            kind=r["kind"], anchor=r["anchor"], provenance=r["provenance"])
 
     def counts(self) -> tuple[int, int]:
         """(n_approved, n_pending) for hive_health — one grouped scan.  // O(N) time."""

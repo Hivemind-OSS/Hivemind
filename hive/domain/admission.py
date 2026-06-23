@@ -133,6 +133,12 @@ class AdmissionService:
         SecretRefused (nothing written); CLEAN/REDACT stage → embed → approve and return
         an approved, recallable memory (trust='established').
 
+        Provenance is TRANSPORT-SET to ``human`` here (a human authored/vouched the
+        text) — it is the memory's ORIGIN, never a caller field (INV-2: no
+        caller-asserted provenance). The dedup-onto-quarantined establishment path does
+        NOT rewrite provenance: the human vouch is recorded by approved_by/trust, not by
+        relabelling origin.
+
         ``replaces`` (human-vouched supersession): the named target is retired in
         favor of this write — validated to EXIST before anything is staged (an
         unknown target fails the WHOLE call: no stored-but-not-retired partial);
@@ -151,9 +157,9 @@ class AdmissionService:
         # stage the (post-redaction) row + blob; dedup by content_hash.
         try:
             eid, deduped = self._store.stage(
-                text=staged_text, weight=weight, source="", tags="",
-                proposed_by=proposed_by, ts=self._now(), polarity=polarity,
-                kind=kind, anchor=anchor)
+                text=staged_text, weight=weight, tags="",
+                proposed_by=proposed_by, ts=self._now(), provenance="human",
+                polarity=polarity, kind=kind, anchor=anchor)
         except Exception:
             _log.error("admission.stage_fail", extra={
                 "event": "admission.stage_fail", "proposed_by": proposed_by,
@@ -260,7 +266,9 @@ class AdmissionService:
         quarantined capture must never gain retirement power. With autonomy
         disabled, returns ``status='disabled'`` before anything (even the scan)
         runs — the store is untouched. The secret floor is IDENTICAL to write's
-        (refuse raises, 0 rows). // O(1) DB ops + one embed + the O(Q·d) trigger."""
+        (refuse raises, 0 rows). Provenance is TRANSPORT-SET to ``agent_reasoned`` (an
+        agent reasoned the content) — never a caller field (INV-2). // O(1) DB ops + one
+        embed + the O(Q·d) trigger."""
         if not self._autonomy_enabled:
             _log.info("admission.capture_disabled", extra={
                 "event": "admission.capture_disabled", "proposed_by": proposed_by,
@@ -273,9 +281,9 @@ class AdmissionService:
 
         try:
             eid, deduped = self._store.stage(
-                text=staged_text, weight=weight, source="", tags="",
-                proposed_by=proposed_by, ts=self._now(), polarity=polarity,
-                kind=kind, anchor=anchor)
+                text=staged_text, weight=weight, tags="",
+                proposed_by=proposed_by, ts=self._now(), provenance="agent_reasoned",
+                polarity=polarity, kind=kind, anchor=anchor)
         except Exception:
             _log.error("admission.capture_stage_fail", extra={
                 "event": "admission.capture_stage_fail", "proposed_by": proposed_by,

@@ -37,7 +37,7 @@ def _store() -> SqliteEpisodeStore:
 def _materialize(s: SqliteEpisodeStore, text: str, *, trust: str, vec=None,
                  approver=None, ts: int = 10, last_active=None) -> int:
     """stage → complete with an explicit trust (the generalized admission flip)."""
-    eid, _ = s.stage(text=text, weight=1.0, source="m", tags="", proposed_by="writer", ts=ts)
+    eid, _ = s.stage(text=text, weight=1.0, tags="", proposed_by="writer", ts=ts)
     ok = s.complete(eid, vec if vec is not None else _VECS[0], expected_version=0,
                     trust=trust, approver=approver, approved_ts=ts,
                     last_active_ts=ts if last_active is None else last_active)
@@ -69,7 +69,7 @@ def test_complete_quarantined_is_unindexed():
 def test_approve_delegates_to_established():
     # approve() stays byte-compatible AND now stamps trust + liveness.
     s = _store()
-    eid, _ = s.stage(text="human approved", weight=1.0, source="m", tags="",
+    eid, _ = s.stage(text="human approved", weight=1.0, tags="",
                      proposed_by="a", ts=5)
     assert s.approve(eid, "human", _VECS[0], expected_version=0, approved_ts=7) is True
     ep = s.get_episode(eid)
@@ -80,7 +80,7 @@ def test_approve_delegates_to_established():
 
 def test_complete_rejects_unknown_trust():
     s = _store()
-    eid, _ = s.stage(text="x", weight=1.0, source="m", tags="", proposed_by="a")
+    eid, _ = s.stage(text="x", weight=1.0, tags="", proposed_by="a")
     with pytest.raises(ValueError):
         s.complete(eid, _VECS[0], expected_version=0, trust="bogus")
 
@@ -122,7 +122,7 @@ def test_set_trust_without_approver_leaves_approved_by_untouched():
 def test_set_trust_guards():
     s = _store()
     assert s.set_trust(404, PROVISIONAL, now=1) is False          # unknown row
-    pend, _ = s.stage(text="pending", weight=1.0, source="m", tags="", proposed_by="a")
+    pend, _ = s.stage(text="pending", weight=1.0, tags="", proposed_by="a")
     assert s.set_trust(pend, PROVISIONAL, now=1) is False         # not materialized
     eid = _materialize(s, "ok", trust=QUARANTINED)
     with pytest.raises(ValueError):
@@ -179,7 +179,7 @@ def test_scan_servable_labeled_is_exactly_the_servable_set():
 
 def test_scan_servable_labeled_carries_polarity_anchor_ts():
     s = _store()
-    eid, _ = s.stage(text="dont run as root", weight=1.0, source="m", tags="",
+    eid, _ = s.stage(text="dont run as root", weight=1.0, tags="",
                      proposed_by="w", ts=7, polarity="dont", anchor="Dockerfile")
     s.approve(eid, "human", _VECS[0], expected_version=0, approved_ts=7)
     (rid, _val, pol, anc, ts, trust), = s.scan_servable_labeled(
@@ -336,7 +336,7 @@ def test_trust_counts_all_states_present():
 # ── kind / anchor carried labels: stage → get_episode round-trip ───────────────
 def test_stage_roundtrips_kind_and_anchor():
     s = _store()
-    eid, _ = s.stage(text="a known bug", weight=1.0, source="m", tags="",
+    eid, _ = s.stage(text="a known bug", weight=1.0, tags="",
                      proposed_by="w", kind="bug", anchor="hive/domain/recall.py")
     ep = s.get_episode(eid)
     assert ep.kind == "bug" and ep.anchor == "hive/domain/recall.py"
@@ -345,6 +345,6 @@ def test_stage_roundtrips_kind_and_anchor():
 def test_stage_defaults_kind_note_and_anchor_empty():
     # a write-site that names no kind/anchor under-claims (generic note, no WHERE)
     s = _store()
-    eid, _ = s.stage(text="unlabelled", weight=1.0, source="m", tags="", proposed_by="w")
+    eid, _ = s.stage(text="unlabelled", weight=1.0, tags="", proposed_by="w")
     ep = s.get_episode(eid)
     assert ep.kind == "note" and ep.anchor == ""

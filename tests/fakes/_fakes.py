@@ -10,6 +10,7 @@ import numpy as np
 
 from hive.domain.kinds import DEFAULT_KIND
 from hive.domain.models import Episode, content_hash
+from hive.domain.provenance import DEFAULT_PROVENANCE
 from hive.domain.secret_scan import REFUSE, ScanVerdict
 from hive.domain.secret_scan import scan as _scan
 
@@ -161,7 +162,8 @@ def make_episode(episode_id: int, text: str, weight: float = 1.0,
                  *, status: str = "approved", trust: Optional[str] = None,
                  last_active_ts: int = 0, ts: int = 0,
                  value: Optional[np.ndarray] = None,
-                 kind: str = DEFAULT_KIND, anchor: str = "") -> Episode:
+                 kind: str = DEFAULT_KIND, anchor: str = "",
+                 provenance: str = DEFAULT_PROVENANCE) -> Episode:
     """A valid (self-asserting) Episode for resolve-seam tests — content_hash binds
     text. An approved episode defaults to trust='established' (mirroring the real
     store, where the human-vouched flip stamps established); pass ``trust`` to model
@@ -173,12 +175,12 @@ def make_episode(episode_id: int, text: str, weight: float = 1.0,
         trust = "established" if approved else "quarantined"
     return Episode(
         id=int(episode_id), tenant_id="default", text=text, weight=float(weight),
-        ts=int(ts), source="test", tags="", content_hash=content_hash(text),
+        ts=int(ts), tags="", content_hash=content_hash(text),
         status=status, proposed_by="tester",
         approved_by="approver" if approved else None,
         approved_ts=0 if approved else None, version=0,
         trust=trust, last_active_ts=int(last_active_ts),
-        kind=kind, anchor=anchor,
+        kind=kind, anchor=anchor, provenance=provenance,
         value=None if value is None else np.asarray(value, dtype=np.float32),
     )
 
