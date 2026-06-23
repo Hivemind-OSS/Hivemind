@@ -14,13 +14,15 @@ the resolution rail stays the human ``hive_supersede`` / ``hive_write(replaces=)
 (Law 3, THEORY §10 O7). It mirrors ``conflict.py``: a pure, total detector emitting a frozen,
 self-asserting note carrying ids + numbers ONLY (Law 4 — no memory text).
 
-``martingale_warning`` is the kept-forward-compatible clause: a provisional that is BOTH thin
-AND has no settled win is "popular but uncorroborated" — the sharper signal. There is no
-per-episode settled-win/credit signal in this build (the outcome loop was deliberately cut),
-so the MCP report passes ``has_settled_win=False`` for every provisional; the worklist runs
-ONLY on provisionals (not-yet-corroborated by construction), for which a settled win is
-unavailable anyway, so ``martingale_warning`` reduces to ``thin`` there. The detector keeps the
-clause structural so a future settled-win source flips it on with no detector change.
+``martingale_warning`` is the sharpened clause: a provisional that is BOTH thin AND has no
+settled win is "popular but uncorroborated" — the sharper signal. The settled-win source is
+``hive_outcome``: an ``outcome_helped`` audit on a provisional (read via the ``SettledWinReader``
+port) marks ``has_settled_win=True``, so a thin-but-corroborated promotion drops to
+``martingale_warning=False`` while a thin-uncorroborated one stays True. This is a TRUSTED-SOLO
+self-report (a hostile fleet could self-report ``helped`` to suppress its own flag; moot under
+the trusted-solo stance, and the worklist is detection-only); the fleet-safe verified-artifact
++ decorrelated-identity form stays deferred. The clause is structural either way — the detector
+never changes, only the wired source does.
 
 PURE: stdlib ``math`` only. The purity gate (tests/test_purity.py) forbids
 sqlite3 | torch | subprocess | os | git | time imports anywhere in hive/domain/. The detector
@@ -40,9 +42,10 @@ _log = logging.getLogger("hive.consensus")
 class SuspectConsensusItem:
     """One provisional's suspect-consensus projection: the stamped demand-independence
     (``rho_bar``, ``n_eff``, ``k``) read from the newest ``promote`` audit, plus
-    ``has_settled_win`` (forward-compat — always False from the current report) and the
-    ``anchor`` (carried for the app layer only; the NOTE never echoes it — ids + numbers,
-    Law 4). Built by the app layer from ``promotion_provenance`` + ``scan_servable_labeled``."""
+    ``has_settled_win`` (True iff an ``outcome_helped`` audit corroborates it, via
+    ``SettledWinReader``) and the ``anchor`` (carried for the app layer only; the NOTE never
+    echoes it — ids + numbers, Law 4). Built by the app layer from ``promotion_provenance`` +
+    ``settled_wins`` + ``scan_servable_labeled``."""
     episode_id: int
     rho_bar: float
     n_eff: float

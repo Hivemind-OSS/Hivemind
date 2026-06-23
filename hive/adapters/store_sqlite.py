@@ -501,6 +501,20 @@ class SqliteEpisodeStore:
                 continue                                  # malformed ⇒ skip, never raise
         return out
 
+    def settled_wins(self, episode_ids: Sequence[int]) -> set[int]:
+        """SettledWinReader: the subset of ``episode_ids`` carrying >= 1 ``outcome_helped``
+        evidence_events audit (a self-reported settled win logged via ``hive_outcome``).
+        Read-only, no DDL. Powers the suspect-consensus martingale clause (thin AND no settled
+        win = the sharper 'popular-but-uncorroborated' signal). An id with no helped event is
+        simply ABSENT from the set (under-claim). Empty input → empty set. // O(rows)."""
+        ids = [int(e) for e in episode_ids]
+        if not ids:
+            return set()
+        placeholders = ",".join("?" for _ in ids)
+        return {int(r["episode_id"]) for r in self.conn.execute(
+            f"SELECT DISTINCT episode_id FROM evidence_events "
+            f"WHERE kind='outcome_helped' AND episode_id IN ({placeholders})", ids)}
+
     def trust_counts(self) -> dict[str, int]:
         """Per-trust-state row counts for hive_health — ALL four states present
         (a zero is signal: quarantine pile-up must be visible, never silent)."""

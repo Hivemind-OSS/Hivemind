@@ -87,6 +87,17 @@ class PromotionProvenanceReader(Protocol):
 
 
 @runtime_checkable
+class SettledWinReader(Protocol):
+    """The settled-win read the suspect-consensus martingale clause drives: for the requested
+    episode ids, the subset carrying >= 1 ``outcome_helped`` evidence audit (a self-reported
+    settled win logged via ``hive_outcome``). A SEPARATE narrow port (not a widening of an
+    existing one) so existing narrow fakes stay conformant; the SqliteEpisodeStore already
+    satisfies it (no adapter change). An id with no helped event is simply ABSENT — the caller
+    under-claims (no settled win read for it)."""
+    def settled_wins(self, episode_ids: "Sequence[int]") -> "set[int]": ...
+
+
+@runtime_checkable
 class ConflictFlagStore(Protocol):
     """The ONE new narrow port: the durable write seam for an advisory conflict flag. The
     ConflictFlagService depends on this (+ ``EpisodeReader`` for id-exists + ``SecretScanner``

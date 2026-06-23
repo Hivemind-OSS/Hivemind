@@ -679,12 +679,15 @@ class HiveMCPServer:
         detector. Ids-only wire dicts (no memory text, Law 4); a provisional with no stamp
         (pre-3b promotion, or never demand-promoted) under-claims (omitted).
 
-        ``has_settled_win`` is passed False for EVERY provisional: there is no per-episode
-        settled-win/credit signal in this build (the outcome loop was deliberately cut). This is
-        EXACT, not lossy — the worklist runs only on provisionals (not-yet-corroborated by
-        construction), for which a settled win is unavailable anyway, so ``martingale_warning``
-        reduces to ``thin`` here. The detector keeps the clause structural so a future settled-win
-        source flips it on with no detector change.
+        ``has_settled_win`` is now SOURCED from ``store.settled_wins`` (ids with >= 1
+        ``outcome_helped`` audit logged via hive_outcome — a self-reported settled win). The
+        martingale clause sharpens: a thin provisional WITH a helped report drops to
+        ``martingale_warning=False`` (popular-but-corroborated), one WITHOUT stays True
+        (popular-but-uncorroborated). NOTE this is a TRUSTED-SOLO self-report: in a hostile
+        fleet a poisoner could self-report ``helped`` on its poison to suppress its own flag —
+        moot in the operator's trusted-solo stance, and the worklist is detection-only (no
+        auto-action). The fleet-safe form (verified-artifact binding + helped from >= N
+        decorrelated identities) stays deferred.
 
         Degrades to [] on any probe fault (a side-channel must never break health, fail-open)."""
         try:
@@ -694,9 +697,10 @@ class HiveMCPServer:
             # (id, value, polarity, anchor, ts, trust) — keep provisional (demand-promoted) only
             anchor_by_id = {row[0]: row[3] for row in labeled if row[5] == "provisional"}
             prov = self.store.promotion_provenance(list(anchor_by_id))
+            settled = self.store.settled_wins(list(prov))    # ids with >= 1 self-reported helped
             items = [SuspectConsensusItem(
                         episode_id=eid, rho_bar=rho_bar, n_eff=n_eff, k=k,
-                        has_settled_win=False, anchor=anchor_by_id.get(eid, ""))
+                        has_settled_win=(eid in settled), anchor=anchor_by_id.get(eid, ""))
                      for eid, (rho_bar, n_eff, k) in prov.items()]
             notes = detect_suspect_consensus(
                 items, n_eff_frac_max=float(self.suspect_consensus.n_eff_frac_max),

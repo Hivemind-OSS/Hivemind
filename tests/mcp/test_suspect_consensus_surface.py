@@ -73,6 +73,27 @@ def test_surfaces_thin_provisional_ids_only():
     assert "popular but correlated insight" not in json.dumps(snap)
 
 
+# ── the martingale clause: a self-reported settled win clears the warning ───────
+def test_thin_with_settled_win_clears_martingale_warning():
+    # a thin provisional is STILL surfaced (it is thin), but a recorded outcome_helped
+    # corroborates it ⇒ martingale_warning=False (thin AND no settled win is the sharper signal).
+    server, clock = _srv(enabled=True)
+    eid = _seed_provisional(server, clock, "thin but corroborated", rho_bar=0.95, n_eff=1.0, k=4)
+    tool_call(server, "hive_outcome", {"helped": [eid]})     # the self-reported settled win
+    snap = content(tool_call(server, "hive_health", {"include_suspect_consensus": True}))
+    work = snap["suspect_consensus"]
+    assert len(work) == 1 and work[0]["episode_id"] == eid
+    assert work[0]["martingale_warning"] is False            # the win flipped the clause off
+
+
+def test_thin_without_settled_win_keeps_warning():
+    server, clock = _srv(enabled=True)
+    eid = _seed_provisional(server, clock, "thin uncorroborated", rho_bar=0.95, n_eff=1.0, k=4)
+    snap = content(tool_call(server, "hive_health", {"include_suspect_consensus": True}))
+    assert snap["suspect_consensus"][0]["episode_id"] == eid
+    assert snap["suspect_consensus"][0]["martingale_warning"] is True   # no win ⇒ still warned
+
+
 def test_fully_independent_provisional_not_flagged():
     server, clock = _srv(enabled=True)
     _seed_provisional(server, clock, "well-corroborated insight",
