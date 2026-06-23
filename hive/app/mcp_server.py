@@ -41,6 +41,7 @@ from hive.app.gaps import cluster_misses
 from hive.app.onboard_ref import SERVER_INSTRUCTIONS
 from hive.app.trends import compute_trends
 from hive.app.tool_defs import TOOL_DEFINITIONS
+from hive.domain.agi import is_agi_override
 from hive.domain.conflict import (
     CONTRADICTION, ConflictItem, detect_conflicts,
 )
@@ -320,12 +321,34 @@ class HiveMCPServer:
                        "error_type": type(e).__name__}, exc_info=True)
             return self._tool_error(req.id, f"error: {type(e).__name__}: {e}")
 
+    # ── AGI_MODE boundary gate (the ONE place the flag is read; the domain never sees it) ──
+    def _override_refused(self, approved_by: str) -> bool:
+        """True iff the caller named the reserved AGI_OVERRIDE sentinel but AGI_MODE is OFF —
+        the fail-closed refusal (Law 6). With the flag off the override is UNCONSTRUCTABLE, so
+        honesty stays structural (Law 1). A human-named vouch is never refused here; with
+        AGI_MODE ON the sentinel passes through to the handler. Deleting this guard is the
+        AGI-gate mutation — the OFF-refused tests red."""
+        return is_agi_override(approved_by) and not self.agi_mode
+
+    def _agi_refused(self, verb: str) -> dict:
+        """The fail-closed refusal envelope for an AGI_OVERRIDE call under AGI_MODE OFF: nothing
+        written/retired (0 rows), no ``id``, a self-describing reason. Mirrors the secret-refuse
+        envelope shape (``status='refused'``) so the bench/client parse path is unchanged."""
+        _log.info("mcp.agi_override_refused", extra={
+            "event": "mcp.agi_override_refused", "verb": verb})
+        return {"status": "refused", "reason": (
+            "AGI_OVERRIDE rejected: AGI_MODE is off (the override is honored only when the "
+            "operator sets HIVE_AGI__MODE=true). Nothing was written or retired."),
+            "agi_mode": False}
+
     # ── tool handlers: (args, identity); args read permissively, _validate_args is the only
     #    required-field guard. ``identity`` is the per-request caller resolved by the transport
     #    (HTTP daemon) or the process default (stdio) — attribution lives HERE (D1). ──
     def _handle_write(self, args: dict, identity: ServerIdentity) -> dict:
         text = args.get("text")
         approved_by = args.get("approved_by") or ""   # required by the schema belt
+        if self._override_refused(approved_by):       # AGI_OVERRIDE sentinel + AGI_MODE off ⇒ refuse
+            return self._agi_refused("hive_write")
         # proposed_by is ALWAYS the authenticated caller — INV-2: no client field to assert it
         # (``proposed_by`` is gone from the write schema). Deliberate mutation: read self.identity here.
         proposed_by = identity.agent_id

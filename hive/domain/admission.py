@@ -29,6 +29,7 @@ import logging
 from dataclasses import dataclass
 from typing import Callable, Optional
 
+from hive.domain.agi import is_agi_override
 from hive.domain.errors import SecretRefused
 from hive.domain.kinds import DEFAULT_KIND
 from hive.domain.lifecycle import DEPRECATED, ESTABLISHED, QUARANTINED
@@ -133,11 +134,14 @@ class AdmissionService:
         SecretRefused (nothing written); CLEAN/REDACT stage → embed → approve and return
         an approved, recallable memory (trust='established').
 
-        Provenance is TRANSPORT-SET to ``human`` here (a human authored/vouched the
-        text) — it is the memory's ORIGIN, never a caller field (INV-2: no
-        caller-asserted provenance). The dedup-onto-quarantined establishment path does
-        NOT rewrite provenance: the human vouch is recorded by approved_by/trust, not by
-        relabelling origin.
+        Provenance is DERIVED from the ``approved_by`` VALUE — ``human`` for a named vouch,
+        ``agent_reasoned`` for the reserved ``AGI_OVERRIDE`` sentinel (an agent reasoned the
+        content; no human authored it — the honest under-claim, Law 2). It is the memory's
+        ORIGIN, never a caller field (INV-2: no caller-asserted provenance); the sentinel is a
+        transport-resolved actor, not caller-asserted origin. The dedup-onto-quarantined
+        establishment path does NOT rewrite provenance: the vouch is recorded by
+        approved_by/trust, not by relabelling origin (a quarantined capture stays
+        ``agent_reasoned``, which an override establish leaves correct).
 
         ``replaces`` (human-vouched supersession): the named target is retired in
         favor of this write — validated to EXIST before anything is staged (an
@@ -153,12 +157,17 @@ class AdmissionService:
                                   approved_by=approved_by, request_id=request_id)
         staged_text = verdict.redacted_text if verdict.action == REDACT else text
         status = "redacted" if verdict.action == REDACT else "approved"
+        # Provenance is DERIVED from the approver VALUE (the sentinel), never a caller arg
+        # (INV-2). An AGI_OVERRIDE write under-claims its ORIGIN as agent_reasoned (an agent
+        # reasoned it; no human authored it — Law 2); a human-named vouch stamps human. Flipping
+        # this to a constant "human" is the provenance mutation (the override-establish test reds).
+        provenance = "agent_reasoned" if is_agi_override(approved_by) else "human"
 
         # stage the (post-redaction) row + blob; dedup by content_hash.
         try:
             eid, deduped = self._store.stage(
                 text=staged_text, weight=weight, tags="",
-                proposed_by=proposed_by, ts=self._now(), provenance="human",
+                proposed_by=proposed_by, ts=self._now(), provenance=provenance,
                 polarity=polarity, kind=kind, anchor=anchor)
         except Exception:
             _log.error("admission.stage_fail", extra={
