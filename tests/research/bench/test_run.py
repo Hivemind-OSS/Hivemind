@@ -173,10 +173,11 @@ def test_main_offline_writes_a_provenance_stamped_report(tmp_path):
     rep = json.loads(out.read_text())
     assert set(rep) >= {"provenance", "arms", "comparisons"}
     assert rep["provenance"]["n_cases"] == 3 and rep["provenance"]["dataset_hash"]
-    assert rep["provenance"]["recall_hfrac"] == 0.9          # the gate threshold is stamped
+    assert rep["provenance"]["recall_tau_serve"] == 0.30     # the gate threshold is stamped
     assert len(rep["arms"]) == 2 and rep["comparisons"]
 
 
-def test_parse_args_recall_hfrac_default_and_override():
-    assert _parse_args(["--dataset", "d", "--out", "o"]).recall_hfrac == 0.9
-    assert _parse_args(["--dataset", "d", "--out", "o", "--recall-hfrac", "0.95"]).recall_hfrac == 0.95
+def test_parse_args_recall_tau_serve_default_and_override():
+    assert _parse_args(["--dataset", "d", "--out", "o"]).recall_tau_serve == 0.30
+    assert _parse_args(["--dataset", "d", "--out", "o",
+                        "--recall-tau-serve", "0.55"]).recall_tau_serve == 0.55

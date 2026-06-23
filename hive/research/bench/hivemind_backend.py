@@ -1,6 +1,6 @@
 """B3 — HivemindBackend: the MemoryBackend over the REAL in-process HiveMCPServer.
 
-    recall  → hive_recall (envelope parsed: episode_ids + abstained + entropy_norm → RecallObs).
+    recall  → hive_recall (envelope parsed: episode_ids + abstained + top_cos → RecallObs).
     propose → hive_capture under the SUBAGENT seat — lands QUARANTINED (a genuine subagent write).
     commit  → hive_write under the ORCHESTRATOR seat; post-B0 this dedups onto the quarantined
               capture and ESTABLISHES THAT ROW IN PLACE (same episode_id), so a denied proposal
@@ -54,11 +54,12 @@ class HivemindBackend:
         abstained = bool(env.get("abstained", True))
         ranked = () if abstained else tuple(str(h["episode_id"]) for h in hits)
         top_score = float(hits[0]["sim"]) if hits else 0.0
-        # native abstention signal: when Hivemind commits to an answer, 1 - entropy_norm (peaked
-        # ⇒ confident); when it abstains (gate fired OR empty store, which reports entropy_norm
-        # 0.0) it carries NO confidence to answer ⇒ 0.0. Never read 1 - entropy on an abstain.
-        entropy = float(env.get("entropy_norm", 1.0))
-        confidence = 0.0 if abstained else max(0.0, min(1.0, 1.0 - entropy))
+        # native abstention signal: when Hivemind commits to an answer, the top absolute cosine
+        # (top_cos) IS the confidence (higher ⇒ more relevant ⇒ more confident); when it abstains
+        # (gate fired OR empty store) it carries NO confidence to answer ⇒ 0.0. The AbsoluteRelevance
+        # gate keys on absolute relevance, so top_cos is read DIRECTLY (no 1 - x inversion).
+        top_cos = float(env.get("top_cos", -1.0))
+        confidence = 0.0 if abstained else max(0.0, min(1.0, top_cos))
         return RecallObs(query=query, ranked_ids=ranked, top_score=top_score,
                          confidence=confidence, abstained=abstained)
 

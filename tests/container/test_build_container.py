@@ -219,3 +219,13 @@ def test_recall_config_has_no_co_access_knobs():
     from hive.app.config import RecallConfig
     assert not hasattr(RecallConfig(), "co_access")
     assert not hasattr(RecallConfig(), "associations")
+
+
+def test_recall_config_is_the_absolute_relevance_knob_set():
+    # the entropy-gate knobs are GONE; the absolute-relevance gate carries exactly tau_serve
+    # + k_min (re-adding a deleted knob, or dropping a new one, REDS this).
+    from hive.app.config import RecallConfig
+    rc = RecallConfig()
+    for gone in ("H_frac_max", "softmax_beta", "tau_top1", "tau_thresh"):
+        assert not hasattr(rc, gone), gone
+    assert hasattr(rc, "tau_serve") and hasattr(rc, "k_min")

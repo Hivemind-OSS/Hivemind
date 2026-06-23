@@ -8,11 +8,12 @@ The four arms isolate serve-time SELECTION, never structural admission-absence �
 servable in ALL FOUR arms through the SAME orchestrator-vouched ``propose→commit`` seam that loads the
 clean pool, so the headline can only come from serve-time selection:
   * A ``mem0``                — trust-everything top-k (the competitor; no retraction).
-  * B ``abstain-off``         — Hivemind at the max legal threshold ``H_frac_max=1.0`` (no entropy
+  * B ``abstain-off``         — Hivemind at the serve-everything proxy ``tau_serve=0.01`` (no
                                 suppression); SAME store/embedder/geometry as C.
-  * C ``abstain-on``          — the production gate (``H_frac_max=0.5``); ``(ON−OFF)`` is the gate's
-                                PURE contribution (expected ~0: the gate is shift-invariant vs a
-                                strong-cosine poison — an honest finding, never retuned away).
+  * C ``abstain-on``          — the production gate (``tau_serve=0.70``); ``(ON−OFF)`` is the gate's
+                                PURE contribution (expected ~0: the gate keys on ABSOLUTE relevance,
+                                not truth, so it does not resist a STRONG-cosine servable falsehood —
+                                an honest finding, never retuned away).
   * D ``hivemind-supersede``  — prod gate + a human ``hive_write(replaces=)`` correction pass that
                                 de-indexes the bad fact so it is never served again — THE headline win.
 
@@ -251,7 +252,7 @@ def measure_promotion_block(server_factory: Callable[[], object], *, poison_text
 
 _REQUIRED_PROVENANCE = (
     "arms", "served_tokenizer", "dataset_hash", "embedder_model", "poison_version",
-    "poison_frac", "poison_kinds", "poison_value_map_hash", "h_frac_on", "h_frac_off",
+    "poison_frac", "poison_kinds", "poison_value_map_hash", "tau_serve_on", "tau_serve_off",
     "llm_digest", "seeds", "regime_mix", "matched_serve_point", "secret_floor_observed",
     "poison_promotion")
 
@@ -285,10 +286,10 @@ def _default_backend_factory(cfg) -> Callable[[str], MemoryBackend]:
             return Mem0Backend(RealMem0Client(model=EMBEDDER_MODEL, dims=1024), top_k=_TOP_K)
         from hive.research.bench.hivemind_backend import HivemindBackend
         from hive.research.bench.run import _hivemind_server_factory
-        # the three Hivemind arms share byte-identical store/embedder/geometry; ONLY H_frac_max
+        # the three Hivemind arms share byte-identical store/embedder/geometry; ONLY tau_serve
         # differs (OFF vs ON), and SUP additionally runs a human supersede pass in main().
-        h = cfg.h_frac_off if arm == ARM_OFF else cfg.h_frac_on
-        return HivemindBackend(_hivemind_server_factory(h))
+        tau = cfg.tau_serve_off if arm == ARM_OFF else cfg.tau_serve_on
+        return HivemindBackend(_hivemind_server_factory(tau))
     return make
 
 
@@ -325,10 +326,10 @@ def _parse_args(argv: Optional[Sequence[str]]) -> argparse.Namespace:
     p.add_argument("--dataset", default=os.environ.get("HIVE_BENCH_LME_PATH"))
     p.add_argument("--n", type=int, default=None, help="seeded subsample (default all)")
     p.add_argument("--seeds", default="0")
-    p.add_argument("--h-frac-on", dest="h_frac_on", type=float, default=0.5,
-                   help="abstain-ON threshold (production default 0.5)")
-    p.add_argument("--h-frac-off", dest="h_frac_off", type=float, default=1.0,
-                   help="abstain-OFF threshold (1.0 = max legal ⇒ no entropy suppression)")
+    p.add_argument("--tau-serve-on", dest="tau_serve_on", type=float, default=0.70,
+                   help="abstain-ON threshold (production default 0.70)")
+    p.add_argument("--tau-serve-off", dest="tau_serve_off", type=float, default=0.01,
+                   help="abstain-OFF threshold (0.01 = serve-everything proxy ⇒ no suppression)")
     p.add_argument("--poison-frac", dest="poison_frac", type=float, default=0.5,
                    help="fraction of answerable cases carrying a synthesized falsehood")
     p.add_argument("--poison-kinds", dest="poison_kinds", default="mistake,stale",
@@ -379,7 +380,7 @@ def main(argv: Optional[Sequence[str]] = None, *,
     # preflight: dataset present + (real CLI) authenticated; equal-footing model parity (fail fast).
     run_preflight(dataset_path=cfg.dataset, llm=llms[ARM_MEM0])
     from hive.app.config import Config
-    assert_model_parity(Config.load(db_path=":memory:", recall={"H_frac_max": cfg.h_frac_on}))
+    assert_model_parity(Config.load(db_path=":memory:", recall={"tau_serve": cfg.tau_serve_on}))
 
     cases = load_longmemeval(cfg.dataset, n=cfg.n, seed=seed)
     memories, poison_cases, specs = build_poison_substrate(
@@ -422,7 +423,7 @@ def main(argv: Optional[Sequence[str]] = None, *,
         "embedder_model": EMBEDDER_MODEL, "poison_version": POISON_VERSION,
         "poison_frac": cfg.poison_frac, "poison_kinds": list(cfg.poison_kinds),
         "poison_value_map_hash": _poison_value_map_hash(specs),
-        "h_frac_on": cfg.h_frac_on, "h_frac_off": cfg.h_frac_off,
+        "tau_serve_on": cfg.tau_serve_on, "tau_serve_off": cfg.tau_serve_off,
         "llm_digest": _combined_digest(llms), "seeds": cfg.seeds,
         "regime_mix": {r: sum(1 for c in poison_cases if c.regime == r) for r in _REGIMES},
         "matched_serve_point": scored["matched_serve_point"],
@@ -467,7 +468,7 @@ def _measure_promotion(cfg, *, backend_factory) -> dict:
     from hive.app.config import AutonomyConfig
     from hive.research.bench.run import _hivemind_server_factory
     autonomy = AutonomyConfig(demand_m=2, demand_tau=0.5, competitor_tau=0.85)
-    factory = _hivemind_server_factory(cfg.h_frac_on, autonomy=autonomy)
+    factory = _hivemind_server_factory(cfg.tau_serve_on, autonomy=autonomy)
     return measure_promotion_block(
         factory,
         poison_text="the deploy region is eu-west for the billing service",

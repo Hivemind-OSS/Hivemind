@@ -3,11 +3,11 @@
 Full functional coverage against fakes only (hash-speed, no SQLite/network):
 happy path, every failure mode (embedder raise / index raise / empty /
 non-authoritative), every invariant (abstain⟹empty, abstain-no-resurrect
-STRUCTURAL, EMPTY vs ABSTAIN distinct, entropy∈[0,1], unique trace, top_n
-size-only, approved-only honest half), the D1 per-hit recall_margin value (a pure
-unit pin), and the swap-seam (a 2nd index
-adapter ⟹ identical result). The move-#6 exposure ledger was removed with the
-producer, so recall no longer records what it surfaced — those tests are gone.
+STRUCTURAL, EMPTY vs ABSTAIN distinct, top_cos∈[-1,1], unique trace, top_n
+size-only, approved-only honest half), and the swap-seam (a 2nd index adapter ⟹
+identical result). The abstain decision is now the pure AbsoluteRelevanceGate
+(serve iff a candidate clears tau_serve); a flat-but-relevant field serves, a
+peaked-but-weak field abstains.
 """
 from __future__ import annotations
 
@@ -15,7 +15,7 @@ import numpy as np
 import pytest
 
 from hive.domain.models import ABSTAIN, CONFIDENT, EMPTY_NO_DATA
-from hive.domain.recall import NormalizedEntropyGate, RecallPipeline, _recall_margins
+from hive.domain.recall import AbsoluteRelevanceGate, RecallPipeline
 from tests.fakes._fakes import (
     FakeEpisodeReader, FakeIndex, FakeLedger, FakeScanner,
 )
@@ -88,12 +88,12 @@ class _ListIndex:
 
 
 def _pipe(*, index, reader, query_vec,
-          recall_top_n=10, h=0.5, beta=16.0, tau_thresh=1.0, embedder=None, ledger=None,
+          recall_top_n=10, tau_serve=0.70, k_min=1, embedder=None, ledger=None,
           suppress_conflicts=False, conflict_tau=0.80, conflict_classifier=None):
     return RecallPipeline(
         embedder=embedder or _StubProvider(query_vec),
         index=index,
-        gate=NormalizedEntropyGate(h, beta, 0.0, tau_thresh),
+        gate=AbsoluteRelevanceGate(tau_serve, k_min),
         reader=reader,
         recall_top_n=recall_top_n,
         ledger=ledger if ledger is not None else FakeLedger(),
@@ -107,7 +107,7 @@ def _pipe(*, index, reader, query_vec,
 
 
 def _confident_setup(top_n=10):
-    """gold(cos1) + two weak distractors ⟹ peaked ⟹ CONFIDENT."""
+    """gold(cos1) + two weak distractors ⟹ the gold clears tau_serve ⟹ CONFIDENT."""
     index, reader = FakeIndex(), FakeEpisodeReader()
     for eid, vec, text in ((1, _e(0), "the gold memory"),
                            (2, _cos_vec(0.1), "distractor a"),
@@ -117,20 +117,12 @@ def _confident_setup(top_n=10):
     return _pipe(index=index, reader=reader, query_vec=_e(0), recall_top_n=top_n)
 
 
-# ── D1: per-hit recall_margin is the softmax-mass gap (pure pin + mutation target)
-def test_recall_margins_are_mass_gaps():
-    assert _recall_margins([0.7, 0.3]) == pytest.approx([0.4, 0.3])
-    assert _recall_margins([0.5, 0.3, 0.2]) == pytest.approx([0.2, 0.1, 0.2])
-    assert _recall_margins([1.0]) == pytest.approx([1.0])  # single hit ⇒ own mass
-    assert _recall_margins([]) == []
-
-
 # ── happy path ────────────────────────────────────────────────────────────────
 def test_happy_path_returns_confident_hits():
     r = _confident_setup().recall("q", agent_id="A")
     assert r.state == CONFIDENT
     assert r.hits[0].episode_id == 1 and r.hits[0].text == "the gold memory"
-    assert 0.0 <= r.entropy_norm <= 1.0
+    assert r.top_cos == pytest.approx(1.0)     # the gold's absolute cosine
 
 
 def test_confident_hit_carries_kind_and_anchor():
@@ -152,7 +144,7 @@ def test_confident_hit_carries_kind_and_anchor():
 
 
 def test_recall_at_5_over_held_out_pairs_meets_floor():
-    # 6 planted golds; each query points exactly at one gold ⟹ that gold is top.
+    # 6 planted golds; each query points exactly at one gold ⟹ that gold is top (cos 1).
     index, reader = FakeIndex(), FakeEpisodeReader()
     golds = [(_e(i), f"gold-{i}") for i in range(6)]
     for eid, (vec, text) in enumerate(golds):
@@ -169,7 +161,7 @@ def test_recall_at_5_over_held_out_pairs_meets_floor():
 
 # ── abstain ───────────────────────────────────────────────────────────────────
 def test_abstain_returns_empty_hits():
-    # 4 candidates with IDENTICAL cosine ⟹ uniform mass ⟹ max entropy ⟹ abstain
+    # 4 candidates ALL at cosine 0 with the query ⟹ none clear tau_serve ⟹ abstain
     index, reader = FakeIndex(), FakeEpisodeReader()
     for eid in (1, 2, 3, 4):
         index.add(eid, _cos_vec(0.0))   # all cos 0 with query e0
@@ -192,14 +184,24 @@ def test_abstain_no_resurrect():
     assert r.state == ABSTAIN and r.hits == ()
 
 
+def test_peaked_but_weak_field_abstains():
+    # ★ the new-honesty pin end-to-end: a single peaked-but-absolutely-weak candidate
+    # (cos 0.5 < tau_serve) ABSTAINS — the old entropy gate served it (n_eff=1 ⇒ entropy 0).
+    index, reader = FakeIndex(), FakeEpisodeReader()
+    index.add(1, _cos_vec(0.5))
+    reader.add(1, "a weak near-miss")
+    r = _pipe(index=index, reader=reader, query_vec=_e(0)).recall("q", agent_id="A")
+    assert r.state == ABSTAIN and r.hits == ()
+
+
 def test_empty_index_is_empty_no_data():
     r = _pipe(index=FakeIndex(), reader=FakeEpisodeReader(), query_vec=_e(0)).recall(
         "q", agent_id="A")
-    assert r.state == EMPTY_NO_DATA and r.hits == () and r.entropy_norm == 0.0
+    assert r.state == EMPTY_NO_DATA and r.hits == () and r.top_cos == 0.0
 
 
 def test_empty_and_abstain_are_distinct_states():
-    assert EMPTY_NO_DATA != ABSTAIN   # not conflated (entropy 0.0 vs gate-fired)
+    assert EMPTY_NO_DATA != ABSTAIN   # not conflated (top_cos 0.0 vs gate-fired)
 
 
 # ── approved-only (M04's honest half) + never-flip ANN guard ──────────────────
@@ -239,7 +241,7 @@ def test_recall_top_n_size_only():
     r5 = _confident_setup(top_n=5).recall("q", agent_id="A")
     assert r1.state == CONFIDENT and r5.state == CONFIDENT   # same gate decision
     assert len(r1.hits) == 1 and len(r5.hits) == 3           # only hits length changes
-    assert r1.entropy_norm == pytest.approx(r5.entropy_norm)
+    assert r1.top_cos == pytest.approx(r5.top_cos)
 
 
 # ── fail-closed on every internal raise ───────────────────────────────────────
@@ -268,7 +270,7 @@ def test_recall_against_alternate_index_adapter():
         r = _pipe(index=idx, reader=rdr, query_vec=_e(0)).recall(
             "q", agent_id="A")
         return (r.state, tuple((h.episode_id, h.text, round(h.sim, 6)) for h in r.hits),
-                round(r.entropy_norm, 9), round(r.top_margin, 9))
+                round(r.top_cos, 9))
     assert run(FakeIndex) == run(_ListIndex)   # internal repr differs; result identical
 
 
@@ -315,16 +317,16 @@ def test_nan_sim_index_never_confident():
 
 
 def test_confident_result_must_carry_hits():
-    # #E: the CONFIDENT<->has-hits biconditional made fully structural — CONFIDENT with empty hits is
-    # unconstructable (the reverse of abstain-no-resurrect: no empty-confident either).
+    # #E: the CONFIDENT<->has-hits biconditional made fully structural — CONFIDENT with empty
+    # hits is unconstructable (the reverse of abstain-no-resurrect: no empty-confident either).
     from hive.domain.models import RecallResult
     with pytest.raises(ValueError):
-        RecallResult(CONFIDENT, "t", (), 0.0, 0.0)
+        RecallResult(CONFIDENT, "t", (), 0.0)
 
 
 def test_gate_passes_but_all_resolve_away_is_empty_no_data():
     idx = FakeIndex()
-    idx.add(7, _e(0))                       # gate will pass (single peaked candidate)
+    idx.add(7, _e(0))                       # gate will pass (single relevant candidate)
     r = _pipe(index=idx, reader=FakeEpisodeReader(), query_vec=_e(0)).recall(
         "q", agent_id="A")
     assert r.state == EMPTY_NO_DATA and r.hits == ()  # fail-closed
@@ -332,18 +334,18 @@ def test_gate_passes_but_all_resolve_away_is_empty_no_data():
 
 # ── serve-time conflict suppression (post-gate, off by default, byte-inert) ─────
 def _trust_pair_pipe(*, suppress, gold_trust="established", poison_trust="provisional",
-                     ledger=None, classifier=None, h=1.0):
-    """A confident (``h=1.0`` ⇒ no abstention) pipe over a near-dup pair: a gold and a
-    poison whose vectors are ~identical (cosine ≫ τ) so the detector pairs them. The
-    resolved Episodes carry the vector (``value=``) the suppressor reads, and distinct
-    trust tiers so strict-dominance can act."""
+                     ledger=None, classifier=None):
+    """A confident pipe over a near-dup pair: a gold and a poison whose vectors are
+    ~identical (cosine ≫ τ, both clear tau_serve) so the detector pairs them. The resolved
+    Episodes carry the vector (``value=``) the suppressor reads, and distinct trust tiers
+    so strict-dominance can act."""
     index, reader = FakeIndex(), FakeEpisodeReader()
     gold_v, poison_v = _cos_vec(0.95), _cos_vec(0.92)
     index.add(1, gold_v)
     reader.add(1, "the port is 8080", trust=gold_trust, value=gold_v)
     index.add(2, poison_v)
     reader.add(2, "the port is 9090", trust=poison_trust, value=poison_v)
-    return _pipe(index=index, reader=reader, query_vec=_e(0), h=h, ledger=ledger,
+    return _pipe(index=index, reader=reader, query_vec=_e(0), ledger=ledger,
                  suppress_conflicts=suppress, conflict_classifier=classifier)
 
 
@@ -387,7 +389,7 @@ def test_suppress_never_empties_a_confident_result():
     for eid, (v, t) in enumerate(zip(vs, trusts), start=1):
         index.add(eid, v)
         reader.add(eid, f"port variant {eid}", trust=t, value=v)
-    r = _pipe(index=index, reader=reader, query_vec=_e(0), h=1.0,
+    r = _pipe(index=index, reader=reader, query_vec=_e(0),
               suppress_conflicts=True).recall("q", agent_id="A")
     assert r.state == CONFIDENT
     assert {h.episode_id for h in r.hits} == {1}   # both provisionals pruned, gold kept
@@ -415,25 +417,25 @@ def test_conflict_classifier_is_unused_in_phase1():
     assert {h.episode_id for h in r.hits} == {1}
 
 
-# ── tau_thresh: a FLAT-but-relevant field serves at the product default, abstains at 1.0 ──
-def _flat_relevant_pipe(*, tau_thresh):
-    """Three candidates at cosines 0.85/0.84/0.83 to the query ⇒ near-uniform mass (flat,
-    entropy_norm > H_frac_max=0.5) but all absolutely relevant (top cos 0.85). The entropy
-    gate alone abstains; the absolute-cosine override serves iff tau_thresh ≤ 0.85."""
+# ── tau_serve: a FLAT-but-relevant field serves at the product default, abstains at 1.0 ──
+def _flat_relevant_pipe(*, tau_serve):
+    """Three candidates at cosines 0.85/0.84/0.83 to the query ⇒ a FLAT field, but all
+    absolutely relevant. The shift-invariant entropy gate abstained on the flatness; the
+    absolute-relevance gate SERVES when they clear tau_serve (≤ 0.85) and abstains at 1.0."""
     index, reader = FakeIndex(), FakeEpisodeReader()
     for eid, c, text in ((1, 0.85, "the gold fact"),
                          (2, 0.84, "a sibling fact"),
                          (3, 0.83, "another sibling")):
         index.add(eid, _cos_vec(c))
         reader.add(eid, text)
-    return _pipe(index=index, reader=reader, query_vec=_e(0), tau_thresh=tau_thresh)
+    return _pipe(index=index, reader=reader, query_vec=_e(0), tau_serve=tau_serve)
 
 
 def test_flat_relevant_field_serves_at_product_default():
-    # at tau_thresh=0.70 the flat-relevant field is SERVED — CONFIDENT with the gold + siblings,
+    # at tau_serve=0.70 the flat-relevant field is SERVED — CONFIDENT with the gold + siblings,
     # the biconditional honored (hits non-empty), exposure recorded for the served set.
     led = FakeLedger()
-    pipe = _flat_relevant_pipe(tau_thresh=0.70)
+    pipe = _flat_relevant_pipe(tau_serve=0.70)
     pipe.ledger = led
     r = pipe.recall("q", agent_id="A")
     assert r.state == CONFIDENT
@@ -441,7 +443,8 @@ def test_flat_relevant_field_serves_at_product_default():
     assert {e for ex in led.exposures for e, _m in ex["items"]} == {1, 2, 3}
 
 
-def test_flat_relevant_field_abstains_at_tau_thresh_1p0():
-    # the off path (tau_thresh=1.0, byte-identical to today's gate): the SAME flat field abstains.
-    r = _flat_relevant_pipe(tau_thresh=1.0).recall("q", agent_id="A")
+def test_flat_relevant_field_abstains_at_tau_serve_1p0():
+    # tau_serve=1.0 ⇒ only an exact-match field serves: the SAME flat field (top cos 0.85 < 1.0)
+    # abstains — the principled knob, not a flatness coincidence.
+    r = _flat_relevant_pipe(tau_serve=1.0).recall("q", agent_id="A")
     assert r.state == ABSTAIN and r.hits == ()

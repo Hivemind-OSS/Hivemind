@@ -60,39 +60,25 @@ class EmbeddingConfig:
 
 @dataclass(frozen=True)
 class RecallConfig:
-    H_frac_max: float = 0.5
     recall_top_n: int = 10
-    softmax_beta: float = 16.0            # gate mass temperature (β>0)
-    # the top-1 score-gap abstention floor: suppress when the top hit's softmax mass is
-    # below tau_top1. Ships inert (0.0 ⇒ never fires, masses ∈ [0,1]); only ADDS abstentions.
-    # No upper clamp — a value > 1 is a legal permanent-abstain config.
-    tau_top1: float = 0.0
-    # Flat-field relevance threshold. Affects ONLY the would-abstain (flat) case: a flat field is
-    # served iff its top-1 absolute cosine > tau_thresh, else abstain. 1.0 ⇒ abstain on every flat
-    # case by construction (a cosine ≤ 1 can never exceed it ⇒ today's gate); lower ⇒ more
-    # permissive. DISTINCT axis from tau_top1 (a mass floor).
-    # PRECEDENCE: tau_top1 is unconditional — when both are set, a flat field with low top-1 mass is
-    #   still suppressed by tau_top1 even if tau_thresh would serve it (the override relaxes only the
-    #   entropy term). Calibrate the production value via gate_eval; it RE-ADMITS cosine-twin
-    #   poison/stale serves on flat fields, so pair it with conflict.suppress + human supersession.
-    # Absolute-cosine meaningful only because stored/searched vectors are EXACT unit-norm (BUG-008).
-    tau_thresh: float = 0.70
+    # The absolute-cosine serve floor: the gate suppresses unless at least ``k_min``
+    # candidates clear ``tau_serve``. This is the never-hallucinate floor — a shift-invariant
+    # entropy is gone; "flat-but-all-relevant" SERVES, "flat-but-weak" and "peaked-but-weak"
+    # ABSTAIN. 1.0 ⇒ only an exact-match field serves. CALIBRATED via gate_eval on the real
+    # query distribution; the 0.70 default is the prior flat-serve posture, calibration-grounded.
+    # Meaningful only because stored/searched vectors are EXACT unit-norm (BUG-008).
+    tau_serve: float = 0.70
+    k_min: int = 1                        # min absolutely-relevant hits to serve (>= 1)
 
     def __post_init__(self) -> None:
-        if not (0.0 < self.H_frac_max <= 1.0):
-            raise ValueError(
-                f"recall.H_frac_max must be in (0.0, 1.0] (the never-hallucinate floor; "
-                f"0 or >1 silently disables the gate); got {self.H_frac_max}")
         if self.recall_top_n < 1:
             raise ValueError(f"recall.recall_top_n must be >= 1 (got {self.recall_top_n})")
-        if not self.softmax_beta > 0.0:
-            raise ValueError(f"recall.softmax_beta must be > 0 (got {self.softmax_beta})")
-        if not (math.isfinite(self.tau_top1) and self.tau_top1 >= 0.0):
+        if not (math.isfinite(self.tau_serve) and 0.0 < self.tau_serve <= 1.0):
             raise ValueError(
-                f"recall.tau_top1 must be finite and >= 0.0 (got {self.tau_top1})")
-        if not (math.isfinite(self.tau_thresh) and 0.0 < self.tau_thresh <= 1.0):
-            raise ValueError(
-                f"recall.tau_thresh must be finite in (0.0, 1.0] (got {self.tau_thresh})")
+                f"recall.tau_serve must be finite in (0.0, 1.0] (the never-hallucinate "
+                f"serve floor); got {self.tau_serve}")
+        if int(self.k_min) < 1:
+            raise ValueError(f"recall.k_min must be >= 1 (got {self.k_min})")
 
 
 @dataclass(frozen=True)
@@ -182,7 +168,7 @@ _GROUP_TYPES: dict[str, type] = {
     "obs": ObservabilityConfig,
 }
 # field-groups constructed (and thus validated) BEFORE runtime, so a field-level error
-# (e.g. recall.H_frac_max) surfaces ahead of the db_path-required check. Derived from
+# (e.g. recall.tau_serve) surfaces ahead of the db_path-required check. Derived from
 # _GROUP_TYPES (its insertion order) minus runtime — one source of truth for the group set.
 _FIELD_GROUP_ORDER = tuple(g for g in _GROUP_TYPES if g != "runtime")
 
@@ -221,7 +207,7 @@ class Config:
         # layer 2: HIVE_<GROUP>__<FIELD> env
         _apply_env(merged, env)
         # layer 4: explicit overrides (per-group dicts). An unknown FIELD here is a typo in the
-        # highest-precedence, most-explicit layer (e.g. recall={"H_frac_maxx": 0.4}) — fail fast
+        # highest-precedence, most-explicit layer (e.g. recall={"tau_servee": 0.4}) — fail fast
         # rather than silently dropping it and leaving the floor at its default.
         for g, vals in overrides.items():
             if g not in _GROUP_TYPES:

@@ -41,7 +41,7 @@ def test_acceptance_recall_at_5_meets_floor(embedder_v1):
 
 # ── #2 — honest-abstention AUROC in band ──────────────────────────────────────
 def test_acceptance_abstention_auroc_in_band(embedder_v1):
-    """The gate's confidence (1 − H/ln N_eff) separates retrieved-gold HITS from MISSES.
+    """The gate's confidence (top absolute cosine) separates retrieved-gold HITS from MISSES.
     Live-wired to the real abstention_auroc scorer [C2]. The synthetic fixture separates
     more cleanly than the real LongMemEval ≈0.77, so the band floor is a safe 0.70."""
     c = build_acc(embedder_v1)
@@ -50,11 +50,11 @@ def test_acceptance_abstention_auroc_in_band(embedder_v1):
     is_miss: list[bool] = []
     for q, gold in HIT_QUERIES:
         ids, r = _topk_ids(c, q, 5)
-        confidences.append(1.0 - float(r.entropy_norm))
+        confidences.append(float(r.top_cos))         # higher abs cosine ⇒ more confident
         is_miss.append(eids[gold] not in ids)        # a false-abstain counts as a miss
     for q in MISS_QUERIES:
         _, r = _topk_ids(c, q, 5)
-        confidences.append(1.0 - float(r.entropy_norm))
+        confidences.append(float(r.top_cos))
         is_miss.append(True)                          # no gold in the corpus ⇒ should abstain
     auroc = abstention_auroc(confidences, is_miss)
     assert 0.70 <= auroc <= 1.0, f"abstention AUROC={auroc:.3f} outside the band"

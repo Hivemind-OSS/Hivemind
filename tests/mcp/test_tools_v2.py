@@ -81,7 +81,7 @@ def test_capture_requires_text_via_schema_belt():
 def test_exposure_recorded_on_hit_not_on_abstain():
     # h=0.01: any off-topic (flat) candidate set abstains deterministically while
     # exact-text matches stay sharply CONFIDENT (hash-vector embedder)
-    server, _ = build_real_server(h=0.01)
+    server, _ = build_real_server()
     w = content(tool_call(server, "hive_write",
                           {"text": "rotate the key quarterly", "approved_by": "h"}))
     hit = content(tool_call_as(server, "agent-A", "hive_recall",
@@ -99,7 +99,7 @@ def test_exposure_recorded_on_hit_not_on_abstain():
 
 
 def test_miss_recorded_on_abstain_and_empty():
-    server, _ = build_real_server(h=0.01)
+    server, _ = build_real_server()
     # EMPTY (cold store) — the miss must still carry its query VECTOR, or cold-start
     # demand could never accumulate and nothing would ever promote
     content(tool_call_as(server, "agent-A", "hive_recall", {"query": "cold question"}))
@@ -190,7 +190,7 @@ def test_write_replaces_unknown_target_is_tool_error():
 
 # ── health telemetry ───────────────────────────────────────────────────────────
 def test_health_trust_counts_misses_gaps():
-    server, _ = build_real_server(h=0.01)
+    server, _ = build_real_server()
     # TWO established rows so an off-topic query reads as a flat (abstaining)
     # candidate set — a single-row index serves everything at sim≈0
     content(tool_call(server, "hive_write", {"text": "vouched", "approved_by": "h"}))

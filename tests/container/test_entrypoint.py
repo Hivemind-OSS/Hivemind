@@ -107,10 +107,10 @@ def test_missing_tenant_defaults_and_boots(env):
 
 
 def test_config_validation_failure_exits_config():
-    # a known-bad config field (H_frac_max=0 disables the never-hallucinate floor) ⇒ 78,
+    # a known-bad config field (tau_serve=0 disables the never-hallucinate floor) ⇒ 78,
     # and the booter is NEVER built (we fail before assembly).
     calls: list = []
-    env = {"HIVE_TENANT_ID": "acme", "HIVE_RECALL__H_FRAC_MAX": "0"}
+    env = {"HIVE_TENANT_ID": "acme", "HIVE_RECALL__TAU_SERVE": "0"}
     assembled: list = []
 
     def build_boot(cfg, *, tenant_id, agent_id):

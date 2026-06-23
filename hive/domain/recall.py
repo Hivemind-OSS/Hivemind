@@ -2,9 +2,9 @@
 enforcement point.
 
 `RecallPipeline.recall(query, *, agent_id) -> RecallResult` hides the whole
-encode → dense-cosine search → normalized-entropy abstain flow behind one narrow
+encode → dense-cosine search → absolute-relevance abstain flow behind one narrow
 surface. It owns NO I/O: it composes injected ports (`EmbeddingProvider`,
-`VectorIndex`, `EpisodeReader`) and the pure `NormalizedEntropyGate` stage. The
+`VectorIndex`, `EpisodeReader`) and the pure `AbsoluteRelevanceGate` stage. The
 dense+gate order is served as-is — there is no utility rerank (reinforcement is
 demand/exposure-only).
 
@@ -22,6 +22,7 @@ from __future__ import annotations
 import logging
 import math
 import uuid
+from dataclasses import dataclass
 from typing import Callable, Optional, Sequence
 
 from hive.domain.conflict import ConflictItem, detect_conflicts, suppression_targets
@@ -37,143 +38,75 @@ from hive.domain.secret_scan import REDACT, REFUSE
 _log = logging.getLogger("hive.recall")
 
 
-# ── softmax-mass transform (shared by the gate AND the per-hit margins) ───────
-# Owning this in ONE helper is what makes D1's "the same softmax masses the gate
-# computes" structural rather than a convention the two call sites must agree on.
-def _softmax_mass_from_sims(sims: Sequence[float], beta: float) -> list[float]:
-    """mass = softmax(beta·sim), max-shifted for numerical stability.  // O(n) time.
+@dataclass(frozen=True, slots=True)
+class GateVerdict:
+    """Frozen, self-asserting gate output. ``suppress`` ⇔ the field lacks absolute
+    relevance. ``top_cos`` = max absolute cosine over the FULL servable field
+    (clamped into [-1, 1]; -1.0 on an empty field). ``n_relevant`` = count of sims
+    clearing ``tau_serve`` (>= 0). An inconsistent verdict is UNCONSTRUCTABLE."""
+    suppress: bool
+    top_cos: float
+    n_relevant: int
 
-    raw_i = exp(beta·sim_i − beta·max_j sim_j); p_i = raw_i / Σ raw.
-    FALLBACK-1 (ported, gate_bundle.py:59): a non-finite raw_i (overflow/NaN) is
-        floored to 0.0 before summing.
-    FALLBACK-2 (ported verbatim, gate_bundle.py:61-66): total <= 0.0 ⇒ uniform
-        1/n — a zero-information set reads as maximally uncertain (→ suppress),
-        never a spurious peak. Empty ⇒ [].
-    """
-    n = len(sims)
-    if n == 0:
-        return []
-    # A non-finite INPUT sim is UNDECIDABLE — refuse rather than silently floor it to
-    # 0.0 (which would fabricate a confident verdict). The gate's except turns this
-    # into a fail-closed SUPPRESS; the honesty contract holds for non-finite floats,
-    # not just for raises (AUDIT wf_e5fdbb3c-5f1 #A).
-    if any(not math.isfinite(s) for s in sims):
-        raise ValueError("non-finite sim is undecidable — fail closed")
-    m = max(sims)
-    raw: list[float] = []
-    for s in sims:
-        x = math.exp(beta * s - beta * m)
-        if not math.isfinite(x):       # FALLBACK-1
-            x = 0.0
-        raw.append(x)
-    total = math.fsum(raw)
-    if total <= 0.0:                   # FALLBACK-2
-        return [1.0 / n] * n
-    return [r / total for r in raw]
+    def __post_init__(self) -> None:
+        if not (math.isfinite(self.top_cos) and -1.0 <= self.top_cos <= 1.0):
+            raise ValueError(f"top_cos must be finite in [-1, 1] (got {self.top_cos})")
+        if self.n_relevant < 0:
+            raise ValueError(f"n_relevant must be >= 0 (got {self.n_relevant})")
 
 
-def _recall_margins(masses: Sequence[float]) -> list[float]:
-    """Per-hit credit-split weight [D1]. For score-descending masses (rank i):
-    margin_i = mass_i − mass_{i+1} for i < N−1 ; margin_{N−1} = mass_{N−1} − 0
-    (the last returned hit's "next" mass is 0 ⇒ equals its own mass; never < 0).
-    The gate's `top_margin` is exactly the i=0 case.  // O(n) time."""
-    n = len(masses)
-    if n == 0:
-        return []
-    out = [masses[i] - masses[i + 1] for i in range(n - 1)]
-    out.append(masses[n - 1])  # tail: next mass is 0
-    return out
+class AbsoluteRelevanceGate:
+    """Abstain unless the field carries absolute relevance. PURE (math only); fail-closed.
 
-
-class NormalizedEntropyGate:
-    """C4 PORT+EXTEND: abstain iff the recall candidate set is too uncertain.
-
-    `evaluate(sims) -> (suppress, entropy_norm, top_margin)`. The sims→mass step
-    is `softmax(beta·sim)` (new code, β in the constructor); everything downstream
-    is byte-identical to the reference. `suppress` iff `(flat AND not serve_relev)`
-    OR `top1 < tau_top1`, where `flat = entropy_norm > h_frac_max` and `serve_relev =
-    top1_absolute_cosine > tau_thresh` (the flat-field relevance override — a FLAT
-    field is SERVED when its best candidate is absolutely relevant; consulted only on
-    the flat branch, inert at the `tau_thresh=1.0` default since a cosine ≤ 1 can never
-    exceed it ⇒ a flat field always abstains there). `top1 <
-    tau_top1` is the top-1 softmax-MASS floor — an unconditional additive abstention,
-    inert at the `tau_top1=0.0` default since masses ∈ [0,1] — so it suppresses even a
-    flat field the relevance override would serve. Empty ⇒ `(False, 0.0, 0.0)`. Any
-    internal failure ⇒ fail-closed `(True, 1.0, 0.0)` — a gate that cannot decide MUST
-    abstain, never fabricate.
+    ``suppress`` iff ``n_relevant < k_min``, where ``n_relevant = |{s in sims : s >=
+    tau_serve}|`` on EXACT unit-norm vectors. A flat-but-all-relevant field SERVES (many
+    clear the floor); a flat-but-weak field ABSTAINS (none clear it) — shift-invariance is
+    gone by construction. A peaked-but-absolutely-weak field also ABSTAINS (top cos <
+    tau_serve) — the old entropy gate wrongly SERVED it. Empty / non-finite / any internal
+    failure → fail-closed SUPPRESS (Law 1; the new gate has no softmax to raise on a
+    non-finite input, so the explicit guard below is load-bearing). PRECONDITION: the
+    producer emits exact unit-norm vectors (BUG-008), so an absolute-cosine floor is
+    meaningful.
     """
 
-    def __init__(self, h_frac_max: float, beta: float, tau_top1: float = 0.0,
-                 tau_thresh: float = 1.0) -> None:
-        if not math.isfinite(h_frac_max):
-            raise ValueError("h_frac_max must be finite")
-        if not (math.isfinite(beta) and beta > 0.0):
-            # a non-positive β inverts/flattens the mass, breaking the abstain
-            # decision — fail fast at construction (B1).
-            raise ValueError("beta must be finite and > 0")
-        if not (math.isfinite(tau_top1) and tau_top1 >= 0.0):
-            # the top-1 floor is only ever an additive abstention; a non-finite or
-            # negative threshold is undecidable — fail fast at construction.
-            raise ValueError("tau_top1 must be finite and >= 0")
-        if not (math.isfinite(tau_thresh) and 0.0 < tau_thresh <= 1.0):
-            # the absolute top-1 cosine ABOVE which a FLAT field is served instead of
-            # abstained. 1.0 ⇒ flat always abstains (today's gate, by construction since a
-            # cosine ≤ 1 can never exceed it); lower ⇒ more permissive.
-            # A distinct axis from tau_top1 (a softmax-MASS floor). Validated finite in (0, 1].
-            raise ValueError("tau_thresh must be finite in (0, 1]")
-        self.h_frac_max = float(h_frac_max)
-        self.beta = float(beta)
-        self.tau_top1 = float(tau_top1)
-        self.tau_thresh = float(tau_thresh)
+    def __init__(self, tau_serve: float, k_min: int = 1) -> None:
+        if not (math.isfinite(tau_serve) and 0.0 < tau_serve <= 1.0):
+            # the absolute-cosine serve floor; an out-of-range floor is undecidable — fail
+            # fast at construction (B1). 1.0 ⇒ only an exact-match field ever serves.
+            raise ValueError("tau_serve must be finite in (0, 1]")
+        k_min = int(k_min)
+        if k_min < 1:
+            raise ValueError("k_min must be an int >= 1")
+        self.tau_serve = float(tau_serve)
+        self.k_min = k_min
         self._recall = None              # set by from_recall() to the frozen config object
 
     @classmethod
-    def from_recall(cls, recall, beta: float) -> "NormalizedEntropyGate":
+    def from_recall(cls, recall) -> "AbsoluteRelevanceGate":
         """Construct the gate BY IDENTITY from the single frozen recall-config object
-        (CONFIG_DRIFT killed structurally — M11). The floor is read off
-        ``recall.H_frac_max`` (+ the additive ``tau_top1`` top-1 floor and the ``tau_thresh``
-        flat-field relevance override, both getattr-defaulted so the duck-typed contract survives
-        an older config — ``tau_thresh`` defaults to 1.0 ⇒ no flat-serve override) and the object
-        itself is retained at ``self._recall`` so a future second gate cannot fork the float.
-        ``recall`` is duck-typed (any frozen object exposing ``H_frac_max``) — the domain stays
-        unaware of ``app.Config``.
-        """
-        gate = cls(float(recall.H_frac_max), beta,
-                   float(getattr(recall, "tau_top1", 0.0)),
-                   float(getattr(recall, "tau_thresh", 1.0)))
+        (CONFIG_DRIFT killed structurally — M11). ``tau_serve`` and the ``k_min`` floor are
+        read off that one object (``k_min`` getattr-defaulted so the duck-typed contract
+        survives an older config) and the object itself is retained at ``self._recall`` so a
+        future second gate cannot fork the floor. ``recall`` is duck-typed (any frozen object
+        exposing ``tau_serve``) — the domain stays unaware of ``app.Config``."""
+        gate = cls(float(recall.tau_serve), int(getattr(recall, "k_min", 1)))
         gate._recall = recall
         return gate
 
-    def evaluate(self, sims: Sequence[float]) -> tuple[bool, float, float]:
+    def evaluate(self, sims: Sequence[float]) -> GateVerdict:
         try:
-            n = len(sims)
-            if n == 0:
-                return (False, 0.0, 0.0)
-            mass = _softmax_mass_from_sims(sims, self.beta)
-            mass_sorted = sorted(mass, reverse=True)
-            top_margin = mass_sorted[0] - (mass_sorted[1] if n > 1 else 0.0)
-            top1 = mass_sorted[0]
-            n_eff = sum(1 for p in mass if p > 0.0)
-            if n_eff <= 1:
-                entropy_norm = 0.0            # ln(1) guard — no div-by-zero / NaN
-            else:
-                h = -math.fsum(p * math.log(p) for p in mass if p > 0.0)
-                entropy_norm = h / math.log(n_eff)
-            entropy_norm = max(0.0, min(1.0, entropy_norm))   # [0,1] clamp
-            # flat-field relevance override (read AFTER _softmax_mass_from_sims, so a non-finite
-            # sim has already raised ⇒ top_cos never sees one and the except's fail-closed SUPPRESS
-            # still wins — Law 1 holds): a FLAT field (entropy too high) is served ONLY on positive
-            # evidence — a present, absolutely-relevant top-1 cosine > tau_thresh — never on
-            # absence/weakness. tau_top1 stays unconditional, so the override relaxes only entropy.
-            top_cos = max(sims)
-            flat = entropy_norm > self.h_frac_max
-            serve_relev = top_cos > self.tau_thresh
-            suppress = (flat and not serve_relev) or (top1 < self.tau_top1)
-            return (suppress, entropy_norm, top_margin)
-        except Exception:                     # noqa: BLE001 — fail-closed by contract
-            _log.warning("entropy gate internal failure (n=%s) → fail-closed SUPPRESS",
+            for s in sims:                       # non-finite guard FIRST (Law 1)
+                if not math.isfinite(s):
+                    raise ValueError("non-finite sim is undecidable — fail closed")
+            if not sims:
+                return GateVerdict(True, -1.0, 0)
+            top_cos = max(-1.0, min(1.0, max(sims)))   # clamp float-error drift into [-1, 1]
+            n_relevant = sum(1 for s in sims if s >= self.tau_serve)
+            return GateVerdict(n_relevant < self.k_min, top_cos, n_relevant)
+        except Exception:                        # noqa: BLE001 — fail-closed by contract
+            _log.warning("relevance gate internal failure (n=%s) → fail-closed SUPPRESS",
                          len(sims) if hasattr(sims, "__len__") else "?")
-            return (True, 1.0, 0.0)
+            return GateVerdict(True, -1.0, 0)
 
 
 class RecallPipeline:
@@ -187,7 +120,7 @@ class RecallPipeline:
 
     def __init__(
         self, *, embedder: EmbeddingProvider, index: VectorIndex,
-        gate: NormalizedEntropyGate,
+        gate: AbsoluteRelevanceGate,
         reader: EpisodeReader,
         recall_top_n: int, ledger: ExposureLedger, clock_now: Callable[[], int],
         scanner, provisional_ttl_s: int, lifecycle=None,
@@ -257,46 +190,34 @@ class RecallPipeline:
             return RecallResult.empty(trace_id)
 
         # abstain gate (self-fail-closed to SUPPRESS). One-way: suppress returns here.
-        suppress, entropy_norm, top_margin = self.gate.evaluate(sims)
-        if suppress:
-            _log.info("ABSTAIN trace=%s h_norm=%.4f top_margin=%.4f n_cands=%d",
-                      trace_id, entropy_norm, top_margin, len(sims))
+        verdict = self.gate.evaluate(sims)
+        if verdict.suppress:
+            _log.info("ABSTAIN trace=%s top_cos=%.4f n_relevant=%d n_cands=%d",
+                      trace_id, verdict.top_cos, verdict.n_relevant, len(sims))
             self._note_non_answer(query, value_q, agent_id, "abstained")
-            return RecallResult.abstain(trace_id, entropy_norm, top_margin)
+            return RecallResult.abstain(trace_id, verdict.top_cos)
 
         # ── CONFIDENT path ────────────────────────────────────────────────────
-        # The whole surface step (resolve → margins → surface) fails
-        # closed to EMPTY_NO_DATA on ANY internal raise — no collaborator may throw
-        # into the caller (AUDIT #C/#D). The masses are the SAME ones the gate
-        # computed (shared helper); per-hit margins are taken over the RETURNED hit
-        # set so the LAST returned hit's "next" mass is 0 ⇒ its own mass (D1), even
-        # under recall_top_n truncation (AUDIT #B).
+        # The whole surface step (resolve → surface) fails closed to EMPTY_NO_DATA on
+        # ANY internal raise — no collaborator may throw into the caller (AUDIT #C/#D).
+        # The per-hit exposure weight is the raw dense cosine ``hit.sim`` (reinforcement
+        # is demand/exposure-only — there is no utility rerank; the dense+gate order is
+        # served as-is).
         try:
-            full_masses = _softmax_mass_from_sims(sims, self.gate.beta)
-
-            # the gate's masses + the honest dense cosine, keyed by eid — the ONLY
-            # mass/sim source for the resolve step. The dense search spans the full
-            # servable index, so every servable id has an entry; a fused id WITHOUT
-            # one (dense-cache divergence) is dropped fail-closed at resolve.
+            # the honest dense cosine keyed by eid — the dense search spans the full
+            # servable index, so every shortlisted id has an entry.
             dense_ids = [int(eid) for eid, _sim in candidates]
-            mass_by_eid = {dense_ids[i]: full_masses[i] for i in range(len(dense_ids))}
             sim_by_eid = {dense_ids[i]: float(candidates[i][1])
                           for i in range(len(dense_ids))}
 
             shortlist = dense_ids[:self.recall_top_n]
-            # resolve the shortlist to full episodes (weight + text + trust labels),
-            # keeping each hit's full-set mass. A hit that cannot resolve OR is no
-            # longer servable is dropped HERE — before it can be surfaced or exposed
-            # (a TTL-lapsed row in the stale warm index must never get its liveness
-            # refreshed by the very read that should have refused it).
+            # resolve the shortlist to full episodes (weight + text + trust labels). A hit
+            # that cannot resolve OR is no longer servable is dropped HERE — before it can
+            # be surfaced or exposed (a TTL-lapsed row in the stale warm index must never
+            # get its liveness refreshed by the very read that should have refused it).
             now_belt = int(self.clock_now())
-            resolved: list[tuple[Scored, float, Episode]] = []   # (scored, full_mass, ep)
+            resolved: list[tuple[Scored, Episode]] = []   # (scored, ep), dense order
             for eid in shortlist:
-                mass = mass_by_eid.get(eid)
-                if mass is None:
-                    _log.warning("resolve drop (no dense mass) eid=%s trace=%s",
-                                 eid, trace_id)
-                    continue
                 ep: Optional[Episode] = self.reader.get_episode(eid)
                 if ep is None or not is_servable(
                         status=ep.status, trust=ep.trust,
@@ -305,8 +226,7 @@ class RecallPipeline:
                     _log.warning("resolve drop (missing/unservable) eid=%s trace=%s",
                                  eid, trace_id)
                     continue
-                resolved.append(
-                    (Scored(eid, float(ep.weight), sim_by_eid[eid]), mass, ep))
+                resolved.append((Scored(eid, float(ep.weight), sim_by_eid[eid]), ep))
 
             # post-gate conflict suppression (§8.4 dedup/shadow slot): prune the
             # strictly-lower-trust member of any near-dup/contradiction pair among the resolved
@@ -319,12 +239,12 @@ class RecallPipeline:
                 citems = [ConflictItem(episode_id=ep.id, vector=ep.value,
                                        polarity=ep.polarity, anchor=ep.anchor,
                                        ts=ep.ts, trust=ep.trust)
-                          for _s, _m, ep in resolved]
+                          for _s, ep in resolved]
                 drop = suppression_targets(
                     detect_conflicts(citems, tau=self.conflict_tau, top_n=len(citems)),
                     {it.episode_id: it.trust for it in citems})
                 if drop:
-                    resolved = [r for r in resolved if r[2].id not in drop]
+                    resolved = [r for r in resolved if r[1].id not in drop]
 
             if not resolved:
                 _log.error("gate passed but 0 candidates resolved → EMPTY_NO_DATA "
@@ -332,49 +252,28 @@ class RecallPipeline:
                 self._note_non_answer(query, value_q, agent_id, "no_match")
                 return RecallResult.empty(trace_id)
 
-            # D1 margins over the RETURNED set, taken in MASS-DESCENDING order: the
-            # shortlist may be fusion-reordered (non-monotone masses), and a gap over
-            # non-monotone masses could go negative. Stable-sort positions by mass
-            # desc, take consecutive gaps, map back by position — byte-identical to
-            # the dense-order computation when the shortlist is dense-ordered, and
-            # every margin is non-negative by construction under fusion. The last
-            # (lowest-mass) hit's next mass is 0 ⇒ its own mass.
-            order_desc = sorted(range(len(resolved)), key=lambda j: resolved[j][1],
-                                reverse=True)
-            gaps = _recall_margins([resolved[j][1] for j in order_desc])
-            hit_margins = [0.0] * len(resolved)
-            for pos, j in enumerate(order_desc):
-                hit_margins[j] = gaps[pos]
-            by_eid = {s.episode_id: (hit_margins[j], ep)
-                      for j, (s, _fm, ep) in enumerate(resolved)}
-            scored = [s for s, _fm, _e in resolved]
-
+            scored = [s for s, _ep in resolved]
             # reinforcement is demand/exposure-ONLY by design — there is no utility rerank:
             # the dense+gate order is served as-is. Every served hit carries its trust label
             # + creation ts so the consumer can discount provisional content and order
             # coexisting versions.
             hits = tuple(
-                RecallHit(s.episode_id, by_eid[s.episode_id][1].text, s.sim,
-                          trust=by_eid[s.episode_id][1].trust,
-                          ts=by_eid[s.episode_id][1].ts,
-                          polarity=by_eid[s.episode_id][1].polarity,
-                          kind=by_eid[s.episode_id][1].kind,
-                          anchor=by_eid[s.episode_id][1].anchor)
-                for s in scored)
+                RecallHit(s.episode_id, ep.text, s.sim, trust=ep.trust, ts=ep.ts,
+                          polarity=ep.polarity, kind=ep.kind, anchor=ep.anchor)
+                for s, ep in resolved)
         except Exception as exc:                       # noqa: BLE001 — fail closed
             _log.error("recall surface failure (agent_id=%s): %r → EMPTY_NO_DATA",
                        agent_id, exc)
             self._note_non_answer(query, value_q, agent_id, "no_match")
             return RecallResult.empty(trace_id)
 
-        # exposure: WHO was served WHAT, with the per-hit margins, refreshing the
-        # served rows' liveness — recorded post-resolve in surfaced order.
+        # exposure: WHO was served WHAT, with the raw cosine weight, refreshing the served
+        # rows' liveness — recorded post-resolve in surfaced order.
         self._note_exposure(
-            trace_id, [(s.episode_id, by_eid[s.episode_id][0]) for s in scored],
-            agent_id)
+            trace_id, [(s.episode_id, s.sim) for s in scored], agent_id)
         _log.debug("CONFIDENT trace=%s n_hits=%d top_sim=%.4f",
                    trace_id, len(hits), hits[0].sim)
-        return RecallResult(CONFIDENT, trace_id, hits, entropy_norm, top_margin)
+        return RecallResult(CONFIDENT, trace_id, hits, verdict.top_cos)
 
     # ── the recall side-channel (exposure + demand), fail-open for the read ───
     def _note_exposure(self, trace_id: str, items: list, agent_id: str) -> None:

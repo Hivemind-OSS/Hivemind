@@ -214,18 +214,18 @@ def _spec(cid: int, *, false_value: str = "9191", true_value: str = "8080",
         false_text=f"the dev server runs on port {false_value} cid={cid}", kind=kind)
 
 
-def _hivemind_factory(*, h: float, autonomy=None):
+def _hivemind_factory(*, tau_serve: float, autonomy=None):
     """A zero-arg server factory the HivemindBackend resets through, fixing the embedder +
     autonomy across every rebuild so the demand geometry is deterministic per arm."""
     def factory():
         server, _clock = build_real_server(
-            d=64, h=h, embedder=FakeClusterProvider(d=64), autonomy=autonomy)
+            d=64, tau_serve=tau_serve, embedder=FakeClusterProvider(d=64), autonomy=autonomy)
         return server
     return factory
 
 
-def _hivemind_backend(*, h: float = 1.0, autonomy=None) -> HivemindBackend:
-    return HivemindBackend(_hivemind_factory(h=h, autonomy=autonomy))
+def _hivemind_backend(*, tau_serve: float = 0.01, autonomy=None) -> HivemindBackend:
+    return HivemindBackend(_hivemind_factory(tau_serve=tau_serve, autonomy=autonomy))
 
 
 def _recall_ids(backend, seat: str, query: str) -> tuple[str, ...]:
@@ -246,7 +246,7 @@ def test_plant_falsehood_vouched_makes_it_servable_in_both_backends():
     query = f"what port does the dev server use cid={_CID_FALSE}"
 
     # Hivemind abstain-off (h=1.0): the orchestrator-vouched commit ESTABLISHES it servable.
-    hm = _hivemind_backend(h=1.0)
+    hm = _hivemind_backend(tau_serve=0.01)
     planted = plant_falsehood_vouched(hm, (spec,), approver="orchestrator")
     assert spec.false_source_id in planted and planted[spec.false_source_id]
     assert planted[spec.false_source_id] in _recall_ids(hm, "reader", query)
@@ -263,7 +263,7 @@ def test_plant_falsehood_vouched_makes_it_servable_in_both_backends():
 def test_two_distinct_seats_can_promote_via_real_demand_path():
     spec = _spec(_CID_FALSE)
     miss_q = f"what port does the dev server use cid={_CID_FALSE}"
-    hm = _hivemind_backend(h=1.0, autonomy=_DEMAND_AUTONOMY)
+    hm = _hivemind_backend(tau_serve=0.01, autonomy=_DEMAND_AUTONOMY)
 
     # plant the falsehood unvouched: a quarantined capture under ONE subagent seat.
     proposals = plant_falsehood_unvouched(hm, (spec,), writer_seat="sub-a")
@@ -283,7 +283,7 @@ def test_two_distinct_seats_can_promote_via_real_demand_path():
 def test_single_seat_cannot_self_promote():
     spec = _spec(_CID_FALSE)
     miss_q = f"what port does the dev server use cid={_CID_FALSE}"
-    hm = _hivemind_backend(h=1.0, autonomy=_DEMAND_AUTONOMY)
+    hm = _hivemind_backend(tau_serve=0.01, autonomy=_DEMAND_AUTONOMY)
 
     plant_falsehood_unvouched(hm, (spec,), writer_seat="sub-a")
     # SAME-seat demand: n_other == 0 ⇒ self_demand ⇒ the anti-gaming floor refuses.
@@ -302,7 +302,7 @@ def test_supersede_deindexes_the_false_fact_and_serves_the_fresh_gold():
     corrected_text = f"the dev server runs on port {spec.true_value} cid={_CID_GOLD}"
 
     # Hivemind: plant servable, then human-vouched supersede.
-    hm = _hivemind_backend(h=1.0)
+    hm = _hivemind_backend(tau_serve=0.01)
     pre = Preloaded(mem_source={}, mem_text={})
     planted = plant_falsehood_vouched(hm, (spec,), approver="orchestrator")
     false_mid = planted[spec.false_source_id]
@@ -340,7 +340,7 @@ def test_falsity_map_skips_refused_credential_writes():
 
     # Hivemind: the shipped secret floor REFUSES the credential at write ⇒ no mem_id, so it
     # contributes no key to falsity_map (a refused entry never leaks an empty handle).
-    hm = _hivemind_backend(h=1.0)
+    hm = _hivemind_backend(tau_serve=0.01)
     pre = preload(hm, [(cred_spec.false_source_id, cred_spec.false_text)],
                   approver="orchestrator")
     assert falsity_map(pre, (cred_spec,)) == frozenset()

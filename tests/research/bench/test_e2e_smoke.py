@@ -57,11 +57,12 @@ def test_e2e_offline_hivemind_oracle_vs_allowall(tmp_path):
 
 
 # ── ABSTAIN-TOKEN C5: the three-arm agent-loop token benchmark, end-to-end offline ──
-def _hive_server(h: float):
-    """A real in-process server at gate threshold ``h`` with the orchestrator as the SOLE
+def _hive_server(tau_serve: float):
+    """A real in-process server at gate threshold ``tau_serve`` with the orchestrator as the SOLE
     promotion authority (demand_m huge), so only preloaded commits are servable."""
     def factory():
-        server, _clock = build_real_server(h=h, autonomy=AutonomyConfig(demand_m=10**9))
+        server, _clock = build_real_server(tau_serve=tau_serve,
+                                           autonomy=AutonomyConfig(demand_m=10**9))
         return server
     return factory
 
@@ -70,8 +71,8 @@ def _token_backend(arm: str):
     if arm == ARM_MEM0:
         return Mem0Backend(FakeMem0Client())
     if arm == ARM_OFF:
-        return HivemindBackend(_hive_server(1.0))      # max legal threshold ⇒ no suppression
-    return HivemindBackend(_hive_server(0.5))          # production gate
+        return HivemindBackend(_hive_server(0.01))     # serve-everything proxy ⇒ no suppression
+    return HivemindBackend(_hive_server(0.70))         # production gate
 
 
 def test_e2e_offline_three_arm_token_report(tmp_path):
@@ -86,7 +87,7 @@ def test_e2e_offline_three_arm_token_report(tmp_path):
     assert set(rep["arms"]) == {ARM_MEM0, ARM_OFF, ARM_ON}
     assert set(rep["deltas"]) == {"C-B", "B-A", "C-A"}
     prov = rep["provenance"]
-    assert prov["h_frac_on"] == 0.5 and prov["h_frac_off"] == 1.0
+    assert prov["tau_serve_on"] == 0.70 and prov["tau_serve_off"] == 0.01
     assert prov["embedder_model"] == "Qwen/Qwen3-Embedding-0.6B"
     assert prov["dataset_hash"] and prov["extractor"] == "substrate-raw-turns"
     assert prov["served_tokenizer"]                 # the served-token axis is tokenizer-stamped

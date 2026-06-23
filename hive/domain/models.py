@@ -75,16 +75,15 @@ class RecallResult:
     state: RecallState
     trace_id: str
     hits: tuple[RecallHit, ...]
-    entropy_norm: float                    # H/ln(N_eff) ∈ [0,1]; 0.0 on EMPTY_NO_DATA
-    top_margin: float
+    top_cos: float                         # max abs cosine ∈ [-1,1]; 0.0 on EMPTY_NO_DATA
 
     @classmethod
     def empty(cls, trace_id: str) -> "RecallResult":
-        return cls(EMPTY_NO_DATA, trace_id, (), 0.0, 0.0)
+        return cls(EMPTY_NO_DATA, trace_id, (), 0.0)
 
     @classmethod
-    def abstain(cls, trace_id: str, h_norm: float, margin: float) -> "RecallResult":
-        return cls(ABSTAIN, trace_id, (), h_norm, margin)
+    def abstain(cls, trace_id: str, top_cos: float) -> "RecallResult":
+        return cls(ABSTAIN, trace_id, (), top_cos)
 
     def __post_init__(self) -> None:
         if self.state not in (CONFIDENT, ABSTAIN, EMPTY_NO_DATA):
@@ -96,8 +95,8 @@ class RecallResult:
             raise ValueError("only CONFIDENT may carry hits (abstain-no-resurrect)")
         if self.state == CONFIDENT and not self.hits:
             raise ValueError("CONFIDENT must carry ≥1 hit (CONFIDENT<->has-hits biconditional)")
-        if not (0.0 <= self.entropy_norm <= 1.0):
-            raise ValueError("entropy_norm must be in [0,1]")
+        if not (-1.0 <= self.top_cos <= 1.0):
+            raise ValueError("top_cos must be in [-1,1]")
 
 
 # ── episode (the recall substrate) ───────────────────────────────────────────

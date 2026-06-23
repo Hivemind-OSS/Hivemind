@@ -11,8 +11,8 @@ Empirically measured real cosines (this model, prior d=768 geometry): container 
 values shift, but the GAP (strong near-dups vs off-topic) stays wide, so conflict.tau=0.80 still
 sits comfortably between — detection is deterministic across minor model jitter. (The DEFAULT
 tau=0.85 is stricter; its calibration is the benchmark's job.)
-H_frac_max=1.0 makes recall serve the co-present near-dups confidently (a flat 2-hit
-distribution would otherwise abstain — the gate is proven elsewhere)."""
+A permissive tau_serve=0.01 makes recall serve the co-present near-dups confidently (they
+clear the absolute-relevance floor — the gate is proven elsewhere)."""
 from __future__ import annotations
 
 import pytest
@@ -25,7 +25,7 @@ from tests.mcp._helpers import content
 pytestmark = pytest.mark.embed   # loads the real Qwen3 model (gated heavy tier)
 
 _CONF = {"enabled": True, "tau": 0.80}
-_PERMISSIVE = {"H_frac_max": 1.0}
+_PERMISSIVE = {"tau_serve": 0.01}
 
 
 def _call(server, name, args, agent="agent-A"):

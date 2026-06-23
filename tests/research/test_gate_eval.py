@@ -1,6 +1,7 @@
 """CV5 — gate self-calibration: the replay labeler's temporal restriction, the
-CI-only ship rule (a positive point estimate with lo<=0 NEVER recommends), arm
-metrics, determinism, and the standing runtime⇸research fence."""
+CI-only ship rule (a positive point estimate with lo<=0 NEVER recommends), the
+coverage-floor anti-over-abstention guard, arm metrics, determinism, and the
+standing runtime⇸research fence."""
 from __future__ import annotations
 
 import numpy as np
@@ -11,8 +12,8 @@ from hive.research.gate_eval import (
 )
 
 D = 8
-CURRENT = (0.1, 8.0, 0.0)   # the strict live gate: abstains every fixture field (floor inert)
-LOOSE = (0.5, 8.0, 0.0)     # the candidate: serves every fixture field (floor inert)
+CURRENT = (0.90, 1)   # the strict live gate: abstains every fixture field (top cos < 0.90)
+LOOSE = (0.50, 1)     # the candidate: serves every fixture field (every top cos >= 0.50)
 
 
 def _rows(ts: int = 10):
@@ -37,12 +38,13 @@ def _miss(sims4, ts: int = 50) -> tuple[np.ndarray, int]:
     return v, ts
 
 
-# fixture fields (beta=8): entropy_norm ≈ 0.14–0.25 — between the two arms'
-# thresholds, so CURRENT (0.1) abstains all three and LOOSE (0.5) serves all.
+# fixture fields: a false-abstain top cos is >= label_tau (0.80); a true-abstain top is
+# below it. CURRENT (0.90) abstains all of them; LOOSE (0.50) serves all of them.
 FA1 = _miss([0.85, 0.30, 0.30, 0.30])    # top 0.85 ≥ 0.8 ⇒ false abstain, gold=1
 FA2 = _miss([0.82, 0.32, 0.32, 0.32])    # false abstain, gold=1
 TA1 = _miss([0.60, 0.15, 0.15, 0.15])    # top 0.60 < 0.8 ⇒ TRUE abstain
 FA_MORE = [_miss([0.84, 0.30 + 0.005 * i, 0.30, 0.30]) for i in range(6)]
+TA_MORE = [_miss([0.60, 0.15 + 0.005 * i, 0.15, 0.15]) for i in range(8)]
 
 
 def _spec(misses, **kw) -> GateEvalSpec:
@@ -91,7 +93,7 @@ def test_recommend_only_on_ci_lo_gt_0():
 
 def test_best_equals_current_never_recommends():
     # sweeping only worse arms: best stays current; the self-delta CI is 0-width
-    worse = (0.001, 8.0, 0.0)                               # abstains even harder
+    worse = (0.95, 1)                                       # abstains even harder
     out = run_gate_eval(_spec([FA1, FA2, *FA_MORE, TA1]), sweep=[worse],
                         n_boot=500, seed=0)
     assert out.best == CURRENT
@@ -99,18 +101,33 @@ def test_best_equals_current_never_recommends():
     assert out.recommend is False
 
 
-def test_gate_eval_sweeps_tau_top1():
-    # the third sweep dimension is live: a tau_top1=0.99 arm (entropy threshold relaxed to
-    # 0.5) floors every fixture's top-1 mass (all in 0.92–0.96 < 0.99) → abstains the FAs it
-    # should have served, so it never beats CURRENT. Proves the 3-tuple arm is unpacked and
-    # the floor reaches the gate inside the sweep.
-    tau_arm = (0.5, 8.0, 0.99)
-    out = run_gate_eval(_spec([FA1, FA2, *FA_MORE, TA1]), sweep=[tau_arm],
+def test_gate_eval_sweeps_k_min():
+    # the k_min sweep dimension is live: a (0.50, 2) arm requires TWO relevant hits, but every
+    # fixture field has only ONE sim clearing 0.50, so it abstains the FAs it should have
+    # served (and the TA), never beating CURRENT. Proves the 2-tuple arm is unpacked and the
+    # quorum floor reaches the gate inside the sweep.
+    k_arm = (0.50, 2)
+    out = run_gate_eval(_spec([FA1, FA2, *FA_MORE, TA1]), sweep=[k_arm],
                         n_boot=500, seed=0)
-    assert set(out.arms) == {tau_arm, CURRENT}
-    assert out.arms[tau_arm]["false_abstain_rate"] == 1.0   # the floor abstains every FA
+    assert set(out.arms) == {k_arm, CURRENT}
+    assert out.arms[k_arm]["false_abstain_rate"] == 1.0     # the quorum abstains every FA
     assert out.best == CURRENT                              # the over-flooring arm never wins
     assert out.recommend is False
+
+
+# ── the coverage floor ★ (anti-over-abstention) ─────────────────────────────────
+def test_coverage_floor_blocks_recommend():
+    # CURRENT here SERVES the field (LOOSE), the candidate is the over-strict gate (abstains
+    # everything). On a true-abstain-heavy corpus the strict arm wins correct_rate and its CI
+    # excludes 0 — but it serves ZERO recoverable golds, so the coverage floor BLOCKS the
+    # recommendation. Honesty-over-recall must not collapse to recall-zero.
+    strict = (0.90, 1)
+    spec = GateEvalSpec(servable=_rows(), misses=[FA1, *TA_MORE], current=LOOSE)
+    out = run_gate_eval(spec, sweep=[strict], n_boot=2000, seed=0)
+    assert out.best == strict                               # strict wins on correctness
+    assert out.best_vs_current_ci[1] > 0.0                  # the CI alone WOULD recommend
+    assert out.arms[strict]["coverage"] == 0.0             # serves none of the recoverable golds
+    assert out.recommend is False                          # ★ blocked by the coverage floor
 
 
 # ── arm metrics + hygiene ──────────────────────────────────────────────────────
@@ -122,9 +139,10 @@ def test_arm_metrics_shapes_and_values():
     assert strict["false_abstain_rate"] == 1.0              # abstains every FA
     assert loose["false_abstain_rate"] == 0.0
     assert loose["recall_at_k"] == 1.0                      # the gold row surfaces
+    assert loose["coverage"] == 1.0                         # serves both recoverable golds
     assert strict["correct_rate"] == pytest.approx(1 / 3)
     assert loose["correct_rate"] == pytest.approx(2 / 3)
-    # the confidence proxy separates: FA fields are more peaked than the TA one
+    # the confidence proxy (top cos) separates: FA fields outrank the TA one
     assert strict["auroc"] == 1.0 and loose["auroc"] == 1.0
 
 

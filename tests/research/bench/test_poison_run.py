@@ -160,7 +160,7 @@ def _complete_provenance() -> dict:
     return {"arms": [ARM_MEM0, ARM_OFF, ARM_ON, ARM_SUP], "served_tokenizer": "regex-wordpunct",
             "dataset_hash": "abc", "embedder_model": EMBEDDER_MODEL, "poison_version": "poison.v1",
             "poison_frac": 0.5, "poison_kinds": ["mistake", "stale"],
-            "poison_value_map_hash": "deadbeef", "h_frac_on": 0.5, "h_frac_off": 1.0,
+            "poison_value_map_hash": "deadbeef", "tau_serve_on": 0.70, "tau_serve_off": 0.01,
             "llm_digest": "d", "seeds": [0], "regime_mix": {"corrected": 1},
             "matched_serve_point": 3,
             "secret_floor_observed": {"refused_by_hive": True, "stored_by_mem0": True,
@@ -253,7 +253,7 @@ def test_main_offline_writes_a_provenance_stamped_poison_report(tmp_path):
         assert isinstance(d["clean_win"], bool)
     # complete provenance, incl. the two DISCLOSED capability lines + the determinism stamps.
     prov = rep["provenance"]
-    assert prov["h_frac_on"] == 0.5 and prov["h_frac_off"] == 1.0
+    assert prov["tau_serve_on"] == 0.70 and prov["tau_serve_off"] == 0.01
     assert prov["embedder_model"] == EMBEDDER_MODEL and prov["served_tokenizer"]
     assert prov["dataset_hash"] and prov["poison_version"] == "poison.v1"
     assert prov["poison_value_map_hash"] and "matched_serve_point" in prov

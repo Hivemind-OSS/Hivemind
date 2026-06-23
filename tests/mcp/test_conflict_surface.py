@@ -1,7 +1,8 @@
 """C4 — the recall-time conflict carrier: a DISTINCT ``conflicts`` envelope key (ids only,
 never reference_context — Law 4), byte-inert when OFF, and fail-OPEN (a detector fault never
 breaks the read). Near-dups are modeled with FakeClusterProvider (cid-tagged texts cluster);
-the gate is made permissive (h=1.0) so a confident recall returns the co-present near-dups."""
+a cid-matched query embeds at cosine≈1 to both, clearing the absolute-relevance floor so a
+confident recall returns the co-present near-dups."""
 from __future__ import annotations
 
 from hive.app.config import ConflictConfig
@@ -11,10 +12,11 @@ from tests.mcp._helpers import build_real_server, content, tool_call, write_text
 D = 64
 
 
-def _srv(*, enabled=True, h=1.0):
-    # h=1.0 ⇒ the entropy gate never suppresses, so two near-dup hits are served confidently
-    # (a flat 2-hit distribution would otherwise abstain — that path is tested elsewhere).
-    return build_real_server(d=D, h=h, embedder=FakeClusterProvider(d=D),
+def _srv(*, enabled=True, tau_serve=0.70):
+    # a cid-matched query embeds at cosine≈1 to both near-dups, so they clear the
+    # absolute-relevance floor and are served confidently (the near-dup pair the conflict
+    # carrier/worklist classify); a non-matching query stays absolutely weak and abstains.
+    return build_real_server(d=D, tau_serve=tau_serve, embedder=FakeClusterProvider(d=D),
                              conflict=ConflictConfig(enabled=enabled))
 
 

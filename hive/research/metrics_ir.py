@@ -142,6 +142,39 @@ def abstention_auroc(scores: Sequence[float], is_miss: Sequence[bool]) -> float:
     return u_hit / (n_hit * n_miss)
 
 
+def risk_coverage(suppressed: Sequence[bool], is_fa: Sequence[bool]) -> tuple[float, float]:
+    """The selective-prediction operating point of a gate over the replay-labeled misses.
+
+    ``coverage`` = fraction of FALSE-ABSTAIN golds the gate SERVES (does not suppress) =
+    ``(n_fa - n_fa_suppressed) / n_fa`` — how much recoverable truth the gate still reaches.
+    ``risk`` = fraction of TRUE-ABSTAIN cases the gate WRONGLY serves = ``n_ta_served / n_ta``
+    — the false-serve rate. An absent class yields 0.0 for its metric (no FA ⇒ coverage 0.0;
+    no TA ⇒ risk 0.0 — documented, not silently degenerate). ``is_fa[i]`` marks the
+    false-abstain (recoverable) cases. Length mismatch RAISES. // O(n) time.
+    """
+    n = len(suppressed)
+    if n != len(is_fa):
+        raise ValueError(
+            f"risk_coverage length mismatch: len(suppressed)={n} != len(is_fa)={len(is_fa)}")
+    n_fa = sum(1 for f in is_fa if f)
+    n_ta = n - n_fa
+    fa_served = sum(1 for s, f in zip(suppressed, is_fa) if f and not s)
+    ta_served = sum(1 for s, f in zip(suppressed, is_fa) if (not f) and not s)
+    coverage = (fa_served / n_fa) if n_fa else 0.0
+    risk = (ta_served / n_ta) if n_ta else 0.0
+    return (risk, coverage)
+
+
+def coverage_floor(served_golds: int, *, n_recoverable: int) -> bool:
+    """The anti-over-abstention guard. True ⇒ BLOCK the recommendation: the candidate
+    collapses recall to ZERO while recoverable golds existed (``n_recoverable > 0`` and it
+    serves none of them). A gate that abstains on everything can score a high correctness
+    rate on a true-abstain-heavy corpus, but serving none of the recoverable false-abstain
+    golds is never a recommendable operating point — honesty-over-recall must not become
+    recall-zero. // O(1)."""
+    return n_recoverable > 0 and served_golds <= 0
+
+
 def bootstrap_ci(
     deltas: Sequence[float], *, n_boot: int = 10_000, alpha: float = 0.05,
     seed: int = 0,

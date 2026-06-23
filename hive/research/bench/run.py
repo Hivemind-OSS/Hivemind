@@ -151,7 +151,7 @@ def preflight(*, dataset_path: str, llm) -> None:
 
 _REQUIRED_PROVENANCE = (
     "dataset_hash", "n_cases", "seeds", "embedder_model", "extractor", "llm_digest", "ks",
-    "recall_hfrac")
+    "recall_tau_serve")
 
 
 def build_report(*, arms: dict, comparisons: list, provenance: dict) -> dict:
@@ -183,15 +183,16 @@ def _build_llm(extractor: str):
     raise ValueError(f"unknown extractor {extractor!r} (use 'claude' or 'verbatim')")
 
 
-def _hivemind_server_factory(h_frac_max: float = 0.9, *, autonomy=None) -> Callable[[], object]:
+def _hivemind_server_factory(tau_serve: float = 0.30, *, autonomy=None) -> Callable[[], object]:
     """A factory booting a real Qwen3-backed in-process server. The embedder is warmed ONCE and
     shared across every per-case rebuild (so Qwen3 loads a single time, not once per question);
     an ephemeral ``:memory:`` store guarantees the bench never touches a persistent operator DB.
 
-    ``h_frac_max`` is the recall entropy-gate threshold: the production default (0.5) abstains on
-    LongMemEval's multi-evidence/aggregation questions (the relevant facts spread the probability
-    mass ⇒ high entropy), collapsing coverage to ~0. It is exposed so it can be calibrated on a dev
-    slice and stamped into the report — never silently tuned to a flattering value.
+    ``tau_serve`` is the AbsoluteRelevanceGate threshold: it serves a field iff at least ``k_min``
+    candidates have absolute cosine ≥ ``tau_serve`` (LOWER = more permissive). The production default
+    (0.70) is strict; this runner defaults to a permissive 0.30 so retrieval recall on LongMemEval's
+    multi-evidence/aggregation questions is not confounded by abstention. It is exposed so it can be
+    calibrated on a dev slice and stamped into the report — never silently tuned to a flattering value.
 
     ``autonomy`` defaults to ``{"demand_m": 10**9}`` — the orchestrator commit is the SOLE promotion
     authority (demand never fires) for the headline arms; pass an ``AutonomyConfig`` or a dict to
@@ -204,7 +205,7 @@ def _hivemind_server_factory(h_frac_max: float = 0.9, *, autonomy=None) -> Calla
     elif isinstance(autonomy, AutonomyConfig):
         autonomy = {f.name: getattr(autonomy, f.name)
                     for f in dataclasses.fields(AutonomyConfig)}
-    overrides = {"autonomy": autonomy, "recall": {"H_frac_max": h_frac_max}}
+    overrides = {"autonomy": autonomy, "recall": {"tau_serve": tau_serve}}
     cfg = Config.load(db_path=":memory:", **overrides)
     embedder = registry.build_embedder(cfg)
     embedder.load()                                    # warm Qwen3 + verify native dim ONCE
@@ -219,13 +220,13 @@ def _hivemind_server_factory(h_frac_max: float = 0.9, *, autonomy=None) -> Calla
     return factory
 
 
-def _build_backend(name: str, *, recall_hfrac: float = 0.9) -> MemoryBackend:
+def _build_backend(name: str, *, recall_tau_serve: float = 0.30) -> MemoryBackend:
     if name == "mem0":
         from hive.research.bench.mem0_backend import Mem0Backend, RealMem0Client
         return Mem0Backend(RealMem0Client(model=EMBEDDER_MODEL, dims=EMBEDDER_DIMS))
     if name == "hivemind":
         from hive.research.bench.hivemind_backend import HivemindBackend
-        return HivemindBackend(_hivemind_server_factory(recall_hfrac))
+        return HivemindBackend(_hivemind_server_factory(recall_tau_serve))
     raise ValueError(f"unknown backend {name!r} (use 'hivemind' or 'mem0')")
 
 
@@ -250,9 +251,10 @@ def _parse_args(argv: Optional[Sequence[str]]) -> argparse.Namespace:
     p.add_argument("--baseline-backend", dest="baseline_backend", default="mem0")
     p.add_argument("--baseline-gate", dest="baseline_gate", default="allowall")
     p.add_argument("--extractor", default="claude", choices=["claude", "verbatim"])
-    p.add_argument("--recall-hfrac", dest="recall_hfrac", type=float, default=0.9,
-                   help="Hivemind recall entropy-gate threshold H_frac_max (prod default 0.5 "
-                        "abstains on multi-evidence queries; calibrate on a dev slice)")
+    p.add_argument("--recall-tau-serve", dest="recall_tau_serve", type=float, default=0.30,
+                   help="Hivemind AbsoluteRelevanceGate threshold tau_serve (prod default 0.70 is "
+                        "strict; a permissive 0.30 serves broadly so recall isn't confounded by "
+                        "abstention; calibrate on a dev slice)")
     p.add_argument("--dataset", default=os.environ.get("HIVE_BENCH_LME_PATH"))
     p.add_argument("--n", type=int, default=None)
     p.add_argument("--seeds", default="0")
@@ -274,7 +276,8 @@ def main(argv: Optional[Sequence[str]] = None, *,
     llm = (llm_factory or _build_llm)(cfg.extractor)
     preflight(dataset_path=cfg.dataset, llm=llm)     # verbatim has no preflight() ⇒ dataset-only
     cases = load_longmemeval(cfg.dataset, n=cfg.n, seed=cfg.seeds[0])
-    make_backend = backend_factory or (lambda name: _build_backend(name, recall_hfrac=cfg.recall_hfrac))
+    make_backend = backend_factory or (
+        lambda name: _build_backend(name, recall_tau_serve=cfg.recall_tau_serve))
 
     primary = score_arm(make_backend(cfg.backend), _build_gate(cfg.gate, cases, llm),
                         cases, llm=llm, seats=list(_SEATS), ks=_KS)
@@ -288,7 +291,7 @@ def main(argv: Optional[Sequence[str]] = None, *,
         "dataset_hash": _file_sha256(cfg.dataset), "n_cases": len(cases), "seeds": cfg.seeds,
         "embedder_model": EMBEDDER_MODEL, "extractor": cfg.extractor,
         "llm_digest": getattr(llm, "digest", lambda: "n/a")(), "ks": list(_KS),
-        "recall_hfrac": cfg.recall_hfrac,
+        "recall_tau_serve": cfg.recall_tau_serve,
         "primary": f"{cfg.backend}/{cfg.gate}", "baseline": f"{cfg.baseline_backend}/{cfg.baseline_gate}",
     }
     report = build_report(arms=arms, comparisons=comparisons, provenance=provenance)

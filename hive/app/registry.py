@@ -17,7 +17,7 @@ import logging
 from typing import TYPE_CHECKING
 
 from hive.adapters import index_exhaustive
-from hive.domain.recall import NormalizedEntropyGate
+from hive.domain.recall import AbsoluteRelevanceGate
 
 if TYPE_CHECKING:                       # avoid an import cycle (config lazily imports us)
     from hive.app.config import Config
@@ -67,10 +67,10 @@ def build_index(*, dim: int):
 
 
 # ── the abstention gate (floor-by-identity) ───────────────────────────────────
-def build_gate(cfg: "Config") -> NormalizedEntropyGate:
+def build_gate(cfg: "Config") -> AbsoluteRelevanceGate:
     """THE single located owner of the never-hallucinate floor wiring. The frozen
-    `cfg.recall` object is handed to the gate BY IDENTITY (not `cfg.recall.H_frac_max`
+    `cfg.recall` object is handed to the gate BY IDENTITY (not `cfg.recall.tau_serve`
     copied as a float) so a future second gate cannot fork the floor — `from_recall`
-    reads both the entropy floor and the additive `tau_top1` top-1 floor off that one
-    object. Invariant: `build_gate(cfg)._recall is cfg.recall` (pinned by test + mutation)."""
-    return NormalizedEntropyGate.from_recall(cfg.recall, cfg.recall.softmax_beta)
+    reads the `tau_serve` floor and the `k_min` count off that one object. Invariant:
+    `build_gate(cfg)._recall is cfg.recall` (pinned by test + mutation)."""
+    return AbsoluteRelevanceGate.from_recall(cfg.recall)

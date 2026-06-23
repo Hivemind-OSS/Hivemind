@@ -16,13 +16,13 @@ from hive.app.config import AutonomyConfig
 from hive.app.mcp_server import HiveMCPServer, MCPRequest, ServerIdentity
 from hive.domain.admission import AdmissionService
 from hive.domain.lifecycle import DemandRule, LifecycleService
-from hive.domain.recall import NormalizedEntropyGate, RecallPipeline
+from hive.domain.recall import AbsoluteRelevanceGate, RecallPipeline
 from tests.fakes._fakes import FakeClock, FakeProvider, FakeScanner
 
 _DAY_S = 86_400
 
 
-def build_real_server(*, d: int = 64, h: float = 0.5, beta: float = 16.0,
+def build_real_server(*, d: int = 64, tau_serve: float = 0.70, k_min: int = 1,
                       top_n: int = 10, t0: int = 1000,
                       scanner=None, autonomy=None, embedder=None, conflict=None):
     """Return (server, clock). ``clock`` is mutable so tests can stamp distinct ts.
@@ -53,7 +53,7 @@ def build_real_server(*, d: int = 64, h: float = 0.5, beta: float = 16.0,
     admission = AdmissionService(store, scanner, embedder, now=clock.now,
                                  lifecycle=lifecycle, autonomy_enabled=aut.enabled)
     recall = RecallPipeline(
-        embedder=embedder, index=index, gate=NormalizedEntropyGate(h, beta),
+        embedder=embedder, index=index, gate=AbsoluteRelevanceGate(tau_serve, k_min),
         reader=store,
         recall_top_n=top_n,
         ledger=store, clock_now=clock.now, scanner=scanner,

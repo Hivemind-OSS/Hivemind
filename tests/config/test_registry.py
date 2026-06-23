@@ -11,7 +11,7 @@ import pytest
 from hive.adapters import index_exhaustive
 from hive.app.config import Config
 from hive.app import registry
-from hive.domain.recall import NormalizedEntropyGate
+from hive.domain.recall import AbsoluteRelevanceGate
 
 
 # ── build_* defaults satisfy their port ───────────────────────────────────────
@@ -59,22 +59,22 @@ def test_build_index_postcondition_fires(monkeypatch):
 def test_gate_reads_same_frozen_recall_object():
     cfg = Config.load(db_path=":memory:")
     gate = registry.build_gate(cfg)
-    assert isinstance(gate, NormalizedEntropyGate)
+    assert isinstance(gate, AbsoluteRelevanceGate)
     assert gate._recall is cfg.recall          # IDENTITY, not a float copy (CONFIG_DRIFT killed)
-    assert gate.h_frac_max == cfg.recall.H_frac_max
+    assert gate.tau_serve == cfg.recall.tau_serve
 
 
 def test_gate_floor_tracks_config_value():
-    cfg = Config.load(db_path=":memory:", recall={"H_frac_max": 0.3})
+    cfg = Config.load(db_path=":memory:", recall={"tau_serve": 0.55})
     gate = registry.build_gate(cfg)
-    assert gate.h_frac_max == 0.3
+    assert gate.tau_serve == 0.55
     assert gate._recall is cfg.recall
 
 
-def test_gate_carries_tau_top1_and_keeps_identity():
-    # build_gate threads tau_top1 off the frozen cfg.recall (by from_recall's getattr) AND
+def test_gate_carries_k_min_and_keeps_identity():
+    # build_gate threads k_min off the frozen cfg.recall (by from_recall's getattr) AND
     # still holds the recall object by identity — the floor and the gate share one source.
-    cfg = Config.load(db_path=":memory:", recall={"tau_top1": 0.4})
+    cfg = Config.load(db_path=":memory:", recall={"k_min": 2})
     gate = registry.build_gate(cfg)
-    assert gate.tau_top1 == 0.4
+    assert gate.k_min == 2
     assert gate._recall is cfg.recall

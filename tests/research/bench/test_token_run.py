@@ -133,7 +133,7 @@ def test_score_token_arms_requires_aligned_arms():
 # ── build_token_report: refuse on incomplete inputs ────────────────────────────
 def _complete_provenance() -> dict:
     return {"token_totals": {ARM_MEM0: 1}, "served_tokenizer": "regex-wordpunct",
-            "h_frac_on": 0.5, "h_frac_off": 1.0,
+            "tau_serve_on": 0.70, "tau_serve_off": 0.01,
             "dataset_hash": "abc", "embedder_model": EMBEDDER_MODEL,
             "extractor": "substrate-raw-turns", "llm_digest": "d", "seeds": [0],
             "regime_mix": {"single-answer": 1}}
@@ -162,7 +162,7 @@ def test_build_token_report_emits_with_complete_inputs():
     rep = build_token_report(
         arms={ARM_MEM0: {"success_rate": 0.5, "input_tokens_total": 1}},
         deltas={"C-B": {}}, provenance=_complete_provenance())
-    assert rep["provenance"]["h_frac_off"] == 1.0 and rep["arms"] and "deltas" in rep
+    assert rep["provenance"]["tau_serve_off"] == 0.01 and rep["arms"] and "deltas" in rep
 
 
 # ── main offline (fake backends + FakeLLM) ─────────────────────────────────────
@@ -204,7 +204,7 @@ def test_main_offline_writes_a_provenance_stamped_token_report(tmp_path):
     assert set(rep["arms"]) == {ARM_MEM0, ARM_OFF, ARM_ON}
     assert set(rep["deltas"]) == {"C-B", "B-A", "C-A"}
     prov = rep["provenance"]
-    assert prov["h_frac_on"] == 0.5 and prov["h_frac_off"] == 1.0
+    assert prov["tau_serve_on"] == 0.70 and prov["tau_serve_off"] == 0.01
     assert prov["token_totals"] and prov["regime_mix"] and prov["dataset_hash"]
     assert prov["embedder_model"] == EMBEDDER_MODEL and prov["served_tokenizer"]
     # every arm carries both axes (Pareto): served tokens AND success, per regime

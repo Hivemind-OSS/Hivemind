@@ -29,7 +29,7 @@ class RecallObs:
     ``ranked_ids``  servable memory ids, best-first (Hivemind ``episode_id`` / mem0 id, as str).
     ``top_score``   the top hit's native similarity (0.0 when none); mem0's abstention proxy.
     ``confidence``  native abstention signal in [0,1], HIGHER = more confident = less likely to
-                    abstain. Hivemind: ``1 - entropy_norm``. mem0: ``top_score``. The
+                    abstain. Hivemind: ``top_cos`` (the top absolute cosine). mem0: ``top_score``. The
                     cross-backend asymmetry is intentional and disclosed — this is "each
                     system's native abstention separability", NOT a calibration claim.
     ``abstained``   the system returned no usable answer (Hivemind gate fired / mem0 empty).

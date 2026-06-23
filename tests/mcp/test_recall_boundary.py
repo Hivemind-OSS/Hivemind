@@ -27,7 +27,7 @@ class _StubRecall:
 
 
 def _confident(eid, text, *, trace="T-abc", sim=0.9):
-    return RecallResult(CONFIDENT, trace, (RecallHit(eid, text, sim),), 0.05, 0.5)
+    return RecallResult(CONFIDENT, trace, (RecallHit(eid, text, sim),), sim)
 
 
 # ── abstain / empty ─────────────────────────────────────────────────────────────
@@ -43,7 +43,7 @@ def test_recall_empty_store_returns_empty_list_with_trace_id():
 
 def test_recall_abstain_returns_empty_list_with_trace_id():
     server, _ = build_real_server()
-    server.recall = _StubRecall(RecallResult.abstain("T-xyz", 0.91, 0.01))
+    server.recall = _StubRecall(RecallResult.abstain("T-xyz", 0.91))
     env = content(tool_call(server, "hive_recall", {"query": "q"}))
     assert env["reference_context"] == []
     assert env["abstained"] is True
@@ -54,7 +54,7 @@ def test_recall_abstain_returns_empty_list_with_trace_id():
 def test_recall_abstain_no_resurrect():
     """An abstained recall is never repopulated by the boundary — hits stay []."""
     server, _ = build_real_server()
-    server.recall = _StubRecall(RecallResult.abstain("T-1", 0.8, 0.0))
+    server.recall = _StubRecall(RecallResult.abstain("T-1", 0.8))
     env = content(tool_call(server, "hive_recall", {"query": "q"}))
     assert env["reference_context"] == [] and env["abstained"] is True
 

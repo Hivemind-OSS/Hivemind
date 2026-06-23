@@ -74,7 +74,7 @@ TOOL_DEFINITIONS: list[dict] = [
                                     "anchor": {"type": "string"}}}},
     {"name": "hive_recall",
      "description": "Retrieve servable memories. Returns {reference_context:[hits], "
-                    "abstained, state, entropy_norm}; on abstain reference_context is [] "
+                    "abstained, state, top_cos}; on abstain reference_context is [] "
                     "and abstained is true. Each hit carries trust ('established' = "
                     "approver-vouched, 'provisional' = demand-promoted, unverified), ts, "
                     "polarity (do|dont|neutral), kind (its category), and anchor (the WHERE "

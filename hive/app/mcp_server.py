@@ -384,7 +384,7 @@ class HiveMCPServer:
         abstained = (result.state != CONFIDENT) or (not hits)
         env: dict = {"reference_context": hits, "abstained": abstained,
                      "trace_id": result.trace_id, "state": result.state,
-                     "entropy_norm": float(result.entropy_norm)}
+                     "top_cos": float(result.top_cos)}
         # conflict carrier: a DISTINCT envelope key referencing IDS ONLY (never text, never
         # reference_context — Law 4). Byte-inert when off (no key) AND when no near-dup pair
         # is co-present (lean by default). Fail-OPEN: a detector fault never breaks the read.
@@ -395,7 +395,7 @@ class HiveMCPServer:
         if abstained:
             _log.info("mcp.recall_abstain", extra={"event": "mcp.recall_abstain",
                       "trace_id": result.trace_id, "state": result.state,
-                      "entropy_norm": float(result.entropy_norm)})
+                      "top_cos": float(result.top_cos)})
             env["note"] = _abstain_note(result.state)
         return env
 

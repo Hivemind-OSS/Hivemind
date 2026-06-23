@@ -5,10 +5,10 @@ one runner.
 
 The three arms isolate the gate, not just A-vs-C:
   * A ``mem0``        — top-k always (the competitor).
-  * B ``abstain-off`` — Hivemind at the max legal threshold ``H_frac_max=1.0`` (a clamped
-                        ``entropy_norm`` can never exceed it ⇒ no suppression); SAME store/embedder/
-                        geometry as C. A config of the shipped gate — no kernel change.
-  * C ``abstain-on``  — the production gate (``H_frac_max=0.5``).
+  * B ``abstain-off`` — Hivemind at the serve-everything proxy ``tau_serve=0.01`` (any field whose
+                        top cosine exceeds 0.01 serves ⇒ effectively no suppression); SAME store/
+                        embedder/geometry as C. A config of the shipped gate — no kernel change.
+  * C ``abstain-on``  — the production gate (``tau_serve=0.70``).
 Deltas, each a task-paired bootstrap CI: (C−B) is the gate's PURE contribution, (B−A) the
 store difference (mem0 and Hivemind now share the native 1024 geometry), (C−A) the total. Tokens are a Pareto co-axis — reported ALONGSIDE
 success (and per-regime), never folded into a scalar; a token saving counts only at
@@ -120,7 +120,7 @@ def score_token_arms(arm_obs: dict[str, ArmTokenObs], *, seed: int = 0) -> dict:
 # ── provenance-stamped report (refuse on incomplete) ───────────────────────────
 
 _REQUIRED_PROVENANCE = (
-    "token_totals", "served_tokenizer", "h_frac_on", "h_frac_off", "dataset_hash",
+    "token_totals", "served_tokenizer", "tau_serve_on", "tau_serve_off", "dataset_hash",
     "embedder_model", "extractor", "llm_digest", "seeds", "regime_mix")
 
 
@@ -148,8 +148,8 @@ def _default_backend_factory(cfg) -> Callable[[str], MemoryBackend]:
             return Mem0Backend(RealMem0Client(model=EMBEDDER_MODEL, dims=EMBEDDER_DIMS), top_k=_TOP_K)
         from hive.research.bench.hivemind_backend import HivemindBackend
         from hive.research.bench.run import _hivemind_server_factory
-        h = cfg.h_frac_off if arm == ARM_OFF else cfg.h_frac_on   # B vs C — the ONLY difference
-        return HivemindBackend(_hivemind_server_factory(h))
+        tau = cfg.tau_serve_off if arm == ARM_OFF else cfg.tau_serve_on  # B vs C — the ONLY difference
+        return HivemindBackend(_hivemind_server_factory(tau))
     return make
 
 
@@ -180,10 +180,10 @@ def _parse_args(argv: Optional[Sequence[str]]) -> argparse.Namespace:
     p.add_argument("--dataset", default=os.environ.get("HIVE_BENCH_LME_PATH"))
     p.add_argument("--n", type=int, default=None, help="seeded subsample (default all)")
     p.add_argument("--seeds", default="0")
-    p.add_argument("--h-frac-on", dest="h_frac_on", type=float, default=0.5,
-                   help="abstain-ON threshold (production default 0.5)")
-    p.add_argument("--h-frac-off", dest="h_frac_off", type=float, default=1.0,
-                   help="abstain-OFF threshold (1.0 = max legal ⇒ no entropy suppression)")
+    p.add_argument("--tau-serve-on", dest="tau_serve_on", type=float, default=0.70,
+                   help="abstain-ON threshold (production default 0.70)")
+    p.add_argument("--tau-serve-off", dest="tau_serve_off", type=float, default=0.01,
+                   help="abstain-OFF threshold (0.01 = serve-everything proxy ⇒ no suppression)")
     p.add_argument("--model", default=os.environ.get("HIVE_BENCH_MODEL"),
                    help="the agent model id (Haiku tier); SAME across arms")
     p.add_argument("--llm-log", dest="llm_log", default=os.environ.get("HIVE_BENCH_LLM_LOG"),
@@ -199,9 +199,9 @@ def _parse_args(argv: Optional[Sequence[str]]) -> argparse.Namespace:
 def main(argv: Optional[Sequence[str]] = None, *,
          backend_factory: Optional[Callable[[str], MemoryBackend]] = None,
          llm_factory: Optional[Callable[[str], LLM]] = None) -> int:
-    """Run the three arms over one dataset slice (fixed thresholds 0.5 / 1.0, both stamped) and write
-    a provenance-stamped JSON token report. Factories are injection seams (tests run fully offline);
-    the defaults build the real Qwen3 backends + the subscription LLM."""
+    """Run the three arms over one dataset slice (fixed thresholds 0.70 / 0.01, both stamped) and
+    write a provenance-stamped JSON token report. Factories are injection seams (tests run fully
+    offline); the defaults build the real Qwen3 backends + the subscription LLM."""
     cfg = _parse_args(argv)
     seed = cfg.seeds[0]
     make_backend = backend_factory or _default_backend_factory(cfg)
@@ -211,7 +211,7 @@ def main(argv: Optional[Sequence[str]] = None, *,
     # preflight: dataset present + (real CLI) authenticated; equal-footing model parity (fail fast).
     run_preflight(dataset_path=cfg.dataset, llm=llms[ARM_MEM0])
     from hive.app.config import Config
-    assert_model_parity(Config.load(db_path=":memory:", recall={"H_frac_max": cfg.h_frac_on}))
+    assert_model_parity(Config.load(db_path=":memory:", recall={"tau_serve": cfg.tau_serve_on}))
 
     # Fixed thresholds need no held-out split (no tuning ⇒ no leakage); the dev/test split
     # (dataset.dev_test_split) is the seam for a future dev-tuned ON value, reported on test only.
@@ -229,7 +229,7 @@ def main(argv: Optional[Sequence[str]] = None, *,
     scored = score_token_arms(arm_obs, seed=seed)
     provenance = {
         "token_totals": scored["token_totals"],
-        "h_frac_on": cfg.h_frac_on, "h_frac_off": cfg.h_frac_off,
+        "tau_serve_on": cfg.tau_serve_on, "tau_serve_off": cfg.tau_serve_off,
         "dataset_hash": _file_sha256(cfg.dataset), "n_cases": len(cases),
         "embedder_model": EMBEDDER_MODEL, "extractor": _EXTRACTOR,
         "llm_digest": _combined_digest(llms), "seeds": cfg.seeds,

@@ -21,7 +21,8 @@ from hive.app.config import Config
 # ── happy path / defaults ─────────────────────────────────────────────────────
 def test_defaults_match_spec():
     cfg = Config.load(db_path=":memory:")
-    assert cfg.recall.H_frac_max == 0.5
+    assert cfg.recall.tau_serve == 0.70
+    assert cfg.recall.k_min == 1
     assert cfg.recall.recall_top_n == 10
     assert cfg.embedding.model == "Qwen/Qwen3-Embedding-0.6B"
     assert cfg.retention.backup_keep == 30
@@ -29,16 +30,16 @@ def test_defaults_match_spec():
 
 # ── env namespacing: the `__` split keeps two groups' fields distinct ──────────
 def test_env_namespacing_no_collision():
-    env = {"HIVE_RECALL__H_FRAC_MAX": "0.4", "HIVE_AUTONOMY__DEMAND_M": "5"}
+    env = {"HIVE_RECALL__TAU_SERVE": "0.5", "HIVE_AUTONOMY__DEMAND_M": "5"}
     cfg = Config.load(db_path=":memory:", env=env)
-    assert cfg.recall.H_frac_max == 0.4   # field on the RECALL group
+    assert cfg.recall.tau_serve == 0.5    # field on the RECALL group
     assert cfg.autonomy.demand_m == 5     # field on the AUTONOMY group — distinct, no collapse
 
 
 def test_env_unknown_key_ignored_not_crash():
     env = {"HIVE_NOPE__DOES_NOT_EXIST": "x", "HIVE_RECALL__NOSUCH": "y"}
     cfg = Config.load(db_path=":memory:", env=env)   # must not raise
-    assert cfg.recall.H_frac_max == 0.5
+    assert cfg.recall.tau_serve == 0.70
 
 
 def test_env_noncoercible_value_skipped_with_warn(caplog):
@@ -60,10 +61,10 @@ def test_layering_precedence():
 def test_env_applies_every_knob():
     # one source per knob (env only): every HIVE_<group>__<field> applies — no authority
     # partition silently dropping a "wrong-layer" knob.
-    env = {"HIVE_RECALL__H_FRAC_MAX": "0.4", "HIVE_RECALL__RECALL_TOP_N": "12"}
+    env = {"HIVE_RECALL__TAU_SERVE": "0.5", "HIVE_RECALL__K_MIN": "2"}
     cfg = Config.load(db_path=":memory:", env=env)
-    assert cfg.recall.H_frac_max == 0.4
-    assert cfg.recall.recall_top_n == 12
+    assert cfg.recall.tau_serve == 0.5
+    assert cfg.recall.k_min == 2
 
 
 def test_provider_field_routes_to_embedding_group():
@@ -75,8 +76,8 @@ def test_provider_field_routes_to_embedding_group():
 
 def test_unknown_override_field_raises():
     # a typo in the highest-precedence layer must fail fast, not silently leave the floor default
-    with pytest.raises(ValueError, match=r"H_frac_maxx|unknown config override"):
-        Config.load(recall={"H_frac_maxx": 0.4})
+    with pytest.raises(ValueError, match=r"tau_servee|unknown config override"):
+        Config.load(recall={"tau_servee": 0.4})
 
 
 def test_isolation_frac_is_cut():
@@ -109,7 +110,7 @@ def test_auth_group_is_removed():
 def test_frozen_nested_group_raises():
     cfg = Config.load(db_path=":memory:")
     with pytest.raises(dataclasses.FrozenInstanceError):
-        cfg.recall.H_frac_max = 0.9   # type: ignore[misc]
+        cfg.recall.tau_serve = 0.9   # type: ignore[misc]
 
 
 def test_frozen_root_raises():
@@ -119,55 +120,39 @@ def test_frozen_root_raises():
 
 
 # ── fail-fast validation ──────────────────────────────────────────────────────
-def test_h_frac_max_bounds():
-    with pytest.raises(ValueError, match=r"H_frac_max"):
-        Config.load(recall={"H_frac_max": 0.0})
-    with pytest.raises(ValueError, match=r"H_frac_max"):
-        Config.load(recall={"H_frac_max": 1.5})
-    # the boundary 1.0 is legal (== fully permissive, gate still constructible)
-    assert Config.load(recall={"H_frac_max": 1.0}).recall.H_frac_max == 1.0
+def test_tau_serve_default_is_product_posture():
+    # the absolute-relevance serve floor ships ACTIVE at 0.70 (the calibration-grounded
+    # prior posture): fields with a top-1 cosine ≥ 0.70 serve, weaker fields abstain.
+    assert Config.load(db_path=":memory:").recall.tau_serve == 0.70
 
 
-def test_tau_top1_default_is_zero_inert():
-    # the top-1 confidence floor ships inert: a default load is 0.0, so it can never
-    # add an abstention (masses are in [0,1]; top1 < 0.0 is impossible).
-    assert Config.load(db_path=":memory:").recall.tau_top1 == 0.0
+def test_tau_serve_bounds():
+    with pytest.raises(ValueError, match=r"tau_serve"):
+        Config.load(recall={"tau_serve": 0.0})
+    with pytest.raises(ValueError, match=r"tau_serve"):
+        Config.load(recall={"tau_serve": 1.5})
+    for bad in (float("inf"), float("nan")):
+        with pytest.raises(ValueError, match=r"tau_serve"):
+            Config.load(recall={"tau_serve": bad})
+    # the boundary 1.0 is legal (only an exact-match field serves)
+    assert Config.load(recall={"tau_serve": 1.0}).recall.tau_serve == 1.0
 
 
-def test_tau_top1_rejects_negative_and_nonfinite():
-    with pytest.raises(ValueError, match=r"tau_top1"):
-        Config.load(recall={"tau_top1": -0.1})
-    with pytest.raises(ValueError, match=r"tau_top1"):
-        Config.load(recall={"tau_top1": float("inf")})
-    with pytest.raises(ValueError, match=r"tau_top1"):
-        Config.load(recall={"tau_top1": float("nan")})
-    # >1 is a LEGAL permanent-abstain config (no upper clamp)
-    assert Config.load(recall={"tau_top1": 1.5}).recall.tau_top1 == 1.5
+def test_k_min_default_and_bounds():
+    # the quorum floor ships at 1 (a single relevant hit serves); k_min < 1 is rejected.
+    assert Config.load(db_path=":memory:").recall.k_min == 1
+    with pytest.raises(ValueError, match=r"k_min"):
+        Config.load(recall={"k_min": 0})
+    with pytest.raises(ValueError, match=r"k_min"):
+        Config.load(recall={"k_min": -2})
+    assert Config.load(recall={"k_min": 3}).recall.k_min == 3
 
 
-def test_tau_thresh_default_is_product_posture():
-    # the flat-field relevance threshold ships ACTIVE (the 2nd sanctioned default-ON product
-    # knob): a default load is 0.70 — flat fields with a top-1 cosine ≥ 0.70 serve, weaker
-    # flat fields still abstain. (1.0 would be byte-identical to the entropy gate alone.)
-    assert Config.load(db_path=":memory:").recall.tau_thresh == 0.70
-
-
-def test_tau_thresh_accepts_endpoints_rejects_out_of_range():
-    # accepted: the inert endpoint (1.0 ⇒ today's gate) and an interior value.
-    assert Config.load(recall={"tau_thresh": 1.0}).recall.tau_thresh == 1.0
-    assert Config.load(recall={"tau_thresh": 0.70}).recall.tau_thresh == 0.70
-    # rejected: 0.0 (a flat field would serve unconditionally — never), >1 (unreachable cosine),
-    # and non-finite — fail fast at boot.
-    for bad in (0.0, 1.5, float("nan")):
-        with pytest.raises(ValueError, match=r"tau_thresh"):
-            Config.load(recall={"tau_thresh": bad})
-
-
-def test_tau_thresh_env_coerces_to_float():
-    # HIVE_RECALL__TAU_THRESH is coerced to float by the existing _annotation_base("float") path
-    # (no coercer change), proving the operator can calibrate it from the environment.
-    cfg = Config.load(db_path=":memory:", env={"HIVE_RECALL__TAU_THRESH": "0.70"})
-    assert cfg.recall.tau_thresh == 0.70
+def test_tau_serve_env_coerces_to_float():
+    # HIVE_RECALL__TAU_SERVE is coerced to float by the existing _annotation_base("float") path
+    # (no coercer change), proving the operator can calibrate the floor from the environment.
+    cfg = Config.load(db_path=":memory:", env={"HIVE_RECALL__TAU_SERVE": "0.55"})
+    assert cfg.recall.tau_serve == 0.55
 
 
 def test_db_path_required():
