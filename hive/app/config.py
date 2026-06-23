@@ -69,6 +69,11 @@ class RecallConfig:
     # Meaningful only because stored/searched vectors are EXACT unit-norm (BUG-008).
     tau_serve: float = 0.70
     k_min: int = 1                        # min absolutely-relevant hits to serve (>= 1)
+    # decorrelated serve-set selection. overscan resolves recall_top_n*overscan candidates so
+    # select_served can backfill servable hits past unservable top ranks; select=True (default)
+    # runs trust-dominance + MMR over that pool, select=False is byte-identical naive truncation.
+    overscan: int = 3
+    select: bool = True
 
     def __post_init__(self) -> None:
         if self.recall_top_n < 1:
@@ -79,6 +84,8 @@ class RecallConfig:
                 f"serve floor); got {self.tau_serve}")
         if int(self.k_min) < 1:
             raise ValueError(f"recall.k_min must be >= 1 (got {self.k_min})")
+        if int(self.overscan) < 1:
+            raise ValueError(f"recall.overscan must be >= 1 (got {self.overscan})")
 
 
 @dataclass(frozen=True)
@@ -110,27 +117,25 @@ class AutonomyConfig:
 @dataclass(frozen=True)
 class ConflictConfig:
     """Conflict/redundancy SURFACING knobs (detection + the advisory flag). ``enabled``
-    gates DETECTION (the recall carrier + the health worklist) and the ``hive_flag``
-    advisory verb ONLY. The orthogonal ``suppress`` switch gates SERVE-TIME PRUNING (recall
-    drops the strictly-lower-trust member of a detected near-dup/contradiction pair) — transient
-    per-query presentation (the §8.4 dedup/shadow slot), never O7 auto-resolution; the resolution
-    verb ``hive_supersede`` is ALWAYS on (Law 3 human vouch) and retirement stays human under
-    either switch. DETECTION (``enabled``) ships ON by default — the recall ``conflicts`` carrier,
-    the ``hive_health`` worklist, and the ``hive_flag`` advisory verb are live so the fleet surfaces
-    conflicts for human resolution by default; ``suppress`` ships OFF (opt-in). Set ``enabled=false``
-    to restore the byte-inert envelope (no ``conflicts`` key, ``hive_flag`` → disabled). The
-    detection METHOD (cosine+polarity) is encoded in code, never a swap knob (THEORY §14);
-    ``tau`` is the one genuinely-empirical knob (the near-dup cosine floor). Default 0.80:
-    measured Qwen3 cosines put genuine paraphrase/contradiction pairs at ~0.81-0.87 while
-    distinct same-subsystem facts top out ~0.69, so 0.80 sits in that gap (recall over the
-    stricter 0.85 at no measured false-positive cost, with margin above the distinct-fact
-    ceiling). It stays a per-deployment knob — recalibrate on the real corpus via the
-    benchmark; the asymmetric cost (a false positive can lead a human to retire a real
-    memory) argues for keeping margin rather than chasing the lowest-cosine conflicts."""
+    gates DETECTION (the recall ``conflicts`` carrier + the health worklist) and the
+    ``hive_flag`` advisory verb. Serve-time PRUNING of a strictly-lower-trust near-dup twin
+    is no longer a separate switch — it is folded into the default-ON ``select_served`` stage
+    (recall.select), which sources its near-dup floor from this ``tau`` (single owner). The
+    resolution verb ``hive_supersede`` is ALWAYS on (Law 3 human vouch) and retirement stays
+    human. DETECTION (``enabled``) ships ON by default so the fleet surfaces conflicts for
+    human resolution; set ``enabled=false`` to restore the byte-inert envelope (no ``conflicts``
+    key, ``hive_flag`` → disabled). The detection METHOD (cosine+polarity) is encoded in code,
+    never a swap knob (THEORY §14); ``tau`` is the one genuinely-empirical knob (the near-dup
+    cosine floor, shared with select_served). Default 0.80: measured Qwen3 cosines put genuine
+    paraphrase/contradiction pairs at ~0.81-0.87 while distinct same-subsystem facts top out
+    ~0.69, so 0.80 sits in that gap (recall over the stricter 0.85 at no measured false-positive
+    cost, with margin above the distinct-fact ceiling). It stays a per-deployment knob —
+    recalibrate on the real corpus via the benchmark; the asymmetric cost (a false positive can
+    lead a human to retire a real memory) argues for keeping margin rather than chasing the
+    lowest-cosine conflicts."""
     enabled: bool = True
     tau: float = 0.80
     top_n: int = 10
-    suppress: bool = False
 
     def __post_init__(self) -> None:
         if not (math.isfinite(self.tau) and 0.0 < self.tau <= 1.0):

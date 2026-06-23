@@ -69,14 +69,23 @@ def test_recall_top_n_from_config():
     assert c.recall.recall_top_n == 7
 
 
-def test_suppress_conflicts_wired_from_config():
-    # the serve-time suppression switch + its near-dup tau flow from ConflictConfig into the
-    # pipeline (default OFF / byte-inert; the Phase-2 classifier seam stays None).
-    assert _build().recall.suppress_conflicts is False
-    c = _build(conflict={"suppress": True})
-    assert c.recall.suppress_conflicts is True
-    assert c.recall.conflict_tau == c.cfg.conflict.tau
-    assert c.recall.conflict_classifier is None
+def test_select_served_wired_from_config():
+    # decorrelated selection ships default-ON; the near-dup floor is single-owned by
+    # ConflictConfig.tau (dup_tau); the recall conflict carrier is gated by conflict.enabled.
+    c = _build()
+    assert c.recall.select is True and c.recall.overscan == c.cfg.recall.overscan
+    assert c.recall.dup_tau == c.cfg.conflict.tau
+    assert c.recall.conflict_enabled == c.cfg.conflict.enabled
+    assert c.recall.conflict_top_n == c.cfg.conflict.top_n
+    # select can be turned off (byte-identical naive truncation)
+    assert _build(recall={"select": False}).recall.select is False
+
+
+def test_conflict_config_has_no_suppress_knob():
+    # the serve-time suppress switch was folded into the default-ON select_served stage —
+    # ConflictConfig no longer carries it (re-adding the field REDS this).
+    from hive.app.config import ConflictConfig
+    assert not hasattr(ConflictConfig(), "suppress")
 
 
 def test_identity_carries_tenant_and_agent():

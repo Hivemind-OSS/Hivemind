@@ -89,7 +89,7 @@ class _ListIndex:
 
 def _pipe(*, index, reader, query_vec,
           recall_top_n=10, tau_serve=0.70, k_min=1, embedder=None, ledger=None,
-          suppress_conflicts=False, conflict_tau=0.80, conflict_classifier=None):
+          overscan=3, select=True, dup_tau=0.80, conflict_enabled=False):
     return RecallPipeline(
         embedder=embedder or _StubProvider(query_vec),
         index=index,
@@ -100,9 +100,10 @@ def _pipe(*, index, reader, query_vec,
         clock_now=lambda: 0,
         scanner=FakeScanner(),
         provisional_ttl_s=10**9,        # effectively fresh-forever for these tests
-        suppress_conflicts=suppress_conflicts,
-        conflict_tau=conflict_tau,
-        conflict_classifier=conflict_classifier,
+        overscan=overscan,
+        select=select,
+        dup_tau=dup_tau,
+        conflict_enabled=conflict_enabled,
     )
 
 
@@ -332,89 +333,120 @@ def test_gate_passes_but_all_resolve_away_is_empty_no_data():
     assert r.state == EMPTY_NO_DATA and r.hits == ()  # fail-closed
 
 
-# ── serve-time conflict suppression (post-gate, off by default, byte-inert) ─────
-def _trust_pair_pipe(*, suppress, gold_trust="established", poison_trust="provisional",
-                     ledger=None, classifier=None):
-    """A confident pipe over a near-dup pair: a gold and a poison whose vectors are
-    ~identical (cosine ≫ τ, both clear tau_serve) so the detector pairs them. The resolved
-    Episodes carry the vector (``value=``) the suppressor reads, and distinct trust tiers
-    so strict-dominance can act."""
+# ── select_served (pure): trust-dominance THEN MMR over a sim-desc pool ─────────
+from hive.domain.models import Episode, Scored, content_hash
+from hive.domain.recall import select_served
+
+
+def _S(eid, sim):
+    return Scored(eid, 1.0, sim)
+
+
+def _ep(eid, vec, *, trust="established", polarity="neutral", ts=0, text=None):
+    text = text or f"memory-{eid}"
+    return Episode(id=eid, tenant_id="t", text=text, weight=1.0, ts=ts, source="",
+                   tags="", content_hash=content_hash(text), status="approved",
+                   proposed_by="x", value=vec, trust=trust, polarity=polarity)
+
+
+def test_select_drops_trust_dominated_near_dup():
+    # of a near-dup pair (cos ≫ dup_tau) with strict trust dominance, the lower-trust member
+    # is dropped (the folded-in conflict.suppress).
+    items = [(_S(1, 0.95), _ep(1, _cos_vec(0.95), trust="established")),
+             (_S(2, 0.92), _ep(2, _cos_vec(0.92), trust="provisional"))]
+    kept = select_served(items, dup_tau=0.80, top_n=10)
+    assert [s.episode_id for s, _ in kept] == [1]
+
+
+def test_select_keeps_higher_trust_truth_over_higher_sim_poison():
+    # ★ the decisive trust-first pin: a HIGHER-cosine LOWER-trust poison sits ABOVE a
+    # lower-cosine higher-trust truth in sim order. Pure greedy-by-sim MMR would keep the
+    # poison and drop the truth; trust-dominance runs FIRST and drops the poison, so the
+    # TRUTH survives. Reordering the two passes reds this.
+    items = [(_S(2, 0.96), _ep(2, _cos_vec(0.96), trust="provisional")),   # higher sim, poison
+             (_S(1, 0.93), _ep(1, _cos_vec(0.93), trust="established"))]   # lower sim, truth
+    kept = select_served(items, dup_tau=0.80, top_n=10)
+    assert [s.episode_id for s, _ in kept] == [1]
+
+
+def test_select_collapses_same_trust_echoes_to_higher_sim():
+    # equal trust ⇒ trust-dominance drops nothing; MMR collapses the cosine echo to the
+    # higher-sim representative (items are sim-desc, so the first survivor wins).
+    items = [(_S(1, 0.95), _ep(1, _cos_vec(0.95), trust="established")),
+             (_S(2, 0.92), _ep(2, _cos_vec(0.92), trust="established"))]
+    kept = select_served(items, dup_tau=0.80, top_n=10)
+    assert [s.episode_id for s, _ in kept] == [1]
+
+
+def test_select_caps_at_top_n_after_filtering():
+    # three mutually-distinct (orthogonal, no near-dup) items: nothing is filtered, the cap
+    # takes the top_n by the input sim order.
+    items = [(_S(1, 0.90), _ep(1, _e(1))),
+             (_S(2, 0.85), _ep(2, _e(2))),
+             (_S(3, 0.80), _ep(3, _e(3)))]
+    kept = select_served(items, dup_tau=0.80, top_n=2)
+    assert [s.episode_id for s, _ in kept] == [1, 2]
+
+
+def test_select_keeps_both_on_undecidable_cosine():
+    # an undecidable cosine (a None vector) is treated as NOT-a-near-dup — REMOVE-only, so
+    # keep both (never drop on uncertainty).
+    items = [(_S(1, 0.95), _ep(1, None)), (_S(2, 0.92), _ep(2, None))]
+    kept = select_served(items, dup_tau=0.80, top_n=10)
+    assert [s.episode_id for s, _ in kept] == [1, 2]
+
+
+def test_select_empty_pool():
+    assert select_served([], dup_tau=0.80, top_n=10) == []
+
+
+# ── select_served wired through the pipeline (default ON) ──────────────────────
+def _pair_pipe(*, select, gold_trust="established", poison_trust="provisional", ledger=None):
+    """A confident pipe over a near-dup pair (both clear tau_serve): a gold and a poison whose
+    vectors are ~identical so select_served pairs them; distinct trust tiers so trust-dominance
+    can act."""
     index, reader = FakeIndex(), FakeEpisodeReader()
     gold_v, poison_v = _cos_vec(0.95), _cos_vec(0.92)
     index.add(1, gold_v)
     reader.add(1, "the port is 8080", trust=gold_trust, value=gold_v)
     index.add(2, poison_v)
     reader.add(2, "the port is 9090", trust=poison_trust, value=poison_v)
-    return _pipe(index=index, reader=reader, query_vec=_e(0), ledger=ledger,
-                 suppress_conflicts=suppress, conflict_classifier=classifier)
+    return _pipe(index=index, reader=reader, query_vec=_e(0), ledger=ledger, select=select)
 
 
-def test_suppress_off_serves_both_near_dups():
-    # OFF (the default) ⇒ byte-inert: the near-dup poison is NOT pruned (current behavior).
-    r = _trust_pair_pipe(suppress=False).recall("q", agent_id="A")
+def test_select_false_serves_both_near_dups_byte_identical():
+    # OFF ⇒ byte-identical naive truncation: both near-dups served in dense order, no dedup.
+    r = _pair_pipe(select=False).recall("q", agent_id="A")
     assert r.state == CONFIDENT
-    assert {h.episode_id for h in r.hits} == {1, 2}
+    assert [h.episode_id for h in r.hits] == [1, 2]
 
 
-def test_suppress_on_drops_lower_trust_poison_keeps_gold():
-    # ON ⇒ the strictly-lower-trust member (provisional poison id=2) is pruned; the
-    # established gold (id=1) is served. CONFIDENT with the surviving hit.
-    r = _trust_pair_pipe(suppress=True).recall("q", agent_id="A")
+def test_select_on_drops_lower_trust_poison_keeps_gold():
+    # ON ⇒ the strictly-lower-trust provisional poison (id=2) is dropped; the gold is served.
+    r = _pair_pipe(select=True).recall("q", agent_id="A")
     assert r.state == CONFIDENT
     assert {h.episode_id for h in r.hits} == {1}
 
 
-def test_suppressed_row_is_not_exposed_belt_ordering():
-    # the pruned poison must NOT be exposed — exposure refreshes liveness, so a row
-    # dropped at resolve must never reach the exposure ledger (belt-ordering invariant).
+def test_selected_out_row_is_not_exposed_belt_ordering():
+    # a row select_served dropped must NOT be exposed — exposure refreshes liveness, so a
+    # dropped row must never reach the ledger (belt-ordering invariant).
     led = FakeLedger()
-    _trust_pair_pipe(suppress=True, ledger=led).recall("q", agent_id="A")
+    _pair_pipe(select=True, ledger=led).recall("q", agent_id="A")
     exposed = {e for ex in led.exposures for e, _m in ex["items"]}
     assert exposed == {1}                     # only the surviving gold, never the poison
 
 
-def test_suppress_on_equal_trust_serves_both():
-    # equal trust ⇒ undecidable by geometry ⇒ strict-dominance prunes NOTHING (no coin
-    # flip); both are served — the honest limit (equal-trust poison needs a human).
-    r = _trust_pair_pipe(suppress=True, poison_trust="established").recall("q", agent_id="A")
-    assert {h.episode_id for h in r.hits} == {1, 2}
-
-
-def test_suppress_never_empties_a_confident_result():
-    # the max-trust member of a conflict cluster always survives ⇒ suppression prunes to a
-    # subset but NEVER to empty; a confident answer stays confident.
-    index, reader = FakeIndex(), FakeEpisodeReader()
-    vs = [_cos_vec(0.96), _cos_vec(0.93), _cos_vec(0.9)]
-    trusts = ["established", "provisional", "provisional"]
-    for eid, (v, t) in enumerate(zip(vs, trusts), start=1):
-        index.add(eid, v)
-        reader.add(eid, f"port variant {eid}", trust=t, value=v)
-    r = _pipe(index=index, reader=reader, query_vec=_e(0),
-              suppress_conflicts=True).recall("q", agent_id="A")
-    assert r.state == CONFIDENT
-    assert {h.episode_id for h in r.hits} == {1}   # both provisionals pruned, gold kept
-
-
-def test_suppress_fails_closed_on_detector_error(monkeypatch):
-    # a suppressor fault is inside the surface try ⇒ EMPTY_NO_DATA (fail-closed): a stage
-    # that cannot decide must abstain, never serve an un-vetted (possibly poisoned) set.
+def test_select_fails_closed_on_detector_error(monkeypatch):
+    # a select_served detector fault is inside the surface try ⇒ EMPTY_NO_DATA (fail-closed):
+    # a selection stage that cannot decide must abstain, never serve an un-vetted set.
     import hive.domain.recall as recall_mod
 
     def boom(*a, **k):
         raise RuntimeError("detector boom")
     monkeypatch.setattr(recall_mod, "detect_conflicts", boom)
-    r = _trust_pair_pipe(suppress=True).recall("q", agent_id="A")
+    r = _pair_pipe(select=True).recall("q", agent_id="A")
     assert r.state == EMPTY_NO_DATA and r.hits == ()
-
-
-def test_conflict_classifier_is_unused_in_phase1():
-    # the Phase-2 classifier seam is accepted but NEVER consulted in Phase 1 — a stub that
-    # raises on any call proves suppression runs purely on trust + geometry.
-    class _BoomClassifier:
-        def classify(self, *a, **k):
-            raise AssertionError("classifier must not be called in Phase 1")
-    r = _trust_pair_pipe(suppress=True, classifier=_BoomClassifier()).recall("q", agent_id="A")
-    assert {h.episode_id for h in r.hits} == {1}
 
 
 # ── tau_serve: a FLAT-but-relevant field serves at the product default, abstains at 1.0 ──

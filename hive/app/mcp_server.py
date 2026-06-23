@@ -361,9 +361,6 @@ class HiveMCPServer:
         now = int(self.now())
         belt_ttl_s = int(self.autonomy.provisional_ttl_days) * _DAY_S
         hits: list[dict] = []
-        # the conflict carrier reads the SAME eps the belt already fetched (no extra I/O),
-        # collecting the vector + labels the detector classifies by (off ⇒ never collected).
-        items: list[ConflictItem] = []
         for h in result.hits:
             ep = self.store.get_episode(h.episode_id)
             if ep is None or not is_servable(                # ← delete this guard ⇒ mut #2
@@ -376,41 +373,23 @@ class HiveMCPServer:
             hits.append({"episode_id": h.episode_id, "text": h.text,
                          "sim": float(h.sim), "trust": h.trust, "ts": h.ts,
                          "polarity": h.polarity, "kind": h.kind, "anchor": h.anchor})
-            if getattr(self.conflict, "enabled", False):
-                items.append(ConflictItem(
-                    episode_id=ep.id, vector=ep.value, polarity=ep.polarity,
-                    anchor=ep.anchor, ts=ep.ts, trust=ep.trust))
         # an empty post-belt set is an ABSTAIN, never a confident-empty (never-hallucinate)
         abstained = (result.state != CONFIDENT) or (not hits)
         env: dict = {"reference_context": hits, "abstained": abstained,
                      "trace_id": result.trace_id, "state": result.state,
                      "top_cos": float(result.top_cos)}
         # conflict carrier: a DISTINCT envelope key referencing IDS ONLY (never text, never
-        # reference_context — Law 4). Byte-inert when off (no key) AND when no near-dup pair
-        # is co-present (lean by default). Fail-OPEN: a detector fault never breaks the read.
-        if getattr(self.conflict, "enabled", False) and len(items) >= 2:
-            conflicts = self._recall_conflicts(items)
-            if conflicts:                                    # ← merging into reference_context ⇒ mut
-                env["conflicts"] = conflicts
+        # reference_context — Law 4). The pure pipeline detects over the PRE-select servable
+        # field, so a near-dup the decorrelated serve dropped is still surfaced. Byte-inert when
+        # off (no key) AND when no near-dup pair is co-present (lean by default).
+        if getattr(self.conflict, "enabled", False) and result.conflicts:
+            env["conflicts"] = [_conflict_note_to_wire(n) for n in result.conflicts]
         if abstained:
             _log.info("mcp.recall_abstain", extra={"event": "mcp.recall_abstain",
                       "trace_id": result.trace_id, "state": result.state,
                       "top_cos": float(result.top_cos)})
             env["note"] = _abstain_note(result.state)
         return env
-
-    def _recall_conflicts(self, items: "list[ConflictItem]") -> list[dict]:
-        """Run the pure detector over the co-served items and render the ids-only wire list.
-        FAIL-OPEN: any detector fault degrades to [] — a conflict-surfacing fault must NEVER
-        break the recall that carries it (a side-channel, THEORY Law 6)."""
-        try:
-            notes = detect_conflicts(items, tau=float(self.conflict.tau),
-                                     top_n=int(self.conflict.top_n))
-            return [_conflict_note_to_wire(n) for n in notes]
-        except Exception:                                    # noqa: BLE001 — fail open
-            _log.warning("mcp.recall_conflict_detect_failed", extra={
-                "event": "mcp.recall_conflict_detect_failed"}, exc_info=True)
-            return []
 
     def _handle_supersede(self, args: dict, identity: ServerIdentity) -> dict:
         """The human-vouched resolution verb (ALWAYS on — Law 3). Thin wrapper over the

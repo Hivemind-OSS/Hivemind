@@ -71,11 +71,17 @@ class RecallHit:
 @dataclass(frozen=True, slots=True)
 class RecallResult:
     """The frozen result of a recall. ``hits`` is non-empty IFF ``CONFIDENT``;
-    ``trace_id`` is ALWAYS present (hit AND abstain) — the move-#6 join key."""
+    ``trace_id`` is ALWAYS present (hit AND abstain) — the move-#6 join key.
+
+    ``conflicts`` is the recall-time conflict carrier: ids-only ``ConflictNote``s detected
+    over the PRE-select servable field (so a near-dup the decorrelated serve dropped is still
+    surfaced for human resolution — a side-channel, never content). Empty on every non-CONFIDENT
+    result and whenever conflict detection is off."""
     state: RecallState
     trace_id: str
     hits: tuple[RecallHit, ...]
     top_cos: float                         # max abs cosine ∈ [-1,1]; 0.0 on EMPTY_NO_DATA
+    conflicts: tuple = ()                  # ids-only ConflictNotes over the pre-select field
 
     @classmethod
     def empty(cls, trace_id: str) -> "RecallResult":
@@ -95,6 +101,10 @@ class RecallResult:
             raise ValueError("only CONFIDENT may carry hits (abstain-no-resurrect)")
         if self.state == CONFIDENT and not self.hits:
             raise ValueError("CONFIDENT must carry ≥1 hit (CONFIDENT<->has-hits biconditional)")
+        # a non-CONFIDENT result surfaces no conflict carrier (a conflict needs ≥2 co-present
+        # servable hits, only possible on the CONFIDENT path).
+        if self.state != CONFIDENT and self.conflicts:
+            raise ValueError("only CONFIDENT may carry conflicts (no co-present field otherwise)")
         if not (-1.0 <= self.top_cos <= 1.0):
             raise ValueError("top_cos must be in [-1,1]")
 

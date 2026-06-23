@@ -172,15 +172,19 @@ def test_backup_keep_at_least_one():
         Config.load(retention={"backup_keep": 0})
 
 
-# ── ConflictConfig group (default OFF; one empirical knob τ) ───────────────────
-def test_conflict_detection_on_suppression_off_by_default():
+# ── ConflictConfig group (detection ON; one empirical knob τ; no suppress knob) ──
+def test_conflict_detection_defaults_and_no_suppress_knob():
     cfg = Config.load(db_path=":memory:")
     assert cfg.conflict.enabled is True           # detection surfaces ship ON (fleet flags conflicts)
     # 0.80: measured to sit in the gap between distinct same-subsystem facts (~0.69) and
     # genuine paraphrase/contradiction pairs (~0.81-0.87) — calibratable per deployment.
     assert cfg.conflict.tau == 0.80
     assert cfg.conflict.top_n == 10
-    assert cfg.conflict.suppress is False         # serve-time pruning stays OPT-IN
+    # serve-time pruning is no longer a ConflictConfig switch — it is folded into the
+    # default-ON recall.select stage (an unknown override field now fails fast).
+    assert not hasattr(cfg.conflict, "suppress")
+    with pytest.raises(ValueError, match=r"suppress|unknown config override"):
+        Config.load(conflict={"suppress": True})
 
 
 def test_conflict_enabled_via_env():
@@ -188,13 +192,18 @@ def test_conflict_enabled_via_env():
     assert cfg.conflict.enabled is True
 
 
-def test_conflict_suppress_is_independent_of_enabled():
-    # suppress (serve-time pruning) and enabled (detection surfaces) are orthogonal: suppression
-    # can run with detection OFF, proving the two knobs do not imply each other.
-    cfg = Config.load(db_path=":memory:",
-                      env={"HIVE_CONFLICT__SUPPRESS": "true", "HIVE_CONFLICT__ENABLED": "false"})
-    assert cfg.conflict.suppress is True
-    assert cfg.conflict.enabled is False
+# ── decorrelated selection knobs (recall.select / recall.overscan) ─────────────
+def test_select_defaults_and_overscan_bounds():
+    cfg = Config.load(db_path=":memory:")
+    assert cfg.recall.select is True              # decorrelated selection ships default-ON
+    assert cfg.recall.overscan == 3
+    # select can be disabled (byte-identical naive truncation); overscan must be >= 1
+    assert Config.load(recall={"select": False}).recall.select is False
+    with pytest.raises(ValueError, match=r"overscan"):
+        Config.load(recall={"overscan": 0})
+    cfg2 = Config.load(db_path=":memory:",
+                       env={"HIVE_RECALL__SELECT": "false", "HIVE_RECALL__OVERSCAN": "5"})
+    assert cfg2.recall.select is False and cfg2.recall.overscan == 5
 
 
 def test_conflict_tau_bounds_rejected():
