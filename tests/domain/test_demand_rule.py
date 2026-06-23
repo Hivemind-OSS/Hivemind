@@ -166,11 +166,13 @@ class _LifeStore:
         return {QUARANTINED: 1, PROVISIONAL: 0}
 
 
-def _service(store, *, enabled: bool = True, index: FakeIndex | None = None):
+def _service(store, *, enabled: bool = True, index: FakeIndex | None = None,
+             anomaly_tau: float = 0.95, anomaly_min_cluster: int = 5):
     return LifecycleService(
         store=store, index=index if index is not None else (store.index or FakeIndex()),
         rule=_rule(), now=lambda: NOW, demand_window_s=WINDOW_S,
-        quarantine_ttl_s=Q_TTL, provisional_ttl_s=P_TTL, enabled=enabled)
+        quarantine_ttl_s=Q_TTL, provisional_ttl_s=P_TTL, enabled=enabled,
+        anomaly_tau=anomaly_tau, anomaly_min_cluster=anomaly_min_cluster)
 
 
 def _demand() -> list[MissRow]:
@@ -189,6 +191,7 @@ def test_on_capture_promotes_against_staged_demand():
     assert (eid, kind, actor, ts) == (7, "promote", "server", NOW)
     body = json.loads(payload)
     di = body.pop("demand_independence")             # the decorrelated-demand stamp (3b)
+    assert body.pop("cluster_anomaly") is False      # the advisory anomaly flag (3c); no cluster here
     assert body == {"rule": "demand", "n_misses": 3, "n_other_identities": 2,
                     "competitor_sim": -1.0, "reason": "demand"}
     # _demand() is three identical-vector asks ⇒ correlated ⇒ n_eff≈1 (rho_bar≈1), k=3
@@ -293,6 +296,29 @@ def test_triggers_never_raise_into_caller():
     assert svc.on_capture(7) is None
     assert svc.on_miss(CAND, agent_id="a") == []
     assert svc.sweep() == {}
+
+
+# ── 3c: the embedding-cluster anomaly flag is advisory — it NEVER blocks promotion ──
+def test_anomaly_flag_is_stamped_without_blocking_promotion():
+    # three near-identical co-quarantined candidates (a compact cluster) + real demand for
+    # one of them: it PROMOTES (the flag never vetoes) and the audit records cluster_anomaly.
+    idx = FakeIndex()
+    cands = [(i, CAND, "writer-1", NOW - 5, NOW - 5) for i in (1, 2, 3)]
+    st = _LifeStore(candidates=cands, misses=_demand(), index=idx)
+    d = _service(st, anomaly_min_cluster=2).on_capture(1)   # 2 neighbors clear the quorum
+    assert d is not None and d.promote is True              # the flag does NOT block promotion
+    assert st.trust[1] == (PROVISIONAL, NOW)
+    body = json.loads(st.audits[0][4])
+    assert body["cluster_anomaly"] is True                  # the compact cluster is flagged
+
+
+def test_no_anomaly_flag_on_an_isolated_candidate():
+    # a lone quarantined candidate has no neighbors ⇒ the flag stays quiet (precision-first)
+    st = _LifeStore(candidates=[(7, CAND, "writer-1", NOW - 5, NOW - 5)],
+                    misses=_demand(), index=FakeIndex())
+    d = _service(st, anomaly_min_cluster=2).on_capture(7)
+    assert d.promote is True
+    assert json.loads(st.audits[0][4])["cluster_anomaly"] is False
 
 
 # ── decorrelated demand (n_eff): counting identities ≠ measuring independence ───

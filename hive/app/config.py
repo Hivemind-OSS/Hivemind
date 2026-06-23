@@ -101,14 +101,19 @@ class AutonomyConfig:
     competitor_tau: float = 0.85    # candidate ↔ servable cosine ⇒ demand already answered
     quarantine_ttl_days: int = 14
     provisional_ttl_days: int = 45
+    # promotion-time embedding-cluster anomaly flag (detection-only, advisory). A candidate
+    # with >= anomaly_min_cluster quarantined neighbors within cos >= anomaly_tau is flagged
+    # in the promote audit (the MINJA/AgentPoison flood signature); it NEVER blocks promotion.
+    anomaly_tau: float = 0.95       # compact-cluster cosine floor (tighter than near-dup)
+    anomaly_min_cluster: int = 5    # >= this many near-identical neighbors ⇒ flag
 
     def __post_init__(self) -> None:
-        for name in ("demand_m", "demand_window_days",
-                     "quarantine_ttl_days", "provisional_ttl_days"):
+        for name in ("demand_m", "demand_window_days", "quarantine_ttl_days",
+                     "provisional_ttl_days", "anomaly_min_cluster"):
             v = getattr(self, name)
             if int(v) < 1:
                 raise ValueError(f"autonomy.{name} must be >= 1 (got {v})")
-        for name in ("demand_tau", "competitor_tau"):
+        for name in ("demand_tau", "competitor_tau", "anomaly_tau"):
             v = getattr(self, name)
             if not (math.isfinite(v) and 0.0 < v <= 1.0):
                 raise ValueError(f"autonomy.{name} must be finite in (0, 1] (got {v})")

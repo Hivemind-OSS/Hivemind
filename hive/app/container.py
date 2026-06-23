@@ -181,7 +181,8 @@ def build_container(cfg: Config, *, tenant_id: str, agent_id: str,
         demand_window_s=aut.demand_window_days * _DAY_S,
         quarantine_ttl_s=aut.quarantine_ttl_days * _DAY_S,
         provisional_ttl_s=aut.provisional_ttl_days * _DAY_S,
-        enabled=aut.enabled)
+        enabled=aut.enabled, anomaly_tau=aut.anomaly_tau,
+        anomaly_min_cluster=aut.anomaly_min_cluster)
     recall = RecallPipeline(
         embedder=embedder, index=index, gate=gate,
         reader=store,

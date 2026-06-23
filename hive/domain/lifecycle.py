@@ -30,6 +30,8 @@ from typing import Callable, Optional, Sequence
 
 import numpy as np  # permitted in domain (not in the forbidden I/O set)
 
+from hive.domain.anomaly import cluster_anomaly
+
 _log = logging.getLogger("hive.lifecycle")
 
 QUARANTINED, PROVISIONAL, ESTABLISHED, DEPRECATED = (
@@ -227,7 +229,8 @@ class LifecycleService:
 
     def __init__(self, *, store, index, rule: DemandRule, now: Callable[[], int],
                  demand_window_s: int, quarantine_ttl_s: int, provisional_ttl_s: int,
-                 enabled: bool = True) -> None:
+                 enabled: bool = True, anomaly_tau: float = 0.95,
+                 anomaly_min_cluster: int = 5) -> None:
         self._store = store
         self._index = index
         self._rule = rule
@@ -236,6 +239,9 @@ class LifecycleService:
         self._q_ttl = int(quarantine_ttl_s)
         self._p_ttl = int(provisional_ttl_s)
         self.enabled = bool(enabled)
+        # promotion-time embedding-cluster anomaly flag thresholds (detection-only, advisory)
+        self._anomaly_tau = float(anomaly_tau)
+        self._anomaly_min_cluster = int(anomaly_min_cluster)
 
     # ── trigger: a capture arrived — does existing demand already want it? ────
     def on_capture(self, episode_id: int) -> Optional[PromotionDecision]:
@@ -249,8 +255,9 @@ class LifecycleService:
             if cand is None:                       # unknown / not quarantined / decayed
                 return None
             _eid, vec, writer, _ts, _la = cand
+            neighbors = [c[1] for k, c in cands.items() if k != int(episode_id)]
             return self._evaluate(int(episode_id), vec, writer, t,
-                                  misses=self._window(t))
+                                  misses=self._window(t), neighbor_vecs=neighbors)
         except Exception:                          # noqa: BLE001 — never break a capture
             _log.warning("lifecycle.on_capture_failed episode_id=%s", episode_id,
                          exc_info=True)
@@ -265,16 +272,20 @@ class LifecycleService:
         try:
             t = self._now()
             misses = self._window(t)
+            cands = list(self._store.quarantined_candidates(
+                now=t, quarantine_ttl_s=self._q_ttl))
             out: list[tuple[int, PromotionDecision]] = []
-            for eid, vec, writer, _ts, _la in self._store.quarantined_candidates(
-                    now=t, quarantine_ttl_s=self._q_ttl):
+            for eid, vec, writer, _ts, _la in cands:
                 pre = _cosine(vector, vec)
                 if pre is None or pre < self._rule.demand_tau:
                     continue                       # this miss is not about this candidate
                 # competitor sim is re-searched PER candidate, so a promotion earlier
-                # in this same scan vetoes its own near-duplicates.
+                # in this same scan vetoes its own near-duplicates. The OTHER co-quarantined
+                # vectors are the anomaly detector's neighborhood (the flood signature).
+                neighbors = [c[1] for c in cands if int(c[0]) != int(eid)]
                 out.append((int(eid), self._evaluate(int(eid), vec, writer, t,
-                                                     misses=misses)))
+                                                     misses=misses,
+                                                     neighbor_vecs=neighbors)))
             return out
         except Exception:                          # noqa: BLE001 — never break a recall
             _log.warning("lifecycle.on_miss_failed agent_id=%s", agent_id, exc_info=True)
@@ -305,17 +316,25 @@ class LifecycleService:
         return float(hits[0][1]) if hits else -1.0   # empty index ⇒ no competitor
 
     def _evaluate(self, episode_id: int, vec: "np.ndarray", writer: str, t: int,
-                  *, misses: Sequence[MissRow]) -> PromotionDecision:
+                  *, misses: Sequence[MissRow],
+                  neighbor_vecs: Sequence = ()) -> PromotionDecision:
         d = self._rule.decide(candidate_vec=vec, candidate_writer=writer,
                               misses=misses,
                               competitor_top_sim=self._competitor_top_sim(vec))
         if d.promote and self._store.set_trust(episode_id, PROVISIONAL, now=t):
+            # embedding-cluster anomaly flag (detection-only, advisory): the candidate's
+            # compactness against its co-quarantined neighbors — the MINJA/AgentPoison flood
+            # signature. Computed AFTER the promote decision and stamped into the durable
+            # audit; it NEVER blocks promotion (O7 — resolution stays the human rail).
+            anomaly = cluster_anomaly(vec, neighbor_vecs, tau=self._anomaly_tau,
+                                      min_cluster=self._anomaly_min_cluster)
             self._store.insert_audit(episode_id, "promote", "server", t, json.dumps({
                 "rule": "demand", "n_misses": d.n_misses,
                 "demand_independence": {"rho_bar": d.rho_bar, "n_eff": d.n_eff,
                                         "k": d.n_misses},
+                "cluster_anomaly": anomaly,
                 "n_other_identities": d.n_other_identities,
                 "competitor_sim": d.competitor_sim, "reason": d.reason}))
-            _log.info("lifecycle.promoted episode_id=%s n_misses=%d n_other=%d",
-                      episode_id, d.n_misses, d.n_other_identities)
+            _log.info("lifecycle.promoted episode_id=%s n_misses=%d n_other=%d anomaly=%s",
+                      episode_id, d.n_misses, d.n_other_identities, anomaly)
         return d
