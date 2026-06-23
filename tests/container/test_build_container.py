@@ -70,15 +70,18 @@ def test_recall_top_n_from_config():
 
 
 def test_select_served_wired_from_config():
-    # decorrelated selection ships default-ON; the near-dup floor is single-owned by
-    # ConflictConfig.tau (dup_tau); the recall conflict carrier is gated by conflict.enabled.
+    # decorrelated selection is UNCONDITIONAL (no `select` knob); the near-dup floor is
+    # single-owned by ConflictConfig.tau (dup_tau); the recall conflict carrier is gated by
+    # conflict.enabled. The overscan pool size is the one selection knob.
     c = _build()
-    assert c.recall.select is True and c.recall.overscan == c.cfg.recall.overscan
+    assert not hasattr(c.recall, "select")        # the select toggle is gone
+    assert c.recall.overscan == c.cfg.recall.overscan
     assert c.recall.dup_tau == c.cfg.conflict.tau
     assert c.recall.conflict_enabled == c.cfg.conflict.enabled
     assert c.recall.conflict_top_n == c.cfg.conflict.top_n
-    # select can be turned off (byte-identical naive truncation)
-    assert _build(recall={"select": False}).recall.select is False
+    # naming the removed select knob fails fast as an unknown override field
+    with pytest.raises(ValueError, match=r"select|unknown config override"):
+        _build(recall={"select": False})
 
 
 def test_conflict_config_has_no_suppress_knob():

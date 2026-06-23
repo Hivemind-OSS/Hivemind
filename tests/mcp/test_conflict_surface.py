@@ -12,13 +12,13 @@ from tests.mcp._helpers import build_real_server, content, tool_call, write_text
 D = 64
 
 
-def _srv(*, enabled=True, tau_serve=0.70, select=True):
+def _srv(*, enabled=True, tau_serve=0.70):
     # a cid-matched query embeds at cosine≈1 to both near-dups, so they clear the
     # absolute-relevance floor and are served confidently (the near-dup pair the conflict
     # carrier/worklist classify); a non-matching query stays absolutely weak and abstains. The
     # carrier detects over the PRE-select resolved field, so it surfaces the pair even when
-    # select decorrelates the served set; pass select=False to keep both near-dups served.
-    return build_real_server(d=D, tau_serve=tau_serve, select=select,
+    # select_served decorrelates the served set (drops one near-dup twin).
+    return build_real_server(d=D, tau_serve=tau_serve,
                              embedder=FakeClusterProvider(d=D),
                              conflict=ConflictConfig(enabled=enabled))
 
@@ -88,12 +88,13 @@ def test_no_conflicts_key_when_no_near_dup_pair():
     assert "conflicts" not in r                      # single hit ⇒ no pair to surface
 
 
-# ── fail-OPEN: a carrier detector fault never breaks the read ──────────────────
-def test_detector_fault_still_returns_hits():
-    # the carrier now detects in the PURE pipeline (over the pre-select field), so the fault is
-    # injected there. select=False isolates the carrier fault from select_served (which would
-    # ITSELF fail-closed on a detector fault — that path is pinned in test_recall_pipeline).
-    server, _ = _srv(enabled=True, select=False)
+# ── a detector fault fails the read CLOSED (select_served owns it; no fail-open carrier) ──
+def test_detector_fault_fails_read_closed():
+    # select_served and the carrier share detect_conflicts over the SAME resolved field;
+    # select_served runs first and fail-closes the whole read on a detector fault (the conflict
+    # carrier therefore needs no separate fail-open guard). Pinned at the pipeline level too
+    # (test_recall_pipeline::test_detect_conflicts_fault_fails_the_read_closed).
+    server, _ = _srv(enabled=True)
     _write(server, "cid=6 first near dup memory", polarity="do")
     _write(server, "cid=6 second near dup memory", polarity="do")
 
@@ -106,8 +107,8 @@ def test_detector_fault_still_returns_hits():
         r = content(tool_call(server, "hive_recall", {"query": "cid=6 near dup"}))
     finally:
         mod.detect_conflicts = orig
-    assert r["abstained"] is False and len(r["reference_context"]) >= 1   # hits survive
-    assert "conflicts" not in r                      # carrier fail-open ⇒ no key, no crash
+    assert r["abstained"] is True                    # fail-closed: no un-vetted set served
+    assert r["reference_context"] == [] and "conflicts" not in r
 
 
 # ── C5: the health conflict worklist (include_conflicts) ───────────────────────

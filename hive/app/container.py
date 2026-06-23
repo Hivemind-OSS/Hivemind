@@ -192,7 +192,7 @@ def build_container(cfg: Config, *, tenant_id: str, agent_id: str,
         ledger=store, clock_now=clock.now, scanner=scanner,
         provisional_ttl_s=aut.provisional_ttl_days * _DAY_S,
         lifecycle=lifecycle, autonomy_enabled=aut.enabled,
-        overscan=cfg.recall.overscan, select=cfg.recall.select,
+        overscan=cfg.recall.overscan,
         dup_tau=cfg.conflict.tau,             # near-dup floor single-owned by ConflictConfig.tau
         conflict_enabled=cfg.conflict.enabled, conflict_top_n=cfg.conflict.top_n)
     admission = AdmissionService(store, scanner, embedder, now=clock.now,

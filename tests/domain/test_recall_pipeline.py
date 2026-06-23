@@ -89,7 +89,7 @@ class _ListIndex:
 
 def _pipe(*, index, reader, query_vec,
           recall_top_n=10, tau_serve=0.70, k_min=1, embedder=None, ledger=None,
-          overscan=3, select=True, dup_tau=0.80, conflict_enabled=False):
+          overscan=3, dup_tau=0.80, conflict_enabled=False):
     return RecallPipeline(
         embedder=embedder or _StubProvider(query_vec),
         index=index,
@@ -101,7 +101,6 @@ def _pipe(*, index, reader, query_vec,
         scanner=FakeScanner(),
         provisional_ttl_s=10**9,        # effectively fresh-forever for these tests
         overscan=overscan,
-        select=select,
         dup_tau=dup_tau,
         conflict_enabled=conflict_enabled,
     )
@@ -415,8 +414,8 @@ def test_select_empty_pool():
     assert select_served([], dup_tau=0.80, top_n=10) == []
 
 
-# ── select_served wired through the pipeline (default ON) ──────────────────────
-def _pair_pipe(*, select, gold_trust="established", poison_trust="provisional", ledger=None):
+# ── select_served wired through the pipeline (UNCONDITIONAL) ───────────────────
+def _pair_pipe(*, gold_trust="established", poison_trust="provisional", ledger=None):
     """A confident pipe over a near-dup pair (both clear tau_serve): a gold and a poison whose
     vectors are ~identical so select_served pairs them; distinct trust tiers so trust-dominance
     can act."""
@@ -426,19 +425,12 @@ def _pair_pipe(*, select, gold_trust="established", poison_trust="provisional", 
     reader.add(1, "the port is 8080", trust=gold_trust, value=gold_v)
     index.add(2, poison_v)
     reader.add(2, "the port is 9090", trust=poison_trust, value=poison_v)
-    return _pipe(index=index, reader=reader, query_vec=_e(0), ledger=ledger, select=select)
+    return _pipe(index=index, reader=reader, query_vec=_e(0), ledger=ledger)
 
 
-def test_select_false_serves_both_near_dups_byte_identical():
-    # OFF ⇒ byte-identical naive truncation: both near-dups served in dense order, no dedup.
-    r = _pair_pipe(select=False).recall("q", agent_id="A")
-    assert r.state == CONFIDENT
-    assert [h.episode_id for h in r.hits] == [1, 2]
-
-
-def test_select_on_drops_lower_trust_poison_keeps_gold():
-    # ON ⇒ the strictly-lower-trust provisional poison (id=2) is dropped; the gold is served.
-    r = _pair_pipe(select=True).recall("q", agent_id="A")
+def test_select_drops_lower_trust_poison_keeps_gold():
+    # the strictly-lower-trust provisional poison (id=2) is dropped; the gold is served.
+    r = _pair_pipe().recall("q", agent_id="A")
     assert r.state == CONFIDENT
     assert {h.episode_id for h in r.hits} == {1}
 
@@ -447,20 +439,21 @@ def test_selected_out_row_is_not_exposed_belt_ordering():
     # a row select_served dropped must NOT be exposed — exposure refreshes liveness, so a
     # dropped row must never reach the ledger (belt-ordering invariant).
     led = FakeLedger()
-    _pair_pipe(select=True, ledger=led).recall("q", agent_id="A")
+    _pair_pipe(ledger=led).recall("q", agent_id="A")
     exposed = {e for ex in led.exposures for e, _m in ex["items"]}
     assert exposed == {1}                     # only the surviving gold, never the poison
 
 
-def test_select_fails_closed_on_detector_error(monkeypatch):
-    # a select_served detector fault is inside the surface try ⇒ EMPTY_NO_DATA (fail-closed):
-    # a selection stage that cannot decide must abstain, never serve an un-vetted set.
+def test_detect_conflicts_fault_fails_the_read_closed(monkeypatch):
+    # select_served is the SINGLE owner of the detect_conflicts-fault decision: a detector fault
+    # is inside the surface try ⇒ EMPTY_NO_DATA (fail-closed). The conflict carrier runs over the
+    # SAME field afterward, so it never independently faults — there is no fail-open carrier path.
     import hive.domain.recall as recall_mod
 
     def boom(*a, **k):
         raise RuntimeError("detector boom")
     monkeypatch.setattr(recall_mod, "detect_conflicts", boom)
-    r = _pair_pipe(select=True).recall("q", agent_id="A")
+    r = _pair_pipe().recall("q", agent_id="A")
     assert r.state == EMPTY_NO_DATA and r.hits == ()
 
 

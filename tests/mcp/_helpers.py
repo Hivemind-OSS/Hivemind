@@ -23,7 +23,7 @@ _DAY_S = 86_400
 
 
 def build_real_server(*, d: int = 64, tau_serve: float = 0.70, k_min: int = 1,
-                      top_n: int = 10, t0: int = 1000, select: bool = True,
+                      top_n: int = 10, t0: int = 1000,
                       scanner=None, autonomy=None, embedder=None, conflict=None,
                       suspect_consensus=None, agi_mode: bool = False):
     """Return (server, clock). ``clock`` is mutable so tests can stamp distinct ts.
@@ -60,7 +60,7 @@ def build_real_server(*, d: int = 64, tau_serve: float = 0.70, k_min: int = 1,
         recall_top_n=top_n,
         ledger=store, clock_now=clock.now, scanner=scanner,
         provisional_ttl_s=aut.provisional_ttl_days * _DAY_S,
-        lifecycle=lifecycle, autonomy_enabled=aut.enabled, select=select,
+        lifecycle=lifecycle, autonomy_enabled=aut.enabled,
         dup_tau=(conflict.tau if conflict is not None else 0.80),
         conflict_enabled=(conflict.enabled if conflict is not None else False),
         conflict_top_n=(conflict.top_n if conflict is not None else 10))

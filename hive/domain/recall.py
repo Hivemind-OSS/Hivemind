@@ -161,7 +161,6 @@ class RecallPipeline:
         scanner, provisional_ttl_s: int, lifecycle=None,
         autonomy_enabled: bool = True,
         overscan: int = 3,
-        select: bool = True,
         dup_tau: float = 0.80,
         conflict_enabled: bool = False,
         conflict_top_n: int = 10,
@@ -185,18 +184,19 @@ class RecallPipeline:
         self.provisional_ttl_s = int(provisional_ttl_s)
         self.lifecycle = lifecycle        # LifecycleService or None: on_miss trigger
         self.autonomy_enabled = bool(autonomy_enabled)
-        # post-gate decorrelated selection (default ON ⇒ off-path select=False is byte-identical
-        # naive truncation). When on, an OVERSCAN pool (recall_top_n*overscan) is resolved and
-        # select_served picks the served set by trust-dominance (drop a strictly-lower-trust
-        # near-dup twin) THEN MMR-decorrelation (collapse cosine echoes) — never touching the
-        # abstain decision, never retiring a row (resolution stays human). dup_tau is the near-dup
-        # cosine floor (single-owned by ConflictConfig.tau).
+        # post-gate decorrelated selection (UNCONDITIONAL — always on, no knob). Over an OVERSCAN
+        # pool (recall_top_n*overscan) select_served picks the served set by trust-dominance (drop
+        # a strictly-lower-trust near-dup twin) THEN MMR-decorrelation (collapse cosine echoes) —
+        # never touching the abstain decision, never retiring a row (resolution stays human).
+        # dup_tau is the near-dup cosine floor (single-owned by ConflictConfig.tau).
         self.overscan = int(overscan)
-        self.select = bool(select)
         self.dup_tau = float(dup_tau)
         # recall-time conflict carrier: detect near-dup/contradiction pairs over the PRE-select
         # resolved field (so a near-dup the decorrelated serve dropped is still surfaced for human
-        # resolution). ids-only on RecallResult.conflicts; fail-OPEN side-channel (Law 6). OFF ⇒
+        # resolution). ids-only on RecallResult.conflicts. It runs AFTER select_served over the
+        # SAME resolved field select_served already fed to detect_conflicts, so its detector call
+        # cannot fault when reached — select_served is the SINGLE owner of the detect_conflicts /
+        # vector-fault decision and fail-CLOSES the read first (no separate fail-open guard). OFF ⇒
         # never computed. Shares dup_tau (=ConflictConfig.tau) as the near-dup floor.
         self.conflict_enabled = bool(conflict_enabled)
         self.conflict_top_n = int(conflict_top_n)
@@ -253,11 +253,10 @@ class RecallPipeline:
             sim_by_eid = {dense_ids[i]: float(candidates[i][1])
                           for i in range(len(dense_ids))}
 
-            # overscan the resolve pool when selecting (recall_top_n*overscan), so a query
-            # whose top dense ranks are unservable can still backfill real servable hits from
-            # deeper in the field; with select OFF the pool is exactly recall_top_n (byte-
-            # identical naive truncation — no backfill).
-            pool = self.recall_top_n * self.overscan if self.select else self.recall_top_n
+            # overscan the resolve pool (recall_top_n*overscan), so a query whose top dense ranks
+            # are unservable can still backfill real servable hits from deeper in the field before
+            # select_served decorrelates and caps at recall_top_n.
+            pool = self.recall_top_n * self.overscan
             shortlist = dense_ids[:pool]
             # resolve the shortlist to full episodes (weight + text + trust labels). A hit
             # that cannot resolve OR is no longer servable is dropped HERE — before it can
@@ -276,17 +275,15 @@ class RecallPipeline:
                     continue
                 resolved.append((Scored(eid, float(ep.weight), sim_by_eid[eid]), ep))
 
-            # decorrelated selection (§8.4 dedup/shadow slot, default ON): trust-dominance drop
+            # decorrelated selection (§8.4 dedup/shadow slot, UNCONDITIONAL): trust-dominance drop
             # THEN MMR over the servable-resolved pool, capped at recall_top_n. Runs AFTER the
             # gate (never touches the abstain decision) and BEFORE the empty-check + exposure
             # below, so a dropped row is never surfaced or liveness-refreshed (belt-ordering). It
             # only REMOVES — no resurrection. A detector fault raises into this block's enclosing
-            # try ⇒ EMPTY_NO_DATA (fail-closed). OFF ⇒ byte-identical naive truncation.
-            if self.select:
-                selected = select_served(resolved, dup_tau=self.dup_tau,
-                                         top_n=self.recall_top_n)
-            else:
-                selected = resolved
+            # try ⇒ EMPTY_NO_DATA (fail-closed): select_served is the SINGLE owner of the
+            # detect_conflicts-fault decision for the whole read.
+            selected = select_served(resolved, dup_tau=self.dup_tau,
+                                     top_n=self.recall_top_n)
 
             if not selected:
                 _log.error("gate passed but 0 candidates resolved → EMPTY_NO_DATA "
@@ -295,22 +292,19 @@ class RecallPipeline:
                 return RecallResult.empty(trace_id)
 
             # recall-time conflict carrier: detect over the PRE-select resolved field so a near-dup
-            # the decorrelated serve dropped is still surfaced for human resolution. FAIL-OPEN
-            # (its own try, NOT the surface try): a carrier fault degrades to () — a side-channel
-            # must never break the read (Law 6). OFF / <2 servable rows ⇒ ().
+            # the decorrelated serve dropped is still surfaced for human resolution. It runs over
+            # the SAME resolved field select_served just fed to detect_conflicts, so this call
+            # cannot fault when reached — no separate fail-open guard: a detector/vector fault was
+            # already owned (fail-closed → EMPTY) by select_served above. Inside the surface try.
+            # OFF / <2 servable rows ⇒ ().
             conflicts: tuple = ()
             if self.conflict_enabled and len(resolved) >= 2:
-                try:
-                    citems = [ConflictItem(episode_id=ep.id, vector=ep.value,
-                                           polarity=ep.polarity, anchor=ep.anchor,
-                                           ts=ep.ts, trust=ep.trust)
-                              for _s, ep in resolved]
-                    conflicts = detect_conflicts(citems, tau=self.dup_tau,
-                                                 top_n=self.conflict_top_n)
-                except Exception as exc:               # noqa: BLE001 — fail-open side-channel
-                    _log.warning("recall conflict carrier failed (trace=%s): %r — read unaffected",
-                                 trace_id, exc)
-                    conflicts = ()
+                citems = [ConflictItem(episode_id=ep.id, vector=ep.value,
+                                       polarity=ep.polarity, anchor=ep.anchor,
+                                       ts=ep.ts, trust=ep.trust)
+                          for _s, ep in resolved]
+                conflicts = detect_conflicts(citems, tau=self.dup_tau,
+                                             top_n=self.conflict_top_n)
 
             scored = [s for s, _ep in selected]
             # reinforcement is demand/exposure-ONLY by design — there is no utility rerank:

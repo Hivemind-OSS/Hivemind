@@ -69,11 +69,10 @@ class RecallConfig:
     # Meaningful only because stored/searched vectors are EXACT unit-norm (BUG-008).
     tau_serve: float = 0.70
     k_min: int = 1                        # min absolutely-relevant hits to serve (>= 1)
-    # decorrelated serve-set selection. overscan resolves recall_top_n*overscan candidates so
-    # select_served can backfill servable hits past unservable top ranks; select=True (default)
-    # runs trust-dominance + MMR over that pool, select=False is byte-identical naive truncation.
+    # decorrelated serve-set selection is UNCONDITIONAL (no knob): overscan resolves
+    # recall_top_n*overscan candidates so select_served can backfill servable hits past unservable
+    # top ranks, then runs trust-dominance + MMR over that pool, capped at recall_top_n.
     overscan: int = 3
-    select: bool = True
 
     def __post_init__(self) -> None:
         if self.recall_top_n < 1:
@@ -124,8 +123,8 @@ class ConflictConfig:
     """Conflict/redundancy SURFACING knobs (detection + the advisory flag). ``enabled``
     gates DETECTION (the recall ``conflicts`` carrier + the health worklist) and the
     ``hive_flag`` advisory verb. Serve-time PRUNING of a strictly-lower-trust near-dup twin
-    is no longer a separate switch — it is folded into the default-ON ``select_served`` stage
-    (recall.select), which sources its near-dup floor from this ``tau`` (single owner). The
+    is no longer a separate switch — it is folded into the unconditional ``select_served`` stage,
+    which sources its near-dup floor from this ``tau`` (single owner). The
     resolution verb ``hive_supersede`` is ALWAYS on (Law 3 human vouch) and retirement stays
     human. DETECTION (``enabled``) ships ON by default so the fleet surfaces conflicts for
     human resolution; set ``enabled=false`` to restore the byte-inert envelope (no ``conflicts``

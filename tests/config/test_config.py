@@ -181,7 +181,7 @@ def test_conflict_detection_defaults_and_no_suppress_knob():
     assert cfg.conflict.tau == 0.80
     assert cfg.conflict.top_n == 10
     # serve-time pruning is no longer a ConflictConfig switch — it is folded into the
-    # default-ON recall.select stage (an unknown override field now fails fast).
+    # unconditional select_served stage (an unknown override field now fails fast).
     assert not hasattr(cfg.conflict, "suppress")
     with pytest.raises(ValueError, match=r"suppress|unknown config override"):
         Config.load(conflict={"suppress": True})
@@ -218,18 +218,20 @@ def test_suspect_consensus_bounds():
         Config.load(suspect_consensus={"top_n": 0})
 
 
-# ── decorrelated selection knobs (recall.select / recall.overscan) ─────────────
-def test_select_defaults_and_overscan_bounds():
+# ── decorrelated selection: overscan knob (select is unconditional, no knob) ───
+def test_overscan_default_and_bounds_and_no_select_knob():
     cfg = Config.load(db_path=":memory:")
-    assert cfg.recall.select is True              # decorrelated selection ships default-ON
     assert cfg.recall.overscan == 3
-    # select can be disabled (byte-identical naive truncation); overscan must be >= 1
-    assert Config.load(recall={"select": False}).recall.select is False
+    # decorrelated selection is UNCONDITIONAL — the `select` config knob was removed; an
+    # override naming it fails fast as an unknown field.
+    assert not hasattr(cfg.recall, "select")
+    with pytest.raises(ValueError, match=r"select|unknown config override"):
+        Config.load(recall={"select": False})
+    # overscan must be >= 1, and is env-coercible.
     with pytest.raises(ValueError, match=r"overscan"):
         Config.load(recall={"overscan": 0})
-    cfg2 = Config.load(db_path=":memory:",
-                       env={"HIVE_RECALL__SELECT": "false", "HIVE_RECALL__OVERSCAN": "5"})
-    assert cfg2.recall.select is False and cfg2.recall.overscan == 5
+    cfg2 = Config.load(db_path=":memory:", env={"HIVE_RECALL__OVERSCAN": "5"})
+    assert cfg2.recall.overscan == 5
 
 
 def test_conflict_tau_bounds_rejected():
