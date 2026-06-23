@@ -18,14 +18,14 @@ from hive.domain.secret_scan import scan as _scan
 from tests.fakes._fakes import FakeIndex
 from tests.mcp._helpers import build_real_server, is_error, tool_call
 
-# net-7: the original 4 verbs + the conflict surface — hive_supersede (always-on
+# net-8: the original 4 verbs + the conflict surface — hive_supersede (always-on
 # human-vouched resolution) + hive_flag (advisory, gated by conflict.enabled) — plus
-# hive_prune (the bare-retirement door; human-vouched, agent-self-authorized under AGI_MODE).
+# hive_prune (the bare-retirement door) and hive_outcome (the pure evidence verb).
 _TOOLS = {"hive_write", "hive_capture", "hive_recall", "hive_supersede",
-          "hive_prune", "hive_flag", "hive_health"}
+          "hive_prune", "hive_outcome", "hive_flag", "hive_health"}
 _DROPPED = {"hive_init", "hive_fetch", "hive_pending", "hive_approve", "hive_reject",
             "hive_evidence", "hive_consolidate", "hive_schemas", "hive_recall_cold",
-            "hive_restore_cold", "hive_reconsolidate", "hive_audit", "hive_outcome"}
+            "hive_restore_cold", "hive_reconsolidate", "hive_audit"}
 
 
 def test_tool_list_is_the_expected_verb_set():

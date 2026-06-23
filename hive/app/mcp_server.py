@@ -260,6 +260,7 @@ class HiveMCPServer:
             "hive_recall": self._handle_recall,
             "hive_supersede": self._handle_supersede,
             "hive_prune": self._handle_prune,
+            "hive_outcome": self._handle_outcome,
             "hive_flag": self._handle_flag,
             "hive_health": self._handle_health,
         }
@@ -473,6 +474,38 @@ class HiveMCPServer:
             return {"status": "pruned", "episode_id": episode_id, "approved_by": approved_by}
         return {"status": "noop", "episode_id": episode_id,
                 "reason": "unknown id or already retired — nothing pruned"}
+
+    def _handle_outcome(self, args: dict, identity: ServerIdentity) -> dict:
+        """The PURE evidence verb: an agent reports which recalled episode_ids materially HELPED
+        or HURT its task. Records one ``outcome_helped`` / ``outcome_hurt`` evidence_events audit
+        per KNOWN id (unknown ids are skipped — never a forged audit, never a raise), carrying
+        ids + kinds ONLY, no memory text (Law 4). It holds NO establish/retire handle, so it
+        structurally CANNOT mutate trust (O7-safe by construction, like ConflictFlagService): the
+        evidence feeds the dormant martingale settled-win clause + a human worklist, never an
+        action. NOT gated by AGI_MODE — identical in both modes. The reporter is the audit actor.
+        Defensively coerces ids (a non-int item is skipped, fail-open side-channel)."""
+        now = int(self.now())
+        actor = identity.agent_id
+        empty = json.dumps({})                        # no memory text rides the audit (Law 4)
+
+        def _record(raw: Any, kind: str) -> list[int]:
+            recorded: list[int] = []
+            for x in raw if isinstance(raw, list) else []:
+                try:
+                    eid = int(x)
+                except (TypeError, ValueError):
+                    continue                          # skip a non-coercible id (fail-open)
+                if self.store.get_episode(eid) is None:
+                    continue                          # skip an unknown id (never forge an audit)
+                self.store.insert_audit(eid, kind, actor, now, empty)
+                recorded.append(eid)
+            return recorded
+
+        helped = _record(args.get("helped"), "outcome_helped")
+        hurt = _record(args.get("hurt"), "outcome_hurt")
+        _log.info("mcp.outcome", extra={"event": "mcp.outcome", "agent_id": actor,
+                  "n_helped": len(helped), "n_hurt": len(hurt)})
+        return {"status": "recorded", "helped": helped, "hurt": hurt}
 
     def _handle_flag(self, args: dict, identity: ServerIdentity) -> dict:
         """The advisory Layer-2 verb (gated by conflict.enabled). Records an UNTRUSTED

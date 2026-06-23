@@ -120,6 +120,18 @@ TOOL_DEFINITIONS: list[dict] = [
                                              "enum": ["conflict", "supersedes"]},
                                     "winner": {"type": "integer"},
                                     "resolution": {"type": "string"}}}},
+    {"name": "hive_outcome",
+     "description": "After a task, log which recalled memories materially HELPED or HURT your "
+                    "work, by their episode_id from reference_context. Omit neutral or "
+                    "contextually-irrelevant ones. Records EVIDENCE only — it changes no trust "
+                    "and retires nothing. Helped memories become establish candidates and "
+                    "corroborate effective-independence; hurt memories become prune/supersede "
+                    "candidates for human review (or autonomous action under AGI_MODE).",
+     "inputSchema": {"type": "object", "required": [],
+                     "properties": {"helped": {"type": "array",
+                                               "items": {"type": "integer"}},
+                                    "hurt": {"type": "array",
+                                             "items": {"type": "integer"}}}}},
     {"name": "hive_health",
      "description": "Cheap liveness/identity snapshot (+ trust_counts, n_misses_7d). "
                     "Fail-closed {ok:false,error,db_path} on a probe failure. "
