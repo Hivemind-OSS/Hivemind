@@ -192,6 +192,29 @@ def test_conflict_enabled_via_env():
     assert cfg.conflict.enabled is True
 
 
+# ── SuspectConsensusConfig group (detection-only worklist; default OFF) ─────────
+def test_suspect_consensus_defaults_off():
+    cfg = Config.load(db_path=":memory:")
+    assert cfg.suspect_consensus.enabled is False     # default OFF ⇒ served envelope byte-inert
+    assert cfg.suspect_consensus.n_eff_frac_max == 0.5
+    assert cfg.suspect_consensus.top_n == 10
+
+
+def test_suspect_consensus_bounds():
+    with pytest.raises(ValueError, match=r"n_eff_frac_max"):
+        Config.load(suspect_consensus={"n_eff_frac_max": 0.0})
+    with pytest.raises(ValueError, match=r"n_eff_frac_max"):
+        Config.load(suspect_consensus={"n_eff_frac_max": 1.5})
+    with pytest.raises(ValueError, match=r"top_n"):
+        Config.load(suspect_consensus={"top_n": 0})
+
+
+def test_suspect_consensus_enabled_via_env():
+    cfg = Config.load(db_path=":memory:",
+                      env={"HIVE_SUSPECT_CONSENSUS__ENABLED": "true"})
+    assert cfg.suspect_consensus.enabled is True
+
+
 # ── decorrelated selection knobs (recall.select / recall.overscan) ─────────────
 def test_select_defaults_and_overscan_bounds():
     cfg = Config.load(db_path=":memory:")

@@ -24,7 +24,8 @@ _DAY_S = 86_400
 
 def build_real_server(*, d: int = 64, tau_serve: float = 0.70, k_min: int = 1,
                       top_n: int = 10, t0: int = 1000, select: bool = True,
-                      scanner=None, autonomy=None, embedder=None, conflict=None):
+                      scanner=None, autonomy=None, embedder=None, conflict=None,
+                      suspect_consensus=None):
     """Return (server, clock). ``clock`` is mutable so tests can stamp distinct ts.
     The FULL trust-lifecycle is wired (real DemandRule + LifecycleService on the
     real store), mirroring build_container — pass ``autonomy`` to tune the knobs.
@@ -73,7 +74,8 @@ def build_real_server(*, d: int = 64, tau_serve: float = 0.70, k_min: int = 1,
         admission=admission, recall=recall, store=store, embedder=embedder,
         identity=ServerIdentity("default", "agent"),
         now=clock.now, started_ts=t0, db_path="", autonomy=aut,
-        conflict=conflict, flag_service=flag_service)
+        conflict=conflict, flag_service=flag_service,
+        suspect_consensus=suspect_consensus)
     return server, clock
 
 

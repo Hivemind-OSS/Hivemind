@@ -150,6 +150,29 @@ class ConflictConfig:
 
 
 @dataclass(frozen=True)
+class SuspectConsensusConfig:
+    """The suspect-consensus worklist knobs (detection-only — surfaces provisional promotions
+    whose demand had thin EFFECTIVE INDEPENDENCE, the confidently-wrong-but-popular failure
+    mode). ``enabled`` gates the ``hive_health(include_suspect_consensus=true)`` report; default
+    OFF ⇒ the served health envelope is byte-identical to today (THEORY §9.9). It NEVER changes a
+    promote boolean or retires a row — it reads the stamped promote audit and renders a human
+    worklist (Law 3, THEORY §10 O7). ``n_eff_frac_max`` is the thin-vote floor: a provisional with
+    ``n_eff / k < n_eff_frac_max`` is flagged (0.5 ⇒ flag any promotion driven by fewer than half
+    as many INDEPENDENT votes as raw asks). ``top_n`` caps the worklist."""
+    enabled: bool = False
+    n_eff_frac_max: float = 0.5
+    top_n: int = 10
+
+    def __post_init__(self) -> None:
+        if not (math.isfinite(self.n_eff_frac_max) and 0.0 < self.n_eff_frac_max <= 1.0):
+            raise ValueError(
+                f"suspect_consensus.n_eff_frac_max must be finite in (0, 1] "
+                f"(got {self.n_eff_frac_max})")
+        if self.top_n < 1:
+            raise ValueError(f"suspect_consensus.top_n must be >= 1 (got {self.top_n})")
+
+
+@dataclass(frozen=True)
 class RetentionConfig:
     backup_keep: int = 30
     backup_dir: str = ""                 # "" ⇒ computed as <db_dir>/backups at load()
@@ -174,6 +197,7 @@ _GROUP_TYPES: dict[str, type] = {
     "recall": RecallConfig,
     "autonomy": AutonomyConfig,
     "conflict": ConflictConfig,
+    "suspect_consensus": SuspectConsensusConfig,
     "retention": RetentionConfig,
     "obs": ObservabilityConfig,
 }
@@ -190,6 +214,7 @@ class Config:
     recall: RecallConfig
     autonomy: AutonomyConfig
     conflict: ConflictConfig
+    suspect_consensus: SuspectConsensusConfig
     retention: RetentionConfig
     obs: ObservabilityConfig
 

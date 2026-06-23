@@ -73,6 +73,20 @@ class QuarantineReader(Protocol):
 
 
 @runtime_checkable
+class PromotionProvenanceReader(Protocol):
+    """The newest-``promote``-audit demand-independence read the suspect-consensus worklist
+    drives: for each requested episode id, the ``(rho_bar, n_eff, k)`` the promotion stamped
+    (the effective-independence of the demand that promoted it). A SEPARATE narrow port (not a
+    widening of an existing one) so existing narrow fakes stay conformant; the SqliteEpisodeStore
+    already satisfies it (no adapter change). Pre-stamp promotion rows (no ``demand_independence``)
+    and ids absent from any ``promote`` audit are simply OMITTED — the caller under-claims for
+    them (a missing stamp is never read as a suspect signal)."""
+    def promotion_provenance(
+        self, episode_ids: Sequence[int]
+    ) -> dict[int, tuple[float, float, int]]: ...
+
+
+@runtime_checkable
 class ConflictFlagStore(Protocol):
     """The ONE new narrow port: the durable write seam for an advisory conflict flag. The
     ConflictFlagService depends on this (+ ``EpisodeReader`` for id-exists + ``SecretScanner``

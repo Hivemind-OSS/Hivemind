@@ -117,13 +117,18 @@ TOOL_DEFINITIONS: list[dict] = [
                     "include_conflicts=true adds the conflict/redundancy worklist "
                     "(near-dup contradictions + supersession candidates + agent-flagged "
                     "advisories) to resolve via hive_supersede. "
+                    "include_suspect_consensus=true adds the suspect-consensus worklist: "
+                    "provisional promotions whose demand had thin effective independence "
+                    "(promoted on correlated asks, the confidently-wrong-but-popular case) "
+                    "for a human to re-examine. "
                     "embedder_loaded reports whether this process's embedder is resident "
                     "(the container HEALTHCHECK is a separate process reading boot markers)."
                     "\n\n" + ONBOARDING_REFERENCE,
      "inputSchema": {"type": "object", "required": [],
                      "properties": {"include_gaps": {"type": "boolean"},
                                     "include_trends": {"type": "boolean"},
-                                    "include_conflicts": {"type": "boolean"}}}},
+                                    "include_conflicts": {"type": "boolean"},
+                                    "include_suspect_consensus": {"type": "boolean"}}}},
 ]
 
 # The canonical tool name set — the dropped-verb guard reads this.

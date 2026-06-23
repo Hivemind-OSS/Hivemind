@@ -437,6 +437,36 @@ class SqliteEpisodeStore:
                 "VALUES(?,?,?,?,?)", (episode_id, kind, actor, ts, payload))
             return int(cur.lastrowid)
 
+    def promotion_provenance(
+            self, episode_ids: Sequence[int]
+    ) -> dict[int, tuple[float, float, int]]:
+        """PromotionProvenanceReader: the newest ``promote`` audit's stamped
+        ``demand_independence`` per episode → ``{eid: (rho_bar, n_eff, k)}``. Read-only, no DDL.
+        DEFENSIVE: a malformed/None payload, or a payload lacking ``demand_independence`` (a
+        pre-stamp promotion row), or a non-coercible field is SKIPPED — never raises, never
+        fabricates a stamp. An id absent from any ``promote`` audit is simply omitted. // O(rows)."""
+        ids = [int(e) for e in episode_ids]
+        if not ids:
+            return {}
+        out: dict[int, tuple[float, float, int]] = {}
+        placeholders = ",".join("?" for _ in ids)
+        # newest-first per episode: ORDER BY ts DESC, id DESC, take the first stamp we can parse.
+        for r in self.conn.execute(
+                f"SELECT episode_id, payload FROM evidence_events "
+                f"WHERE kind='promote' AND episode_id IN ({placeholders}) "
+                f"ORDER BY episode_id, ts DESC, id DESC", ids):
+            eid = int(r["episode_id"])
+            if eid in out:
+                continue                                  # already have the newest for this id
+            try:
+                di = json.loads(r["payload"]).get("demand_independence")
+                if not isinstance(di, dict):
+                    continue                              # pre-stamp row ⇒ omit (under-claim)
+                out[eid] = (float(di["rho_bar"]), float(di["n_eff"]), int(di["k"]))
+            except (TypeError, ValueError, KeyError, json.JSONDecodeError):
+                continue                                  # malformed ⇒ skip, never raise
+        return out
+
     def trust_counts(self) -> dict[str, int]:
         """Per-trust-state row counts for hive_health — ALL four states present
         (a zero is signal: quarantine pile-up must be visible, never silent)."""

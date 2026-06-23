@@ -44,6 +44,9 @@ from hive.app.tool_defs import TOOL_DEFINITIONS
 from hive.domain.conflict import (
     CONTRADICTION, ConflictItem, detect_conflicts,
 )
+from hive.domain.consensus import (
+    SuspectConsensusItem, detect_suspect_consensus,
+)
 from hive.domain.errors import SecretRefused
 from hive.domain.kinds import DEFAULT_KIND
 from hive.domain.lifecycle import is_servable
@@ -207,7 +210,7 @@ class HiveMCPServer:
     def __init__(self, *, admission, recall, store, embedder,
                  identity: ServerIdentity, now: Callable[[], int],
                  started_ts: int = 0, db_path: str = "", autonomy=None,
-                 conflict=None, flag_service=None) -> None:
+                 conflict=None, flag_service=None, suspect_consensus=None) -> None:
         self.admission = admission          # AdmissionService: write + capture
         self.recall = recall                # RecallPipeline: recall(query, *, agent_id)
         self.store = store                  # the store adapter: get_episode (belt) / counts
@@ -235,6 +238,14 @@ class HiveMCPServer:
             conflict = ConflictConfig(enabled=False)
         self.conflict = conflict
         self.flag_service = flag_service
+        # suspect-consensus worklist (duck-typed SuspectConsensusConfig). Default OFF: a
+        # bare-construction server's health envelope is byte-identical to today (no key). The
+        # real config wires it from cfg.suspect_consensus (also default OFF unless an operator
+        # opts in). Detection-only — it reads stamped promote audits, never retires (Law 3).
+        if suspect_consensus is None:
+            from hive.app.config import SuspectConsensusConfig   # noqa: PLC0415 — lazy default
+            suspect_consensus = SuspectConsensusConfig(enabled=False)
+        self.suspect_consensus = suspect_consensus
         self._tool_handlers: dict[str, Callable[[dict, ServerIdentity], dict]] = {
             "hive_write": self._handle_write,
             "hive_capture": self._handle_capture,
@@ -469,6 +480,11 @@ class HiveMCPServer:
             # (OFF ⇒ byte-inert, no key); dropping the request flag ⇒ always-emits mutation.
             if self.conflict.enabled and args.get("include_conflicts"):
                 snap["conflicts"] = self._conflict_report()
+            # the suspect-consensus worklist is gated by BOTH the request flag AND
+            # suspect_consensus.enabled (OFF ⇒ byte-inert, no key); dropping the `enabled and`
+            # half ⇒ the off-byte-inert mutation.
+            if self.suspect_consensus.enabled and args.get("include_suspect_consensus"):
+                snap["suspect_consensus"] = self._suspect_consensus_report()
             return snap
         except Exception as e:                               # fail-closed subset ONLY
             _log.error("mcp.health_probe_fail", extra={"event": "mcp.health_probe_fail",
@@ -565,6 +581,48 @@ class HiveMCPServer:
         except Exception:                                # noqa: BLE001 — telemetry only
             _log.warning("mcp.conflict_report_failed", extra={
                 "event": "mcp.conflict_report_failed"}, exc_info=True)
+            return []
+
+    def _suspect_consensus_report(self) -> list[dict]:
+        """The suspect-consensus worklist (THEORY §10 O7 — detection, never resolution):
+        PROVISIONAL promotions whose stamped demand had thin EFFECTIVE INDEPENDENCE
+        (``n_eff / k`` below the floor) — the confidently-wrong-but-popular failure mode. Scans
+        the SERVABLE set, keeps the provisional (demand-promoted, not human-vouched) ids, reads
+        each one's newest ``promote`` audit ``demand_independence`` stamp, and runs the pure
+        detector. Ids-only wire dicts (no memory text, Law 4); a provisional with no stamp
+        (pre-3b promotion, or never demand-promoted) under-claims (omitted).
+
+        ``has_settled_win`` is passed False for EVERY provisional: there is no per-episode
+        settled-win/credit signal in this build (the outcome loop was deliberately cut). This is
+        EXACT, not lossy — the worklist runs only on provisionals (not-yet-corroborated by
+        construction), for which a settled win is unavailable anyway, so ``martingale_warning``
+        reduces to ``thin`` here. The detector keeps the clause structural so a future settled-win
+        source flips it on with no detector change.
+
+        Degrades to [] on any probe fault (a side-channel must never break health, fail-open)."""
+        try:
+            now = int(self.now())
+            ttl_s = int(self.autonomy.provisional_ttl_days) * _DAY_S
+            labeled = self.store.scan_servable_labeled(now=now, provisional_ttl_s=ttl_s)
+            # (id, value, polarity, anchor, ts, trust) — keep provisional (demand-promoted) only
+            anchor_by_id = {row[0]: row[3] for row in labeled if row[5] == "provisional"}
+            prov = self.store.promotion_provenance(list(anchor_by_id))
+            items = [SuspectConsensusItem(
+                        episode_id=eid, rho_bar=rho_bar, n_eff=n_eff, k=k,
+                        has_settled_win=False, anchor=anchor_by_id.get(eid, ""))
+                     for eid, (rho_bar, n_eff, k) in prov.items()]
+            notes = detect_suspect_consensus(
+                items, n_eff_frac_max=float(self.suspect_consensus.n_eff_frac_max),
+                top_n=int(self.suspect_consensus.top_n))
+            return [{"episode_id": n.episode_id, "rho_bar": round(float(n.rho_bar), 4),
+                     "n_eff": round(float(n.n_eff), 4), "k": n.k,
+                     "martingale_warning": n.martingale_warning,
+                     "note": ("provisional promoted on thin effective-independence demand "
+                              "(correlated asks) — re-examine; resolve via hive_supersede")}
+                    for n in notes]
+        except Exception:                                # noqa: BLE001 — telemetry only
+            _log.warning("mcp.suspect_consensus_report_failed", extra={
+                "event": "mcp.suspect_consensus_report_failed"}, exc_info=True)
             return []
 
     def _db_size(self) -> int:
