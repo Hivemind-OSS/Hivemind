@@ -709,7 +709,8 @@ class HiveMCPServer:
                      "n_eff": round(float(n.n_eff), 4), "k": n.k,
                      "martingale_warning": n.martingale_warning,
                      "note": ("provisional promoted on thin effective-independence demand "
-                              "(correlated asks) — re-examine; resolve via hive_supersede")}
+                              "(correlated asks) — re-examine; resolve via hive_supersede "
+                              "(replace) or hive_prune (retire if wrong)")}
                     for n in notes]
         except Exception:                                # noqa: BLE001 — telemetry only
             _log.warning("mcp.suspect_consensus_report_failed", extra={
