@@ -367,6 +367,40 @@ class SqliteEpisodeStore:
                   target_id, replacement_id, actor)
         return True
 
+    def deprecate(self, episode_id: int, *, actor: str, ts: int) -> bool:
+        """The SECOND retirement owner (beside ``supersede``): a BARE deprecation — no
+        replacement — reserved for an INCORRECT / MALICIOUS / MISLEADING memory (behind
+        ``hive_prune``). Flips trust→deprecated + writes ONE ``prune`` audit, leaving
+        ``superseded_by`` NULL (the distinction from supersede: no successor), in ONE tx;
+        de-indexes after commit. NOT a hard delete — the row and its ``evidence_events`` stay in
+        the append-only ledger (an orphaned-evidence delete would break the honesty model).
+        Guards: unknown id or a non-materialized (status!='approved') row → False; idempotent —
+        an already-deprecated row is a no-op (no duplicate audit) returning False (THEORY §6:
+        the bool reports whether anything actually changed). True iff this call retired a live
+        row. Deleting the trust flip is the prune mutation (the flip test reds)."""
+        with tx(self.conn):
+            r = self.conn.execute(
+                "SELECT status, trust FROM episodes WHERE id=?", (episode_id,)).fetchone()
+            if r is None or r["status"] != "approved":
+                return False
+            old_trust = r["trust"]
+            if old_trust == DEPRECATED:
+                return False                       # idempotent: already retired, no duplicate audit
+            self.conn.execute(
+                "UPDATE episodes SET trust=? WHERE id=?", (DEPRECATED, episode_id))
+            self.conn.execute(
+                "INSERT INTO evidence_events(episode_id, kind, actor, ts, payload) "
+                "VALUES(?,?,?,?,?)",
+                (episode_id, "prune", actor, ts, json.dumps({"from": old_trust})))
+        if self.index is not None and old_trust in (ESTABLISHED, PROVISIONAL):
+            try:                                   # quarantined rows were never indexed
+                self.index.remove(episode_id)
+            except Exception:                      # noqa: BLE001 — warm cache only [B3]
+                _log.warning("store.deprecate_deindex_failed episode_id=%s", episode_id)
+        _log.info("store.deprecated episode_id=%s actor=%s from=%s",
+                  episode_id, actor, old_trust)
+        return True
+
 
     def sweep_decayed(self, *, now: int, q_ttl_s: int, p_ttl_s: int) -> dict:
         """Materialize the lazy ``lifecycle.decayed`` rule: TTL-lapsed quarantined/

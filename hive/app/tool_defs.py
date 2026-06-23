@@ -93,6 +93,18 @@ TOOL_DEFINITIONS: list[dict] = [
                      "properties": {"loser": {"type": "integer"},
                                     "winner": {"type": "integer"},
                                     "approved_by": {"type": "string"}}}},
+    {"name": "hive_prune",
+     "description": "Retire a memory that is INCORRECT, MALICIOUS, or MISLEADING — it is "
+                    "deprecated (never recalled again) with no replacement and stays in the "
+                    "audit ledger. NOT for neutral or merely off-topic memories (omit those; "
+                    "leave them as-is). Needs an approver (approved_by: your human's in-chat "
+                    "yes, or an orchestrator's sign-off); under AGI_MODE an agent may "
+                    "self-authorize with approved_by='AGI_OVERRIDE'. To CORRECT a memory "
+                    "(retire-and-replace), prefer hive_write(replaces=) instead. Resolves a "
+                    "hurt candidate surfaced by hive_outcome or a review worklist.",
+     "inputSchema": {"type": "object", "required": ["episode_id", "approved_by"],
+                     "properties": {"episode_id": {"type": "integer"},
+                                    "approved_by": {"type": "string"}}}},
     {"name": "hive_flag",
      "description": "Advisory ONLY: flag two recalled memories as in conflict or one "
                     "superseding the other. It NEVER retires anything — it records a note "

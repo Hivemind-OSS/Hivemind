@@ -259,6 +259,7 @@ class HiveMCPServer:
             "hive_capture": self._handle_capture,
             "hive_recall": self._handle_recall,
             "hive_supersede": self._handle_supersede,
+            "hive_prune": self._handle_prune,
             "hive_flag": self._handle_flag,
             "hive_health": self._handle_health,
         }
@@ -451,6 +452,27 @@ class HiveMCPServer:
                     "approved_by": approved_by}
         return {"status": "noop", "loser": loser, "winner": winner,
                 "reason": "unknown id or self-supersede — nothing retired"}
+
+    def _handle_prune(self, args: dict, identity: ServerIdentity) -> dict:
+        """The bare-retirement verb (the SECOND retirement owner beside hive_supersede). Thin
+        wrapper over ``store.deprecate``: retire an INCORRECT/MALICIOUS/MISLEADING memory to
+        ``deprecated`` with NO replacement, recording ``actor=approved_by``. Human-vouched by
+        default; under AGI_MODE an agent self-authorizes (approved_by=AGI_OVERRIDE) — the SAME
+        fail-closed gate as write/supersede refuses the sentinel when AGI_MODE is off (§10 O7:
+        operator-gated, audit-stamped, reversible-tier — never mechanical auto-resolution).
+        ``store.deprecate`` owns the existence + idempotency guards (False ⇒ a noop envelope,
+        nothing retired)."""
+        episode_id = int(args.get("episode_id"))     # required+integer (schema belt)
+        approved_by = args.get("approved_by") or ""   # required by the schema belt
+        if self._override_refused(approved_by):       # AGI_OVERRIDE sentinel + AGI_MODE off ⇒ refuse
+            return self._agi_refused("hive_prune")
+        ok = self.store.deprecate(episode_id, actor=approved_by, ts=int(self.now()))
+        if ok:
+            _log.info("mcp.pruned", extra={"event": "mcp.pruned",
+                      "episode_id": episode_id, "agent_id": identity.agent_id})
+            return {"status": "pruned", "episode_id": episode_id, "approved_by": approved_by}
+        return {"status": "noop", "episode_id": episode_id,
+                "reason": "unknown id or already retired — nothing pruned"}
 
     def _handle_flag(self, args: dict, identity: ServerIdentity) -> dict:
         """The advisory Layer-2 verb (gated by conflict.enabled). Records an UNTRUSTED
