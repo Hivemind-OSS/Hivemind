@@ -13,6 +13,12 @@ hive up                     # build + start (zero-config); blocks until the daem
 - Zero config required: `hive up` boots on safe code defaults. Only `cp .env.example .env`
   and edit it if you need an operator override (a non-default DB path, log level, a guarantee
   knob, or the `--tunnel` ngrok credentials).
+- **Agent self-authorization (`HIVE_AGI__MODE`, default OFF)** — leave it off and a human
+  `hive_write(approved_by=…)` is the only path to `established` trust and the only authority to
+  retire (`hive_supersede`) or prune (`hive_prune`) a memory. Set it `true` only to deliberately
+  delegate that per-write vouch to the fleet: an agent may then self-authorize with
+  `approved_by="AGI_OVERRIDE"`, stamped byte-distinguishably in the audit (`provenance=agent_reasoned`).
+  It loosens a safety gate, so it stays off unless you mean it.
 
 - The daemon serves MCP over HTTP on **two doors**: a tokenless **loopback** door on
   **127.0.0.1:8765** (local agents) and a token-required **tunnel** door (compose-internal
@@ -49,14 +55,16 @@ claude mcp add --transport http hive https://<your-domain>/mcp \
 `hive connect` prints the right line ready-made — the tokenless `http://localhost:8765`
 loopback line by default, or the token-gated public `https://…` line when `NGROK_DOMAIN` is set
 on the host. The token only authenticates the tunnel door; it is never the identity. From there
-onboarding is self-serve: the `hive_health` tool description carries the rules block, so a
-connected agent writes it into its primary rules file (CLAUDE.md / AGENTS.md / …) and skips
-re-touch when the marker is already present. No skill, no handshake call, no manual per-repo work.
+onboarding is **served-only**: the usage contract reaches every agent over MCP — the `initialize`
+instructions carry the full contract, with a secondary reference in the `hive_health` description.
+Nothing is written into a client's rules file; the served copy is the only copy, so it can't
+drift. No skill, no handshake call, no manual per-repo work.
 
 **Solo (one dev)?** Nothing to set — solo is automatic. A solo dev's independent agents each
 carry a distinct per-session identity (the server-minted `Mcp-Session-Id`, or an explicit
 `X-Hive-Agent-Id`), so their shared demand promotes under the one identity-diversity rule with
-no flag. Human `hive_write(approved_by=…)` stays the only path to `established` trust.
+no flag. Human `hive_write(approved_by=…)` stays the only path to `established` trust — unless
+you deliberately opt into `HIVE_AGI__MODE` (section 1), which lets an agent self-authorize.
 
 ## 3. Teammates on other machines
 
