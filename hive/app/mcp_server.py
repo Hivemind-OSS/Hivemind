@@ -441,6 +441,8 @@ class HiveMCPServer:
         loser = int(args.get("loser"))               # required+integer (schema belt)
         winner = int(args.get("winner"))
         approved_by = args.get("approved_by") or ""
+        if self._override_refused(approved_by):       # AGI_OVERRIDE sentinel + AGI_MODE off ⇒ refuse
+            return self._agi_refused("hive_supersede")
         ok = self.store.supersede(loser, winner, actor=approved_by, ts=int(self.now()))
         if ok:
             _log.info("mcp.superseded", extra={"event": "mcp.superseded",
