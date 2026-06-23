@@ -15,7 +15,7 @@ import pytest
 
 from hive.domain.lifecycle import (
     PROVISIONAL, QUARANTINED, DemandRule, LifecycleService, MissRow,
-    PromotionDecision,
+    PromotionDecision, _demand_independence,
 )
 from tests.fakes import FakeIndex
 
@@ -188,8 +188,13 @@ def test_on_capture_promotes_against_staged_demand():
     eid, kind, actor, ts, payload = st.audits[0]
     assert (eid, kind, actor, ts) == (7, "promote", "server", NOW)
     body = json.loads(payload)
+    di = body.pop("demand_independence")             # the decorrelated-demand stamp (3b)
     assert body == {"rule": "demand", "n_misses": 3, "n_other_identities": 2,
                     "competitor_sim": -1.0, "reason": "demand"}
+    # _demand() is three identical-vector asks ⇒ correlated ⇒ n_eff≈1 (rho_bar≈1), k=3
+    assert di["k"] == 3
+    assert di["rho_bar"] == pytest.approx(1.0, abs=1e-4)
+    assert di["n_eff"] == pytest.approx(1.0, abs=1e-4)
     # the candidate scan + window read used the configured knobs
     assert ("quarantined_candidates", NOW, Q_TTL) in st.calls
     assert ("misses_window", NOW - WINDOW_S) in st.calls
@@ -288,3 +293,68 @@ def test_triggers_never_raise_into_caller():
     assert svc.on_capture(7) is None
     assert svc.on_miss(CAND, agent_id="a") == []
     assert svc.sweep() == {}
+
+
+# ── decorrelated demand (n_eff): counting identities ≠ measuring independence ───
+def _missv(agent: str, vec, ts: int = NOW - 10) -> MissRow:
+    return MissRow(vector=np.asarray(vec, dtype=np.float32), agent_id=agent, ts=ts)
+
+
+def test_demand_independence_identical_vectors_collapse_to_one():
+    # k near-IDENTICAL asks ⇒ rho_bar≈1 ⇒ n_eff≈1 (one effective independent vote)
+    v = _at_cos(0.9)
+    rho, n_eff = _demand_independence([_missv("a", v), _missv("b", v), _missv("c", v)])
+    assert rho == pytest.approx(1.0, abs=1e-5)
+    assert n_eff == pytest.approx(1.0, abs=1e-5)
+
+
+def test_demand_independence_orthogonal_vectors_are_full_n_eff():
+    # k ORTHOGONAL asks ⇒ rho_bar≈0 ⇒ n_eff≈k (fully independent demand)
+    e = np.eye(4, dtype=np.float32)
+    rho, n_eff = _demand_independence([_missv("a", e[0]), _missv("b", e[1]), _missv("c", e[2])])
+    assert rho == pytest.approx(0.0, abs=1e-6)
+    assert n_eff == pytest.approx(3.0, abs=1e-6)
+
+
+def test_demand_independence_k_lt_2_under_claims():
+    assert _demand_independence([]) == (0.0, 0.0)
+    assert _demand_independence([_missv("a", _at_cos(0.9))]) == (0.0, 1.0)
+
+
+def test_demand_independence_returns_json_serializable_builtin_floats():
+    rho, n_eff = _demand_independence([_missv("a", _at_cos(0.9)), _missv("b", _at_cos(0.8))])
+    assert type(rho) is float and type(n_eff) is float       # builtin, NOT np.float64
+    json.dumps({"rho_bar": rho, "n_eff": n_eff})             # must not TypeError
+
+
+def test_demand_independence_n_eff_never_exceeds_k():
+    # anti-correlated asks (rho_bar<0) ⇒ the design effect floors rho at 0 ⇒ n_eff == k, never > k
+    rho, n_eff = _demand_independence([_missv("a", _at_cos(0.9)), _missv("b", _at_cos(-0.9))])
+    assert rho < 0.0 and n_eff == pytest.approx(2.0)
+
+
+def test_demand_independence_skips_undecidable_pairs():
+    # a wrong-shape (undecidable) vector pair is skipped, not counted as demand
+    bad = np.array([1.0, 0.0], dtype=np.float32)             # shape mismatch with the 4-d asks
+    rho, n_eff = _demand_independence([_missv("a", _at_cos(0.9)), _missv("b", bad)])
+    assert (rho, n_eff) == (0.0, 2.0)                        # no decidable pair ⇒ under-claim
+
+
+def test_promote_stamps_demand_independence_non_promote_keeps_zero():
+    # identical-vector demand promotes and carries n_eff≈1; a rejected case under-claims 0.0
+    d = _decide(_rule(), _demand())
+    assert d.promote is True
+    assert d.rho_bar == pytest.approx(1.0, abs=1e-5) and d.n_eff == pytest.approx(1.0, abs=1e-5)
+    rej = _decide(_rule(), [_miss("writer-1")])              # insufficient demand
+    assert rej.promote is False and rej.rho_bar == 0.0 and rej.n_eff == 0.0
+
+
+def test_n_eff_is_value_independent_of_the_verdict(monkeypatch):
+    # ★ Law 3: the independence measure NEVER gates the verdict. Force absurd values — a
+    # promoting case still promotes, a rejecting case still rejects.
+    import hive.domain.lifecycle as lc
+    monkeypatch.setattr(lc, "_demand_independence", lambda matched: (1.0, 0.0001))
+    assert _decide(_rule(), _demand()).promote is True       # n_eff≈0 does not block
+    monkeypatch.setattr(lc, "_demand_independence", lambda matched: (0.0, 9999.0))
+    assert _decide(_rule(), _demand()).promote is True       # huge n_eff does not change it
+    assert _decide(_rule(), [_miss("writer-1")]).promote is False   # gated paths untouched

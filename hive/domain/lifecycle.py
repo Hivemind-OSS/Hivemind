@@ -109,17 +109,51 @@ def _cosine(a, b) -> Optional[float]:
     return float(np.dot(va, vb) / (na * nb))
 
 
+def _demand_independence(matched: Sequence["MissRow"]) -> tuple[float, float]:
+    """(rho_bar, n_eff) — a decorrelated-vote measure over the matched-miss QUERY vectors.
+
+    Counting identities is not measuring independence: many SESSIONS can ask near-identical
+    questions (correlated demand). ``rho_bar`` = mean pairwise cosine of the matched vectors
+    (the average correlation among the asks); ``D_eff = 1 + (k-1)*max(0, rho_bar)`` is the
+    design effect of correlated votes; ``n_eff = k / D_eff`` is the effective number of
+    INDEPENDENT votes — k identical asks ⇒ n_eff≈1, k orthogonal asks ⇒ n_eff≈k. k<2 or no
+    decidable pair ⇒ ``(0.0, float(k))`` (under-claim — not flagged). Undecidable pairs are
+    skipped. PURE, total; returns BUILTIN floats (never np.float64 — json.dumps would
+    TypeError). rho_bar is clamped into [-1, 1]; the design effect floors rho_bar at 0 so
+    n_eff can never exceed k.  // O(k^2 d)."""
+    k = len(matched)
+    if k < 2:
+        return (0.0, float(k))
+    cosines: list[float] = []
+    for i in range(k):
+        for j in range(i + 1, k):
+            c = _cosine(matched[i].vector, matched[j].vector)
+            if c is None:                          # undecidable pair ⇒ skipped, never counted
+                continue
+            cosines.append(max(-1.0, min(1.0, c)))
+    if not cosines:
+        return (0.0, float(k))
+    rho_bar = max(-1.0, min(1.0, float(sum(cosines) / len(cosines))))
+    d_eff = 1.0 + (k - 1) * max(0.0, rho_bar)      # max(0,·) ⇒ n_eff <= k by construction
+    return (rho_bar, float(k) / d_eff)
+
+
 @dataclass(frozen=True, slots=True)
 class PromotionDecision:
     """The machine-readable verdict on one quarantined candidate — its fields go
     verbatim into the ``promote`` audit payload. ``reason`` names the FIRST failed
     clause in rule order (insufficient_demand → self_demand → competitor_answers),
-    ``non_finite`` for undecidable inputs, ``demand`` on promotion."""
+    ``non_finite`` for undecidable inputs, ``demand`` on promotion. ``rho_bar`` / ``n_eff``
+    are the decorrelated-demand stamp (computed on the promote path only, value-INDEPENDENT
+    of the verdict — they record HOW independent the demand was, never gate it); both keep the
+    under-claiming 0.0 on every non-promote path."""
     promote: bool
     n_misses: int                 # matched misses inside the window
     n_other_identities: int       # matched misses from identities ≠ the writer
     competitor_sim: float         # top-1 cosine against the SERVABLE index
     reason: str
+    rho_bar: float = 0.0          # mean pairwise cosine of the matched-miss vectors
+    n_eff: float = 0.0            # effective independent votes (k / design-effect)
 
 
 class DemandRule:
@@ -171,7 +205,12 @@ class DemandRule:
             if comp >= self.competitor_tau:
                 return PromotionDecision(False, len(matched), n_other, comp,
                                          "competitor_answers")
-            return PromotionDecision(True, len(matched), n_other, comp, "demand")
+            # promote path ONLY (after every gating clause has had its chance to return) —
+            # so the measure is value-INDEPENDENT of the verdict (Law 3): it records HOW
+            # independent the demand was, it never decides whether to promote.
+            rho_bar, n_eff = _demand_independence(matched)
+            return PromotionDecision(True, len(matched), n_other, comp, "demand",
+                                     rho_bar=rho_bar, n_eff=n_eff)
         except Exception:                          # noqa: BLE001 — total by contract
             _log.warning("demand rule internal failure → fail-closed no-promote",
                          exc_info=True)
@@ -273,6 +312,8 @@ class LifecycleService:
         if d.promote and self._store.set_trust(episode_id, PROVISIONAL, now=t):
             self._store.insert_audit(episode_id, "promote", "server", t, json.dumps({
                 "rule": "demand", "n_misses": d.n_misses,
+                "demand_independence": {"rho_bar": d.rho_bar, "n_eff": d.n_eff,
+                                        "k": d.n_misses},
                 "n_other_identities": d.n_other_identities,
                 "competitor_sim": d.competitor_sim, "reason": d.reason}))
             _log.info("lifecycle.promoted episode_id=%s n_misses=%d n_other=%d",
