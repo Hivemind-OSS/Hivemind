@@ -13,7 +13,7 @@ import re
 import pytest
 
 from hive.research.bench.backends import MemoryBackend
-from hive.research.bench.mem0_backend import Mem0Backend, Mem0Client, Mem0Hit
+from hive.research.bench.mem0_backend import _SHARED_USER, Mem0Backend, Mem0Client, Mem0Hit
 
 
 # ── a deterministic, model-free Mem0Client double ──────────────────────────────
@@ -148,6 +148,36 @@ def _cached_minilm():
         return name if isinstance(hit, str) else None
     except Exception:
         return None
+
+
+def test_real_client_translates_limit_to_top_k_and_disables_threshold():
+    """RealMem0Client must map the seam's ``limit`` onto mem0's ``top_k`` kwarg and pin
+    ``threshold=0.0``. mem0 2.0.7's ``search(*, top_k=20, threshold=0.1, **kwargs)`` SILENTLY ignores
+    an unknown ``limit=`` (absorbed by ``**kwargs``), so the bug left the window at 20 and the native
+    0.1 floor on — scoring mem0 over a wider top-k than Hivemind and giving it undisclosed abstention.
+    Model-free spy: the FakeMem0Client honors ``limit`` and has no threshold, so only a real-adapter
+    test reaches this translation. Regression guard for BUG-009."""
+    from hive.research.bench.mem0_backend import RealMem0Client
+
+    captured: dict = {}
+
+    class _SpyMem:
+        def search(self, query, **kwargs):
+            captured.update(kwargs)
+            captured["query"] = query
+            return {"results": [{"id": "m1", "score": 0.9}]}
+
+    client = object.__new__(RealMem0Client)        # bypass the heavy Memory.from_config boot
+    client._uid = _SHARED_USER
+    client._mem = _SpyMem()
+
+    hits = client.search("what port does redis use", limit=7)
+
+    assert captured["top_k"] == 7                   # requested window honored, NOT defaulted to 20
+    assert captured["threshold"] == 0.0             # native 0.1 floor disabled → unconditional top-k
+    assert "limit" not in captured                  # the silently-ignored kwarg is gone
+    assert captured["filters"] == {"user_id": _SHARED_USER}
+    assert [h.id for h in hits] == ["m1"]
 
 
 @pytest.mark.skipif(_cached_minilm() is None, reason="no cached ST model / mem0 for the real client")

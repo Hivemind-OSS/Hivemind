@@ -125,7 +125,12 @@ class RealMem0Client:
         return str(res[0]["id"])
 
     def search(self, query: str, *, limit: int) -> list[Mem0Hit]:
-        res = self._mem.search(query, filters={"user_id": self._uid}, limit=limit)["results"]
+        # mem0's search kwarg is ``top_k`` (default 20), NOT ``limit`` — a ``limit=`` is swallowed by
+        # its ``**kwargs`` and silently ignored, widening the scored window past the requested k.
+        # ``threshold=0.0`` disables mem0's native 0.1 similarity floor so the store serves an
+        # unconditional top-k (coverage ~1.0, abstains only when empty) — the comparison contract.
+        res = self._mem.search(query, filters={"user_id": self._uid},
+                               top_k=limit, threshold=0.0)["results"]
         return [Mem0Hit(id=str(h["id"]), score=float(h["score"])) for h in res]
 
     def reset(self) -> None:
