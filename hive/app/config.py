@@ -187,6 +187,19 @@ class ObservabilityConfig:
     log_level: int = logging.INFO
 
 
+@dataclass(frozen=True)
+class AgiConfig:
+    """The AGI-MODE operator opt-in (``HIVE_AGI__MODE``). When ON, the boundary HONORS the
+    reserved ``approved_by="AGI_OVERRIDE"`` sentinel so an agent may self-authorize the
+    currently human-gated trust actions (establish / supersede / prune); when OFF (default),
+    that sentinel is REJECTED fail-closed and every existing envelope is byte-identical. It
+    LOOSENS a safety gate, so default-OFF is strict and non-negotiable (THEORY §9.9): unlike
+    the two sanctioned default-ON exceptions, an operator must explicitly opt in. The flag is a
+    transport concern — the pure domain reacts to the sentinel VALUE only (Law 4); this group
+    carries the one bool the boundary reads."""
+    mode: bool = False
+
+
 # ── the root ──────────────────────────────────────────────────────────────────
 # Auth is NOT a config group: it is a property of the listening socket (a tokenless
 # loopback door + a token-required tunnel door, bound by the entrypoint), so there is no
@@ -200,6 +213,7 @@ _GROUP_TYPES: dict[str, type] = {
     "suspect_consensus": SuspectConsensusConfig,
     "retention": RetentionConfig,
     "obs": ObservabilityConfig,
+    "agi": AgiConfig,
 }
 # field-groups constructed (and thus validated) BEFORE runtime, so a field-level error
 # (e.g. recall.tau_serve) surfaces ahead of the db_path-required check. Derived from
@@ -217,6 +231,7 @@ class Config:
     suspect_consensus: SuspectConsensusConfig
     retention: RetentionConfig
     obs: ObservabilityConfig
+    agi: AgiConfig
 
     @property
     def db_path(self) -> str:

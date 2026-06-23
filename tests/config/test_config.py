@@ -249,6 +249,39 @@ def test_conflict_group_is_frozen():
         cfg.conflict.enabled = True   # type: ignore[misc]
 
 
+# ── AgiConfig group (the AGI-MODE operator opt-in; default OFF, byte-inert) ─────
+def test_agi_mode_defaults_off():
+    # AGI_MODE LOOSENS a safety gate, so it ships OFF — the strict default-OFF (THEORY §9.9).
+    cfg = Config.load(db_path=":memory:")
+    assert cfg.agi.mode is False
+
+
+def test_agi_mode_enabled_via_env_coerces_bool():
+    # the operator opt-in: HIVE_AGI__MODE coerces through the existing bool path.
+    for truthy in ("true", "1", "yes", "on"):
+        cfg = Config.load(db_path=":memory:", env={"HIVE_AGI__MODE": truthy})
+        assert cfg.agi.mode is True
+    for falsy in ("false", "0", "no", "off"):
+        cfg = Config.load(db_path=":memory:", env={"HIVE_AGI__MODE": falsy})
+        assert cfg.agi.mode is False
+
+
+def test_agi_mode_explicit_override():
+    assert Config.load(db_path=":memory:", agi={"mode": True}).agi.mode is True
+
+
+def test_agi_unknown_field_typo_raises():
+    # a typo in the highest-precedence layer fails fast (never silently leaves the gate OFF).
+    with pytest.raises(ValueError, match=r"unknown config override|modee"):
+        Config.load(agi={"modee": True})
+
+
+def test_agi_group_is_frozen():
+    cfg = Config.load(db_path=":memory:")
+    with pytest.raises(dataclasses.FrozenInstanceError):
+        cfg.agi.mode = True   # type: ignore[misc]
+
+
 # ── config → embedder threading (torch-free: construction does not load the model) ────
 def test_build_provider_sources_native_dim():
     # the embedder's d is the model's NATIVE dim (sourced from native_dim_for), not a config

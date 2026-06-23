@@ -93,6 +93,18 @@ def test_identity_carries_tenant_and_agent():
     assert (c.identity.tenant_id, c.identity.agent_id) == ("t1", "a1")
 
 
+# ── AGI_MODE flag threads cfg → make_server (default OFF; ON only when opted in) ──
+def test_agi_mode_off_by_default_on_the_server():
+    c = _build()
+    assert c.cfg.agi.mode is False
+    assert c.make_server().agi_mode is False
+
+
+def test_agi_mode_threads_from_config_when_enabled():
+    c = _build(agi={"mode": True})
+    assert c.make_server().agi_mode is True
+
+
 # ── warm / migrate / index (the boot steps) ───────────────────────────────────
 def test_warm_embedder_sets_loaded(tmp_path):
     c = _build(tmp_path)

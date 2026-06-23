@@ -139,7 +139,8 @@ class Container:
             identity=self.identity, now=self.clock.now, started_ts=self.started_ts,
             db_path=db_path, autonomy=self.cfg.autonomy,
             conflict=self.cfg.conflict, flag_service=self.flag_service,
-            suspect_consensus=self.cfg.suspect_consensus)
+            suspect_consensus=self.cfg.suspect_consensus,
+            agi_mode=self.cfg.agi.mode)
 
     # ── convenience surface (clean shutdown) ──────────────────────────────────────
     def close(self) -> None:

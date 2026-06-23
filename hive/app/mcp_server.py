@@ -210,7 +210,8 @@ class HiveMCPServer:
     def __init__(self, *, admission, recall, store, embedder,
                  identity: ServerIdentity, now: Callable[[], int],
                  started_ts: int = 0, db_path: str = "", autonomy=None,
-                 conflict=None, flag_service=None, suspect_consensus=None) -> None:
+                 conflict=None, flag_service=None, suspect_consensus=None,
+                 agi_mode: bool = False) -> None:
         self.admission = admission          # AdmissionService: write + capture
         self.recall = recall                # RecallPipeline: recall(query, *, agent_id)
         self.store = store                  # the store adapter: get_episode (belt) / counts
@@ -246,6 +247,12 @@ class HiveMCPServer:
             from hive.app.config import SuspectConsensusConfig   # noqa: PLC0415 — lazy default
             suspect_consensus = SuspectConsensusConfig(enabled=False)
         self.suspect_consensus = suspect_consensus
+        # AGI_MODE (default OFF): the transport flag that HONORS the reserved AGI_OVERRIDE
+        # sentinel. It lives ONLY here at the boundary — the pure domain reacts to the sentinel
+        # VALUE, never to this flag (Law 4). OFF ⇒ the sentinel is rejected fail-closed (Law 6)
+        # and every existing envelope is byte-identical (THEORY §9.9). It LOOSENS a gate, so it
+        # is the one default-OFF that stays strict regardless of product posture.
+        self.agi_mode = bool(agi_mode)
         self._tool_handlers: dict[str, Callable[[dict, ServerIdentity], dict]] = {
             "hive_write": self._handle_write,
             "hive_capture": self._handle_capture,
