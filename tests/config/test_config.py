@@ -192,12 +192,21 @@ def test_conflict_enabled_via_env():
     assert cfg.conflict.enabled is True
 
 
-# ── SuspectConsensusConfig group (detection-only worklist; default OFF) ─────────
-def test_suspect_consensus_defaults_off():
+# ── SuspectConsensusConfig group (detection-only worklist; request-flag gated) ──
+def test_suspect_consensus_defaults():
     cfg = Config.load(db_path=":memory:")
-    assert cfg.suspect_consensus.enabled is False     # default OFF ⇒ served envelope byte-inert
     assert cfg.suspect_consensus.n_eff_frac_max == 0.5
     assert cfg.suspect_consensus.top_n == 10
+
+
+def test_suspect_consensus_has_no_enabled_toggle():
+    # the worklist is gated SOLELY by the hive_health(include_suspect_consensus) request flag —
+    # there is no config `enabled` bool (it was removed; the default is baked always-on). An
+    # override naming it fails fast as an unknown field.
+    cfg = Config.load(db_path=":memory:")
+    assert not hasattr(cfg.suspect_consensus, "enabled")
+    with pytest.raises(ValueError, match=r"enabled|unknown config override"):
+        Config.load(suspect_consensus={"enabled": True})
 
 
 def test_suspect_consensus_bounds():
@@ -207,12 +216,6 @@ def test_suspect_consensus_bounds():
         Config.load(suspect_consensus={"n_eff_frac_max": 1.5})
     with pytest.raises(ValueError, match=r"top_n"):
         Config.load(suspect_consensus={"top_n": 0})
-
-
-def test_suspect_consensus_enabled_via_env():
-    cfg = Config.load(db_path=":memory:",
-                      env={"HIVE_SUSPECT_CONSENSUS__ENABLED": "true"})
-    assert cfg.suspect_consensus.enabled is True
 
 
 # ── decorrelated selection knobs (recall.select / recall.overscan) ─────────────

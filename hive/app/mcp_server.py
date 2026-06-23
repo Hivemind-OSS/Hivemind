@@ -240,13 +240,14 @@ class HiveMCPServer:
             conflict = ConflictConfig(enabled=False)
         self.conflict = conflict
         self.flag_service = flag_service
-        # suspect-consensus worklist (duck-typed SuspectConsensusConfig). Default OFF: a
-        # bare-construction server's health envelope is byte-identical to today (no key). The
-        # real config wires it from cfg.suspect_consensus (also default OFF unless an operator
-        # opts in). Detection-only — it reads stamped promote audits, never retires (Law 3).
+        # suspect-consensus worklist (duck-typed SuspectConsensusConfig). The worklist is gated
+        # SOLELY by the include_suspect_consensus request flag (no config enabled toggle), so a
+        # bare-construction server's health envelope is byte-identical until the flag is set — the
+        # same single-gate posture as the conflict worklist. Detection-only — it reads stamped
+        # promote audits, never retires (Law 3).
         if suspect_consensus is None:
             from hive.app.config import SuspectConsensusConfig   # noqa: PLC0415 — lazy default
-            suspect_consensus = SuspectConsensusConfig(enabled=False)
+            suspect_consensus = SuspectConsensusConfig()
         self.suspect_consensus = suspect_consensus
         # AGI_MODE (default OFF): the transport flag that HONORS the reserved AGI_OVERRIDE
         # sentinel. It lives ONLY here at the boundary — the pure domain reacts to the sentinel
@@ -567,10 +568,9 @@ class HiveMCPServer:
             # (OFF ⇒ byte-inert, no key); dropping the request flag ⇒ always-emits mutation.
             if self.conflict.enabled and args.get("include_conflicts"):
                 snap["conflicts"] = self._conflict_report()
-            # the suspect-consensus worklist is gated by BOTH the request flag AND
-            # suspect_consensus.enabled (OFF ⇒ byte-inert, no key); dropping the `enabled and`
-            # half ⇒ the off-byte-inert mutation.
-            if self.suspect_consensus.enabled and args.get("include_suspect_consensus"):
+            # the suspect-consensus worklist is gated SOLELY by the request flag (no config
+            # toggle — byte-inert until requested); dropping the request flag ⇒ always-emits mutation.
+            if args.get("include_suspect_consensus"):
                 snap["suspect_consensus"] = self._suspect_consensus_report()
             return snap
         except Exception as e:                               # fail-closed subset ONLY
