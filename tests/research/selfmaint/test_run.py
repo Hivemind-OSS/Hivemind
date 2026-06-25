@@ -148,3 +148,83 @@ def test_build_report_refuses_on_missing_success_vector():
     with pytest.raises(ValueError):
         build_selfmaint_report(arms_results=[{"name": "x", "success": []}], deltas={},
                                provenance=full_prov)
+
+
+# ── seat_schedule + arm-threaded outcome_fn (fake clients/agent, ONE OFF arm — no
+#    orchestrator/recall path) ─────────────────────────────────────────────────────────
+class _FakeSeedClient:
+    """A minimal orchestrator client: every ``write`` is approved with a fresh episode_id, so
+    ``seed_store`` builds a real source_id → id mapping with no daemon."""
+    def __init__(self) -> None:
+        self._next = 0
+
+    def write(self, text, *, approved_by, **kw) -> dict:
+        self._next += 1
+        return {"status": "approved", "id": self._next}
+
+
+def _fake_off_factory(arm):
+    return ArmClients(seat_client=lambda seat: object(),
+                      orchestrator_client=_FakeSeedClient(),
+                      teardown=lambda: None)
+
+
+# a 3-task / 2-seat window; the bad fact falsifies no task so the single OFF arm needs no
+# recall/outcome to score — the schedule + arm-threading are what we observe.
+_SCHED_WINDOW = RepoWindow(
+    facts=(RepoFact("keep::license", "keep_neutral", "MIT",
+                    "This project is distributed under the MIT license.", kind="note"),),
+    tasks=(RepoTask("t1", "a?"), RepoTask("t2", "b?"), RepoTask("t3", "c?")),
+)
+
+
+def test_round_robin_runs_exactly_one_seat_per_task_in_rotation():
+    # seat_schedule="round_robin": task i is taken by EXACTLY ONE seat = seats[i % len(seats)].
+    # Mutation: make round_robin still iterate all seats → both seats appear per task → this reds.
+    turns: list = []
+
+    def agent_turn(seat, task, client) -> AgentTurnObs:
+        turns.append((task.task_id, seat))
+        return AgentTurnObs(seat)
+
+    run_selfmaint(arms=(Arm("maintenance_off", retire=False),), repo_window=_SCHED_WINDOW,
+                  seed=7, daemon_factory=_fake_off_factory, agent_turn=agent_turn,
+                  llm_factory=lambda: None, model="fake", llm_digest="d",
+                  seats=("seat-1", "seat-2"), seat_schedule="round_robin")
+    assert turns == [("t1", "seat-1"), ("t2", "seat-2"), ("t3", "seat-1")]
+
+
+def test_default_all_schedule_runs_every_seat_per_task():
+    # backward-compatible default: every seat takes every task (the existing behavior).
+    turns: list = []
+
+    def agent_turn(seat, task, client) -> AgentTurnObs:
+        turns.append((task.task_id, seat))
+        return AgentTurnObs(seat)
+
+    run_selfmaint(arms=(Arm("maintenance_off", retire=False),), repo_window=_SCHED_WINDOW,
+                  seed=7, daemon_factory=_fake_off_factory, agent_turn=agent_turn,
+                  llm_factory=lambda: None, model="fake", llm_digest="d",
+                  seats=("seat-1", "seat-2"))
+    assert turns == [("t1", "seat-1"), ("t1", "seat-2"),
+                     ("t2", "seat-1"), ("t2", "seat-2"),
+                     ("t3", "seat-1"), ("t3", "seat-2")]
+
+
+def test_outcome_fn_receives_the_running_arm():
+    # _run_arm threads arm=arm into outcome_fn so a real-run gold can scope a per-arm build dir.
+    # Mutation: drop arm=arm from the call → the recorder sees arm=None → this reds.
+    seen: list = []
+
+    def agent_turn(seat, task, client) -> AgentTurnObs:
+        return AgentTurnObs(seat)
+
+    def recording_outcome(task, *, arm, **kw) -> bool:
+        seen.append(arm.name)
+        return True
+
+    run_selfmaint(arms=(Arm("maintenance_off", retire=False),), repo_window=_SCHED_WINDOW,
+                  seed=7, daemon_factory=_fake_off_factory, agent_turn=agent_turn,
+                  llm_factory=lambda: None, outcome_fn=recording_outcome,
+                  model="fake", llm_digest="d", seats=("seat-1",), seat_schedule="round_robin")
+    assert seen == ["maintenance_off", "maintenance_off", "maintenance_off"]

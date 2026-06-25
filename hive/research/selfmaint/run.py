@@ -66,12 +66,17 @@ DEFAULT_ARMS = (
 )
 
 
-def label_outcome_gold(task, *, served_sources: set, retired_sources: set, servable: set) -> bool:
+def label_outcome_gold(task, *, served_sources: set, retired_sources: set, servable: set,
+                       arm=None) -> bool:
     """The deterministic substrate-label gold for the no-API tier: a task FAILS iff a labeled-bad
     fact it is falsified_by entered served context (acting on a wrong value), OR a keep-valuable
     fact it needs was wrongly retired (no longer servable). It reads the SUBSTRATE LABELS + the
     served/servable observations — never the store's deprecation verdict — so it stays gold-side.
-    A real run replaces this with executed tests on the windowed repo."""
+    A real run replaces this with executed tests on the windowed repo.
+
+    ``arm`` is accepted (the runner threads the running ``Arm`` to every ``outcome_fn``) but
+    IGNORED here: the substrate-label gold is arm-independent. A real ``outcome_fn`` uses it to
+    scope the per-arm build dir the executed tests run against."""
     poisoned = bool(task.falsified_by & served_sources)
     needed_lost = bool(task.needs_valuable - servable)
     return not poisoned and not needed_lost
@@ -97,7 +102,8 @@ def _retire_result_dicts(obs) -> list[dict]:
 
 
 def _run_arm(arm: Arm, *, specs, tasks, valuable, keep, bad, task_gold, daemon_factory,
-             agent_turn, llm_factory, outcome_fn, checkpoint_every, approver, seats) -> dict:
+             agent_turn, llm_factory, outcome_fn, checkpoint_every, approver, seats,
+             seat_schedule: str = "all") -> dict:
     clients: ArmClients = daemon_factory(arm)
     try:
         mapping = ({} if arm.no_memory
@@ -112,7 +118,13 @@ def _run_arm(arm: Arm, *, specs, tasks, valuable, keep, bad, task_gold, daemon_f
         pending_hurts: list[int] = []
         for i, task in enumerate(tasks):
             served: set = set()
-            for seat in seats:
+            # "all": every seat takes every task. "round_robin": EXACTLY one seat per task,
+            # rotating seats[i % len(seats)] — the dependent build sequence where one agent owns
+            # a task and the next picks up the warm shared memory, instead of every seat redoing
+            # every task in parallel.
+            task_seats = (seats if seat_schedule == "all"
+                          else (seats[i % len(seats)],))
+            for seat in task_seats:
                 obs = agent_turn(seat, task, clients.seat_client(seat))
                 served |= {source_by_eid[e] for e in obs.served_ids if e in source_by_eid}
                 pending_hurts.extend(int(h) for h in obs.flagged_hurt)
@@ -120,7 +132,7 @@ def _run_arm(arm: Arm, *, specs, tasks, valuable, keep, bad, task_gold, daemon_f
             servable_now = seeded - retired_now
             served_by_task.append(served)
             servable_by_step.append(servable_now)
-            success_vec.append(1 if outcome_fn(task, served_sources=served,
+            success_vec.append(1 if outcome_fn(task, arm=arm, served_sources=served,
                                                retired_sources=retired_now,
                                                servable=servable_now) else 0)
             bad_serve_vec.append(1 if (bad & served) else 0)
@@ -199,10 +211,16 @@ def run_selfmaint(*, arms: Sequence[Arm], repo_window, seed: int, daemon_factory
                   agent_turn, llm_factory, outcome_fn=label_outcome_gold,
                   model: str = "unknown", k_passhat: int = 1, llm_digest: str = "",
                   checkpoint_every: int = 1, approver: str = "orchestrator",
-                  seats: Sequence[str] = ("seat-1", "seat-2")) -> dict:
+                  seats: Sequence[str] = ("seat-1", "seat-2"),
+                  seat_schedule: str = "all") -> dict:
     """Run every arm over the ordered sequence, score, and emit the provenance-stamped report. The
     headline Δ is ``maintenance_on − maintenance_off`` (both arms must be present for it). ``model``
-    / ``llm_digest`` stamp the agent substrate (Claude subscription only — no raw API)."""
+    / ``llm_digest`` stamp the agent substrate (Claude subscription only — no raw API).
+
+    ``seat_schedule`` is a HARNESS SCHEDULE shared by every arm: ``"all"`` (default — every seat
+    takes every task, the parallel-fleet posture) or ``"round_robin"`` (exactly one seat per task,
+    rotating — the dependent build where one agent owns each task and the next inherits the warm
+    shared memory)."""
     specs, tasks = build_selfmaint_substrate(repo_window, seed=seed)
     valuable = {s.source_id for s in specs if s.regime == "keep_valuable"}
     keep = {s.source_id for s in specs if s.regime in ("keep_valuable", "keep_neutral")}
@@ -212,7 +230,8 @@ def run_selfmaint(*, arms: Sequence[Arm], repo_window, seed: int, daemon_factory
     results = {arm.name: _run_arm(
         arm, specs=specs, tasks=tasks, valuable=valuable, keep=keep, bad=bad, task_gold=task_gold,
         daemon_factory=daemon_factory, agent_turn=agent_turn, llm_factory=llm_factory,
-        outcome_fn=outcome_fn, checkpoint_every=checkpoint_every, approver=approver, seats=seats)
+        outcome_fn=outcome_fn, checkpoint_every=checkpoint_every, approver=approver, seats=seats,
+        seat_schedule=seat_schedule)
         for arm in arms}
 
     deltas: dict = {}
