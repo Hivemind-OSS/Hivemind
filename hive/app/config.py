@@ -64,7 +64,7 @@ class RecallConfig:
     # The absolute-cosine serve floor: the gate suppresses unless at least ``k_min``
     # candidates clear ``tau_serve``. This is the never-hallucinate floor — a shift-invariant
     # entropy is gone; "flat-but-all-relevant" SERVES, "flat-but-weak" and "peaked-but-weak"
-    # ABSTAIN. 1.0 ⇒ only an exact-match field serves. CALIBRATED via gate_eval on the real
+    # ABSTAIN. 1.0 ⇒ only an exact-match field serves. CALIBRATED on the real
     # query distribution; the 0.70 default is the prior flat-serve posture, calibration-grounded.
     # Meaningful only because stored/searched vectors are EXACT unit-norm (BUG-008).
     tau_serve: float = 0.70

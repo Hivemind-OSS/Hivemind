@@ -15,7 +15,7 @@ import pytest
 from hive.app.mcp_server import MCPRequest
 from hive.domain.errors import SecretRefused
 from hive.domain.models import CONFIDENT, content_hash
-from hive.research.metrics_ir import abstention_auroc, recall_at_k
+from scripts.eval_metrics import abstention_auroc, recall_at_k
 from tests.acceptance.conftest import (
     HIT_QUERIES, MISS_QUERIES, build_acc, seed_corpus,
 )
