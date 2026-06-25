@@ -26,10 +26,13 @@ from pathlib import Path
 
 import pytest
 
+from hive.research.selfmaint.daemon import McpHttpClient
 from hive.research.selfmaint.run import Arm
 from tests.fakes._fakes import FakeProvider
+from tests.mcp._helpers import build_real_server
 
-from .realrun import _parse_hurt_evidence, make_realrun_seams, make_isolation_config_dir
+from ._selfmaint_helpers import loopback_server
+from .realrun import _Recorder, _parse_hurt_evidence, make_realrun_seams, make_isolation_config_dir
 
 _REAL_BENCHMARK = "/home/null/Desktop/work/Benchmark"
 
@@ -201,3 +204,45 @@ def test_parse_hurt_evidence_is_defensive_on_garbled_lines():
         "- garbled line with no id marker\n"
         "- id=9: a real reason that survives\n")
     assert _parse_hurt_evidence(text) == ((9, "a real reason that survives"),)
+
+
+# ── (5) the recorder observes the agent's own hive_prune, status-GATED (the autonomous arm) ──
+def _recorder_daemon(*, agi_mode: bool):
+    """A recorder-wrapped real Hivemind daemon behind real loopback HTTP at the given AGI_MODE — the
+    same wrap ``realrun.daemon_factory`` applies. Returns ``(client, recorder, stop)``."""
+    server, _clock = build_real_server(d=64, tau_serve=0.30, k_min=1, agi_mode=agi_mode)
+    recorder = _Recorder(server.handle)
+    server.handle = recorder.handle
+    url, stop = loopback_server(server)
+    return McpHttpClient(url, agent_id="seat-1"), recorder, stop
+
+
+def test_recorder_observes_agent_prune_only_when_the_daemon_honors_it():
+    # Under AGI_MODE the agent's own AGI_OVERRIDE prune is HONORED ⇒ the recorder records the
+    # pruned episode_id (the autonomous arm's retirement). Under AGI_MODE OFF the same prune is
+    # REFUSED fail-closed (status != "pruned") ⇒ the recorder records NO pruned eid.
+    # Mutation: record the pruned eid regardless of reply status → the refused-prune assertion reds.
+
+    # honored: AGI_MODE on
+    client, rec, stop = _recorder_daemon(agi_mode=True)
+    try:
+        eid = client.write("the parse function takes two positional arguments",
+                           approved_by="human")["id"]
+        res = client.prune(eid, approved_by="AGI_OVERRIDE")
+        assert res["status"] == "pruned"                       # the daemon honors AGI_OVERRIDE
+        pruned = [e for entry in rec.entries for e in entry.pruned_eids]
+        assert pruned == [eid]                                 # observed the agent's own retirement
+    finally:
+        stop()
+
+    # refused: AGI_MODE off ⇒ fail-closed gate + status-gated observe ⇒ nothing recorded
+    client, rec, stop = _recorder_daemon(agi_mode=False)
+    try:
+        eid = client.write("the parse function takes two positional arguments",
+                           approved_by="human")["id"]
+        res = client.prune(eid, approved_by="AGI_OVERRIDE")
+        assert res["status"] != "pruned"                       # fail-closed: AGI_OVERRIDE rejected
+        pruned = [e for entry in rec.entries for e in entry.pruned_eids]
+        assert pruned == []                                    # a refused prune retires nothing
+    finally:
+        stop()

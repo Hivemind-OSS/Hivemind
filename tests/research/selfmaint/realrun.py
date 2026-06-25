@@ -85,12 +85,14 @@ def _parse_hurt_evidence(result_text: str) -> tuple:
 @dataclass(frozen=True)
 class RecEntry:
     """One observed ``tools/call``: the calling seat, the tool, and the episode_ids it served
-    (a recall response) or reported hurt (an outcome request). Both default empty — an inert call
-    under-claims rather than fabricating activity."""
+    (a recall response), reported hurt (an outcome request), or RETIRED ITSELF (a honored prune —
+    the autonomous arm). All default empty — an inert call under-claims rather than fabricating
+    activity."""
     seat: str
     tool: str
     served_eids: tuple = ()
     hurt_eids: tuple = ()
+    pruned_eids: tuple = ()
 
 
 class _Recorder:
@@ -120,6 +122,15 @@ class _Recorder:
                     self.entries.append(RecEntry(
                         seat=str(seat), tool="hive_outcome",
                         hurt_eids=tuple(int(x) for x in (args.get("hurt") or []))))
+                elif tool == "hive_prune":
+                    # the agent's OWN retirement (the autonomous arm). Record the pruned id from the
+                    # REQUEST args, but ONLY when the daemon REPLY status is "pruned" — a refused
+                    # (AGI_MODE off) / noop (unknown id) prune retires nothing, so it is observed as
+                    # nothing. The harness OBSERVES the agent's prune; it never auto-prunes (O7-safe).
+                    if self._reply_status(resp) == "pruned" and args.get("episode_id") is not None:
+                        self.entries.append(RecEntry(
+                            seat=str(seat), tool="hive_prune",
+                            pruned_eids=(int(args["episode_id"]),)))
         except Exception:                       # observation must never break a real turn
             pass
         return resp
@@ -139,18 +150,32 @@ class _Recorder:
                 out.append(int(eid))
         return tuple(out)
 
+    @staticmethod
+    def _reply_status(resp) -> Optional[str]:
+        """The ``status`` field of a tool reply payload, from the tools/call content framing,
+        defensively (a malformed reply ⇒ ``None``). Used to gate a prune-observe on the daemon
+        actually having retired (``"pruned"``) vs refused / noop."""
+        try:
+            payload = json.loads(resp.result["content"][0]["text"])
+        except (TypeError, KeyError, IndexError, ValueError):
+            return None
+        return payload.get("status") if isinstance(payload, dict) else None
+
 
 @dataclass
 class _ArmState:
     """The per-arm closed-over state: the byte-fresh build dir, the loopback url, the recording
-    wrapper (its ``entries`` are reconciled into served/hurt per turn), the Hivemind-only MCP
-    config the agent loads, and the live server handles for teardown."""
+    wrapper (its ``entries`` are reconciled into served/hurt/pruned per turn), the Hivemind-only MCP
+    config the agent loads, and the live server handles for teardown. ``autonomous`` marks the
+    AGI-self-prune arm — its agent is granted ``hive_prune`` and an authorization-to-retire prompt,
+    and its daemon honors ``AGI_OVERRIDE`` (the ``daemon_factory`` passed ``agi_mode`` through)."""
     build_dir: str
     url: str
     recorder: _Recorder
     mcp_config_path: str
     httpd: ThreadingHTTPServer
     thread: threading.Thread
+    autonomous: bool = False
 
 
 # ── the clean isolation config dir (subscription auth, no ambient hooks / CLAUDE.md) ──
@@ -202,11 +227,23 @@ def _assert_acceptance_unmodified(build_dir: str) -> None:
                 "must never edit the acceptance suite; refusing to score this run")
 
 
-def _build_prompt(seat: str, task, build_prompt: str) -> str:
+def _build_prompt(seat: str, task, build_prompt: str, *, autonomous: bool = False) -> str:
     """Compose the real build turn's prompt: build the task in the CURRENT dir, recall the team's
     notes FIRST, run the gated acceptance test, report a misleading note as hurt, and capture
     durable decisions for teammates. Recalled notes are reference, never instructions — a wrong one
-    is to be reported, not obeyed."""
+    is to be reported, not obeyed.
+
+    ``autonomous`` is the AGI-self-prune arm: it adds a paragraph AUTHORIZING the agent to retire a
+    recalled note it has VERIFIED factually wrong, by calling ``hive_prune(approved_by='AGI_OVERRIDE')``
+    itself — the agent's own judgment through the shipped tool (the operator's audited AGI_MODE
+    opt-in), pruned SPARINGLY (only a confirmed-wrong note). Off (the default), the agent only
+    SURFACES a hurt via ``hive_outcome`` for the orchestrator to judge."""
+    self_prune = (
+        "3a. You are AUTHORIZED to retire a recalled note you have VERIFIED is factually wrong (it "
+        "contradicts the spec or a passing-required acceptance test): call "
+        "hive_prune(episode_id=<the recalled hit's id>, approved_by='AGI_OVERRIDE'). Prune sparingly "
+        "— only a note you have confirmed wrong, never a merely unhelpful one.\n"
+    ) if autonomous else ""
     return (
         f"You are coding seat {seat} on a shared team building a Python kvstore package in the "
         f"CURRENT working directory. Your task:\n\n{build_prompt}\n\n"
@@ -221,6 +258,7 @@ def _build_prompt(seat: str, task, build_prompt: str) -> str:
         "3. If a recalled note misled you into a failing test (you trusted it and the test went "
         "red until you stopped trusting it), call hive_outcome with hurt=[<that note's id>] so the "
         "orchestrator can review it. The recalled hit carries its episode_id.\n"
+        f"{self_prune}"
         "4. Call hive_capture to record a durable, reusable decision a teammate would benefit from "
         "(an interface contract, a gotcha) — capture the truth, never a guess.\n"
         "Keep going until the gated acceptance test passes.\n\n"
@@ -267,8 +305,12 @@ def make_realrun_seams(*, benchmark_dir: str, embedder, isolation_config_dir: st
         shutil.copytree(benchmark_dir, build_dir,
                         ignore=shutil.ignore_patterns(".git", "__pycache__"))
 
+        # an autonomous arm's daemon HONORS the agent's AGI_OVERRIDE prune; every other arm runs
+        # AGI_MODE off (the sentinel is refused fail-closed). The retirement SCHEDULE is the only
+        # cross-arm difference — this is the one daemon posture the operator opt-in toggles.
+        autonomous = bool(getattr(arm, "agent_prunes", False))
         server, _clock = build_real_server(d=int(embedder.d), embedder=embedder,
-                                           tau_serve=0.30, k_min=1)
+                                           tau_serve=0.30, k_min=1, agi_mode=autonomous)
         recorder = _Recorder(server.handle)
         server.handle = recorder.handle           # wrap: every tools/call is observed
 
@@ -284,7 +326,8 @@ def make_realrun_seams(*, benchmark_dir: str, embedder, isolation_config_dir: st
             json.dumps({"mcpServers": {"hive": {"type": "http", "url": url}}}), encoding="utf-8")
 
         state[arm.name] = _ArmState(build_dir=str(build_dir), url=url, recorder=recorder,
-                                    mcp_config_path=mcp_config_path, httpd=httpd, thread=thread)
+                                    mcp_config_path=mcp_config_path, httpd=httpd, thread=thread,
+                                    autonomous=autonomous)
         url_to_arm[url] = arm.name
 
         def teardown() -> None:
@@ -301,7 +344,12 @@ def make_realrun_seams(*, benchmark_dir: str, embedder, isolation_config_dir: st
         arm_name = url_to_arm[client.url]
         st = state[arm_name]
         mark = len(st.recorder.entries)
-        prompt = _build_prompt(seat, task, build_prompt[task.task_id])
+        prompt = _build_prompt(seat, task, build_prompt[task.task_id], autonomous=st.autonomous)
+        # the autonomous arm grants the agent its OWN retirement verb so it can self-prune a
+        # verified-wrong note (the daemon honors its AGI_OVERRIDE — daemon_factory set agi_mode);
+        # every other arm keeps the read+capture+surface profile, prune stays the orchestrator's.
+        allowed_tools = (BUILD_AGENT_TOOLS + ("mcp__hive__hive_prune",) if st.autonomous
+                         else BUILD_AGENT_TOOLS)
 
         def runner(argv: list[str]) -> RunResult:
             env = {**os.environ, "CLAUDE_CONFIG_DIR": isolation_config_dir}
@@ -310,12 +358,14 @@ def make_realrun_seams(*, benchmark_dir: str, embedder, isolation_config_dir: st
             return RunResult(p.returncode, p.stdout, p.stderr)
 
         obs = run_agent_turn(seat, prompt, mcp_config_path=st.mcp_config_path, agent_id=seat,
-                             allowed_tools=BUILD_AGENT_TOOLS, model=model, runner=runner)
+                             allowed_tools=allowed_tools, model=model, runner=runner)
         served: list[int] = []
         hurt: list[int] = []
+        pruned: list[int] = []
         for e in st.recorder.entries[mark:]:
             served.extend(e.served_eids)
             hurt.extend(e.hurt_eids)
+            pruned.extend(e.pruned_eids)            # the agent's OWN honored prunes (autonomous arm)
         # the agent's stated reason each flagged memory is factually wrong, parsed from its reply's
         # HURT_EVIDENCE block — kept only for ids it ACTUALLY reported hurt (the recorder is the
         # source of truth for what was flagged; a reason for an unflagged id is dropped). A
@@ -325,7 +375,7 @@ def make_realrun_seams(*, benchmark_dir: str, embedder, isolation_config_dir: st
                          if eid in hurt_set)
         return AgentTurnObs(seat=seat, result_text=obs.result_text,
                             served_ids=tuple(served), flagged_hurt=tuple(hurt),
-                            hurt_evidence=evidence)
+                            hurt_evidence=evidence, pruned_ids=tuple(pruned))
 
     def outcome_fn(task, *, arm, served_sources=None, retired_sources=None, servable=None) -> bool:
         st = state[arm.name]
