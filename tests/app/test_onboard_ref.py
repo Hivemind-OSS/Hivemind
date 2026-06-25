@@ -56,6 +56,17 @@ def test_instructions_make_conflict_escalation_explicit():
     assert "which memory wins" in low         # ask the human to pick the winner
 
 
+def test_instructions_cover_bare_retirement_and_hurt_evidence():
+    """A lone recalled memory the agent believes is plain WRONG — nothing to replace it, no
+    second memory to name a winner — has a served path: request hive_prune (human-vouched bare
+    retirement, distinct from supersede which needs a winner), or hive_outcome(hurt=) which
+    records evidence only. Closes the RESOLVE-clause gap (duplicates/contradictions were
+    covered; bare deletion of one bad memory was not)."""
+    s = SERVER_INSTRUCTIONS
+    assert "hive_prune" in s and "hive_outcome" in s
+    assert "hurt" in s.lower()
+
+
 def test_instructions_convey_capture_default_vs_approved_fastpath_strategy():
     """Agents must learn the STRATEGY, not just the mechanism: capture is the cheap default
     (let demand/recall-counts promote), and the approved write is the immediate-serve fast-path
