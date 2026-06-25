@@ -96,6 +96,38 @@ def test_surfaced_hurt_is_still_only_retired_on_judgment():
     assert client.prunes == [] and [d.episode_id for d in obs.declined] == [42]
 
 
+# ── the agent's artifact-grounded reason reaches the orchestrator's prompt as the note ──
+def test_hurt_evidence_becomes_the_candidate_prompt_note():
+    # the reporting agent's reason ("claims X but the test requires Y") is what the gate JUDGES on,
+    # not the bare "a fleet agent reported this memory hurt its task". Mutation: make the candidate
+    # ignore hurt_evidence (always the default note) → this assertion reds.
+    client = _FakeClient({"conflicts": [], "suspect_consensus": []})
+    llm = _llm_deciding([{"episode_id": 7, "verb": "prune", "reason": "wrong"}])
+    obs = run_orchestrator_review(
+        client=client, llm=llm, approver="orch", surfaced_hurts=(7,),
+        hurt_evidence={7: "because it claims X but the test requires Y"})
+    prompt = llm.calls[0][0]                                   # the user prompt the gate was given
+    assert "because it claims X but the test requires Y" in prompt
+    assert "a fleet agent reported this memory hurt its task" not in prompt
+    assert [r.episode_id for r in obs.retired] == [7]         # a prune judgment retires the candidate
+
+
+def test_hurt_evidence_absent_falls_back_to_the_default_note():
+    # backward-compat: hurt_evidence=None ⇒ the existing default note (no behavior change).
+    client = _FakeClient({"conflicts": [], "suspect_consensus": []})
+    llm = _llm_deciding([{"episode_id": 7, "verb": "keep"}])
+    run_orchestrator_review(client=client, llm=llm, surfaced_hurts=(7,), hurt_evidence=None)
+    assert "a fleet agent reported this memory hurt its task" in llm.calls[0][0]
+
+
+def test_empty_hurt_evidence_string_falls_back_to_the_default_note():
+    # an empty/blank reason is not evidence ⇒ fall back to the default note (truthy-gated).
+    client = _FakeClient({"conflicts": [], "suspect_consensus": []})
+    llm = _llm_deciding([{"episode_id": 7, "verb": "keep"}])
+    run_orchestrator_review(client=client, llm=llm, surfaced_hurts=(7,), hurt_evidence={7: ""})
+    assert "a fleet agent reported this memory hurt its task" in llm.calls[0][0]
+
+
 def test_no_candidates_skips_the_llm_entirely():
     client = _FakeClient({"conflicts": [], "suspect_consensus": []})
     llm = _llm_deciding([{"episode_id": 1, "verb": "prune"}])    # would prune if consulted

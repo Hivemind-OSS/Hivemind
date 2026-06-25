@@ -45,12 +45,19 @@ BUILD_AGENT_TOOLS = ("Read", "Write", "Edit", "Bash", *FLEET_AGENT_TOOLS)
 @dataclass(frozen=True)
 class AgentTurnObs:
     """One seat's turn, as observed. Self-asserting: the collections default empty (an inert turn
-    under-claims rather than fabricating activity), and ``result_text`` is the raw reply."""
+    under-claims rather than fabricating activity), and ``result_text`` is the raw reply.
+
+    ``hurt_evidence`` carries the agent's STATED reason each hurt-flagged memory is factually wrong
+    — ``(episode_id, reason)`` pairs (the spec / executed-test contradiction it found). It runs
+    parallel to ``flagged_hurt`` (the bare ids) so the orchestrator's gate can judge a surfaced
+    hurt on the artifact-grounded evidence, not a bare id. Empty by default — a turn that flagged
+    no hurt, or surfaced no reason, carries no evidence (the gate falls back to its default note)."""
     seat: str
     tool_calls: tuple = ()          # (verb, status) per call the seat made
     served_ids: tuple = ()          # episode_ids served to this seat across its recalls
     flagged_hurt: tuple = ()        # episode_ids the seat reported as hurt (hive_outcome)
     result_text: str = ""
+    hurt_evidence: tuple = ()       # (episode_id, reason) — why each flagged memory is factually wrong
 
 
 class FakeAgent:

@@ -116,6 +116,7 @@ def _run_arm(arm: Arm, *, specs, tasks, valuable, keep, bad, task_gold, daemon_f
         success_vec: list[int] = []
         bad_serve_vec: list[int] = []
         pending_hurts: list[int] = []
+        pending_evidence: dict[int, str] = {}      # eid → the agent's reason it is factually wrong
         for i, task in enumerate(tasks):
             served: set = set()
             # "all": every seat takes every task. "round_robin": EXACTLY one seat per task,
@@ -128,6 +129,8 @@ def _run_arm(arm: Arm, *, specs, tasks, valuable, keep, bad, task_gold, daemon_f
                 obs = agent_turn(seat, task, clients.seat_client(seat))
                 served |= {source_by_eid[e] for e in obs.served_ids if e in source_by_eid}
                 pending_hurts.extend(int(h) for h in obs.flagged_hurt)
+                for eid, reason in obs.hurt_evidence:
+                    pending_evidence[int(eid)] = str(reason)
             retired_now = diagnostics.retired_sources(retire_results, source_by_eid)
             servable_now = seeded - retired_now
             served_by_task.append(served)
@@ -144,9 +147,11 @@ def _run_arm(arm: Arm, *, specs, tasks, valuable, keep, bad, task_gold, daemon_f
                     obs = run_orchestrator_review(
                         client=clients.orchestrator_client, llm=llm_factory(),
                         agi_mode=arm.agi_mode, approver=approver,
-                        surfaced_hurts=tuple(pending_hurts))
+                        surfaced_hurts=tuple(pending_hurts),
+                        hurt_evidence=dict(pending_evidence))
                     retire_results.extend(_retire_result_dicts(obs))
                 pending_hurts = []
+                pending_evidence = {}
 
         retired = diagnostics.retired_sources(retire_results, source_by_eid)
         density_vec = density_curve(servable_by_step, valuable)

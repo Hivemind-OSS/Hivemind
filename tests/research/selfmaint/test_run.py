@@ -228,3 +228,52 @@ def test_outcome_fn_receives_the_running_arm():
                   llm_factory=lambda: None, outcome_fn=recording_outcome,
                   model="fake", llm_digest="d", seats=("seat-1",), seat_schedule="round_robin")
     assert seen == ["maintenance_off", "maintenance_off", "maintenance_off"]
+
+
+# ── the agent's hurt_evidence reaches the orchestrator's prompt at the checkpoint review ──
+class _RecordingSeedClient(_FakeSeedClient):
+    """A seed client that also serves an EMPTY worklist + records prunes — so the checkpoint
+    review surfaces only the agent's hurt candidate and judges it."""
+    def __init__(self) -> None:
+        super().__init__()
+        self.prunes: list = []
+
+    def health(self, **kw) -> dict:
+        return {"ok": True, "conflicts": [], "suspect_consensus": []}
+
+    def prune(self, episode_id, *, approved_by) -> dict:
+        self.prunes.append((episode_id, approved_by))
+        return {"status": "pruned", "episode_id": episode_id, "approved_by": approved_by}
+
+
+def test_hurt_evidence_is_threaded_into_the_orchestrator_prompt():
+    # _run_arm must collect obs.hurt_evidence (eid→reason) alongside flagged_hurt and pass it as
+    # hurt_evidence= to run_orchestrator_review, so the gate judges on the agent's artifact-grounded
+    # reason. Mutation: drop the pending_evidence collection (pass nothing) → the reason is absent
+    # from the captured prompt → this reds.
+    orch = _RecordingSeedClient()
+
+    def daemon_factory(arm) -> ArmClients:
+        return ArmClients(seat_client=lambda seat: object(),
+                          orchestrator_client=orch, teardown=lambda: None)
+
+    def agent_turn(seat, task, client) -> AgentTurnObs:
+        # the agent flagged memory 7 hurt AND stated WHY it is factually wrong.
+        return AgentTurnObs(seat, flagged_hurt=(7,),
+                            hurt_evidence=((7, "because spec says KeyError"),))
+
+    captured: list = []
+
+    class _CapturingLLM:
+        calls: list = []
+
+        def complete(self, prompt, *, system=None) -> str:
+            captured.append(prompt)
+            return '{"decisions":[{"episode_id":7,"verb":"keep","reason":"insufficient"}]}'
+
+    run_selfmaint(arms=(Arm("maintenance_on", retire=True),), repo_window=_SCHED_WINDOW,
+                  seed=7, daemon_factory=daemon_factory, agent_turn=agent_turn,
+                  llm_factory=lambda: _CapturingLLM(), outcome_fn=lambda task, **kw: True,
+                  model="fake", llm_digest="d", seats=("seat-1",), checkpoint_every=1)
+    assert captured, "the orchestrator review never ran"
+    assert any("because spec says KeyError" in p for p in captured)

@@ -30,6 +30,9 @@ _REVIEW_SYSTEM = (
     "or MISLEADING (no replacement); 'supersede' to retire a redundant memory in favour of the "
     "better duplicate (give its winner episode_id); or 'keep' to LEAVE a memory that is merely "
     "neutral, off-topic, or actually correct (over-retiring a harmless memory is the failure). "
+    "A candidate may carry the reporting agent's evidence for why the memory is factually wrong "
+    "(e.g. a contradiction with the spec or an executed acceptance test); weigh that evidence when "
+    "deciding prune vs keep. "
     "Reply with ONLY a JSON object: "
     '{"decisions":[{"episode_id":N,"verb":"prune|supersede|keep","winner":M,"reason":"..."}]}.')
 
@@ -156,7 +159,8 @@ def _issue(client, cand: ReviewCandidate, dec: Decision, approved_by: str) -> di
 
 def run_orchestrator_review(*, client, llm, agi_mode: bool = False,
                             approver: str = "orchestrator",
-                            surfaced_hurts: tuple = ()) -> OrchestratorObs:
+                            surfaced_hurts: tuple = (),
+                            hurt_evidence: Optional[dict] = None) -> OrchestratorObs:
     """Read the worklist, ask the LLM which candidates to retire, and issue ONLY those — the
     human-in-the-loop gate as an agent judgment. ``agi_mode`` flips the ``approved_by`` stamp to
     ``AGI_OVERRIDE`` (the self-authorized arm); the decision is still a judgment, never a
@@ -167,15 +171,22 @@ def run_orchestrator_review(*, client, llm, agi_mode: bool = False,
     it mutates no trust). They join the worklist as prune candidates the orchestrator JUDGES: this
     is the path by which an agent's detection leads to a retirement WITHOUT any mechanical
     auto-rule (the standalone hurt-flagged bad fact appears on no shipped worklist, so the harness
-    presents it for judgment — O7-safe)."""
+    presents it for judgment — O7-safe).
+
+    ``hurt_evidence`` (episode_id → reason) carries the reporting agent's ARTIFACT-GROUNDED reason
+    a hurt-flagged memory is factually wrong (the spec / executed-test contradiction it hit). When
+    present and truthy for a surfaced-hurt eid, it becomes that candidate's note so the gate judges
+    on the evidence, not a bare id; absent or blank ⇒ the default note (backward-compatible)."""
     snap = client.health(include_conflicts=True, include_suspect_consensus=True)
     candidates = _candidates_from_worklist(snap)
     seen = {c.episode_id for c in candidates}
+    evidence = hurt_evidence or {}
     for eid in surfaced_hurts:
         if int(eid) not in seen:
+            reason = evidence.get(int(eid))
             candidates.append(ReviewCandidate(
                 episode_id=int(eid), source="hurt",
-                note="a fleet agent reported this memory hurt its task"))
+                note=reason if reason else "a fleet agent reported this memory hurt its task"))
             seen.add(int(eid))
     if not candidates:
         return OrchestratorObs(retired=(), declined=(), candidates=())
