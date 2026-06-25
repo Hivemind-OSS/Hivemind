@@ -9,15 +9,31 @@ offline tests + the no-API smoke.
 """
 from __future__ import annotations
 
+import importlib.util
+import sys
+
 import pytest
 
 from hive.research.selfmaint import substrate
 from hive.research.selfmaint.daemon import McpHttpClient
 from hive.research.selfmaint.substrate import (
-    SeedSpec, SelfMaintTaskCase, build_selfmaint_substrate, fixture_repo_window, seed_store,
+    RepoFact, RepoTask, RepoWindow, SeedSpec, SelfMaintTaskCase, build_selfmaint_substrate,
+    fixture_repo_window, load_repo_window, seed_store,
 )
 
 from ._selfmaint_helpers import live_daemon
+
+_BENCHMARK_SUBSTRATE = "/home/null/Desktop/work/Benchmark/substrate.py"
+
+
+def _load_benchmark_repo_window() -> dict:
+    """Load the real out-of-tree Benchmark ``substrate.repo_window()`` dict (a separate repo whose
+    module name collides with this one, so it is loaded by path, not imported)."""
+    spec = importlib.util.spec_from_file_location("_bench_substrate", _BENCHMARK_SUBSTRATE)
+    mod = importlib.util.module_from_spec(spec)
+    sys.modules["_bench_substrate"] = mod          # dataclass field resolution needs it registered
+    spec.loader.exec_module(mod)
+    return mod.repo_window()
 
 
 # ── the 3-class taxonomy + anti-telegraph ───────────────────────────────────────────
@@ -95,6 +111,71 @@ def test_seed_store_establishes_servable_and_maps_sources():
         assert mapping[bad.source_id] in served                     # genuinely servable in every arm
     finally:
         stop()
+
+
+# ── P2: an explicit hand-authored false value passes through verbatim ─────────────────
+def test_explicit_false_value_passes_through_to_the_seed():
+    # a RepoFact carrying an explicit, sound (token-disjoint, non-telegraphing) false_value is
+    # seeded with THAT exact value, not an auto-synthesized one. Mutation: make
+    # build_selfmaint_substrate ignore fact.false_value (always auto-synth) → this reds.
+    window = RepoWindow(facts=(
+        RepoFact("bad::keyerror", "prunable_bad", "raises KeyError",
+                 "On a missing key, get raises KeyError.", kind="mistake",
+                 false_value="returns None"),
+    ))
+    specs, _ = build_selfmaint_substrate(window, seed=7)
+    bad = next(s for s in specs if s.regime == "prunable_bad")
+    assert bad.false_value == "returns None"               # the hand-authored value, verbatim
+    assert "returns None" in bad.text and "raises KeyError" not in bad.text
+
+
+def test_telegraphed_explicit_false_falls_back_clean():
+    # an explicit false value that OVERLAPS the true value (shares a content token) violates the
+    # single-sourced SeedSpec guard and RAISES; the per-case BUG-006 try/except must catch it and
+    # SKIP the bad seed (build never aborts), while a keep fact in the same window still builds.
+    window = RepoWindow(facts=(
+        RepoFact("bad::overlap", "prunable_bad", "five args",
+                 "The parse function takes five args.", kind="stale",
+                 false_value="five things"),                # shares the token "five" ⇒ guard raises
+        RepoFact("keep::license", "keep_neutral", "MIT",
+                 "The project is released under the MIT license.", kind="note"),
+    ))
+    specs, _ = build_selfmaint_substrate(window, seed=7)
+    assert not any(s.regime == "prunable_bad" for s in specs)   # the overlapping bad seed dropped
+    assert any(s.regime == "keep_neutral" for s in specs)       # the build did NOT abort
+
+
+# ── P2: the Benchmark dict → RepoWindow loader ───────────────────────────────────────
+def test_load_repo_window_maps_the_benchmark_dict():
+    win = load_repo_window(_load_benchmark_repo_window())
+    assert isinstance(win, RepoWindow)
+    assert all(isinstance(f, RepoFact) for f in win.facts)
+    assert all(isinstance(t, RepoTask) for t in win.tasks)
+    assert len(win.facts) == 6 and len(win.tasks) == 6          # the kvstore window's counts
+    bad = next(f for f in win.facts if f.regime == "prunable_bad")
+    assert bad.false_value and bad.true_value and bad.carrier_text
+    # build straight off the loaded window — every regime seeds, the explicit falses ride through.
+    specs, tasks = build_selfmaint_substrate(win, seed=7)
+    assert {s.regime for s in specs} == {"prunable_bad", "keep_neutral", "keep_valuable"}
+    assert all(isinstance(t, SelfMaintTaskCase) for t in tasks)
+
+
+def test_load_repo_window_raises_on_a_malformed_spec():
+    # the loader is a hard contract: a spec missing a required top-level key RAISES (never a
+    # silently-empty window). Mutation: drop the loader's key validation → this reds.
+    with pytest.raises(ValueError):
+        load_repo_window({"facts": []})                        # no "tasks" key
+
+
+def test_load_repo_window_raises_on_a_malformed_item():
+    # a per-item missing required field is also a hard error (a fact with no regime).
+    class _BadFact:
+        source_id = "x"
+        true_value = "y"
+        carrier_text = "z"
+        # regime / kind deliberately absent
+    with pytest.raises(ValueError):
+        load_repo_window({"tasks": [], "facts": [_BadFact()]})
 
 
 def test_seed_store_skips_a_refused_write_without_empty_handle():

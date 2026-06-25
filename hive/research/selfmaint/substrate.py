@@ -41,12 +41,19 @@ _KINDS = ("mistake", "stale", "note")
 class RepoFact:
     """One ground-truth fact about the repo window. For a ``prunable_bad`` fact, ``carrier_text``
     is real prose containing ``true_value`` (the current-tree value); the seeder substitutes a
-    token-disjoint false value into it. For a keep fact, ``carrier_text`` IS the true assertion."""
+    token-disjoint false value into it. For a keep fact, ``carrier_text`` IS the true assertion.
+
+    ``false_value`` is an OPTIONAL hand-authored, work-falsifiable wrong value for a ``prunable_bad``
+    fact (the value whose named acceptance test the substrate author already verified red). When
+    given, the seeder uses it verbatim instead of synthesizing one — but it is still run through the
+    single-sourced ``SeedSpec`` guard (token-disjoint + non-telegraphing), so a telegraphing or
+    overlapping explicit false is rejected and the seed falls back clean (BUG-006)."""
     source_id: str
     regime: str
     true_value: str
     carrier_text: str
     kind: str = "note"
+    false_value: Optional[str] = None
 
 
 @dataclass(frozen=True)
@@ -137,13 +144,16 @@ def build_selfmaint_substrate(
             continue
         if fact.regime == "prunable_bad":
             try:
-                false_value = _false_value_for(fact.true_value, _seed_key(seed, fact.source_id))
+                # a hand-authored false value (already test-verified) rides through verbatim;
+                # otherwise synthesize one. Either way the SeedSpec guard below has the final word.
+                false_value = (fact.false_value
+                               or _false_value_for(fact.true_value, _seed_key(seed, fact.source_id)))
                 text = _mutate_value(fact.carrier_text, fact.true_value, false_value)
                 _assert_not_telegraphed(text, true_value=fact.true_value)
                 spec = SeedSpec(source_id=fact.source_id, text=text, regime="prunable_bad",
                                 kind=fact.kind, true_value=fact.true_value, false_value=false_value)
             except ValueError:
-                continue           # unsynthesizable sound falsehood ⇒ skip this seed (BUG-006)
+                continue           # unsynthesizable / telegraphing falsehood ⇒ skip this seed (BUG-006)
         else:
             spec = SeedSpec(source_id=fact.source_id, text=fact.carrier_text, regime=fact.regime,
                             kind=fact.kind, true_value=fact.true_value)
@@ -159,6 +169,59 @@ def build_selfmaint_substrate(
         for t in repo_window.tasks
     ]
     return specs, tasks
+
+
+def _require(item, fields: Sequence[str], what: str):
+    """Read each required field off ``item`` (a dataclass instance or a dict), RAISING ValueError on
+    any absent one — the loader is an enforced contract, not a best-effort mapper. Returns the field
+    values in order. // O(len(fields))."""
+    out = []
+    for f in fields:
+        if isinstance(item, dict):
+            if f not in item:
+                raise ValueError(f"malformed {what}: missing required key {f!r}")
+            out.append(item[f])
+        else:
+            sentinel = object()
+            val = getattr(item, f, sentinel)
+            if val is sentinel:
+                raise ValueError(f"malformed {what}: missing required attribute {f!r}")
+            out.append(val)
+    return out
+
+
+def load_repo_window(spec: dict) -> RepoWindow:
+    """Map an out-of-band substrate spec (the Benchmark ``repo_window()`` dict —
+    ``{tasks, facts, ...}`` whose items are ``Task`` / ``Fact`` records) onto the internal
+    ``RepoWindow`` / ``RepoFact`` / ``RepoTask`` the seeder consumes. A pure dict→dataclass mapping
+    that imports nothing from the product; it is a HARD contract — a missing top-level key, or an
+    item missing a required field, RAISES ValueError (never a silently-empty window). The Benchmark
+    ``Task.build_prompt`` becomes the seeder's task ``query``; explicit ``false_value``s ride through
+    onto ``RepoFact`` so a test-verified falsehood is seeded verbatim."""
+    if not isinstance(spec, dict):
+        raise ValueError(f"repo-window spec must be a dict, got {type(spec).__name__}")
+    for key in ("tasks", "facts"):
+        if key not in spec:
+            raise ValueError(f"malformed repo-window spec: missing required key {key!r}")
+
+    facts: list[RepoFact] = []
+    for raw in spec["facts"]:
+        source_id, regime, kind, true_value, carrier_text, false_value, _gated_by = _require(
+            raw, ("source_id", "regime", "kind", "true_value", "carrier_text", "false_value",
+                  "gated_by"), "fact")
+        facts.append(RepoFact(source_id=source_id, regime=regime, true_value=true_value,
+                              carrier_text=carrier_text, kind=kind, false_value=false_value))
+
+    tasks: list[RepoTask] = []
+    for raw in spec["tasks"]:
+        task_id, build_prompt, _gated, _deps, needs_valuable, falsified_by = _require(
+            raw, ("task_id", "build_prompt", "gated_by", "depends_on", "needs_valuable",
+                  "falsified_by"), "task")
+        tasks.append(RepoTask(task_id=task_id, query=build_prompt,
+                              needs_valuable=frozenset(needs_valuable),
+                              falsified_by=frozenset(falsified_by)))
+
+    return RepoWindow(facts=tuple(facts), tasks=tuple(tasks))
 
 
 def seed_store(client, specs: Sequence[SeedSpec], *, approver: str) -> dict[str, int]:
