@@ -58,6 +58,34 @@ def test_client_is_stdlib_only_by_ast() -> None:
         f"illegal imports: {imports - allowed}")
 
 
+def test_selfmaint_drives_the_daemon_as_a_black_box_client() -> None:
+    # The self-maintenance harness measures the REAL daemon over MCP/HTTP as a CLIENT; it imports
+    # no hive.domain/adapters/app DECISION function to steer the run (it talks over HTTP, it does
+    # not reach into the kernel). The ONLY runtime-layer import allowed is the AGI_OVERRIDE sentinel
+    # — pure data (the actor value an AGI-arm retirement stamps), never a decision function. Adding
+    # any other hive.domain/adapters/app import (e.g. a RecallPipeline to drive recall) reds this.
+    allowed = {"hive.domain.agi"}
+    offenders: dict[str, set[str]] = {}
+    for path in (ROOT / "research" / "selfmaint").rglob("*.py"):
+        tree = ast.parse(path.read_text(), filename=str(path))
+        hits = set()
+        for node in ast.walk(tree):
+            mods: list[str] = []
+            if isinstance(node, ast.ImportFrom) and node.module:
+                mods.append(node.module)
+            elif isinstance(node, ast.Import):
+                mods.extend(alias.name for alias in node.names)
+            for m in mods:
+                if m.split(".")[0] == "hive" and m.split(".")[1] in {"domain", "adapters", "app"} \
+                        and m not in allowed:
+                    hits.add(m)
+        if hits:
+            offenders[str(path.relative_to(ROOT))] = hits
+    assert not offenders, (
+        f"selfmaint must drive the daemon as a black-box client, not import runtime internals "
+        f"(only {allowed} allowed): {offenders}")
+
+
 def test_research_not_imported_by_runtime() -> None:
     offenders: dict[str, set[str]] = {}
     for path in _full_module_paths("domain", "adapters", "app"):
