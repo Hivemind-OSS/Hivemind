@@ -13,7 +13,10 @@ import json
 
 import pytest
 
-from hive.research.selfmaint.agent import AgentTurnObs, FakeAgent, run_agent_turn
+from hive.research.selfmaint import agent as agent_mod
+from hive.research.selfmaint.agent import (
+    BUILD_AGENT_TOOLS, AgentTurnObs, FakeAgent, run_agent_turn,
+)
 from hive.research.selfmaint.daemon import McpHttpClient, RunResult
 
 from ._selfmaint_helpers import live_daemon
@@ -84,3 +87,47 @@ def test_run_agent_turn_fails_closed_on_error_envelope():
     with pytest.raises(RuntimeError):
         run_agent_turn("seat-1", "q", mcp_config_path="/c.json", agent_id="seat-1",
                        runner=runner.run)
+
+
+# ── the build profile: the coding tools + the hive tools, all under --strict-mcp-config ──
+def test_build_agent_tools_grants_coding_and_hive_tools():
+    # the build profile = the four coding tools PLUS the five hive verbs the agent emits.
+    for coding in ("Read", "Write", "Edit", "Bash"):
+        assert coding in BUILD_AGENT_TOOLS
+    assert "mcp__hive__hive_recall" in BUILD_AGENT_TOOLS         # the hive verbs ride along
+    assert "mcp__hive__hive_prune" not in BUILD_AGENT_TOOLS      # the privileged verbs stay out
+
+
+def test_run_agent_turn_build_profile_argv_carries_coding_and_hive_tools():
+    # a build-profile turn (allowed_tools=BUILD_AGENT_TOOLS) grants the coding tools AND the hive
+    # tools to one --strict-mcp-config'd claude -p. Mutation: drop the coding tools from
+    # BUILD_AGENT_TOOLS → "Write" leaves the granted set → this reds.
+    runner = _CannedRunner({"result": "built", "subtype": "success", "is_error": False})
+    run_agent_turn("builder", "build the kvstore", mcp_config_path="/tmp/hive.json",
+                   agent_id="builder", runner=runner.run, allowed_tools=BUILD_AGENT_TOOLS)
+    assert "--strict-mcp-config" in runner.argv
+    granted = runner.argv[runner.argv.index("--allowedTools") + 1]
+    for coding in ("Read", "Write", "Edit", "Bash"):
+        assert coding in granted
+    assert "mcp__hive__hive_recall" in granted
+
+
+def test_run_agent_turn_default_runner_receives_cwd(monkeypatch):
+    # the injected-runner seam stays argv-only, so cwd is closed over by the DEFAULT runner: a
+    # real (un-injected) turn must forward cwd to subprocess.run. Mutation: drop cwd from the
+    # default-runner closure (or stop forwarding it) → cwd never reaches subprocess.run → this reds.
+    seen: dict = {}
+
+    class _Done:
+        returncode = 0
+        stdout = json.dumps({"result": "ok", "subtype": "success", "is_error": False})
+        stderr = ""
+
+    def _spy(argv, **kwargs):
+        seen["cwd"] = kwargs.get("cwd")
+        return _Done()
+
+    monkeypatch.setattr(agent_mod.subprocess, "run", _spy)
+    run_agent_turn("builder", "build it", mcp_config_path="/tmp/hive.json",
+                   agent_id="builder", cwd="/tmp/arm_on")
+    assert seen["cwd"] == "/tmp/arm_on"

@@ -35,6 +35,12 @@ FLEET_AGENT_TOOLS = (
     "mcp__hive__hive_recall", "mcp__hive__hive_capture", "mcp__hive__hive_outcome",
     "mcp__hive__hive_flag", "mcp__hive__hive_health")
 
+# The build profile: the four coding tools a real claude -p needs to author the greenfield repo
+# (Read / Write / Edit / Bash) PLUS the same five hive verbs FLEET_AGENT_TOOLS grants. A build turn
+# runs IN the build repo (``cwd``) and emits its own ``hive_*`` calls while it codes; the privileged
+# retirement verbs (prune / supersede / write) stay the orchestrator's, not granted here.
+BUILD_AGENT_TOOLS = ("Read", "Write", "Edit", "Bash", *FLEET_AGENT_TOOLS)
+
 
 @dataclass(frozen=True)
 class AgentTurnObs:
@@ -74,9 +80,10 @@ class FakeAgent:
                             served_ids=tuple(served), flagged_hurt=tuple(hurt))
 
 
-def _default_agent_runner(argv: list[str]) -> RunResult:
+def _default_agent_runner(argv: list[str], cwd: Optional[str] = None) -> RunResult:
     try:
-        p = subprocess.run(argv, capture_output=True, text=True, timeout=_DEFAULT_TIMEOUT_S)
+        p = subprocess.run(argv, capture_output=True, text=True, timeout=_DEFAULT_TIMEOUT_S,
+                           cwd=cwd)
         return RunResult(p.returncode, p.stdout, p.stderr)
     except subprocess.TimeoutExpired:
         return RunResult(124, "", f"timed out after {_DEFAULT_TIMEOUT_S}s")
@@ -87,16 +94,21 @@ def _default_agent_runner(argv: list[str]) -> RunResult:
 def run_agent_turn(seat: str, prompt: str, *, mcp_config_path: str, agent_id: str,
                    runner: Optional[Callable[[list[str]], RunResult]] = None,
                    allowed_tools: Sequence[str] = FLEET_AGENT_TOOLS,
-                   model: Optional[str] = None, system: Optional[str] = None) -> AgentTurnObs:
+                   model: Optional[str] = None, system: Optional[str] = None,
+                   cwd: Optional[str] = None) -> AgentTurnObs:
     """One real autonomous ``claude -p`` turn against the warm daemon. Fail-CLOSED: a non-zero
     exit, an unparseable reply, or an ``is_error`` / non-``success`` envelope RAISES (never a
     silent empty result). The agent's autonomous ``hive_*`` effects land server-side; the
     served/hurt observations are reconciled from the daemon by the run (the obs's collections stay
     empty here — a real turn under-claims rather than guessing the trace from a plain JSON
-    envelope)."""
+    envelope).
+
+    ``cwd`` is the directory the subprocess runs IN (the build repo for a build-profile turn). The
+    injected ``runner`` seam stays argv-only (so the argv contract is unit-testable with no CWD);
+    ``cwd`` is closed over by the DEFAULT runner only, which forwards it to ``subprocess.run``."""
     argv = build_claude_argv(prompt, mcp_config_path=mcp_config_path,
                              allowed_tools=allowed_tools, system=system, model=model)
-    runner = runner or _default_agent_runner
+    runner = runner or (lambda a: _default_agent_runner(a, cwd=cwd))
     res = runner(argv)
     if res.returncode != 0:
         raise RuntimeError(f"claude -p exited {res.returncode}: {(res.stderr or '').strip()[:200]}")
