@@ -209,9 +209,9 @@ def _add_labels(args: dict, *, polarity: Optional[str], kind: Optional[str],
 
 
 # ── the per-call agent argv (BUG-007 is load-bearing) ───────────────────────────────
-def build_claude_argv(prompt: str, *, mcp_config_path: str, output_format: str = "json",
-                      system: Optional[str] = None, model: Optional[str] = None,
-                      bin: str = "claude") -> list[str]:
+def build_claude_argv(prompt: str, *, mcp_config_path: str, allowed_tools: Sequence[str] = (),
+                      output_format: str = "json", system: Optional[str] = None,
+                      model: Optional[str] = None, bin: str = "claude") -> list[str]:
     """The argv for ONE autonomous ``claude -p`` agent turn against the warm daemon.
 
     ``--strict-mcp-config`` is MANDATORY and unconditional: it restricts the subprocess to the
@@ -221,9 +221,17 @@ def build_claude_argv(prompt: str, *, mcp_config_path: str, output_format: str =
     (BUG-007 killed a full n=60 run and took down the parent session). Unlike the comparative
     bench's task agent — which passes NO ``--mcp-config`` because it answers from an injected
     memory block and needs zero MCP servers — a self-maint agent EMITS its own ``hive_*`` calls,
-    so it must load the Hivemind server (and ONLY it)."""
+    so it must load the Hivemind server (and ONLY it).
+
+    ``allowed_tools`` (the ``mcp__<server>__<tool>`` names) is passed through ``--allowedTools``:
+    headless ``claude -p`` does NOT auto-grant MCP tools (an un-allowed tool call is refused with a
+    permission error, so the agent silently cannot recall/capture/flag), so the autonomous turn
+    must be granted exactly the Hivemind tools it emits — scoped, consistent with the Hivemind-only
+    ``--strict-mcp-config`` posture (BUG-011)."""
     argv = [bin, "-p", prompt, "--output-format", output_format,
             "--mcp-config", str(mcp_config_path), "--strict-mcp-config"]
+    if allowed_tools:
+        argv += ["--allowedTools", " ".join(allowed_tools)]
     if system:
         argv += ["--append-system-prompt", system]
     if model:

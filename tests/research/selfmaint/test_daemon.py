@@ -275,6 +275,20 @@ def test_build_claude_argv_threads_optional_system_and_model():
     assert argv[argv.index("--model") + 1] == "claude-x"
 
 
+def test_build_claude_argv_grants_allowed_tools_for_headless_mcp():
+    # BUG-011: headless claude -p REFUSES an un-allowed MCP tool (the agent silently cannot
+    # recall/capture/flag), so the autonomous turn must be granted exactly the Hivemind tools it
+    # emits, via --allowedTools. Mutation: drop the allowed_tools handling → this reds.
+    argv = build_claude_argv("q", mcp_config_path="/c.json",
+                             allowed_tools=("mcp__hive__hive_recall", "mcp__hive__hive_outcome"))
+    assert argv[argv.index("--allowedTools") + 1] == "mcp__hive__hive_recall mcp__hive__hive_outcome"
+
+
+def test_build_claude_argv_omits_allowed_tools_when_none():
+    # backward-compatible: no tools ⇒ no flag (the BUG-007 argv tests pass none).
+    assert "--allowedTools" not in build_claude_argv("q", mcp_config_path="/c.json")
+
+
 # ── DaemonHandle: lifecycle + the AGI-mode env switch ───────────────────────────────
 class _RecRunner:
     """Records ``(argv, env)`` for each lifecycle shell-out; returns a fixed return code."""

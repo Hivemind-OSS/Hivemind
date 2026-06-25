@@ -27,6 +27,14 @@ from hive.research.selfmaint.daemon import RunResult, build_claude_argv
 
 _DEFAULT_TIMEOUT_S = 180
 
+# The MCP tools a FLEET agent is granted (``mcp__<server>__<tool>`` for the "hive" server in the
+# generated --mcp-config): the read + capture + pure-evidence verbs it emits during real work. The
+# privileged retirement verbs (write / prune / supersede) are deliberately NOT granted — those are
+# the orchestrator's, issued through the harness, so the agent boundary stays read+surface only.
+FLEET_AGENT_TOOLS = (
+    "mcp__hive__hive_recall", "mcp__hive__hive_capture", "mcp__hive__hive_outcome",
+    "mcp__hive__hive_flag", "mcp__hive__hive_health")
+
 
 @dataclass(frozen=True)
 class AgentTurnObs:
@@ -78,6 +86,7 @@ def _default_agent_runner(argv: list[str]) -> RunResult:
 
 def run_agent_turn(seat: str, prompt: str, *, mcp_config_path: str, agent_id: str,
                    runner: Optional[Callable[[list[str]], RunResult]] = None,
+                   allowed_tools: Sequence[str] = FLEET_AGENT_TOOLS,
                    model: Optional[str] = None, system: Optional[str] = None) -> AgentTurnObs:
     """One real autonomous ``claude -p`` turn against the warm daemon. Fail-CLOSED: a non-zero
     exit, an unparseable reply, or an ``is_error`` / non-``success`` envelope RAISES (never a
@@ -85,7 +94,8 @@ def run_agent_turn(seat: str, prompt: str, *, mcp_config_path: str, agent_id: st
     served/hurt observations are reconciled from the daemon by the run (the obs's collections stay
     empty here — a real turn under-claims rather than guessing the trace from a plain JSON
     envelope)."""
-    argv = build_claude_argv(prompt, mcp_config_path=mcp_config_path, system=system, model=model)
+    argv = build_claude_argv(prompt, mcp_config_path=mcp_config_path,
+                             allowed_tools=allowed_tools, system=system, model=model)
     runner = runner or _default_agent_runner
     res = runner(argv)
     if res.returncode != 0:

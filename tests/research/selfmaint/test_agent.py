@@ -71,6 +71,10 @@ def test_run_agent_turn_argv_carries_strict_mcp_config():
                          agent_id="seat-1", runner=runner.run)
     assert "--strict-mcp-config" in runner.argv
     assert runner.argv[runner.argv.index("--mcp-config") + 1] == "/tmp/hive.json"
+    # the fleet agent is granted exactly its hive tools (headless MCP needs --allowedTools, BUG-011)
+    granted = runner.argv[runner.argv.index("--allowedTools") + 1]
+    assert "mcp__hive__hive_recall" in granted and "mcp__hive__hive_outcome" in granted
+    assert "mcp__hive__hive_prune" not in granted        # the privileged verbs stay the orchestrator's
     assert obs.seat == "seat-1" and obs.result_text == "did the work"
 
 
