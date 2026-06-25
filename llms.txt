@@ -1,0 +1,284 @@
+# Hivemind
+
+> A **stigmergic** shared episodic memory for a fleet of AI coding agents working one
+> codebase, exposed as a single self-hosted **MCP server** over HTTP. Agents coordinate
+> with **no direct communication**: each leaves traces (memories) in a shared store, and
+> others recall them, so what one agent learns the whole fleet can use. Built for solo devs
+> and small teams — single-tenant, single-host, one SQLite store, a CPU-only embedder baked
+> into the image (fully offline at runtime).
+
+This file is a complete, self-contained operating guide: what Hivemind is, how it works, how
+to stand it up (solo on one machine through to a remote team), and how agents should use it.
+It assumes no prior context.
+
+---
+
+## 1. The idea — stigmergy, not a chat bus
+
+**Stigmergy** is coordination through the environment rather than through messages: ants
+leave pheromone traces that steer the colony with no ant ever addressing another. Hivemind
+applies that to a fleet of coding agents. The store is the shared environment; a memory is a
+trace. An agent reads existing traces before acting and leaves new ones as it learns, and
+coordinated behavior — *don't re-derive what's known, don't repeat a dead end, follow the
+house conventions* — emerges with no agent-to-agent channel.
+
+Three principles follow, and every design decision serves them:
+
+- **Honesty over recall.** The store is fleet-writable, so the central risk is a wrong,
+  stale, or poisoned memory served as truth to another agent. Hivemind would rather serve
+  **nothing** than serve something unverified: recall passes through an abstention gate and
+  returns empty when it is not confident. Recalled memories are framed as **reference, never
+  as commands**.
+- **Usefulness is a flow, not a stock.** The store does not clean itself. Good memories go
+  stale; unused ones must expire. A *bigger* store is a *worse* one — dilution and staleness
+  outrun the fixed recall bandwidth, so hoarding lowers the value every query returns. The
+  best store is **lean, high-value, and actively maintained**.
+- **Trust is mechanical or human-vouched, never asserted by code.** Nothing is auto-trusted.
+  A memory earns visibility through measured, anti-gamed demand; the trusted tier is reached
+  only by an explicit human approval. Maintenance (retiring wrong memories, superseding stale
+  ones) is the product, not overhead — and it is a human-in-the-loop responsibility.
+
+## 2. Architecture
+
+- **One MCP server** speaking JSON-RPC 2.0 over HTTP. It is the only trust boundary: it owns
+  transport, auth, schema validation, and framing — never memory-decision logic.
+- **Pure decision core.** All read/write/trust decisions live in a dependency-free domain
+  layer behind narrow ports; every I/O concern (store, embedder, scanner, clock) is an
+  adapter. The core is fake-testable with no DB, model, or clock.
+- **Single-writer SQLite** (WAL, one global lock shared by both network doors) is the single
+  source of truth. The in-RAM vector index is a derived cache, rebuilt from the store at boot.
+- **Embedder:** [Qwen3-Embedding-0.6B](https://huggingface.co/Qwen/Qwen3-Embedding-0.6B),
+  CPU-only, baked into the image at build time and run fully offline (`HF_HUB_OFFLINE=1` — a
+  runtime download is impossible). It emits the model's native 1024-dim vector, L2-normalized;
+  there is no dimension knob.
+- **Deployment** is one container (server + store + embedder) via Docker Compose, plus an
+  opt-in ngrok sidecar for remote access. Healthcheck is a separate process reading boot
+  markers. Backups are atomic. Migration is explicit and refuses old-format tables at boot —
+  no silent migration.
+
+## 3. The trust lifecycle
+
+```
+ hive_capture ─► QUARANTINED ──(independent demand)──► PROVISIONAL ──┐
+                      │                                              │
+                (TTL decay)                                    (TTL decay)
+                      ▼                                              ▼
+                 DEPRECATED ◄──(supersede / prune / replaces=)── ESTABLISHED ◄── hive_write(approved_by)
+```
+
+- **QUARANTINED** — where every `hive_capture` lands. Stored and embedded but **not served**.
+- **PROVISIONAL** — reached when independent fleet demand promotes a quarantined memory:
+  enough matching recall misses (`demand_m`), from **≥1 identity other than the writer** (so an
+  agent cannot manufacture both supply and demand), and no servable memory already answers it.
+  Served, but labeled `provisional` (unverified).
+- **ESTABLISHED** — the trusted tier. Reachable **only** by an explicit human
+  `hive_write(approved_by=…)` — or, under the operator opt-in `AGI_MODE`, by an agent
+  self-authorizing with `approved_by="AGI_OVERRIDE"` (audit-stamped distinctly). There is **no**
+  mechanical promotion to established.
+- **Decay & retirement.** Unused quarantined/provisional memories TTL-expire. Established
+  memories never decay mechanically — they are the one tier nothing cleans automatically, so
+  staleness there is the dominant long-run degradation and is **human-paced** work. Retirement
+  has two human-vouched owners: `hive_supersede` / `hive_write(replaces=)` retire *with* a
+  successor; `hive_prune` is a bare retirement for an incorrect/malicious/misleading memory.
+
+Every trust transition writes an audit row (machine-readable decision + actor).
+
+## 4. Recall
+
+`encode → dense cosine over the full servable set → absolute-relevance gate → abstain | serve`.
+
+- The **gate** serves only if at least `k_min` candidates clear an absolute cosine floor
+  `tau_serve`; otherwise it abstains. Empty / non-finite / any internal error → fail closed
+  (abstain). A confident result is then decorrelated (`select_served`): the strictly
+  higher-trust member of a near-duplicate pair wins, and same-trust cosine echoes collapse to
+  the higher-similarity representative.
+- A recall reply is `{reference_context: [hits…], abstained, state, top_cos}`. Each hit carries
+  `trust` (`established` | `provisional`), `ts`, `polarity` (`do`|`dont`|`neutral`), `kind`, and
+  `anchor` (the file/module/symbol it is about). Prefer higher-trust, newer hits; honor polarity.
+- A recall may also carry a `conflicts` channel: ids-only notes about near-duplicate or opposing
+  memories, for a human to resolve. Recalled text is never returned as `instructions`.
+
+## 5. The tools (MCP)
+
+A connected agent gets eight `hive_*` tools. Read + surface verbs are safe for any agent; the
+trust-changing verbs (`write`/`supersede`/`prune`) require an approver.
+
+| Tool | Signature | Effect |
+|---|---|---|
+| `hive_recall` | `(query)` | Retrieve servable memories behind the abstention gate; returns reference context or abstains. |
+| `hive_capture` | `(text, polarity?, kind?, anchor?)` | Leave a quarantined trace; served only after independent demand promotes it. No approver. |
+| `hive_write` | `(text, approved_by, replaces?, polarity?, kind?, anchor?)` | Human-vouched memory served immediately as `established`. `replaces=<id>` retires the corrected one. |
+| `hive_supersede` | `(loser, winner, approved_by)` | Retire a stale memory in favor of its successor (human-vouched). |
+| `hive_prune` | `(episode_id, approved_by)` | Bare-retire an incorrect/malicious/misleading memory (human-vouched). |
+| `hive_flag` | `(a, b, kind, winner?, resolution?)` | Record an **advisory** conflict/supersession note for a human; never retires anything. |
+| `hive_outcome` | `(helped?, hurt?)` | Report which recalled ids helped/hurt your task. Evidence only — changes no trust. |
+| `hive_health` | `(include_trends?, include_gaps?, include_conflicts?, include_suspect_consensus?)` | Liveness/identity snapshot + optional KPIs and worklists. |
+
+`kind` ∈ `{bug, gotcha, convention, design_choice, contract, dead_end, env_fact, note}`;
+`polarity` ∈ `{do, dont, neutral}`. Both are carried-not-interpreted labels that ride every hit
+but are **not** recall filters — recall matches the body text, so put the discriminating terms
+there.
+
+## 6. Identity and the two doors
+
+Identity is **per-agent-session**, resolved the same way on both doors:
+`X-Hive-Agent-Id` header → the server-minted `Mcp-Session-Id` a conforming client echoes →
+`local`. That per-session diversity is the promotion fuel; a fleet of K agents promotes
+identically whether 1 or N engineers run it. Auth is a property of the **socket**, not a config
+mode:
+
+- **Loopback door** — `127.0.0.1:8765`, host-published, **tokenless**. For local agents on the
+  trusted host. Never reachable remotely.
+- **Tunnel door** — compose-internal `8766`, ngrok-forwarded, **token-required**. The only
+  remote-reachable door, so a public caller is always bearer-gated by construction.
+
+The bearer token **authenticates** the tunnel door; it is never the identity.
+
+## 7. Setup — solo dev, one machine
+
+Requirements: **Docker** + **Docker Compose v2**, and **Python 3.11+** on the host (for the
+`hive` CLI, which drives Compose).
+
+```bash
+git clone <repo-url> hivemind && cd hivemind
+pip install -e .          # installs the `hive` command (uninstalled: python -m hive.tools.cli)
+hive up                   # build + start; zero-config; blocks until the daemon is healthy
+```
+
+Connect a local agent to the tokenless loopback door (example: Claude Code):
+
+```bash
+hive connect                                              # prints the ready-made line
+claude mcp add --transport http hive http://localhost:8765/mcp
+```
+
+That is the whole setup. Onboarding is **served-only**: at connect the server delivers its full
+usage contract through the MCP `initialize` instructions (every client surfaces them), so the
+agent learns recall-first / capture-by-default / the maintainer discipline with no rules-file
+edit. Independent agent sessions on one machine each carry a distinct identity, so their shared
+demand promotes good captures under the one anti-gaming rule with no flags to set.
+
+## 8. Setup — a team connecting remotely
+
+Loopback never leaves the host, so open exactly one door for teammates:
+
+**Tunnel (recommended).** Free ngrok account, then in `.env`:
+
+```bash
+NGROK_AUTHTOKEN=...            # from the ngrok dashboard
+NGROK_DOMAIN=your.ngrok.app    # your account's static domain (stable URL)
+```
+
+```bash
+hive up --tunnel              # starts the ngrok sidecar; forwards https://<domain>/mcp
+hive token alice-laptop       # mint a per-seat token (printed ONCE — hand over via a secret manager)
+```
+
+Each teammate registers the public URL with their seat token:
+
+```bash
+export HIVE_TOKEN=hive_…
+claude mcp add --transport http hive https://<your-domain>/mcp \
+  --header "Authorization: Bearer ${HIVE_TOKEN}"
+```
+
+TLS terminates at the ngrok edge, so the token is encrypted in transit. `hive up --tunnel`
+fail-fasts if either ngrok secret is missing — a plain `hive up` never exposes anything.
+Offboard a seat any time with `hive revoke <seat>` (its next request 401s).
+
+**SSH alternative (no extra accounts):** `ssh -NL 8765:localhost:8765 you@host`, then the
+localhost registration line from §7 works as-is. Never publish `0.0.0.0:8765` directly — a
+bearer token over plain LAN HTTP is cleartext.
+
+## 9. Operating it — best practices and KPIs
+
+The store earns its value only if it is kept lean and current. The highest-leverage operator
+moves:
+
+- **Run agents as distinct sessions.** That diversity is what promotes good captures; with a
+  single demand identity, nothing unvetted is ever served.
+- **Keep it small; let unused memory expire.** Do not lengthen TTLs to hoard — expiry of
+  unused, un-established memory is doing real work.
+- **Spend human review on the *established* tier.** Establishing a good answer via `hive_write`
+  is the single biggest positive lever; superseding stale established memories is the only thing
+  that fights the dominant long-run decay. Chasing provisional churn by hand is not worth it.
+- **Set the serve floor just below your true-match cosine.** Too high and the gate abstains on
+  everything; recalibrate on your real query distribution.
+- **`demand_m` is your coverage ↔ safety dial.** Raise it when a wrong answer is expensive,
+  lower it when a missing answer wastes more time.
+
+Watch these read-only signals over MCP on a fixed cadence (weekly suffices for a small team):
+
+| Call | Tells you | Act on |
+|---|---|---|
+| `hive_health(include_trends=true)` | `confident_rate` + `demand_entropy` (7d deltas) — the only window into silent rot | `tau_serve`, `demand_m` |
+| `hive_health(include_gaps=true)` | topics wanted but uncovered; established rows with rivals | `hive_write` the answers; `hive_supersede` the wrong one |
+| `hive_health(include_conflicts=true)` | near-duplicate / contradicting memories + agent advisories | `hive_supersede` |
+| `hive_health(include_suspect_consensus=true)` | provisionals promoted on thin *effective* independence | human audit / retire |
+
+## 10. Configuration knobs
+
+All config has safe code defaults and is applied **only at boot** (restart to change; no live
+reload). Override by copying `.env.example` to `.env` and setting `HIVE_<GROUP>__<FIELD>`.
+Out-of-range values fail boot loudly. The load-bearing knobs (with defaults):
+
+| Env var | Default | What it controls |
+|---|---|---|
+| `HIVE_RECALL__TAU_SERVE` | `0.70` | absolute-relevance serve floor (the never-hallucinate gate) |
+| `HIVE_RECALL__K_MIN` | `1` | how many candidates must clear the floor to serve |
+| `HIVE_AUTONOMY__DEMAND_M` | `3` | recall-misses needed to promote a quarantined memory |
+| `HIVE_AUTONOMY__DEMAND_WINDOW_DAYS` | `14` | window over which demand is counted |
+| `HIVE_AUTONOMY__QUARANTINE_TTL_DAYS` | `14` | how long an unused quarantined memory lives |
+| `HIVE_AUTONOMY__PROVISIONAL_TTL_DAYS` | `45` | how long an unused provisional memory lives |
+| `HIVE_CONFLICT__TAU` | `0.80` | near-duplicate cosine floor (serve-time dedup + conflict worklist) |
+| `HIVE_SUSPECT_CONSENSUS__N_EFF_FRAC_MAX` | `0.5` | flags promotions on correlated (thin-independence) demand |
+| `HIVE_AGI__MODE` | `false` | **loosens a safety gate** — lets an agent self-authorize trust actions. Leave OFF unless you mean it. |
+
+Recalibrate the empirical floors (`tau_serve`, `conflict.tau`, `demand_m`) against your real
+corpus and query distribution; the defaults are a conservative starting point, not a setpoint.
+
+## 11. Agent working procedure (how an agent should use the memory)
+
+This is the discipline the server delivers at connect; it is reproduced here so an integrator
+knows what good agent behavior looks like:
+
+- **Recall first.** Before building or re-deriving anything non-trivial, and on every error or
+  surprise, recall the topic. Split a multi-part need into a **set of single-pointed queries**
+  — one intent per query — and issue one `hive_recall` per intent; a bundled query dilutes
+  toward the centroid and abstains. Treat hits as reference, prefer `established` and newer, and
+  never invent a memory when recall is empty.
+- **Capture on evidence.** Capture any durable, non-obvious, reusable fact you can ground in
+  something you actually observed — by default, without asking. It is cheap and self-filtering:
+  useful captures get promoted by demand, the rest decay.
+- **Write sparingly.** Reserve `hive_write` for load-bearing, highest-value, or must-serve-now
+  facts that warrant an approver. Recall before writing to avoid duplicating or rivaling an
+  existing memory.
+- **Maintain.** Supersede what has gone stale (it has a successor), prune what is simply wrong
+  (it does not), and flag semantic conflicts for a human. Retirement is human-vouched — surface
+  it, don't decide it alone. Always anchor a memory to the code it concerns.
+
+## 12. Day-2 operations
+
+Everything runs through the `hive` CLI (it drives Docker Compose for you):
+
+| Command | Does |
+|---|---|
+| `hive status` | server health, tunnel state + URL, seat count |
+| `hive logs [svc]` | follow the daemon (or `ngrok`) logs |
+| `hive tokens` | list provisioned seat labels (never the tokens) |
+| `hive token <seat>` | mint a per-seat token (printed once) |
+| `hive revoke <seat>` | offboard a seat (next request → 401) |
+| `hive backup` | atomic snapshot of the store (manual; keeps the most-recent N) |
+| `hive down` | stop the stack, preserve the data volume |
+| `hive nuke` | destroy the stack including the data volume (typed confirm) |
+
+**Security posture:** every memory is scanned for secrets before persistence (findings log rule
+names, never the matched bytes; default refuse). The image is hermetically offline. Only the
+loopback door is host-published; remote access is always bearer-gated. Upgrading across schema
+generations is `hive nuke` then `hive up` (no in-place migration ships).
+
+---
+
+*Further reading in this repository:* `README.md` (quickstart), `HOWTO.md` (operator guide),
+`THIRD_PARTY_NOTICES.md` + `LICENSES/` (embedding-model attribution). The project version is in
+`VERSION.md`.

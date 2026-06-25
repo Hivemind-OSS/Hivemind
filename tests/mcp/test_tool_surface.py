@@ -11,6 +11,7 @@ import json
 from hive.app.mcp_server import (
     HiveMCPServer, MCPRequest, ServerIdentity, run_stdio,
 )
+from hive.app.onboard_ref import BAD_VS_STALE, WRITE_VS_CAPTURE
 from hive.app.tool_defs import TOOL_DEFINITIONS
 from hive.domain.admission import WriteResult
 from hive.domain.kinds import KIND_NAMES
@@ -54,6 +55,38 @@ def test_write_description_directs_recall_before_write():
     desc = next(t["description"] for t in TOOL_DEFINITIONS if t["name"] == "hive_write").lower()
     assert "recall the topic" in desc       # recall-before-write at the call site
     assert "replaces" in desc               # correct in place rather than duplicate
+
+
+def test_write_description_states_agi_mode_self_authorization():
+    """The write call site must name the AGI_MODE exception: normally human/orchestrator-approved,
+    but under AGI_MODE an agent self-authorizes with approved_by='AGI_OVERRIDE'."""
+    desc = next(t["description"] for t in TOOL_DEFINITIONS if t["name"] == "hive_write")
+    assert "AGI_MODE" in desc and "AGI_OVERRIDE" in desc   # the mode + the sentinel both named
+
+
+def test_capture_description_requires_verifiable_evidence():
+    """Capture is evidence-grounded, not speculative — the call site must say so (the user can't
+    see the initialize instructions when reading a tool description)."""
+    desc = next(t["description"] for t in TOOL_DEFINITIONS if t["name"] == "hive_capture").lower()
+    assert "verifiable evidence" in desc   # the capture-specific phrase, not just WRITE_VS_CAPTURE's
+
+
+def test_write_and_capture_descriptions_carry_the_decision_rule():
+    """The write-vs-capture decision rides BOTH call sites verbatim (one source, no drift from the
+    initialize instructions)."""
+    for name in ("hive_write", "hive_capture"):
+        desc = next(t["description"] for t in TOOL_DEFINITIONS if t["name"] == name)
+        assert WRITE_VS_CAPTURE in desc, f"{name} missing the write-vs-capture decision rule"
+
+
+def test_retirement_descriptions_diagnose_bad_vs_stale():
+    """prune handles BAD (incorrect/misleading, nothing to replace); supersede handles STALE (a
+    memory with a successor) — each call site states its own case so an agent picks the right verb."""
+    prune = next(t["description"] for t in TOOL_DEFINITIONS if t["name"] == "hive_prune")
+    supersede = next(t["description"] for t in TOOL_DEFINITIONS if t["name"] == "hive_supersede").lower()
+    assert "incorrect" in prune.lower() or "misleading" in prune.lower()   # BAD -> prune
+    assert "stale" in supersede and "successor" in supersede               # STALE (has a successor)
+    assert BAD_VS_STALE in prune                       # the diagnosis served at the prune call site
 
 
 def test_health_description_carries_served_reference_not_a_self_install_block():

@@ -8,7 +8,8 @@ import json
 
 from hive.app import onboard_ref
 from hive.app.onboard_ref import (
-    CAPTURE_TAXONOMY, CLAUDE_CODE_HOOKS, ONBOARDING_REFERENCE, SERVER_INSTRUCTIONS,
+    BAD_VS_STALE, CAPTURE_TAXONOMY, CLAUDE_CODE_HOOKS, ONBOARDING_REFERENCE,
+    SERVER_INSTRUCTIONS, VALUE_RUBRIC, WRITE_VS_CAPTURE,
 )
 from hive.domain.kinds import render_taxonomy
 
@@ -107,6 +108,61 @@ def test_onboarding_is_served_only_no_self_install():
     # but the served reference still carries the identity/auth notes + the optional hooks
     assert "Mcp-Session-Id" in ONBOARDING_REFERENCE
     assert CLAUDE_CODE_HOOKS in ONBOARDING_REFERENCE
+
+
+def test_store_philosophy_is_stigmergic_lean_and_maintainer_framed():
+    """The opening must teach the MENTAL MODEL: a stigmergic fleet coordinating through traces with
+    no direct messaging, a lean flow-not-stock store, and the agent as a maintainer — not just a
+    place to dump text. Without it the verbs are mechanics with no governing philosophy."""
+    s = SERVER_INSTRUCTIONS.lower()
+    assert "stigmergic" in s                       # the coordination model
+    assert "trace" in s                            # coordination via traces left behind
+    assert "no direct communication" in s          # indirect — no agent-to-agent messaging
+    assert "maintainer" in s                       # standing responsibility, not just a writer
+    assert "lean" in s                             # the lean-store target
+    assert "flow" in s and "bigger store" in s     # flow-not-stock: a bigger store is worse
+
+
+def test_value_rubric_defines_what_is_worth_storing_and_grounding():
+    """The value bar an agent applies before storing — durable / reusable / non-obvious /
+    evidence-grounded — plus the anchor grounding requirement, served inside the taxonomy."""
+    t = CAPTURE_TAXONOMY.lower()
+    for crit in ("durable", "reusable", "non-obvious", "evidence"):
+        assert crit in t, f"missing value criterion: {crit!r}"
+    assert "anchor" in t                            # ground every trace in code (file/module/symbol)
+    assert VALUE_RUBRIC in CAPTURE_TAXONOMY         # served as one source inside the taxonomy
+
+
+def test_instructions_serve_the_write_vs_capture_decision():
+    """Agents must be able to CHOOSE the verb: capture (useful + evidence, no human, can wait) vs
+    write (load-bearing/highest-value or needs human confirmation, must-serve-now), with the
+    AGI_MODE self-authorization exception named (otherwise write needs human review)."""
+    s = SERVER_INSTRUCTIONS
+    low = s.lower()
+    assert WRITE_VS_CAPTURE in s                    # the decision rule served verbatim (one source)
+    assert "load-bearing" in low                    # write's bar
+    assert "verifiable evidence" in low             # capture's bar
+    assert "AGI_MODE" in s                          # the self-authorization exception, else human
+
+
+def test_instructions_diagnose_bad_vs_stale_for_prune_vs_supersede():
+    """The retire decision: STALE (was true, has a successor) -> supersede/replace; BAD (incorrect/
+    misleading, nothing to replace) -> prune. Without the diagnosis an agent prunes what it should
+    supersede (losing the successor) or vice-versa."""
+    s = SERVER_INSTRUCTIONS
+    assert BAD_VS_STALE in s
+    low = s.lower()
+    assert "stale" in low and "successor" in low    # stale -> replace with the successor
+    assert "incorrect" in low and "misleading" in low  # bad -> prune
+
+
+def test_instructions_require_single_pointed_recall_query_set():
+    """A bulk multi-question query dilutes toward the centroid and abstains, so the contract directs
+    splitting an information need into a SET of single-pointed queries, one hive_recall each."""
+    low = SERVER_INSTRUCTIONS.lower()
+    assert "single-pointed" in low
+    assert "one intent" in low
+    assert "never bundle" in low                    # no bulk multi-question query
 
 
 def test_claude_code_hooks_is_valid_json_with_the_three_nudge_events():

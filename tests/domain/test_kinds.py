@@ -44,3 +44,12 @@ def test_render_taxonomy_names_every_kind_and_both_rules():
 def test_query_guidance_warns_about_abstention():
     # the load-bearing reason to write dense queries; mutation-visible if gutted
     assert "abstain" in QUERY_GUIDANCE.lower()
+
+
+def test_query_guidance_mandates_a_single_pointed_query_set():
+    # a bundled multi-question query dilutes toward the centroid and abstains; the guidance must
+    # direct splitting an information need into single-pointed queries, one hive_recall per intent.
+    g = QUERY_GUIDANCE.lower()
+    assert "single-pointed" in g
+    assert "one intent" in g
+    assert "per intent" in g            # one recall per intent, not a bulk multi-question query
