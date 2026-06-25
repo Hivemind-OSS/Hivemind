@@ -76,6 +76,26 @@ def test_declined_candidate_is_never_retired():
     assert sorted(d.episode_id for d in obs.declined) == [1, 3]
 
 
+def test_agent_surfaced_hurt_becomes_a_judged_candidate():
+    # a standalone hurt-flagged bad fact appears on NO shipped worklist; the harness presents it as
+    # a candidate the orchestrator JUDGES (O7-safe — the agent's hive_outcome surfaces, never acts).
+    client = _FakeClient({"conflicts": [], "suspect_consensus": []})
+    obs = run_orchestrator_review(
+        client=client, llm=_llm_deciding([{"episode_id": 42, "verb": "prune", "reason": "wrong"}]),
+        approver="orch", surfaced_hurts=(42,))
+    assert client.prunes == [(42, "orch")]
+    assert [r.episode_id for r in obs.retired] == [42]
+
+
+def test_surfaced_hurt_is_still_only_retired_on_judgment():
+    # the firewall holds for surfaced hurts too: a 'keep' judgment declines the hurt candidate.
+    client = _FakeClient({"conflicts": [], "suspect_consensus": []})
+    obs = run_orchestrator_review(
+        client=client, llm=_llm_deciding([{"episode_id": 42, "verb": "keep", "reason": "fine"}]),
+        surfaced_hurts=(42,))
+    assert client.prunes == [] and [d.episode_id for d in obs.declined] == [42]
+
+
 def test_no_candidates_skips_the_llm_entirely():
     client = _FakeClient({"conflicts": [], "suspect_consensus": []})
     llm = _llm_deciding([{"episode_id": 1, "verb": "prune"}])    # would prune if consulted

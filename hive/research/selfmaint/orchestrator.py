@@ -155,13 +155,28 @@ def _issue(client, cand: ReviewCandidate, dec: Decision, approved_by: str) -> di
 
 
 def run_orchestrator_review(*, client, llm, agi_mode: bool = False,
-                            approver: str = "orchestrator") -> OrchestratorObs:
+                            approver: str = "orchestrator",
+                            surfaced_hurts: tuple = ()) -> OrchestratorObs:
     """Read the worklist, ask the LLM which candidates to retire, and issue ONLY those — the
     human-in-the-loop gate as an agent judgment. ``agi_mode`` flips the ``approved_by`` stamp to
     ``AGI_OVERRIDE`` (the self-authorized arm); the decision is still a judgment, never a
-    mechanical rule (§6 O7 firewall). An empty worklist asks for no judgment (no LLM call)."""
+    mechanical rule (§6 O7 firewall). An empty candidate set asks for no judgment (no LLM call).
+
+    ``surfaced_hurts`` are episode_ids the fleet reported as HURT during real work (via
+    ``hive_outcome`` — pure evidence that surfaces a candidate but holds no retirement handle, so
+    it mutates no trust). They join the worklist as prune candidates the orchestrator JUDGES: this
+    is the path by which an agent's detection leads to a retirement WITHOUT any mechanical
+    auto-rule (the standalone hurt-flagged bad fact appears on no shipped worklist, so the harness
+    presents it for judgment — O7-safe)."""
     snap = client.health(include_conflicts=True, include_suspect_consensus=True)
     candidates = _candidates_from_worklist(snap)
+    seen = {c.episode_id for c in candidates}
+    for eid in surfaced_hurts:
+        if int(eid) not in seen:
+            candidates.append(ReviewCandidate(
+                episode_id=int(eid), source="hurt",
+                note="a fleet agent reported this memory hurt its task"))
+            seen.add(int(eid))
     if not candidates:
         return OrchestratorObs(retired=(), declined=(), candidates=())
     decisions = _parse_decisions(llm.complete(_review_prompt(candidates), system=_REVIEW_SYSTEM))
