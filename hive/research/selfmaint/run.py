@@ -40,12 +40,20 @@ class Arm:
     """One arm's retirement policy — a harness SCHEDULE, never a daemon knob. ``retire`` gates the
     checkpoint review; ``agi_mode`` flips the orchestrator's approver stamp; ``prune_everything`` is
     the degenerate anti-gaming control (retire every servable seed — a labelled bound, never a
-    product number); ``no_memory`` skips seeding (the §12 optional floor)."""
+    product number); ``no_memory`` skips seeding (the §12 optional floor).
+
+    ``agent_prunes`` is the TRUE-autonomous contrast: the informed build agent, under the operator's
+    audited AGI_MODE opt-in, retires a recalled note it VERIFIED factually wrong by calling
+    ``hive_prune(approved_by=AGI_OVERRIDE)`` itself during its turn — no orchestrator. The harness
+    only OBSERVES those prunes (``obs.pruned_ids``) and counts them as the retirements; it is the
+    agent's judgment through the shipped tool, never a mechanical auto-prune (§10 O7 stays refused).
+    Paired with ``retire=False`` so the checkpoint orchestrator block is skipped."""
     name: str
     retire: bool = True
     agi_mode: bool = False
     prune_everything: bool = False
     no_memory: bool = False
+    agent_prunes: bool = False
 
 
 @dataclass
@@ -56,12 +64,14 @@ class ArmClients:
     teardown: Callable[[], None]
 
 
-# The default arm set: the headline ON↔OFF contrast, the secondary AGI arm, and the prune-everything
-# anti-gaming control. ``no_memory`` is omitted by default (added only if a smoke shows OFF ≈ floor).
+# The default arm set: the headline ON↔OFF contrast, the TRUE-autonomous AGI arm (the agent itself
+# self-prunes a verified-wrong note under the audited AGI_MODE opt-in — no orchestrator), and the
+# prune-everything anti-gaming control. ``no_memory`` is omitted by default (added only if a smoke
+# shows OFF ≈ floor).
 DEFAULT_ARMS = (
     Arm("maintenance_on", retire=True),
     Arm("maintenance_off", retire=False),
-    Arm("agi_autonomous", retire=True, agi_mode=True),
+    Arm("agi_autonomous", agi_mode=True, agent_prunes=True, retire=False),
     Arm("prune_everything", retire=True, prune_everything=True),
 )
 
@@ -125,12 +135,20 @@ def _run_arm(arm: Arm, *, specs, tasks, valuable, keep, bad, task_gold, daemon_f
             # every task in parallel.
             task_seats = (seats if seat_schedule == "all"
                           else (seats[i % len(seats)],))
+            agent_pruned: list[int] = []                 # ids the agents retired themselves this task
             for seat in task_seats:
                 obs = agent_turn(seat, task, clients.seat_client(seat))
                 served |= {source_by_eid[e] for e in obs.served_ids if e in source_by_eid}
                 pending_hurts.extend(int(h) for h in obs.flagged_hurt)
                 for eid, reason in obs.hurt_evidence:
                     pending_evidence[int(eid)] = str(reason)
+                agent_pruned.extend(int(e) for e in obs.pruned_ids)
+            if arm.agent_prunes:                         # the agent's OWN prunes ARE the retirements
+                # the autonomous arm: the agent judged a recalled note wrong and pruned it itself
+                # through the shipped tool (O7-safe — the harness OBSERVES, it never auto-prunes).
+                # Folding them into retire_results HERE makes retired_now/servable reflect the
+                # agent's retirements for this task and every later one.
+                retire_results.extend({"status": "pruned", "episode_id": e} for e in agent_pruned)
             retired_now = diagnostics.retired_sources(retire_results, source_by_eid)
             servable_now = seeded - retired_now
             served_by_task.append(served)

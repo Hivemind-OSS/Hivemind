@@ -277,3 +277,38 @@ def test_hurt_evidence_is_threaded_into_the_orchestrator_prompt():
                   model="fake", llm_digest="d", seats=("seat-1",), checkpoint_every=1)
     assert captured, "the orchestrator review never ran"
     assert any("because spec says KeyError" in p for p in captured)
+
+
+# ── the autonomous arm: the AGENT's own prunes are the retirements (NO orchestrator) ──
+class _ExplodingLLM:
+    """An orchestrator LLM that RAISES if its judgment is ever asked — the autonomous arm must
+    never reach the checkpoint review, so any ``complete`` call is a contract violation."""
+    def complete(self, prompt, *, system=None) -> str:        # pragma: no cover - must not run
+        raise AssertionError("the autonomous arm reached run_orchestrator_review")
+
+
+def test_agent_prunes_arm_retires_via_the_agent_not_the_orchestrator():
+    # An agent_prunes arm (agi_mode=True, retire=False) takes the agent's OWN hive_prune calls
+    # (obs.pruned_ids) as the retirement set — the agent judged through the shipped tool, no
+    # orchestrator. The single seeded source maps to episode_id 1, which the agent prunes.
+    # Mutation: drop the obs.pruned_ids collection in _run_arm (or route it through the
+    # orchestrator) → the retired-source assertion reds (and an orchestrator route would also
+    # explode the LLM).
+    factory_calls: list = []
+
+    def llm_factory():
+        factory_calls.append(1)
+        return _ExplodingLLM()
+
+    def agent_turn(seat, task, client) -> AgentTurnObs:
+        # the agent verified the seeded note (episode_id 1) is factually wrong and self-pruned it.
+        return AgentTurnObs(seat, pruned_ids=(1,))
+
+    report = run_selfmaint(
+        arms=(Arm("agi", agi_mode=True, agent_prunes=True, retire=False),),
+        repo_window=_SCHED_WINDOW, seed=7, daemon_factory=_fake_off_factory,
+        agent_turn=agent_turn, llm_factory=llm_factory, outcome_fn=lambda task, **kw: True,
+        model="fake", llm_digest="d", seats=("seat-1",))
+    arm = next(a for a in report["arms"] if a["name"] == "agi")
+    assert arm["retired_sources"] == ["keep::license"]        # the agent's prune retired the source
+    assert factory_calls == []                                # the orchestrator was never invoked

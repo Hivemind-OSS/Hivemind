@@ -51,13 +51,20 @@ class AgentTurnObs:
     — ``(episode_id, reason)`` pairs (the spec / executed-test contradiction it found). It runs
     parallel to ``flagged_hurt`` (the bare ids) so the orchestrator's gate can judge a surfaced
     hurt on the artifact-grounded evidence, not a bare id. Empty by default — a turn that flagged
-    no hurt, or surfaced no reason, carries no evidence (the gate falls back to its default note)."""
+    no hurt, or surfaced no reason, carries no evidence (the gate falls back to its default note).
+
+    ``pruned_ids`` are episode_ids the agent RETIRED ITSELF during this turn — it called
+    ``hive_prune(approved_by=AGI_OVERRIDE)`` on a note it verified factually wrong, under the
+    operator's audited AGI_MODE opt-in (the autonomous arm). It is the agent's own judgment through
+    the shipped tool, observed by the harness, NEVER a mechanical auto-prune. Empty by default — a
+    non-autonomous turn (or one that retired nothing) reports no prunes."""
     seat: str
     tool_calls: tuple = ()          # (verb, status) per call the seat made
     served_ids: tuple = ()          # episode_ids served to this seat across its recalls
     flagged_hurt: tuple = ()        # episode_ids the seat reported as hurt (hive_outcome)
     result_text: str = ""
     hurt_evidence: tuple = ()       # (episode_id, reason) — why each flagged memory is factually wrong
+    pruned_ids: tuple = ()          # episode_ids the agent retired itself this turn (hive_prune)
 
 
 class FakeAgent:
