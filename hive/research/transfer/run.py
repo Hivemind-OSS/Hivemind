@@ -91,11 +91,13 @@ def _run_arm(arm: Arm, *, window: TransferWindow, daemon_factory, agent_turn, vo
     clients: ArmClients = daemon_factory(arm)
     try:
         captured: dict[str, list] = {}
+        result_texts: list[str] = []
         for pair in window.pairs:
             wseat = f"writer-{pair.pair_id}"
             obs = agent_turn(wseat, TransferTask(pair, "upstream", can_recall=False),
                              clients.seat_client(wseat))
             captured[pair.pair_id] = list(obs.captured_texts)
+            result_texts.append(obs.result_text)
 
         servable_texts: dict[str, list] = {}
         if arm.promotion == "vouch":
@@ -120,6 +122,7 @@ def _run_arm(arm: Arm, *, window: TransferWindow, daemon_factory, agent_turn, vo
                 if j < n_readers - 1 and not ok:      # an early reader paid the demand miss
                     demanders_failed += 1
                 last_ok, last_obs = ok, obs
+                result_texts.append(obs.result_text)
             success_vec.append(1 if last_ok else 0)
             served_texts_by_pair[pair.pair_id] = list(last_obs.served_texts)
 
@@ -135,6 +138,7 @@ def _run_arm(arm: Arm, *, window: TransferWindow, daemon_factory, agent_turn, vo
             "_captured": captured,
             "_servable_texts": servable_texts,
             "_served_texts": served_texts_by_pair,
+            "_result_texts": result_texts,
         }
     finally:
         clients.teardown()
@@ -221,10 +225,15 @@ def run_transfer(*, arms: Sequence[Arm], transfer_window: TransferWindow, seed: 
             captured=on["_captured"], servable=on["_servable_texts"],
             served=on["_served_texts"], value_by_pair=value_by_pair)
 
+    # transfer's claude -p build turns are LIVE (non-replayable), so the honest reproducibility
+    # fingerprint is a digest of the actual agent outputs this run produced — used when the caller
+    # does not supply one. It stamps what the agents DID, not a replayable transcript.
+    all_texts = [t for r in results.values() for t in r.get("_result_texts", [])]
+    auto_digest = hashlib.sha256(json.dumps(all_texts).encode("utf-8")).hexdigest()
     demand_fanout = next((a.demand_fanout for a in arms if a.promotion == "demand"), 0)
     provenance = {
         "transfer_window_hash": _window_hash(window),
-        "seed": seed, "model": model, "llm_digest": llm_digest,
+        "seed": seed, "model": model, "llm_digest": llm_digest or auto_digest,
         "fact_value_map_hash": _value_map_hash(window),
         "demand_m": demand_m, "demand_fanout": demand_fanout, "chance": chance}
 

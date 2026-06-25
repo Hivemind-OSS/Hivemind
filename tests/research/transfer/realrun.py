@@ -42,7 +42,7 @@ from hive.app.http_server import _build_handler
 from hive.research.bench.llm import RunResult
 from hive.research.selfmaint.agent import BUILD_AGENT_TOOLS, run_agent_turn
 from hive.research.selfmaint.daemon import McpHttpClient
-from hive.research.transfer.run import ArmClients, TransferTurnObs
+from hive.research.transfer.run import DEFAULT_ARMS, ArmClients, TransferTurnObs, run_transfer
 from hive.research.transfer.substrate import load_transfer_window
 from tests.mcp._helpers import build_real_server
 from tests.research.selfmaint.realrun import make_isolation_config_dir
@@ -261,4 +261,48 @@ def _load_generated_window(benchmark_dir: str, seed: int) -> dict:
     return mod.transfer_window(seed)
 
 
-__all__ = ["make_transfer_realrun_seams", "make_isolation_config_dir"]
+def run_real_transfer(*, benchmark_dir: str, out: str, seed: int = 0, arms=DEFAULT_ARMS,
+                      model: Optional[str] = None, demand_m: int = 2,
+                      isolation_config_dir: Optional[str] = None,
+                      work_base: Optional[str] = None) -> dict:
+    """Execute the REAL knowledge-transfer benchmark: load the shipping Qwen3 embedder, drive real
+    ``claude -p`` build agents over an in-process loopback daemon, and write the provenance-stamped
+    report to ``out``. Requires an authenticated ``claude`` (subscription) and the model weights.
+    Spends subscription tokens. The embedder import is lazy (heavy/torch)."""
+    from hive.adapters.embedding.factory import native_dim_for
+    from hive.adapters.embedding.local_st import DEFAULT_MODEL, LocalSTEmbedder
+
+    embedder = LocalSTEmbedder(d=native_dim_for(DEFAULT_MODEL), model_name=DEFAULT_MODEL).load()
+    iso = isolation_config_dir or make_isolation_config_dir(
+        str(Path(out).resolve().parent / ".transfer_cfg"))
+    seams = make_transfer_realrun_seams(
+        benchmark_dir=benchmark_dir, seed=seed, embedder=embedder, isolation_config_dir=iso,
+        model=model, demand_m=demand_m, work_base=work_base)
+    report = run_transfer(
+        arms=arms, transfer_window=seams["transfer_window"], seed=seed,
+        daemon_factory=seams["daemon_factory"], agent_turn=seams["agent_turn"],
+        vouch_fn=seams["vouch_fn"], outcome_fn=seams["outcome_fn"],
+        model=model or "unknown", demand_m=demand_m)
+    Path(out).write_text(json.dumps(report, indent=2), encoding="utf-8")
+    return report
+
+
+__all__ = ["make_transfer_realrun_seams", "make_isolation_config_dir", "run_real_transfer"]
+
+
+if __name__ == "__main__":
+    import argparse
+
+    ap = argparse.ArgumentParser(description="Real knowledge-transfer benchmark run (BENCHMARK §7).")
+    ap.add_argument("--benchmark-dir", required=True, help="path to ../Benchmark/transfer")
+    ap.add_argument("--out", required=True, help="report JSON output path")
+    ap.add_argument("--seed", type=int, default=0)
+    ap.add_argument("--model", default=None, help="claude model id (the agent tier)")
+    ap.add_argument("--demand-m", type=int, default=2)
+    _a = ap.parse_args()
+    _rep = run_real_transfer(benchmark_dir=_a.benchmark_dir, out=_a.out, seed=_a.seed,
+                             model=_a.model, demand_m=_a.demand_m)
+    _d = _rep["deltas"]
+    print(json.dumps({"headline_success_verdict": _d.get("success"),
+                      "success_ci": _d.get("success_ci"),
+                      "n_valid_pairs": _rep["necessity"].get("n_valid")}, indent=2))
