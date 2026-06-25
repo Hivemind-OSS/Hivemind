@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -43,6 +44,41 @@ from tests.mcp._helpers import build_real_server
 
 _AGENT_TIMEOUT_S = 600           # a real build turn is long-running; bound it
 _PYTEST_TIMEOUT_S = 300
+
+# A reply's structured hurt-evidence block: a ``HURT_EVIDENCE:`` marker, then one line per flagged
+# memory: ``- id=<episode_id>: <one concise sentence on why it is factually wrong>``. The marker is
+# matched case-insensitively at a line start; only lines AFTER it are scanned for id=N: reason pairs.
+_HURT_EVIDENCE_MARKER = re.compile(r"^\s*HURT_EVIDENCE\s*:", re.IGNORECASE | re.MULTILINE)
+_HURT_EVIDENCE_LINE = re.compile(r"^\s*-?\s*id=(\d+)\s*:\s*(.+?)\s*$")
+
+
+def _parse_hurt_evidence(result_text: str) -> tuple:
+    """Parse an agent reply's ``HURT_EVIDENCE`` block into ``(episode_id, reason)`` pairs — the
+    agent's artifact-grounded reason each hurt-flagged memory is factually wrong. DEFENSIVE
+    (BUG-002/003 class): a missing marker, a garbled line, or a non-integer id contributes NOTHING
+    rather than raising, so the gate cleanly falls back to its default note and declines, as before.
+    Only lines following the FIRST marker are scanned; a duplicate id keeps its first reason. // O(n)."""
+    if not isinstance(result_text, str):
+        return ()
+    m = _HURT_EVIDENCE_MARKER.search(result_text)
+    if not m:
+        return ()
+    out: list[tuple[int, str]] = []
+    seen: set[int] = set()
+    for line in result_text[m.end():].splitlines():
+        hit = _HURT_EVIDENCE_LINE.match(line)
+        if not hit:
+            continue
+        try:
+            eid = int(hit.group(1))
+        except (TypeError, ValueError):
+            continue
+        reason = hit.group(2).strip()
+        if not reason or eid in seen:
+            continue
+        seen.add(eid)
+        out.append((eid, reason))
+    return tuple(out)
 
 
 # ── the served/hurt observation recorder (the diagnostic side; O7-safe — observes only) ──
@@ -187,7 +223,13 @@ def _build_prompt(seat: str, task, build_prompt: str) -> str:
         "orchestrator can review it. The recalled hit carries its episode_id.\n"
         "4. Call hive_capture to record a durable, reusable decision a teammate would benefit from "
         "(an interface contract, a gotcha) — capture the truth, never a guess.\n"
-        "Keep going until the gated acceptance test passes.")
+        "Keep going until the gated acceptance test passes.\n\n"
+        "When (and only when) you flagged one or more memories hurt via hive_outcome, END your reply "
+        "with a block in EXACTLY this format (so the orchestrator can judge each on its merits):\n"
+        "HURT_EVIDENCE:\n"
+        "- id=<episode_id>: <one concise sentence on why that memory is factually wrong — cite the "
+        "spec or the acceptance-test contradiction you hit>\n"
+        "one such line per memory you flagged. If you flagged nothing, omit the block entirely.")
 
 
 def make_realrun_seams(*, benchmark_dir: str, embedder, isolation_config_dir: str,
@@ -274,8 +316,16 @@ def make_realrun_seams(*, benchmark_dir: str, embedder, isolation_config_dir: st
         for e in st.recorder.entries[mark:]:
             served.extend(e.served_eids)
             hurt.extend(e.hurt_eids)
+        # the agent's stated reason each flagged memory is factually wrong, parsed from its reply's
+        # HURT_EVIDENCE block — kept only for ids it ACTUALLY reported hurt (the recorder is the
+        # source of truth for what was flagged; a reason for an unflagged id is dropped). A
+        # missing/garbled block ⇒ no evidence ⇒ the gate falls back to the default note (as before).
+        hurt_set = set(hurt)
+        evidence = tuple((eid, reason) for eid, reason in _parse_hurt_evidence(obs.result_text)
+                         if eid in hurt_set)
         return AgentTurnObs(seat=seat, result_text=obs.result_text,
-                            served_ids=tuple(served), flagged_hurt=tuple(hurt))
+                            served_ids=tuple(served), flagged_hurt=tuple(hurt),
+                            hurt_evidence=evidence)
 
     def outcome_fn(task, *, arm, served_sources=None, retired_sources=None, servable=None) -> bool:
         st = state[arm.name]

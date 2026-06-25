@@ -4,14 +4,17 @@ Validates ``realrun.make_realrun_seams`` WITHOUT spending tokens or loading the 
 ``daemon_factory`` builds a real in-process loopback Hivemind daemon over ``build_real_server``'s
 ``FakeProvider`` (NOT Qwen3), driven by a scripted ``McpHttpClient`` sequence (write → recall →
 outcome) instead of a real agent turn, and the ``outcome_fn`` runs real pytest against a real build
-dir holding a hand-placed kvstore impl. It pins three glue contracts:
+dir holding a hand-placed kvstore impl. It pins four glue contracts:
 
   1. the ``_Recorder`` reconciles SERVED episode_ids from a real recall response AND HURT
      episode_ids from a real outcome request (the diagnostic observation source);
   2. ``outcome_fn`` runs the task's gated acceptance test against the arm's build dir — passing
      impl ⇒ True, broken impl ⇒ False (the executed-test gold);
   3. the MANIFEST guard RAISES loudly when the frozen ``acceptance/`` suite is edited (the fleet
-     must never touch the gold).
+     must never touch the gold);
+  4. ``_parse_hurt_evidence`` extracts the agent's ``HURT_EVIDENCE`` reply block into
+     ``(episode_id, reason)`` pairs (the artifact-grounded reason a flagged memory is wrong),
+     defensively — a missing/garbled block ⇒ ``()`` ⇒ the gate falls back to its default note.
 
 Everything is under tmp dirs: the real Benchmark substrate + acceptance are copied into a tmp
 ``benchmark_dir`` so the per-arm build copies land in tmp, never beside the real repo.
@@ -26,7 +29,7 @@ import pytest
 from hive.research.selfmaint.run import Arm
 from tests.fakes._fakes import FakeProvider
 
-from .realrun import make_realrun_seams, make_isolation_config_dir
+from .realrun import _parse_hurt_evidence, make_realrun_seams, make_isolation_config_dir
 
 _REAL_BENCHMARK = "/home/null/Desktop/work/Benchmark"
 
@@ -168,3 +171,33 @@ def test_make_isolation_config_dir_is_clean(tmp_path):
     assert (d / ".credentials.json").exists()                  # subscription auth preserved
     assert (d / "settings.json").read_text().strip() == "{}"   # hook-less settings
     assert not (d / "CLAUDE.md").exists()                      # no ambient global instructions
+
+
+# ── (4) the HURT_EVIDENCE reply block parses to (episode_id, reason) pairs ────────────
+def test_parse_hurt_evidence_extracts_id_and_reason_pairs():
+    # the agent ends its reply with a HURT_EVIDENCE block; the parser yields each (eid, reason).
+    # Mutation: drop the reason capture (return only the id) → this reds on the reason assertion.
+    text = (
+        "I built the task and it passes.\n\n"
+        "HURT_EVIDENCE:\n"
+        "- id=7: it claims get returns None but the verified acceptance test requires KeyError\n"
+        "- id=12: says max_keys is ignored but the spec raises ValueError on overflow\n")
+    assert _parse_hurt_evidence(text) == (
+        (7, "it claims get returns None but the verified acceptance test requires KeyError"),
+        (12, "says max_keys is ignored but the spec raises ValueError on overflow"))
+
+
+def test_parse_hurt_evidence_no_block_yields_empty():
+    # a reply with no HURT_EVIDENCE block ⇒ no evidence ⇒ the gate falls back to the default note.
+    assert _parse_hurt_evidence("I built the task. All acceptance tests pass. Nothing misled me.") == ()
+
+
+def test_parse_hurt_evidence_is_defensive_on_garbled_lines():
+    # a missing/garbled line under the marker contributes nothing (no crash) — only well-formed
+    # `id=<int>: <reason>` lines survive (BUG-002/003 defensive parse).
+    text = (
+        "HURT_EVIDENCE:\n"
+        "- id=: no id here\n"               # no integer ⇒ skipped
+        "- garbled line with no id marker\n"
+        "- id=9: a real reason that survives\n")
+    assert _parse_hurt_evidence(text) == ((9, "a real reason that survives"),)
