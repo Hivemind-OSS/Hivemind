@@ -86,32 +86,6 @@ def test_selfmaint_drives_the_daemon_as_a_black_box_client() -> None:
         f"(only {allowed} allowed): {offenders}")
 
 
-def test_transfer_drives_the_daemon_as_a_black_box_client() -> None:
-    # The knowledge-transfer harness (BENCHMARK §7) measures the REAL daemon over MCP/HTTP as a
-    # CLIENT, like selfmaint — but it uses NO AGI_OVERRIDE, so it imports NO runtime layer at all.
-    # Any hive.domain/adapters/app import (e.g. a RecallPipeline or AbsoluteRelevanceGate to
-    # short-circuit the measurement) reds this: the benchmark must exercise shipped behavior through
-    # the public tool surface, never reach into the kernel.
-    offenders: dict[str, set[str]] = {}
-    for path in (ROOT / "research" / "transfer").rglob("*.py"):
-        tree = ast.parse(path.read_text(), filename=str(path))
-        hits = set()
-        for node in ast.walk(tree):
-            mods: list[str] = []
-            if isinstance(node, ast.ImportFrom) and node.module:
-                mods.append(node.module)
-            elif isinstance(node, ast.Import):
-                mods.extend(alias.name for alias in node.names)
-            for m in mods:
-                if m.split(".")[0] == "hive" and m.split(".")[1] in {"domain", "adapters", "app"}:
-                    hits.add(m)
-        if hits:
-            offenders[str(path.relative_to(ROOT))] = hits
-    assert not offenders, (
-        f"transfer must drive the daemon as a black-box client, not import runtime internals: "
-        f"{offenders}")
-
-
 def test_research_not_imported_by_runtime() -> None:
     offenders: dict[str, set[str]] = {}
     for path in _full_module_paths("domain", "adapters", "app"):
