@@ -2,9 +2,9 @@
 
 create LABEL prints the 256-bit plaintext to stdout ONCE (the operator hands it over via a
 secret manager); revoke LABEL deletes the token so the device's next request 401s. db_path
-resolves from --db / $HIVE_STORE__DB_PATH and FAILS FAST (EX_CONFIG) if absent — mirroring the
-entrypoint. The mutation (revoke claims success without deleting) makes the
-revoke→verify-None test red.
+resolves from --db / $HIVE_STORE__DB_PATH, else defaults to /data/shared.db (mirroring
+entrypoint/healthcheck/backupctl) so the zero-config token verbs work. The mutation (revoke
+claims success without deleting) makes the revoke→verify-None test red.
 """
 from __future__ import annotations
 
@@ -48,9 +48,19 @@ def test_revoke_makes_a_valid_token_verify_none(db):
     assert _store(db).verify(token) is None                # the device's next request now 401s
 
 
-def test_missing_db_is_config_error():
-    rc = authctl.main(["create", "x"], env={}, out=io.StringIO())     # no --db, no env
-    assert rc == authctl.EX_CONFIG
+def test_missing_db_defaults_to_shared_db():
+    # no --db and no env → default to /data/shared.db (mirrors entrypoint/healthcheck/backupctl);
+    # the CLI execs authctl with no --db, so this default is what makes the zero-config token verbs
+    # work. Inject connect_fn to capture the resolved path without touching a real /data.
+    seen = {}
+
+    def fake_connect(db_path):
+        seen["db"] = db_path
+        return connect(":memory:")
+
+    rc = authctl.main(["list"], env={}, connect_fn=fake_connect, out=io.StringIO())
+    assert rc == authctl.EX_OK
+    assert seen["db"] == "/data/shared.db"          # the in-container default, not a fail-fast
 
 
 def test_db_flag_overrides_env(db):

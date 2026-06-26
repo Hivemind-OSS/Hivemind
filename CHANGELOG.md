@@ -75,3 +75,11 @@ All notable changes to this project are documented here.
   pytest argv assertion.
 - No migration/backfill path ships (clean-store start, human decision): an
   old-format `episodes` table is refused at store construction.
+
+## Fixed
+- `hive token` / `hive tokens` / `hive revoke` failed on a zero-config install (no `.env`):
+  `authctl` alone fail-fasted when `HIVE_STORE__DB_PATH` was unset, instead of defaulting to the
+  in-container `/data/shared.db` like its sibling tools (entrypoint / healthcheck / backupctl).
+  Because the `hive` CLI execs `authctl` with no `--db`, the token verbs exited `EX_CONFIG` and
+  `hive status` reported `seats: unknown`. `authctl` now defaults the store path the same way;
+  an explicit `--db` or `$HIVE_STORE__DB_PATH` still overrides it.

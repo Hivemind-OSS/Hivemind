@@ -6,11 +6,11 @@ it over via a secret manager — it is never recoverable again). `revoke <label>
 token so that device's next request returns 401.
 
 A sibling of `healthcheck` / `bake_model` (operational tools live in `hive/tools/`). The
-db_path resolves from `--db` or `$HIVE_STORE__DB_PATH` and FAILS FAST (EX_CONFIG) if absent —
-mirroring the entrypoint's "a required value missing is a non-zero exit, never a silent
-default". Injection seams (`connect_fn` / `out`) keep the wiring + the fail-fast unit-testable
-without a real DB file. STDOUT carries only the token (machine-parseable); human metadata
-goes to STDERR so a pipe captures just the credential.
+db_path resolves from `--db` or `$HIVE_STORE__DB_PATH`, else defaults to `/data/shared.db`
+(mirroring entrypoint/healthcheck/backupctl) — the `hive` CLI execs this with no `--db`, so the
+default is what makes the zero-config token verbs work. Injection seams (`connect_fn` / `out`)
+keep the wiring unit-testable without a real DB file. STDOUT carries only the token
+(machine-parseable); human metadata goes to STDERR so a pipe captures just the credential.
 """
 from __future__ import annotations
 
@@ -25,7 +25,8 @@ from hive.adapters.sqlite_db import connect
 # sysexits.h — mirror the entrypoint's boot contract (an exit code cannot lie like a log can).
 EX_OK = 0
 EX_SOFTWARE = 70
-EX_CONFIG = 78
+
+_DEFAULT_DB_PATH = "/data/shared.db"   # mirrors entrypoint/healthcheck/backupctl
 
 
 def main(argv: Optional[list[str]] = None, *, env: Optional[Mapping[str, str]] = None,
@@ -33,7 +34,7 @@ def main(argv: Optional[list[str]] = None, *, env: Optional[Mapping[str, str]] =
          out: Optional[TextIO] = None) -> int:
     """Mint or revoke a device token; return a sysexits exit code. `connect_fn` (default the
     prod `connect`) and `out` (default stdout) are injection seams. NEVER echoes the env
-    value of a missing var (secret-safe). // O(1) DB ops."""
+    value (secret-safe). // O(1) DB ops."""
     import os                                       # local: env default without a module global
 
     env = os.environ if env is None else env
@@ -53,10 +54,10 @@ def main(argv: Optional[list[str]] = None, *, env: Optional[Mapping[str, str]] =
     sub.add_parser("list", help="print provisioned device labels, one per line (no hashes)")
     args = parser.parse_args(argv)
 
-    db_path = (args.db or env.get("HIVE_STORE__DB_PATH") or "").strip()
-    if not db_path:                                 # fail fast — no silent default (mirrors entrypoint)
-        print("authctl: --db or $HIVE_STORE__DB_PATH is required", file=sys.stderr)
-        return EX_CONFIG
+    # default to the in-container store path when unset (mirrors entrypoint/healthcheck/backupctl)
+    # — the CLI execs authctl with no --db, so this default is what makes the zero-config token
+    # verbs work; an operator's $HIVE_STORE__DB_PATH still overrides it, --db wins over both.
+    db_path = (args.db or env.get("HIVE_STORE__DB_PATH") or "").strip() or _DEFAULT_DB_PATH
 
     store = SqliteTokenStore(connect_fn(db_path))
 
