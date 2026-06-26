@@ -3,6 +3,12 @@
 All notable changes to this project are documented here.
 
 ## Added
+- `scripts/contract_version_guard.py` + `.githooks/pre-commit` — a non-blocking pre-commit guard
+  that keeps the agent-contract `CONTRACT_VERSION` monotonic: when a commit stages a change to the
+  served-contract source (`hive/app/onboard_ref.py` / `hive/domain/kinds.py`) it bumps the version
+  past HEAD if it is not already ahead, regenerates the keystone bundle-hash golden from the new
+  single owner `onboard_ref.bundle_digest()`, and `git add`s both so the bump rides in the commit.
+  Enable with `git config core.hooksPath .githooks`. Contributor tooling (wheel-excluded).
 - `skills/` — operator runbook-skills (`hive-bringup`, `hive-connect-team`,
   `hive-backup-restore`, `hive-operate`), each a self-contained `SKILL.md` with trigger
   frontmatter, so an agent can run the load-bearing lifecycle / connect / backup / tuning
