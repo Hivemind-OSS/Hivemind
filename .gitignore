@@ -52,7 +52,11 @@ backups/
 Thumbs.db
 
 
-# Graphify files
+# CLAUDE rules
+CLAUDE.md 
+
+
+# Graphify files (man I luh graphify)
 graphify-out
 
 # ── Agent tooling (local only; do not ship) ──
@@ -60,7 +64,10 @@ graphify-out
 CLAUDE.md
 
 # ── Local design/plan docs ──
-docs/PLANS/
+docs/
 
-# local context files
+# local context files and agent artifacts
 CONTEXT/
+
+# ── Server Admin Agent (in development)──
+/queen/
