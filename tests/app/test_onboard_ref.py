@@ -11,7 +11,8 @@ from hive.app import onboard_ref
 from hive.app.onboard_ref import (
     AGENT_RULES_BLOCK, AUTO_APPROVE_TOOLS, BAD_VS_STALE, CAPTURE_TAXONOMY,
     CLAUDE_CODE_HOOKS, CONTRACT_VERSION, ONBOARDING_PROCEDURE, ONBOARDING_REFERENCE,
-    RULES_END, RULES_START, SERVER_INSTRUCTIONS, VALUE_RUBRIC, WRITE_VS_CAPTURE,
+    RESULT_ONBOARDING_DIRECTIVE, RULES_END, RULES_START, SERVER_INSTRUCTIONS,
+    VALUE_RUBRIC, WRITE_VS_CAPTURE,
     bundle_digest, render_agent_rules_block, render_allowlist,
 )
 from hive.app.tool_defs import TOOL_DEFINITIONS
@@ -20,7 +21,7 @@ from hive.domain.kinds import render_taxonomy
 # Regenerate when the bundle legitimately changes (and bump CONTRACT_VERSION) — the pre-commit
 # contract-version guard does this automatically, or by hand:
 #   python -c "from hive.app.onboard_ref import bundle_digest; print(bundle_digest())"
-_GOLDEN_BUNDLE_SHA256 = "ec5012f967d862208ab6e3d84c53e0cf89ed9714bd8cbdf3a8946c1edb72a22c"
+_GOLDEN_BUNDLE_SHA256 = "4161380b4c8ce07db1fd9a4712ceafe097f9f9520042c54cad4760f55fff2e00"
 
 
 def test_server_instructions_cover_the_verbs_and_search_first_timing():
@@ -206,13 +207,39 @@ def test_auto_approve_tools_match_schema_partition():
 def test_server_instructions_carry_version_and_reonboard_trigger():
     """The floor advertises the bundle version + the self-heal trigger: every tool result echoes
     contract_version, and a mismatch against the installed marker (or no block) is the re-onboard
-    signal. Without this an agent can't know its installed block went stale."""
+    signal. The install is DIRECTED (MAY -> MUST), not merely offered, while the contract still
+    honestly degrades to the floor (Law 6 — a lying contract is worse than none). Without this an
+    agent can't know its installed block went stale."""
     s = SERVER_INSTRUCTIONS
     assert CONTRACT_VERSION in s                          # the live version is advertised at connect
     assert "contract_version" in s                        # the beacon field is named
     low = s.lower()
     assert "re-onboard" in low or "re-install" in low or "reinstall" in low  # the self-heal trigger
     assert RULES_START in s                               # the verbatim block is served on the floor
+    assert "must install" in low                          # MAY -> MUST: the install is directed
+    assert "degrades safely" in low                       # ... but still honest about the floor (Law 6)
+
+
+def test_result_onboarding_directive_directs_full_reonboard_from_fresh_source():
+    """The per-result onboarding directive rides every tool result alongside contract_version,
+    turning the passive version beacon into an ACTIONABLE re-onboard prompt that re-reaches the
+    agent on every turn (so it survives context compaction). It projects the live CONTRACT_VERSION,
+    names the FULL contract to (re)install — the rules block + the claude hooks + the auto-approve
+    allowlist, not just the block — and points at the FRESH served source (re-run initialize /
+    reconnect, or read the hive_health description) so a cached stale block is never reinstalled."""
+    d = RESULT_ONBOARDING_DIRECTIVE
+    assert CONTRACT_VERSION in d                           # the live version the agent compares against
+    low = d.lower()
+    assert "re-onboard" in low or "reonboard" in low or "re-install" in low  # the actionable verb
+    # the FULL bundle is named — dropping any of the three reds this (the §5.6 mutation proof)
+    assert "block" in low                                 # the rules block
+    assert "hooks" in low                                 # the claude lifecycle hooks
+    assert "allowlist" in low                             # the read-verb auto-approve allowlist
+    # points at the FRESH served source, never a possibly-cached copy
+    assert "initialize" in low or "reconnect" in low
+    assert "hive_health" in d
+    # honest: skipping the install degrades to the floor, so this is salience, not a correctness gate
+    assert "degrades safely" in low or "floor" in low
 
 
 def test_store_philosophy_is_stigmergic_lean_and_maintainer_framed():

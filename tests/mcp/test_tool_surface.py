@@ -11,7 +11,9 @@ import json
 from hive.app.mcp_server import (
     HiveMCPServer, MCPRequest, ServerIdentity, run_stdio,
 )
-from hive.app.onboard_ref import BAD_VS_STALE, CONTRACT_VERSION, WRITE_VS_CAPTURE
+from hive.app.onboard_ref import (
+    BAD_VS_STALE, CONTRACT_VERSION, RESULT_ONBOARDING_DIRECTIVE, WRITE_VS_CAPTURE,
+)
 from hive.app.tool_defs import TOOL_DEFINITIONS
 from hive.domain.admission import WriteResult
 from hive.domain.kinds import KIND_NAMES
@@ -110,9 +112,10 @@ def test_health_description_carries_served_reference_and_optional_versioned_bloc
 
 
 def test_tool_result_carries_contract_version():
-    """The live drift signal (D1): every dict-returning tool result echoes contract_version via the
-    single _tool_result choke point — so a connected agent detects a server-side contract upgrade on
-    the only channel live after connect. Covers success, abstain, capture, and the recorded paths."""
+    """The live drift signal (D1): every dict-returning tool result echoes contract_version AND the
+    actionable onboarding directive via the single _tool_result choke point — so a connected agent
+    detects a server-side contract upgrade on the only channel live after connect, and is re-prompted
+    to (re)install on every turn (surviving compaction). Covers success, abstain, capture, recorded."""
     server, _ = build_real_server()
     write_text(server, "a beacon fact")
     for name, args in (("hive_health", {}), ("hive_recall", {"query": "a beacon fact"}),
@@ -120,17 +123,20 @@ def test_tool_result_carries_contract_version():
                        ("hive_capture", {"text": "an insight"}), ("hive_outcome", {})):
         env = content(tool_call(server, name, args))
         assert env["contract_version"] == CONTRACT_VERSION, f"{name} dropped the beacon"
+        assert env["onboarding"] == RESULT_ONBOARDING_DIRECTIVE, f"{name} dropped the onboarding directive"
 
 
 def test_tool_error_path_is_unbeaconed():
     """The deliberate single-owner boundary: only _tool_result stamps the beacon. The schema-reject /
-    internal-error bare-string path (_tool_error) carries NO contract_version — pinning this keeps a
-    future refactor from quietly adding a second beacon site (a second source of the version truth)."""
+    internal-error bare-string path (_tool_error) carries NEITHER contract_version NOR the onboarding
+    directive — pinning this keeps a future refactor from quietly adding a second beacon site (a second
+    source of the version truth) on the unbeaconed error boundary."""
     server, _ = build_real_server()
     resp = tool_call(server, "hive_write", {"approved_by": "u"})   # missing text → schema reject
     assert is_error(resp)
     text = resp.result["content"][0]["text"]
     assert "contract_version" not in text          # the bare-string error envelope is unbeaconed
+    assert "onboarding" not in text                # ... and carries no onboarding directive either
 
 
 def test_initialize_carries_server_instructions():

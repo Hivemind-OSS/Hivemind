@@ -5,7 +5,7 @@ resolution is secret-scanned."""
 from __future__ import annotations
 
 from hive.app.config import ConflictConfig
-from hive.app.onboard_ref import CONTRACT_VERSION
+from hive.app.onboard_ref import CONTRACT_VERSION, RESULT_ONBOARDING_DIRECTIVE
 from tests.mcp._helpers import build_real_server, content, is_error, tool_call, write_text
 
 _AKIA = "AKIAIOSFODNN7EXAMPLE"
@@ -72,7 +72,8 @@ def test_flag_disabled_returns_disabled_when_feature_off():
     a = write_text(server, "alpha")["id"]
     b = write_text(server, "beta")["id"]
     out = content(tool_call(server, "hive_flag", {"a": a, "b": b, "kind": "conflict"}))
-    assert out == {"status": "disabled", "contract_version": CONTRACT_VERSION}
+    assert out == {"status": "disabled", "contract_version": CONTRACT_VERSION,
+                   "onboarding": RESULT_ONBOARDING_DIRECTIVE}
 
 
 def test_flag_never_retires_either_episode():
