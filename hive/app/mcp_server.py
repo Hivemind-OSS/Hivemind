@@ -553,6 +553,11 @@ class HiveMCPServer:
                 "d": int(getattr(self.embedder, "d", 0)),
                 "index_authoritative": bool(self.recall.index.is_authoritative()),
                 "uptime_s": max(0, int(self.now()) - self.started_ts)}
+            if not self.secret_scan_enabled:
+                # the credential floor is OFF (operator opt-out) — surface the loosened posture so
+                # it is never silent. Present ONLY when disabled ⇒ the default envelope is
+                # byte-identical (dropping this guard ⇒ the always-emits mutation).
+                snap["secret_scan_disabled"] = True
             # trust-lifecycle telemetry: quarantine pile-up must be visible, never
             # silent. Best-effort — an older store double (tests) may lack these.
             try:

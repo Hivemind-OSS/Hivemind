@@ -40,6 +40,21 @@ def test_health_snapshot_has_no_secret_substring():
     assert "AKIA" not in blob and "sk-" not in blob and "-----BEGIN" not in blob
 
 
+def test_health_surfaces_secret_scan_disabled_when_off():
+    # the loosened posture is never silent: a disabled credential floor shows in health.
+    server, _ = build_real_server(secret_scan_enabled=False)
+    snap = content(tool_call(server, "hive_health", {}))
+    assert snap["ok"] is True
+    assert snap["secret_scan_disabled"] is True
+
+
+def test_health_omits_secret_scan_key_when_enabled():
+    # default (floor ON) ⇒ the key is ABSENT ⇒ the health envelope is byte-identical.
+    server, _ = build_real_server()
+    snap = content(tool_call(server, "hive_health", {}))
+    assert "secret_scan_disabled" not in snap
+
+
 def test_health_has_no_contested():
     # the contested-memory review queue was cut; include_gaps still serves the demand-gap
     # report, but never a contested block (no _contested_report wiring remains).
