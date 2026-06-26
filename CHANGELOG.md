@@ -6,6 +6,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 ### Added
+- `skills/` — operator runbook-skills (`hive-bringup`, `hive-connect-team`,
+  `hive-backup-restore`, `hive-operate`), each a self-contained `SKILL.md` with trigger
+  frontmatter, so an agent can run the load-bearing lifecycle / connect / backup / tuning
+  procedures without rediscovering them. Indexed in `skills/README.md`; the long-form reference
+  stays in `HIVE-ADMIN.md` + `docs/OPERATIONS.md`.
+- `HIVE_SECRET_SCAN__ENABLED` (config group `secret_scan`, default `true`) — an operator
+  opt-out for the credential secret floor. On by default it is byte-identical to the prior
+  always-on scan; `false` bypasses the pre-persist scan so raw text (secrets included) is
+  stored unscanned. Disabling loosens a safety gate, so the default is the safe posture and a
+  disabled floor is logged loudly at boot and surfaced as `secret_scan_disabled` in `hive_health`.
 - `hive backup` — a manual durability verb (the in-container `hive.tools.backupctl`
   entry runs the existing `run_daily_backup` and prints the snapshot path).
 - Self-serve onboarding: the `hive_health` tool description carries the static,

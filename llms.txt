@@ -233,6 +233,7 @@ Out-of-range values fail boot loudly. The load-bearing knobs (with defaults):
 | `HIVE_AUTONOMY__PROVISIONAL_TTL_DAYS` | `45` | how long an unused provisional memory lives |
 | `HIVE_CONFLICT__TAU` | `0.80` | near-duplicate cosine floor (serve-time dedup + conflict worklist) |
 | `HIVE_SUSPECT_CONSENSUS__N_EFF_FRAC_MAX` | `0.5` | flags promotions on correlated (thin-independence) demand |
+| `HIVE_SECRET_SCAN__ENABLED` | `true` | the credential secret floor; `false` **loosens a safety gate** — bypasses the pre-persist scan so raw secrets are stored (logged at boot + in `hive_health`). |
 | `HIVE_AGI__MODE` | `false` | **loosens a safety gate** — lets an agent self-authorize trust actions. Leave OFF unless you mean it. |
 
 Recalibrate the empirical floors (`tau_serve`, `conflict.tau`, `demand_m`) against your real
@@ -275,7 +276,9 @@ Everything runs through the `hive` CLI (it drives Docker Compose for you):
 | `hive restore <snap>` | replace the live store from a snapshot (the inverse of reset; typed confirm) |
 
 **Security posture:** every memory is scanned for secrets before persistence (findings log rule
-names, never the matched bytes; default refuse). The image is hermetically offline. Only the
+names, never the matched bytes; default refuse) — on by default, operator-disableable via
+`HIVE_SECRET_SCAN__ENABLED=false` (logged at boot and surfaced in `hive_health`). The image is
+hermetically offline. Only the
 loopback door is host-published; remote access is always bearer-gated. Upgrading across schema
 generations is a single recoverable `hive reset` — it snapshots the prior store to the host first,
 then recreates it empty (no in-place migration ships; `hive restore` rolls back).
@@ -283,4 +286,4 @@ then recreates it empty (no in-place migration ships; `hive restore` rolls back)
 ---
 
 *Further reading in this repository:* `README.md` (quickstart), `HIVE-ADMIN.md` (admin & operator guide),
-`THIRD_PARTY_NOTICES.md` + `LICENSES/` (embedding-model attribution).
+`skills/` (operator runbook-skills), `THIRD_PARTY_NOTICES.md` + `LICENSES/` (embedding-model attribution).

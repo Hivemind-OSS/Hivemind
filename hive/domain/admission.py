@@ -10,8 +10,12 @@ recallable memory through a single irreversible-by-construction gauntlet (M05):
 CLIENT-GATED capture: the server-side pending→approve QUEUE
 was removed. A write is approved by a human in native chat BEFORE the tool call; the
 caller passes that approver as ``approved_by`` and the server records it. There is no
-``list_pending`` / ``approve`` / ``reject`` surface — the ONE non-bypassable gate that
-remains is the deterministic secret scan (refuse is fail-closed, never optional).
+``list_pending`` / ``approve`` / ``reject`` surface — the ONE gate that remains is the
+deterministic secret scan, INVOKED on every write/capture (admission always calls the scanner —
+non-bypassable in-domain; refuse is fail-closed). The injected scanner's STRICTNESS is the only
+operator seam: ``HIVE_SECRET_SCAN__ENABLED=false`` makes the adapter return CLEAN, so the floor
+is default-on but operator-disableable — admission's call is unchanged, it just sees a CLEAN
+verdict (the toggle never reaches this pure module — Law 4).
 
 PURE domain: depends only on injected ports (SecretScanner, the store,
 EmbeddingProvider) + an injected ``now`` clock. Imports no sqlite/torch/os/time —

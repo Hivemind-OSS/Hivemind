@@ -1,4 +1,9 @@
-"""Deterministic credential scan — the one always-on substrate floor.
+"""Deterministic credential scan — the default-on substrate floor.
+
+This pure scan is ON by default and runs before any persistence. An operator may BYPASS it
+with ``HIVE_SECRET_SCAN__ENABLED=false`` — but that toggle lives in the ``DefaultSecretScanner``
+adapter (which returns CLEAN when off), never here: this module's logic is unchanged either way,
+so it stays pure and the domain reacts to a verdict, never to a flag (Law 4).
 
 PURE: stdlib ``re`` + ``math`` only (no I/O; the purity gate forbids
 sqlite/torch/subprocess/os/git/time here). Side-effect-free and deterministic so

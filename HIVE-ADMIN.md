@@ -4,7 +4,8 @@ The administrator's reference for standing up a Hivemind server, connecting a fl
 safety/recall knobs, and running it day-2. Everything here goes through the `hive` CLI
 (`pip install -e .` provides the command; uninstalled, `python -m hive.tools.cli` is identical).
 For *what Hivemind is* and the agent-facing memory contract, see `llms.txt`; for the quickstart,
-`README.md`.
+`README.md`. Agent-runnable runbook-skills for the procedures below live in `skills/`
+(`skills/README.md`).
 
 ## 1. Prerequisites & first-time setup
 
@@ -140,6 +141,7 @@ and query distribution.
 | `HIVE_RETENTION__BACKUP_KEEP` | `30` | most-recent snapshots `hive backup` keeps |
 | `HIVE_RETENTION__BACKUP_DIR` | `<db_dir>/backups` | where snapshots are written |
 | `HIVE_OBS__LOG_LEVEL` | `20` | logging level (Python `logging`; `20` = INFO) |
+| `HIVE_SECRET_SCAN__ENABLED` | `true` | the credential secret floor; `false` **loosens a safety gate** (bypasses the scan — raw secrets get stored) — see below |
 | `HIVE_AGI__MODE` | `false` | **loosens a safety gate** — see below. Leave OFF unless you mean it |
 
 **Fixed by the image (not runtime knobs).** The embedder is **Qwen3-Embedding-0.6B**, baked in at
@@ -153,6 +155,14 @@ dimension knob; changing the model means rebuilding the image. The in-container 
 that per-write vouch to the fleet — an agent may then self-authorize with `approved_by="AGI_OVERRIDE"`,
 stamped byte-distinguishably in the audit (`provenance=agent_reasoned`). It loosens a safety gate, so
 it stays off unless you mean it.
+
+**`HIVE_SECRET_SCAN__ENABLED` — the credential secret floor.** Default ON: every memory is scanned
+for credentials *before* it is persisted, and a detected secret is refused (nothing is stored). Set
+it `false` only to deliberately **bypass** that scan — raw text, secrets included, is then written
+unscanned into the fleet-shared store. It loosens a safety gate, so the default is the safe posture
+(floor on) and disabling is opt-in; a disabled floor is **not silent** — it logs a loud WARN at boot
+and surfaces as `secret_scan_disabled` in `hive_health`. Leave it ON unless you have a specific
+reason (e.g. a trusted corpus that legitimately contains secret-shaped tokens) and accept the risk.
 
 ## 5. Day-2 operations
 
@@ -190,8 +200,9 @@ TTLs to hoard; and spend human review on the **established tier** (`hive_write` 
 
 ## 7. Security posture
 
-- Every memory is **scanned for secrets before persistence** (findings log rule names, never the
-  matched bytes; the default action is refuse).
+- Every memory is **scanned for secrets before persistence** by default (findings log rule names,
+  never the matched bytes; the default action is refuse). The floor is on unless an operator opts
+  out with `HIVE_SECRET_SCAN__ENABLED=false`, which is logged at boot and shown in `hive_health`.
 - The server image is **hermetically offline** — a runtime model or dependency download is impossible.
 - Only the **loopback door** is host-published; remote access is **always bearer-gated** by
   construction (the tunnel door binds token-required, and ngrok forwards only to it).
