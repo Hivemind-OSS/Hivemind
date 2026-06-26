@@ -75,7 +75,7 @@ Add a `hive_gaps` MCP tool (9th tool — or fold into `hive_health` as an option
 
 Implementation: cluster `recall_misses` rows by cosine similarity (reuse `ExhaustiveCosineIndex` on miss vectors), pick the highest-frequency clusters, surface the most recent `query_text` as the representative. Cap at top-10 clusters to keep the tool fast.
 
-This turns the miss log into an actionable queue — the human can read it and decide what to `/hive-mark` or `/hive-log-bug` proactively.
+This turns the miss log into an actionable queue — surfaced via `hive_health(include_gaps=true)` and worked through the shipped `hive-operate` sweep (`hive_write` the missing answers, `hive_supersede` the wrong rows).
 
 ---
 
@@ -132,50 +132,15 @@ Part of the credit/origin subsystem removal (`docs/PLANS/MINIMIZATION-PLAN.md` �
 
 ---
 
-## TODO 6 — Conflict-resolution logging + admin skill (the supersession-review workflow)
+## TODO 6 — Conflict-resolution admin skill — ✅ COVERED 2026-06-25 (removed)
 
-**File:** `.claude/skills/hive-resolve/` (new admin skill, documented in `ADMINSKILLS.md`), `hive/app/gaps.py`, `hive/app/mcp_server.py`, `hive/app/observability.py`
-
-A contradiction between two memories is surfaced TODAY only as a *pull* report:
-`hive_health(include_gaps=true)` → `contested_misses` (`gaps.py`), the "supersession-review
-queue", resolved by one `hive_write(replaces=<episode_id>)`. There is no push signal and no
-guided workflow — if no operator polls the report, conflicts accumulate invisibly. Build:
-
-1. **Logging / notification (the push signal).** Emit a structured, throttled log line + a
-   `hive status`-visible counter when the contested queue is non-empty. Today the only
-   contested-related log is `mcp.contested_report_failed` (the failure path) — there is no
-   "N memories pending review" signal. Host-side KPI reads deliberately exclude
-   gaps/contested (they need the live servable index — `cli.py`), so the push path must
-   originate daemon-side where the index is warm.
-2. **Admin skill `/hive-resolve`** (alongside `/hive-tune` in `ADMINSKILLS.md`): pull the
-   contested report, render each `{episode_id, trust, miss_count, miss_types, last_seen}`
-   with the conflicting servable text side by side, and walk the operator through the
-   `hive_write(replaces=…)` resolution. Confirm the queue shrank afterwards off the
-   `admission.superseded` audit row (close the loop).
-
-**Edge cases to cover — the coverage holes in the demand-derived report (`contested_misses` only
-sees conflicts that PRODUCE misses/abstains):**
-- **Quiet contradiction, dominant winner.** Two contradictory servable rows where one scores
-  much higher: recall serves it CONFIDENT (the other as a lower hit), emits NO miss, so the
-  demand-derived report never sees it. Needs a DIRECT pairwise scan over the servable index
-  (rows within shadow/contested τ whose text — or outcome credit — diverges), not just
-  clustered misses.
-- **Quiet contradiction, co-served pair.** Both rows returned in one CONFIDENT result without
-  splitting softmax mass enough to trip the entropy gate → no abstain → no miss → never
-  queued. Same direct-scan fix.
-- **No notification / pull-only.** The queue is invisible until `hive_health(include_gaps=true)`
-  is called; the skill + log line are the missing push.
-- **Trust asymmetry — never auto-resolve.** An `established` (human-vouched) vs `provisional`
-  (demand-promoted) conflict must NOT be auto-superseded by recency; supersession is
-  human-only by design. The skill PRESENTS; the human decides.
-- **Self-resolving provisional.** A conflict may clear on its own when a provisional row hits
-  its lazy TTL; don't prompt a human to supersede a row about to lapse.
-
-**Mutations to verify:** seed two contradictory servable memories — (a) mass-splitting (loud:
-already surfaced by `contested_misses`) and (b) one-dominant (quiet: currently invisible). The
-new direct scan must surface BOTH; resolving one via `hive_write(replaces=)` removes the pair
-from the next report and writes the `admission.superseded` audit row; the non-empty-queue log
-line fires before resolution and not after.
+Superseded by the shipped `hive-operate` skill (the `hive_health(include_conflicts=true)` →
+`hive_supersede` supersession-review sweep) and the landed direct conflict scan
+(`hive/domain/conflict.py`), which already catches the quiet/dominant-winner contradictions this
+entry was filed to chase. Its `contested_misses` framing and the `ADMINSKILLS.md` / `/hive-tune`
+/ `/hive-resolve` admin-skill track never shipped. The one unbuilt slice — a proactive *push*
+signal (a `hive status` counter when the conflict queue is non-empty) — was dropped with it;
+re-file it fresh if still wanted.
 
 ---
 
@@ -204,3 +169,66 @@ swap:
 (default), query and document encodings must be byte-identical (the byte-inert guarantee); the
 recalibrated `demand_tau` must still promote a genuine cross-identity demand and still withhold a
 self-demanded one.
+
+---
+
+## TODO 8 — Non-Claude-Code permission auto-approve recipes (per-IDE allowlist)
+
+**File:** `hive/app/onboard_ref.py` (`ONBOARDING_REFERENCE`), `tests/app/test_onboard_ref.py`
+
+Deferred from `docs/PLANS/CONTRACT-VERSIONING-PLAN.md` (§9, resolved Claude-Code-first). The
+contract-versioning feature serves an auto-approve step so the non-human-in-the-loop verbs
+(`recall`/`capture`/`health`/`outcome`/`flag` — the schema-derived set whose `required[]` lacks
+`approved_by`) don't prompt per call. But the *mechanism* is IDE-specific: v1 ships only Claude
+Code's form (`.claude/settings.json` `permissions.allow`, `mcp__hive__*`). Other runtimes have
+different (or no) permission-allowlist formats.
+
+Extend the served `ONBOARDING_REFERENCE` with a per-runtime permission recipe **alongside** the
+existing per-runtime rules-file table (Cursor / Windsurf / Cline / generic), each writing to the
+**project** scope (never global) and each keeping the human-gated 3 (`write`/`supersede`/`prune`)
+prompted.
+
+**Mutations / verification:** each IDE's permission schema is real-runtime-only (the BUG-007/011/012
+class — an offline suite can't see whether the written allowlist actually suppresses that IDE's
+prompt). Verify each recipe against the live IDE before serving it; a runtime with no allowlist
+mechanism gets the rules block but keeps prompting (degrade-safe).
+
+---
+
+## TODO 9 — Full AGI-mode client-side contract + switching mechanism
+
+**File:** `hive/app/onboard_ref.py`, `hive/app/mcp_server.py` (beacon), a new claude-code `SessionStart`
+hook, `tests/app/test_onboard_ref.py`
+
+Deferred from `docs/PLANS/CONTRACT-VERSIONING-PLAN.md` (§9 open-Q #4, AGI descoped). The **domain**
+half of AGI mode already exists (AGI-MODE landed: `HIVE_AGI__MODE` makes the boundary honor
+`approved_by="AGI_OVERRIDE"`). The missing half is the **client-side** prompt-bypass + the switching
+that propagates an off↔on flip into the installed contract (rules + allowlist + possibly hooks).
+
+The hard constraint (why it is its own feature): AGI_MODE is a *server-side vouch* switch; the
+*client-side* permission prompt lives on the client, and **a remote server cannot — and must not —
+reach a client's `permissions.allow`** (a remote flag silently switching off local human control is a
+footgun). So propagation is **local convergence on a server signal**, never server→client reach, and
+the actuator must be an **operator-enabled** hook (conscious client-side opt-in).
+
+Mechanism sketch (build on the contract-versioning beacon substrate):
+- Beacon carries `agi_mode` as a **second axis** orthogonal to `contract_version`; the installed
+  marker records the `(version, posture)` pair, so an off→on flip (text unchanged) reads as drift.
+- Re-onboard on posture drift rewrites **only** the project allowlist 5↔8 verbs (under AGI-on the
+  privileged 3 self-authorize, so the prompt is the only thing left blocking autonomy) and restamps
+  the marker. The rules-block text is unchanged (it already states the AGI_OVERRIDE conditional).
+- Needs the **hook-enforced** enforcement variant (the teeth) — model-driven re-onboard is too weak
+  for an autonomy promise. Likely depends on **TODO 8** (per-IDE permission recipes), since the
+  bypass is also per-IDE.
+
+**Honest limits to design around (carried from the plan's AGI discussion):**
+- Behavioral unless hook-enforced; absent teeth it degrades to *more* prompting, never a silent
+  unauthorized write (the domain gate is the real authority — Law 6).
+- One-session latency: `permissions.allow` is read at session start, so a mid-session rewrite applies
+  next session. Operator fast-path: write the 8-verb allowlist at config-flip time, with
+  beacon/re-onboard as the convergence backstop.
+
+**Mutations to verify:** with AGI on, the beacon's `agi_mode` flips and an `agi=off`-marked install
+reads as drift → re-onboard; with AGI off, the allowlist contracts to 5 and the privileged 3
+re-prompt + require a human `approved_by`; the server never writes a client permission file (the
+actuator is always local).
