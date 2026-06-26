@@ -6,8 +6,8 @@ learns, the others can recall. It is built for **solo devs and small teams** —
 single-host, one SQLite store.
 
 Recall is deliberately conservative: a query is embedded, matched by dense cosine similarity,
-and passed through a **normalized-entropy abstention gate** — when the top matches are not
-clearly separated, Hivemind returns nothing rather than guess. Memories enter **quarantined**
+and passed through an **absolute-relevance abstention gate** — when the top match does not
+clear an absolute similarity floor, Hivemind returns nothing rather than guess. Memories enter **quarantined**
 via `hive_capture` and become servable only once independent fleet demand promotes them
 (`provisional`); the trusted `established` tier is reached **only** by an explicit
 human-approved `hive_write`. Unused memories decay on a TTL. Nothing is auto-trusted, and the
@@ -15,14 +15,18 @@ store never silently migrates across schema generations.
 
 ## The MCP tools
 
-A connected agent gets exactly four tools:
+A connected agent gets exactly eight tools:
 
 | Tool | Purpose |
 |---|---|
-| `hive_recall(query)` | Dense recall behind the abstention gate. Returns reference context (or abstains) with each hit's `trust` + `ts`. |
+| `hive_recall(query)` | Dense recall behind the abstention gate. Returns reference context (or abstains) with each hit's `trust`, `ts`, `polarity`, `kind`, and `anchor`. |
 | `hive_capture(text)` | Record a durable insight. Lands quarantined; served only after fleet demand promotes it. |
 | `hive_write(text, approved_by=…)` | Human-vouched memory served immediately as `established`. `replaces=<id>` supersedes an existing one. |
-| `hive_health(...)` | Liveness/identity snapshot; `include_trends=true` adds convergence KPIs, `include_gaps=true` the demand-gap and contested-memory reports. |
+| `hive_supersede(loser, winner, approved_by=…)` | Human-vouched: retire one memory in favor of another. Nothing new is written. |
+| `hive_prune(episode_id, approved_by=…)` | Human-vouched: retire an incorrect or misleading memory with no replacement (it stays in the audit ledger). |
+| `hive_flag(a, b, kind)` | Advisory only: record that two memories conflict or one supersedes the other, for a human to resolve. Retires nothing. |
+| `hive_outcome(helped=[…], hurt=[…])` | Log which recalled memories helped or hurt the task; records evidence only — changes no trust. |
+| `hive_health(...)` | Liveness/identity snapshot; `include_trends=true` adds convergence KPIs, `include_gaps=true` the demand-gap report, `include_conflicts=true` the contested-memory worklist. |
 
 ## Requirements
 

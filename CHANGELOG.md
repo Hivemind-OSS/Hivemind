@@ -15,9 +15,9 @@ All notable changes to this project are documented here.
   disabled floor is logged loudly at boot and surfaced as `secret_scan_disabled` in `hive_health`.
 - `hive backup` — a manual durability verb (the in-container `hive.tools.backupctl`
   entry runs the existing `run_daily_backup` and prints the snapshot path).
-- Self-serve onboarding: the `hive_health` tool description carries the static,
-  marker-delimited rules block a connected agent writes into its primary rules file
-  (CLAUDE.md / AGENTS.md / …) and skips re-touch when the marker is already present —
+- Self-serve onboarding is served-only: the full usage contract is delivered over MCP via the
+  `initialize` instructions (every client surfaces them), with a secondary reference carried in
+  the `hive_health` tool description. It installs nothing and writes nothing into a rules file —
   no server-driven handshake.
 - `hive` operator CLI (`hive/tools/cli.py`, stdlib-only, `[project.scripts]` entry
   point; uninstalled: `python -m hive.tools.cli`): `up [--tunnel]` (bounded
@@ -52,8 +52,9 @@ All notable changes to this project are documented here.
   N engineers run it. Local agents connect tokenless; remote teammates use a per-seat token.
 - Convergence KPI window narrowed 14d → 7d (`trends.WINDOW_DAYS`): current vs previous
   one-week windows over the warm store.
-- Tool surface is now exactly 4 verbs (`hive_write` / `hive_capture` / `hive_recall` /
-  `hive_health`); serving is decided by the single `lifecycle.is_servable` predicate
+- Tool surface is eight verbs (`hive_write` / `hive_capture` / `hive_recall` /
+  `hive_supersede` / `hive_prune` / `hive_flag` / `hive_outcome` / `hive_health`); serving is
+  decided by the single `lifecycle.is_servable` predicate
   (established, or fresh provisional) at the scan, the index sync, the pipeline resolve
   step, and the per-hit belt.
 - Boot order: decay sweep runs before the index rebuild.
