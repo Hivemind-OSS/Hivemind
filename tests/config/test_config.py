@@ -287,6 +287,43 @@ def test_agi_group_is_frozen():
         cfg.agi.mode = True   # type: ignore[misc]
 
 
+# ── SecretScanConfig group (the secret-floor operator opt-OUT; default ON, byte-inert) ─
+def test_secret_scan_enabled_defaults_on():
+    # the credential floor is ON by default — disabling it LOOSENS a safety gate, so the
+    # loosened (bypass) state is the one that takes an explicit opt-in. Default = the SAFE
+    # direction (floor on), the same posture as AGI_MODE with inverted polarity (THEORY §9.9).
+    cfg = Config.load(db_path=":memory:")
+    assert cfg.secret_scan.enabled is True
+
+
+def test_secret_scan_enabled_via_env_coerces_bool():
+    # the operator opt-OUT: HIVE_SECRET_SCAN__ENABLED coerces through the existing bool path.
+    for falsy in ("false", "0", "no", "off"):
+        cfg = Config.load(db_path=":memory:", env={"HIVE_SECRET_SCAN__ENABLED": falsy})
+        assert cfg.secret_scan.enabled is False
+    for truthy in ("true", "1", "yes", "on"):
+        cfg = Config.load(db_path=":memory:", env={"HIVE_SECRET_SCAN__ENABLED": truthy})
+        assert cfg.secret_scan.enabled is True
+
+
+def test_secret_scan_explicit_override():
+    assert Config.load(
+        db_path=":memory:", secret_scan={"enabled": False}).secret_scan.enabled is False
+
+
+def test_secret_scan_unknown_field_typo_raises():
+    # a typo in the highest-precedence layer fails fast (never silently leaves the floor at a
+    # posture the operator did not mean).
+    with pytest.raises(ValueError, match=r"unknown config override|enabledd"):
+        Config.load(secret_scan={"enabledd": False})
+
+
+def test_secret_scan_group_is_frozen():
+    cfg = Config.load(db_path=":memory:")
+    with pytest.raises(dataclasses.FrozenInstanceError):
+        cfg.secret_scan.enabled = False   # type: ignore[misc]
+
+
 # ── config → embedder threading (torch-free: construction does not load the model) ────
 def test_build_provider_sources_native_dim():
     # the embedder's d is the model's NATIVE dim (sourced from native_dim_for), not a config

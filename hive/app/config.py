@@ -199,6 +199,20 @@ class AgiConfig:
     mode: bool = False
 
 
+@dataclass(frozen=True)
+class SecretScanConfig:
+    """The credential secret-floor operator opt-OUT (``HIVE_SECRET_SCAN__ENABLED``). The
+    deterministic scan that runs BEFORE any persistence is ON by default (``enabled=True`` —
+    byte-identical to the always-on floor). Set it False to BYPASS the scan: raw text (including
+    credentials) is then persisted unscanned. Disabling LOOSENS a safety gate, so the loosened
+    (bypass) state is opt-in only — the default is the SAFE direction (floor on), the same posture
+    as AGI_MODE expressed with inverted polarity (THEORY §9.9). The bypass lives in the
+    DefaultSecretScanner adapter (the injected scanner returns CLEAN when off); the pure-domain
+    scan is untouched (Law 4). A disabled floor is never silent — it is surfaced loudly at boot
+    (a WARN) and in ``hive_health`` (a ``secret_scan_disabled`` key, present only when off)."""
+    enabled: bool = True
+
+
 # ── the root ──────────────────────────────────────────────────────────────────
 # Auth is NOT a config group: it is a property of the listening socket (a tokenless
 # loopback door + a token-required tunnel door, bound by the entrypoint), so there is no
@@ -213,6 +227,7 @@ _GROUP_TYPES: dict[str, type] = {
     "retention": RetentionConfig,
     "obs": ObservabilityConfig,
     "agi": AgiConfig,
+    "secret_scan": SecretScanConfig,
 }
 # field-groups constructed (and thus validated) BEFORE runtime, so a field-level error
 # (e.g. recall.tau_serve) surfaces ahead of the db_path-required check. Derived from
@@ -231,6 +246,7 @@ class Config:
     retention: RetentionConfig
     obs: ObservabilityConfig
     agi: AgiConfig
+    secret_scan: SecretScanConfig
 
     @property
     def db_path(self) -> str:
