@@ -132,7 +132,8 @@ mode:
 - **Tunnel door** — compose-internal `8766`, ngrok-forwarded, **token-required**. The only
   remote-reachable door, so a public caller is always bearer-gated by construction.
 
-The bearer token **authenticates** the tunnel door; it is never the identity.
+The bearer token **authenticates** the tunnel door; it is never the identity. There is no
+`HIVE_AUTH__MODE` switch — a leftover one from an older config is ignored (a WARN, not a crash).
 
 ## 7. Setup — solo dev, one machine
 
@@ -268,16 +269,18 @@ Everything runs through the `hive` CLI (it drives Docker Compose for you):
 | `hive tokens` | list provisioned seat labels (never the tokens) |
 | `hive token <seat>` | mint a per-seat token (printed once) |
 | `hive revoke <seat>` | offboard a seat (next request → 401) |
-| `hive backup` | atomic snapshot of the store (manual; keeps the most-recent N) |
+| `hive backup` | atomic snapshot of the store (manual; keeps the `backup_keep` most-recent) |
 | `hive down` | stop the stack, preserve the data volume |
-| `hive nuke` | destroy the stack including the data volume (typed confirm) |
+| `hive reset` | snapshot the store out to the host, then destroy + recreate it empty (recoverable; typed confirm) |
+| `hive restore <snap>` | replace the live store from a snapshot (the inverse of reset; typed confirm) |
 
 **Security posture:** every memory is scanned for secrets before persistence (findings log rule
 names, never the matched bytes; default refuse). The image is hermetically offline. Only the
 loopback door is host-published; remote access is always bearer-gated. Upgrading across schema
-generations is `hive nuke` then `hive up` (no in-place migration ships).
+generations is a single recoverable `hive reset` — it snapshots the prior store to the host first,
+then recreates it empty (no in-place migration ships; `hive restore` rolls back).
 
 ---
 
-*Further reading in this repository:* `README.md` (quickstart), `HOWTO.md` (operator guide),
+*Further reading in this repository:* `README.md` (quickstart), `HIVE-ADMIN.md` (admin & operator guide),
 `THIRD_PARTY_NOTICES.md` + `LICENSES/` (embedding-model attribution).

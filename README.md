@@ -1,6 +1,6 @@
 # Hivemind
 
-A shared **episodic memory** for a fleet of coding agents working one codebase. Hivemind
+A stigmergic **episodic memory** for a fleet of coding agents working one codebase. Hivemind
 runs as a single self-hosted **MCP server** that every agent connects to; what one agent
 learns, the others can recall. It is built for **solo devs and small teams** — single-tenant,
 single-host, one SQLite store.
@@ -62,8 +62,11 @@ claude mcp add --transport http hive https://<your-domain>/mcp \
   --header "Authorization: Bearer ${HIVE_TOKEN}"
 ```
 
-From there onboarding is self-serve: the `hive_health` tool description carries a rules block a
-connected agent writes into its own primary rules file (`CLAUDE.md` / `AGENTS.md` / …).
+From there onboarding is automatic and server-side: at connect the server delivers its full usage
+contract through the MCP `initialize` instructions (every client surfaces them) — recall-first,
+capture-by-default, the capture taxonomy, and the per-agent-session identity model. **Nothing is
+written into a rules file.** On **Claude Code only**, the `hive_health` tool description additionally
+lists optional lifecycle-hook nudges you can merge into `.claude/settings.json`.
 
 ## Configuration
 
@@ -97,16 +100,18 @@ Never publish `0.0.0.0:8765` — a bearer token over plain LAN HTTP is cleartext
 ## Day-2 operations
 
 `hive status` / `logs` / `tokens` / `revoke <seat>` / `backup` (manual snapshot) / `down`
-(stop, keep data) / `nuke` (destroy the data volume, typed confirm). Upgrading across schema
-generations is `hive nuke` then `hive up` — no in-place migration ships.
+(stop, keep data) / `reset` (snapshot the store out of the volume, then destroy + recreate it
+empty — recoverable; typed confirm) / `restore` (replace the live store from a snapshot). Upgrading
+across schema generations is a single `hive reset` — it saves the prior store to the host, then
+recreates empty; no in-place migration ships.
 
-See **[HOWTO.md](HOWTO.md)** for the full operator guide (setup, tunneling, KPIs, tuning).
+See **[HIVE-ADMIN.md](HIVE-ADMIN.md)** for the full admin & operator guide (setup, tunneling, tuning, KPIs).
 
 ## Embedding model & attribution
 
 Recall is powered by [**Qwen3-Embedding-0.6B**](https://huggingface.co/Qwen/Qwen3-Embedding-0.6B)
 (© Alibaba Cloud / the Qwen Team), used unmodified and baked into the image at build time. Its
-1024-dim output is Matryoshka-truncated to 768 dims at inference (no weight modification). The
+native 1024-dim output is used directly, L2-normalized (no weight modification). The
 model is licensed under the [Apache License 2.0](https://www.apache.org/licenses/LICENSE-2.0); the
 full text and attribution travel with this repository in
 [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md) and
@@ -119,6 +124,6 @@ hive/                 the server: domain core, adapters (SQLite store, embedder)
 tests/                the test suite
 compose.yaml          the single-service stack (+ opt-in ngrok tunnel profile)
 Dockerfile            the hermetically-offline server image (embedder baked at build)
-HOWTO.md              operator guide
+HIVE-ADMIN.md         admin & operator guide
 THIRD_PARTY_NOTICES.md / LICENSES/   embedding-model attribution + license
 ```
