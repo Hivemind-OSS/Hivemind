@@ -72,6 +72,9 @@ capture-by-default, the capture taxonomy, and the per-agent-session identity mod
 written into a rules file.** On **Claude Code only**, the `hive_health` tool description additionally
 lists optional lifecycle-hook nudges you can merge into `.claude/settings.json`.
 
+## Agents
+Read ```llms.txt``` for a detailed explanation.
+
 ## Configuration
 
 All config has safe code defaults in `hive/app/config.py` and is applied **only at boot** (a
