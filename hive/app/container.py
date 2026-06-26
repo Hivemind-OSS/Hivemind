@@ -140,7 +140,8 @@ class Container:
             db_path=db_path, autonomy=self.cfg.autonomy,
             conflict=self.cfg.conflict, flag_service=self.flag_service,
             suspect_consensus=self.cfg.suspect_consensus,
-            agi_mode=self.cfg.agi.mode)
+            agi_mode=self.cfg.agi.mode,
+            secret_scan_enabled=self.cfg.secret_scan.enabled)
 
     # ── convenience surface (clean shutdown) ──────────────────────────────────────
     def close(self) -> None:
@@ -168,7 +169,15 @@ def build_container(cfg: Config, *, tenant_id: str, agent_id: str,
     store = SqliteEpisodeStore(conn, index=index)
     # Auth token store: owns its own `access_tokens` table — built anywhere after conn.
     token_store = SqliteTokenStore(conn)
-    scanner = DefaultSecretScanner()
+    # The credential secret-floor (HIVE_SECRET_SCAN__ENABLED, default ON). This ONE flag flows
+    # to every scanner consumer (admission, the recall miss-floor, the conflict-flag note) via
+    # the single injected adapter. Disabling it LOOSENS a safety gate, so it is never silent:
+    # a loud boot WARN here, plus a hive_health key when off.
+    scanner = DefaultSecretScanner(enabled=cfg.secret_scan.enabled)
+    if not cfg.secret_scan.enabled:
+        _log.warning("container.secret_floor_disabled: HIVE_SECRET_SCAN__ENABLED is off — "
+                     "credential scanning is BYPASSED; raw text (including secrets) will be "
+                     "persisted unscanned into shared memory")
     clock = clock or SystemClock()
 
     gate = registry.build_gate(cfg)

@@ -212,7 +212,7 @@ class HiveMCPServer:
                  identity: ServerIdentity, now: Callable[[], int],
                  started_ts: int = 0, db_path: str = "", autonomy=None,
                  conflict=None, flag_service=None, suspect_consensus=None,
-                 agi_mode: bool = False) -> None:
+                 agi_mode: bool = False, secret_scan_enabled: bool = True) -> None:
         self.admission = admission          # AdmissionService: write + capture
         self.recall = recall                # RecallPipeline: recall(query, *, agent_id)
         self.store = store                  # the store adapter: get_episode (belt) / counts
@@ -255,6 +255,11 @@ class HiveMCPServer:
         # and every existing envelope is byte-identical (THEORY §9.9). It LOOSENS a gate, so it
         # is the one default-OFF that stays strict regardless of product posture.
         self.agi_mode = bool(agi_mode)
+        # The credential secret-floor posture (HIVE_SECRET_SCAN__ENABLED, default ON). The actual
+        # scan/bypass is owned by the injected scanner adapter; the boundary holds this ONLY to
+        # surface the loosened posture in hive_health (a disabled floor must never be silent — it
+        # is also WARN-logged at boot). Default True ⇒ no health key ⇒ byte-identical envelope.
+        self.secret_scan_enabled = bool(secret_scan_enabled)
         self._tool_handlers: dict[str, Callable[[dict, ServerIdentity], dict]] = {
             "hive_write": self._handle_write,
             "hive_capture": self._handle_capture,

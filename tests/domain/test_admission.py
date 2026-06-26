@@ -50,6 +50,21 @@ def test_write_refuses_on_secret():
     assert store.index.size() == 0
 
 
+def test_write_with_disabled_scanner_stores_secret_text():
+    # the operator opt-OUT (HIVE_SECRET_SCAN__ENABLED=false): with the floor disabled, a
+    # credential-bearing write is NOT refused — it stages and approves the raw text verbatim.
+    conn = connect(":memory:")
+    store = SqliteEpisodeStore(conn, index=ExhaustiveCosineIndex(DIM))
+    svc = AdmissionService(store, DefaultSecretScanner(enabled=False),
+                           FakeProvider(d=DIM), now=lambda: 0)
+    res = svc.write(f"my key {SECRET}", approved_by="human", proposed_by="a")
+    assert res.status == "approved"
+    assert _count(store, "episodes") == 1
+    # the raw secret reached the row unscanned — by deliberate operator choice
+    assert SECRET in store.get_episode(res.episode_id).text
+    assert res.content_hash == content_hash(f"my key {SECRET}")
+
+
 def test_refuse_calls_store_stage_zero_times(monkeypatch):
     svc, store = _svc()
     calls = {"n": 0}

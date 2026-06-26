@@ -108,6 +108,24 @@ def test_agi_mode_threads_from_config_when_enabled():
     assert c.make_server().agi_mode is True
 
 
+# ── secret floor threads cfg → scanner + make_server (default ON; OFF only when opted out) ──
+def test_secret_floor_on_by_default():
+    from hive.domain.secret_scan import REFUSE
+    c = _build()
+    assert c.cfg.secret_scan.enabled is True
+    assert c.make_server().secret_scan_enabled is True
+    # the wired scanner actually refuses a credential — the default floor is live, not nominal
+    assert c.scanner.scan("AKIAIOSFODNN7EXAMPLE").action == REFUSE
+
+
+def test_build_container_threads_secret_scan_disabled():
+    from hive.domain.secret_scan import CLEAN
+    c = _build(secret_scan={"enabled": False})
+    assert c.make_server().secret_scan_enabled is False
+    # the one flag flows to the wired scanner: a credential scans CLEAN (floor bypassed)
+    assert c.scanner.scan("AKIAIOSFODNN7EXAMPLE").action == CLEAN
+
+
 # ── warm / migrate / index (the boot steps) ───────────────────────────────────
 def test_warm_embedder_sets_loaded(tmp_path):
     c = _build(tmp_path)
