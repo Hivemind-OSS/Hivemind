@@ -19,7 +19,7 @@ from __future__ import annotations
 from hive.app.config import Config
 from hive.app.container import build_container
 from hive.app.mcp_server import MCPRequest, ServerIdentity
-from hive.app.onboard_ref import CONTRACT_VERSION, RESULT_ONBOARDING_DIRECTIVE
+from hive.app.onboard_ref import CONTRACT_VERSION
 from hive.domain.lifecycle import PROVISIONAL, QUARANTINED
 from tests.fakes._fakes import FakeClock, FakeWarmProvider
 from tests.mcp._helpers import content
@@ -100,9 +100,8 @@ def test_acceptance_disabled_byte_stable():
     # capture refused cleanly, before anything touches the store
     cap = _call(server, "agent-A", "hive_capture", {"text": "anything"})
     # autonomy-disabled is byte-stable vs the pre-lifecycle build EXCEPT for the unconditional
-    # contract_version + onboarding beacon, which stamps every envelope orthogonally to any feature flag.
-    assert cap == {"status": "disabled", "contract_version": CONTRACT_VERSION,
-                   "onboarding": RESULT_ONBOARDING_DIRECTIVE}
+    # contract_version beacon, which stamps every envelope orthogonally to any feature flag.
+    assert cap == {"status": "disabled", "contract_version": CONTRACT_VERSION}
     assert _count(c, "episodes") == 0
     # the human write→recall path behaves exactly as today
     w = _call(server, "agent-A", "hive_write",

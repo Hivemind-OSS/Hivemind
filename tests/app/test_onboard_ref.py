@@ -11,8 +11,7 @@ from hive.app import onboard_ref
 from hive.app.onboard_ref import (
     AGENT_RULES_BLOCK, AUTO_APPROVE_TOOLS, BAD_VS_STALE, CAPTURE_TAXONOMY,
     CLAUDE_CODE_HOOKS, CONTRACT_VERSION, ONBOARDING_PROCEDURE, ONBOARDING_REFERENCE,
-    RESULT_ONBOARDING_DIRECTIVE, RULES_END, RULES_START, SERVER_INSTRUCTIONS,
-    VALUE_RUBRIC, WRITE_VS_CAPTURE,
+    RULES_END, RULES_START, SERVER_INSTRUCTIONS, VALUE_RUBRIC, WRITE_VS_CAPTURE,
     bundle_digest, render_agent_rules_block, render_allowlist,
 )
 from hive.app.tool_defs import TOOL_DEFINITIONS
@@ -218,28 +217,6 @@ def test_server_instructions_carry_version_and_reonboard_trigger():
     assert RULES_START in s                               # the verbatim block is served on the floor
     assert "must install" in low                          # MAY -> MUST: the install is directed
     assert "degrades safely" in low                       # ... but still honest about the floor (Law 6)
-
-
-def test_result_onboarding_directive_directs_full_reonboard_from_fresh_source():
-    """The per-result onboarding directive rides every tool result alongside contract_version,
-    turning the passive version beacon into an ACTIONABLE re-onboard prompt that re-reaches the
-    agent on every turn (so it survives context compaction). It projects the live CONTRACT_VERSION,
-    names the FULL contract to (re)install — the rules block + the claude hooks + the auto-approve
-    allowlist, not just the block — and points at the FRESH served source (re-run initialize /
-    reconnect, or read the hive_health description) so a cached stale block is never reinstalled."""
-    d = RESULT_ONBOARDING_DIRECTIVE
-    assert CONTRACT_VERSION in d                           # the live version the agent compares against
-    low = d.lower()
-    assert "re-onboard" in low or "reonboard" in low or "re-install" in low  # the actionable verb
-    # the FULL bundle is named — dropping any of the three reds this (the §5.6 mutation proof)
-    assert "block" in low                                 # the rules block
-    assert "hooks" in low                                 # the claude lifecycle hooks
-    assert "allowlist" in low                             # the read-verb auto-approve allowlist
-    # points at the FRESH served source, never a possibly-cached copy
-    assert "initialize" in low or "reconnect" in low
-    assert "hive_health" in d
-    # honest: skipping the install degrades to the floor, so this is salience, not a correctness gate
-    assert "degrades safely" in low or "floor" in low
 
 
 def test_store_philosophy_is_stigmergic_lean_and_maintainer_framed():

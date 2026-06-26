@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 
-from hive.app.onboard_ref import CONTRACT_VERSION, RESULT_ONBOARDING_DIRECTIVE
+from hive.app.onboard_ref import CONTRACT_VERSION
 from tests.mcp._helpers import build_real_server, content, tool_call, write_text
 
 
@@ -31,12 +31,10 @@ def test_health_fail_closed_subset():
     server.store.counts = _boom
     snap = content(tool_call(server, "hive_health", {}))
     assert snap["ok"] is False
-    # fail-closed subset ONLY (the leak guard) + the unconditional beacon stamps. EXACT, never a
-    # subset: the beacon (contract_version + onboarding directive) are the only additive keys; no db
-    # internals may join them.
-    assert set(snap.keys()) == {"ok", "error", "db_path", "contract_version", "onboarding"}
+    # fail-closed subset ONLY (the leak guard) + the unconditional beacon stamp. EXACT, never a
+    # subset: the beacon is the single additive key; no db internals may join it.
+    assert set(snap.keys()) == {"ok", "error", "db_path", "contract_version"}
     assert snap["contract_version"] == CONTRACT_VERSION
-    assert snap["onboarding"] == RESULT_ONBOARDING_DIRECTIVE   # the directive rides even fail-closed
 
 
 def test_health_snapshot_has_no_secret_substring():

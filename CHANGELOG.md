@@ -49,15 +49,14 @@ All notable changes to this project are documented here.
 
 ## Changed
 - Agent-contract `CONTRACT_VERSION` `v.01` → `v.02`: the served onboarding is raised from MAY →
-  **MUST install** (the `initialize` instructions, the `hive_health` reference, and the installed
-  rules block now direct the install, while keeping the honest "degrades safely to the served floor"
-  clause — the install is a salience directive, not a correctness gate). Every tool result now
-  carries a second beacon key, `onboarding` (`RESULT_ONBOARDING_DIRECTIVE`), alongside
-  `contract_version` via the single `_tool_result` choke point — an actionable re-onboard prompt that
-  names the FULL contract (rules block + claude hooks + auto-approve allowlist) and points at the
-  fresh served source (re-run `initialize` / reconnect, or read the `hive_health` description), so a
-  hookless remote agent is re-prompted to (re)install on every turn and after context compaction. The
-  bare-string `_tool_error` path stays unbeaconed (the single-owner boundary).
+  **MUST install** (the `initialize` instructions, the `hive_health` reference, the installed rules
+  block, and the onboarding procedure now direct the install, while keeping the honest "degrades
+  safely to the served floor" clause — the install is a salience directive, not a correctness gate).
+  The self-heal loop is the `contract_version` beacon stamped on every tool result via the single
+  `_tool_result` choke point: the agent compares it against the `contract-version=` embedded in its
+  installed HIVEMIND-RULES marker and, on a mismatch (or no block installed), reinstalls the bundle
+  (block + hooks + allowlist) per the procedure single-sourced in the block + the `initialize`
+  instructions. The bare-string `_tool_error` path stays unbeaconed (the single-owner boundary).
 - Auth is now a property of the **listening socket**, not a config mode: the daemon binds a
   tokenless **loopback** door (host-published `127.0.0.1:8765`) and a token-required **tunnel**
   door (compose-internal `8766`, ngrok-forwarded). `HIVE_AUTH__MODE` (the `token|open` switch)

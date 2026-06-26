@@ -4,9 +4,8 @@ The served ``initialize`` instructions are the always-on FLOOR (foolproof, every
 them at connect). On top of that floor a versioned agent-contract bundle the server DIRECTS the agent
 to install (MUST — a salience directive over a floor-sufficient, non-blocking mechanism the server
 cannot verify): it is version-stamped
-by ``CONTRACT_VERSION``, beaconed on every tool result alongside an actionable
-``RESULT_ONBOARDING_DIRECTIVE`` (so a connected agent whose installed copy drifts re-onboards even
-after compaction), and a missing or stale block degrades safely to the served floor (Law 6). The
+by ``CONTRACT_VERSION``, beaconed on every tool result (so a connected agent whose installed copy
+drifts re-onboards), and a missing or stale block degrades safely to the served floor (Law 6). The
 bundle is single-sourced from the served constants — advertised == served == installed — and pinned
 to ``CONTRACT_VERSION`` by a keystone hash so editing it without a version bump goes RED (Law 1/7).
 
@@ -33,9 +32,6 @@ The served pieces, layered weakest-enforcement to strongest:
 - ``ONBOARDING_REFERENCE`` — the served identity/auth + optional-block + optional-hooks reference
   surfaced via the ``hive_health`` tool description; a SECONDARY copy for clients that read tool
   descriptions. The always-on floor still installs nothing by itself — the block is opt-in.
-- ``RESULT_ONBOARDING_DIRECTIVE`` — the terse, actionable re-onboard prompt the server stamps on
-  EVERY tool result (next to ``contract_version``); names the FULL contract (block + hooks +
-  allowlist) and points at the fresh served source. SERVED not installed, so NOT in ``bundle_digest``.
 - ``CLAUDE_CODE_HOOKS`` — OPTIONAL, claude-code ONLY: real lifecycle hooks that give the
   recall/capture nudges active teeth (incl. the per-turn contract_version drift reminder). Other
   IDEs have no event-hook substrate, so correctness must never depend on these — they are an
@@ -119,22 +115,6 @@ ONBOARDING_PROCEDURE: str = (
     "block is installed): repeat steps 0-2 to reinstall the FULL contract — the HIVEMIND-RULES block, "
     "plus on Claude Code the lifecycle hooks AND the auto-approve allowlist — from the freshly served "
     "copies."
-)
-
-# The per-result onboarding DIRECTIVE — rides every tool result envelope alongside contract_version
-# (mcp_server._tool_result), turning the passive version beacon into an ACTIONABLE re-onboard prompt
-# that re-reaches the agent on EVERY turn, so a hookless remote agent is re-prompted to (re)install
-# after context compaction. It projects from CONTRACT_VERSION (the single owner) and, like
-# SERVER_INSTRUCTIONS, is SERVED not installed — so it is deliberately NOT part of bundle_digest. It
-# names the FULL contract (block + hooks + allowlist) and points at the FRESH served source so the
-# thing reinstalled is never a possibly-cached stale block.
-RESULT_ONBOARDING_DIRECTIVE: str = (
-    "contract " + CONTRACT_VERSION + " — if your project rules file lacks a HIVEMIND-RULES block at "
-    "contract-version=" + CONTRACT_VERSION + " (or none is installed), re-onboard now: re-fetch the "
-    "freshly served contract (re-run initialize / reconnect, or read the current hive_health tool "
-    "description) and install the FULL contract — the HIVEMIND-RULES block, plus on Claude Code the "
-    "lifecycle hooks AND the read-verb auto-approve allowlist. A missing or stale block degrades "
-    "safely to the served floor, so this is a directive for salience, not a correctness gate."
 )
 
 # What is WORTH storing — the value bar, prepended into the served taxonomy so an agent learns the
@@ -307,9 +287,9 @@ ONBOARDING_REFERENCE = (
     "tokenless.\n\n"
     "PERSISTENCE (required, contract " + CONTRACT_VERSION + "): the served floor installs nothing by "
     "itself, but you MUST install the contract as a version-stamped block so it survives context "
-    "compaction. Every hive_* tool result echoes contract_version AND an onboarding directive; "
-    "re-onboard when contract_version differs from your installed marker (or no block is installed). "
-    "A missing or stale block degrades safely to the served floor.\n"
+    "compaction. Every hive_* tool result echoes contract_version; re-onboard when it differs from "
+    "your installed marker (or no block is installed). A missing or stale block degrades safely to "
+    "the served floor.\n"
     + ONBOARDING_PROCEDURE + "\n\n"
     "The block to install verbatim:\n"
     + AGENT_RULES_BLOCK + "\n\n"
@@ -380,10 +360,10 @@ SERVER_INSTRUCTIONS = (
     "always-on FLOOR, re-delivered every connect. To survive context compaction within a session you "
     "MUST install it as a version-stamped block in YOUR runtime's PROJECT rules file. The live "
     "contract_version is " + CONTRACT_VERSION + ", and every hive_* tool result echoes "
-    "contract_version AND an onboarding directive — when contract_version differs from the version in "
-    "your installed HIVEMIND-RULES marker (or no block is installed) you MUST re-onboard now "
-    "(reinstall the freshly served block + hooks + allowlist). A missing or stale block still degrades "
-    "safely to this floor, so the install is a directive for salience, not a correctness gate.\n"
+    "contract_version — when it differs from the version in your installed HIVEMIND-RULES marker (or "
+    "no block is installed) you MUST re-onboard now (reinstall the freshly served block + hooks + "
+    "allowlist). A missing or stale block still degrades safely to this floor, so the install is a "
+    "directive for salience, not a correctness gate.\n"
     + ONBOARDING_PROCEDURE + "\n\n"
     "The block to install verbatim:\n"
     + AGENT_RULES_BLOCK
