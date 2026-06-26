@@ -9,8 +9,9 @@ runtime — it runs on a host with nothing but the repo + Docker.
 
 Boundary (M11/M12): this CLI wires lifecycle + transport ONLY. `hive connect` prints
 the MCP registration line; per-repo onboarding is served over MCP (the usage contract
-reaches every agent via the `initialize` instructions — it installs nothing into a rules
-file) and never happens here.
+reaches every agent via the always-on `initialize` instructions — the CLI installs nothing,
+and the optional versioned rules block an agent MAY install is the agent's own act over MCP,
+never the CLI's) and never happens here.
 
 Injection seams (`run` / `out` / `env` / `ask`) keep every verb unit-testable without
 Docker — authctl's `connect_fn`/`out` idiom. `run` receives the FULL argv (program

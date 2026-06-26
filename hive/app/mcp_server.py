@@ -38,7 +38,7 @@ from dataclasses import dataclass
 from typing import Any, Callable, Mapping, Optional
 
 from hive.app.gaps import cluster_misses
-from hive.app.onboard_ref import SERVER_INSTRUCTIONS
+from hive.app.onboard_ref import CONTRACT_VERSION, SERVER_INSTRUCTIONS
 from hive.app.trends import compute_trends
 from hive.app.tool_defs import TOOL_DEFINITIONS
 from hive.domain.agi import is_agi_override
@@ -294,6 +294,14 @@ class HiveMCPServer:
         return MCPResponse(id=req.id, error=_err(-32601, f"method not found: {req.method}"))
 
     def _tool_result(self, req_id: Any, content: dict, *, is_error: bool) -> MCPResponse:
+        # BEACON (mutation #3): stamp the live contract version on EVERY dict envelope through this
+        # single choke point, so a connected agent detects a server-side contract upgrade on the only
+        # channel live after connect (tool results) and re-onboards. It is an UNCONDITIONAL version
+        # stamp, not optional behavior with an off-knob (THEORY §9 #14 "a measured-good behavior with
+        # one right answer is NOT a knob"). The bare-string _tool_error path is deliberately UNbeaconed
+        # (the single-owner boundary — test_tool_error_path_is_unbeaconed pins it). Deleting this line
+        # is mutation #3.
+        content = {**content, "contract_version": CONTRACT_VERSION}
         return MCPResponse(id=req_id, result={
             "content": [{"type": "text", "text": json.dumps(content, default=_json_default)}],
             "isError": is_error})

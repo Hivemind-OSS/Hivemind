@@ -153,10 +153,13 @@ hive connect                                              # prints the ready-mad
 claude mcp add --transport http hive http://localhost:8765/mcp
 ```
 
-That is the whole setup. Onboarding is **served-only**: at connect the server delivers its full
+That is the whole setup. Onboarding's **floor is served**: at connect the server delivers its full
 usage contract through the MCP `initialize` instructions (every client surfaces them), so the
-agent learns recall-first / capture-by-default / the maintainer discipline with no rules-file
-edit. Independent agent sessions on one machine each carry a distinct identity, so their shared
+agent learns recall-first / capture-by-default / the maintainer discipline with no required
+rules-file edit. On top of that floor an agent MAY optionally persist the contract as a
+version-stamped block in its own project rules file (the server beacons a `contract_version` on
+every result, so a stale block re-onboards; skipping it falls back to the served floor).
+Independent agent sessions on one machine each carry a distinct identity, so their shared
 demand promotes good captures under the one anti-gaming rule with no flags to set.
 
 ## 8. Setup — a team connecting remotely

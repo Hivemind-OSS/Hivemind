@@ -4,14 +4,23 @@ single-source guarantee (instructions and the rules block share ONE taxonomy, no
 parseable claude-code hooks bundle that wires the recall/capture nudges to lifecycle events."""
 from __future__ import annotations
 
+import hashlib
 import json
+import re
 
 from hive.app import onboard_ref
 from hive.app.onboard_ref import (
-    BAD_VS_STALE, CAPTURE_TAXONOMY, CLAUDE_CODE_HOOKS, ONBOARDING_REFERENCE,
-    SERVER_INSTRUCTIONS, VALUE_RUBRIC, WRITE_VS_CAPTURE,
+    AGENT_RULES_BLOCK, AUTO_APPROVE_TOOLS, BAD_VS_STALE, CAPTURE_TAXONOMY,
+    CLAUDE_CODE_HOOKS, CONTRACT_VERSION, ONBOARDING_PROCEDURE, ONBOARDING_REFERENCE,
+    RULES_END, RULES_START, SERVER_INSTRUCTIONS, VALUE_RUBRIC, WRITE_VS_CAPTURE,
+    render_agent_rules_block, render_allowlist,
 )
+from hive.app.tool_defs import TOOL_DEFINITIONS
 from hive.domain.kinds import render_taxonomy
+
+# Regenerate when the bundle legitimately changes (and bump CONTRACT_VERSION):
+#   python -c "import hashlib; from hive.app.onboard_ref import render_agent_rules_block as b, CLAUDE_CODE_HOOKS as h, render_allowlist as a; print(hashlib.sha256((b()+h+a()).encode()).hexdigest())"
+_GOLDEN_BUNDLE_SHA256 = "ec5012f967d862208ab6e3d84c53e0cf89ed9714bd8cbdf3a8946c1edb72a22c"
 
 
 def test_server_instructions_cover_the_verbs_and_search_first_timing():
@@ -99,15 +108,113 @@ def test_taxonomy_is_rendered_from_the_registry_and_served():
     assert CAPTURE_TAXONOMY in SERVER_INSTRUCTIONS
 
 
-def test_onboarding_is_served_only_no_self_install():
-    # the single-source switch: there is NO self-installed rules block — the symbol is gone and
-    # the served reference never tells an agent to write a block into its rules file.
-    assert not hasattr(onboard_ref, "ONBOARDING_RULES_BLOCK")
-    assert "hive-init" not in ONBOARDING_REFERENCE                 # no marker block
-    assert "write this block" not in ONBOARDING_REFERENCE.lower()  # no self-install instruction
-    # but the served reference still carries the identity/auth notes + the optional hooks
-    assert "Mcp-Session-Id" in ONBOARDING_REFERENCE
-    assert CLAUDE_CODE_HOOKS in ONBOARDING_REFERENCE
+def test_onboarding_offers_optional_versioned_block_over_the_served_floor():
+    # the §5 evolution: the served initialize instructions remain the always-on floor, AND an
+    # OPTIONAL, versioned agent-contract block MAY now be installed as an enhancement layer. The
+    # old pre-minimization self-install symbol stays gone; the new block is its own named, version-
+    # stamped constant. The reference still carries the identity/auth notes + the optional hooks,
+    # and now advertises the bundle version so a fresh agent knows what it would install.
+    assert not hasattr(onboard_ref, "ONBOARDING_RULES_BLOCK")      # the old symbol stays gone
+    assert hasattr(onboard_ref, "AGENT_RULES_BLOCK")               # the optional block now exists
+    assert "hive-init" not in ONBOARDING_REFERENCE                 # no hive_init handshake marker
+    assert "Mcp-Session-Id" in ONBOARDING_REFERENCE               # identity/auth reference kept
+    assert CLAUDE_CODE_HOOKS in ONBOARDING_REFERENCE              # optional hooks kept
+    assert CONTRACT_VERSION in ONBOARDING_REFERENCE               # the bundle version advertised
+
+
+# ── contract-versioning: the installable, version-stamped agent-contract bundle ──
+def test_contract_version_pins_bundle_hash():
+    """KEYSTONE (Law 7): the served bundle (the agent rules block + the claude hooks + the
+    auto-approve allowlist) is pinned to CONTRACT_VERSION by a golden hash. Editing ANY of the
+    three without bumping CONTRACT_VERSION + regenerating this golden goes RED — silent contract
+    drift at equal version becomes unconstructable (Law 1). To regenerate, run the one-liner in
+    the module-level comment above and bump CONTRACT_VERSION."""
+    bundle = render_agent_rules_block() + CLAUDE_CODE_HOOKS + render_allowlist()
+    digest = hashlib.sha256(bundle.encode("utf-8")).hexdigest()
+    assert digest == _GOLDEN_BUNDLE_SHA256, (
+        "you edited the contract bundle; bump CONTRACT_VERSION and regenerate this golden")
+
+
+def test_agent_rules_block_is_marker_wrapped_and_version_stamped():
+    block = render_agent_rules_block()
+    assert block is AGENT_RULES_BLOCK or block == AGENT_RULES_BLOCK   # the constant == the renderer
+    assert block.startswith(RULES_START)                  # opens with the START marker
+    assert block.rstrip().endswith(RULES_END)             # closes with the END marker
+    # the START marker carries the version so a one-regex extract reads it straight off the file
+    assert CONTRACT_VERSION in RULES_START
+    assert f"contract-version={CONTRACT_VERSION}" in block
+
+
+def test_agent_rules_block_extracts_and_replaces_with_one_version_agnostic_regex():
+    """The idempotent-install contract: an installed block is found and REPLACED in place by ONE
+    regex anchored on the version-AGNOSTIC marker prefixes — so a re-onboard from any prior version
+    overwrites exactly one block, never clobbering surrounding content and never duplicating."""
+    block = render_agent_rules_block()
+    host = f"# Existing project rules\n\nkeep me above\n\n{block}\n\nkeep me below\n"
+    pat = re.compile(r"<!-- HIVEMIND-RULES:START.*?-->.*?<!-- HIVEMIND-RULES:END -->", re.DOTALL)
+    found = pat.findall(host)
+    assert len(found) == 1 and found[0] == block          # exactly the block, nothing more
+    # replacing with a (future-version) block leaves ONE block and preserves the surroundings
+    v_next = block.replace(f"contract-version={CONTRACT_VERSION}", "contract-version=v.99")
+    replaced = pat.sub(lambda _m: v_next, host)
+    assert replaced.count("HIVEMIND-RULES:START") == 1    # no duplicate block
+    assert "contract-version=v.99" in replaced            # the new version won
+    assert "keep me above" in replaced and "keep me below" in replaced  # no clobber
+
+
+def test_agent_rules_block_renders_from_single_source():
+    """The block PROJECTS from onboard_ref's OWN sub-constants — no new drift source. The
+    write-vs-capture decision and the bad-vs-stale retire diagnosis ride verbatim, and the verb
+    roster names every served verb (the keystone hash covers the exact text)."""
+    block = render_agent_rules_block()
+    assert WRITE_VS_CAPTURE in block                      # capture-vs-write decision, one source
+    assert BAD_VS_STALE in block                          # retire diagnosis, one source
+    for verb in ("hive_recall", "hive_capture", "hive_write", "hive_supersede",
+                 "hive_prune", "hive_outcome", "hive_health"):
+        assert verb in block, f"verb roster missing {verb!r}"
+
+
+def test_onboarding_targets_project_not_global():
+    """Scope is load-bearing (operator-stated): the agent resolves ITS OWN runtime's rules file at
+    the REPO ROOT and writes there; hooks + the allowlist go to the PROJECT .claude/settings.json —
+    never a home/global file."""
+    proc = ONBOARDING_PROCEDURE
+    for f in ("CLAUDE.md", ".cursorrules", ".windsurfrules", ".clinerules", "AGENTS.md"):
+        assert f in proc, f"procedure missing the runtime rules file {f!r}"
+    assert ".claude/settings.json" in proc                # the PROJECT settings target
+    assert "~/.claude" not in proc                        # never the home/global settings file
+    low = proc.lower()
+    assert "project" in low and ("repo root" in low or "repository root" in low)
+
+
+def test_auto_approve_tools_match_schema_partition():
+    """D4: the auto-approve set is the schema complement of the human-gated verbs — exactly the
+    verbs whose inputSchema does NOT require approved_by. The privileged write/supersede/prune
+    (whose approved_by prompt IS the human checkpoint) are excluded. Pins AUTO_APPROVE_TOOLS to the
+    schema so it can't drift (the onboard_ref↔tool_defs import cycle forbids deriving it inline)."""
+    human_gated = {t["name"] for t in TOOL_DEFINITIONS
+                   if "approved_by" in t["inputSchema"].get("required", [])}
+    auto = {t["name"] for t in TOOL_DEFINITIONS} - human_gated
+    assert set(AUTO_APPROVE_TOOLS) == auto
+    assert human_gated == {"hive_write", "hive_supersede", "hive_prune"}
+    assert not (set(AUTO_APPROVE_TOOLS) & human_gated)    # no privileged verb is auto-approved
+    # the rendered allowlist names each auto-approve verb under the mcp__<server>__ prefix
+    rendered = render_allowlist("hive")
+    for verb in AUTO_APPROVE_TOOLS:
+        assert f"mcp__hive__{verb}" in rendered
+    assert "hive_write" not in rendered                   # the privileged verbs never rendered
+
+
+def test_server_instructions_carry_version_and_reonboard_trigger():
+    """The floor advertises the bundle version + the self-heal trigger: every tool result echoes
+    contract_version, and a mismatch against the installed marker (or no block) is the re-onboard
+    signal. Without this an agent can't know its installed block went stale."""
+    s = SERVER_INSTRUCTIONS
+    assert CONTRACT_VERSION in s                          # the live version is advertised at connect
+    assert "contract_version" in s                        # the beacon field is named
+    low = s.lower()
+    assert "re-onboard" in low or "re-install" in low or "reinstall" in low  # the self-heal trigger
+    assert RULES_START in s                               # the verbatim block is served on the floor
 
 
 def test_store_philosophy_is_stigmergic_lean_and_maintainer_framed():

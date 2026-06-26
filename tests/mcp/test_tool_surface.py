@@ -11,13 +11,13 @@ import json
 from hive.app.mcp_server import (
     HiveMCPServer, MCPRequest, ServerIdentity, run_stdio,
 )
-from hive.app.onboard_ref import BAD_VS_STALE, WRITE_VS_CAPTURE
+from hive.app.onboard_ref import BAD_VS_STALE, CONTRACT_VERSION, WRITE_VS_CAPTURE
 from hive.app.tool_defs import TOOL_DEFINITIONS
 from hive.domain.admission import WriteResult
 from hive.domain.kinds import KIND_NAMES
 from hive.domain.secret_scan import scan as _scan
 from tests.fakes._fakes import FakeIndex
-from tests.mcp._helpers import build_real_server, is_error, tool_call
+from tests.mcp._helpers import build_real_server, content, is_error, tool_call, write_text
 
 # net-8: the original 4 verbs + the conflict surface — hive_supersede (always-on
 # human-vouched resolution) + hive_flag (advisory, gated by conflict.enabled) — plus
@@ -89,23 +89,48 @@ def test_retirement_descriptions_diagnose_bad_vs_stale():
     assert BAD_VS_STALE in prune                       # the diagnosis served at the prune call site
 
 
-def test_health_description_carries_served_reference_not_a_self_install_block():
-    """Onboarding is served-only: the hive_health DESCRIPTION carries the identity/auth +
-    optional-hooks reference, NOT a self-installed rules block — no marker block and no 'write
-    this block' instruction. The full contract rides the initialize instructions instead."""
+def test_health_description_carries_served_reference_and_optional_versioned_block():
+    """The §5 enhancement layer: the hive_health DESCRIPTION carries the identity/auth reference
+    AND now the OPTIONAL, version-stamped rules block (the secondary onboarding channel). The old
+    hive_init handshake marker stays gone; the always-on floor is the initialize instructions."""
     server, _ = build_real_server()
     resp = server.handle(MCPRequest(1, "tools/list", {}))
     health = next(t for t in resp.result["tools"] if t["name"] == "hive_health")
     desc = health["description"]
-    assert "<!-- hive-init:start -->" not in desc         # no self-installed marker block
-    assert "write this block" not in desc.lower()          # no self-install instruction
-    assert "Mcp-Session-Id" in desc                        # the served identity/auth reference
+    assert "<!-- hive-init:start -->" not in desc          # the old self-install handshake stays gone
+    assert "Mcp-Session-Id" in desc                         # the served identity/auth reference
+    assert "HIVEMIND-RULES:START" in desc                   # the optional versioned block is offered
+    assert CONTRACT_VERSION in desc                         # stamped with the live bundle version
     server, _ = build_real_server()
     init = server.handle(MCPRequest(1, "initialize", {}))
     assert init.result["serverInfo"]["name"] == "hive"
     assert "protocolVersion" in init.result
     pong = server.handle(MCPRequest(2, "ping", {}))
     assert pong.result == {} and pong.error is None
+
+
+def test_tool_result_carries_contract_version():
+    """The live drift signal (D1): every dict-returning tool result echoes contract_version via the
+    single _tool_result choke point — so a connected agent detects a server-side contract upgrade on
+    the only channel live after connect. Covers success, abstain, capture, and the recorded paths."""
+    server, _ = build_real_server()
+    write_text(server, "a beacon fact")
+    for name, args in (("hive_health", {}), ("hive_recall", {"query": "a beacon fact"}),
+                       ("hive_recall", {"query": "nothing matches this query at all"}),  # abstain
+                       ("hive_capture", {"text": "an insight"}), ("hive_outcome", {})):
+        env = content(tool_call(server, name, args))
+        assert env["contract_version"] == CONTRACT_VERSION, f"{name} dropped the beacon"
+
+
+def test_tool_error_path_is_unbeaconed():
+    """The deliberate single-owner boundary: only _tool_result stamps the beacon. The schema-reject /
+    internal-error bare-string path (_tool_error) carries NO contract_version — pinning this keeps a
+    future refactor from quietly adding a second beacon site (a second source of the version truth)."""
+    server, _ = build_real_server()
+    resp = tool_call(server, "hive_write", {"approved_by": "u"})   # missing text → schema reject
+    assert is_error(resp)
+    text = resp.result["content"][0]["text"]
+    assert "contract_version" not in text          # the bare-string error envelope is unbeaconed
 
 
 def test_initialize_carries_server_instructions():

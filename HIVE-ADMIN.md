@@ -45,9 +45,12 @@ server-minted `Mcp-Session-Id` a conforming client echoes, or an explicit `X-Hiv
 for readable provenance). That per-session diversity is what promotes captures, so a **solo dev's**
 independent agents earn each other's memories with no flag and no per-agent token.
 
-Onboarding is **served-only**: at connect the server delivers the full usage contract over MCP (the
-`initialize` instructions), so each agent learns the recall-first / capture-by-default discipline
-with nothing written into its rules file.
+Onboarding's **floor is served**: at connect the server delivers the full usage contract over MCP
+(the `initialize` instructions), so each agent learns the recall-first / capture-by-default
+discipline with nothing required to be written into its rules file. Optionally, an agent may persist
+that contract as a version-stamped rules block in its own project file — the server beacons a
+`contract_version` on every result so a stale block re-onboards, and a missing block degrades to the
+served floor. That is the agent's own act; the operator installs nothing.
 
 ## 3. Connect a remote team
 
@@ -189,7 +192,7 @@ fail-open rot:
 | Call | Tells you | Act on |
 |---|---|---|
 | `hive_health(include_trends=true)` | `confident_rate` + `demand_entropy` (current vs prior 7d, with deltas) | `tau_serve`, `demand_m` |
-| `hive_health(include_gaps=true)` | topics wanted but uncovered; established rows with rivals | `hive_write` the answers; `hive_supersede` the wrong one |
+| `hive_health(include_gaps=true)` | topics wanted but uncovered (clustered demand gaps) | `hive_write` the answers |
 | `hive_health(include_conflicts=true)` | near-duplicate / contradicting memories + agent advisories | `hive_supersede` |
 | `hive_health(include_suspect_consensus=true)` | provisionals promoted on thin effective independence | human audit / retire |
 

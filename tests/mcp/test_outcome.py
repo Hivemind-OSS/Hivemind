@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import json
 
+from hive.app.onboard_ref import CONTRACT_VERSION
 from tests.mcp._helpers import build_real_server, content, is_error, tool_call, write_text
 
 
@@ -70,13 +71,15 @@ def test_identical_under_both_modes():
         server, _ = build_real_server(agi_mode=agi)
         a = write_text(server, "a mode-invariant memory")["id"]
         out = content(tool_call(server, "hive_outcome", {"helped": [a]}))
-        assert out == {"status": "recorded", "helped": [a], "hurt": []}
+        assert out == {"status": "recorded", "helped": [a], "hurt": [],
+                       "contract_version": CONTRACT_VERSION}
 
 
 def test_empty_call_records_nothing():
     server, _ = build_real_server()
     out = content(tool_call(server, "hive_outcome", {}))   # both arrays optional
-    assert out == {"status": "recorded", "helped": [], "hurt": []}
+    assert out == {"status": "recorded", "helped": [], "hurt": [],
+                   "contract_version": CONTRACT_VERSION}
 
 
 def test_schema_belt_accepts_arrays_rejects_non_array():

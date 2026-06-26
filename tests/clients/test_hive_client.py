@@ -21,6 +21,7 @@ import pytest
 from hive.adapters.auth_store_sqlite import SqliteTokenStore
 from hive.adapters.sqlite_db import connect
 from hive.app.http_server import _build_handler
+from hive.app.onboard_ref import CONTRACT_VERSION
 from hive.client import HiveClient, HiveError
 from tests.mcp._helpers import build_real_server
 
@@ -99,6 +100,21 @@ def test_client_recall_capture_write_health(live):
     with pytest.raises(HiveError) as ei:
         bad.health()
     assert ei.value.http_status == 401
+
+
+def test_beacon_rides_client_envelope_and_is_parse_safe(live):
+    """The beacon reaches an MCP-less client over the REAL HTTP stack and is safe for permissive
+    .get parsing (BUG-002/003/005 class — an additive key never breaks a tolerant reader): every
+    dict the client returns carries contract_version, while recall still yields the hits list (the
+    beacon sits on the envelope, not inside reference_context)."""
+    url, token, _server = live
+    c = HiveClient(url, token)
+    assert c.health()["contract_version"] == CONTRACT_VERSION
+    cap = c.capture("a vendored-client insight")
+    assert cap["status"] == "quarantined" and cap["contract_version"] == CONTRACT_VERSION
+    w = c.write("a load-bearing fact", approved_by="alice")
+    assert w["status"] == "approved" and w["contract_version"] == CONTRACT_VERSION
+    assert c.recall("nothing in an empty store matches") == []   # parse unbroken: hits list only
 
 
 def test_client_write_supersedes_via_replaces(live):

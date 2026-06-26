@@ -10,6 +10,7 @@ import pytest
 
 from hive.app.config import AutonomyConfig
 from hive.app.mcp_server import MCPRequest, ServerIdentity
+from hive.app.onboard_ref import CONTRACT_VERSION
 from hive.app.tool_defs import TOOL_NAMES
 from hive.domain.lifecycle import PROVISIONAL
 from hive.domain.ports import ExposureLedger
@@ -61,7 +62,7 @@ def test_capture_tool_quarantine_roundtrip():
 def test_capture_tool_disabled_envelope():
     server, _ = build_real_server(autonomy=AutonomyConfig(enabled=False))
     env = content(tool_call(server, "hive_capture", {"text": "anything"}))
-    assert env == {"status": "disabled"}
+    assert env == {"status": "disabled", "contract_version": CONTRACT_VERSION}
     assert _count(server, "episodes") == 0
 
 

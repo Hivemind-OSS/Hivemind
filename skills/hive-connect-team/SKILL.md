@@ -69,9 +69,13 @@ Then the teammate uses the **local** loopback line above as-is — no ngrok, no 
   is tokenless; the tunnel door (compose-internal `8766`) is token-required and is the only
   remote-reachable one. **Never publish `0.0.0.0:8765`** — a bearer token over plain LAN HTTP is
   cleartext.
-- **Onboarding is served-only — install nothing.** The full usage contract (recall-first,
-  capture-by-default, the capture taxonomy, the identity model) reaches every agent over MCP at
-  connect via the `initialize` instructions. There is no rules-file block to write and no handshake
-  call; the only client-side step is the MCP registration above. (Claude Code only: optional
-  lifecycle-hook nudges are listed in the `hive_health` tool description — merge into
-  `.claude/settings.json` for active recall / capture reminders.)
+- **Onboarding's floor is served — the operator installs nothing.** The full usage contract
+  (recall-first, capture-by-default, the capture taxonomy, the identity model) reaches every agent
+  over MCP at connect via the `initialize` instructions; the only client-side step is the MCP
+  registration above, and there is no handshake call. On top of that floor an agent MAY optionally
+  persist the contract as a **version-stamped rules block** in its own project rules file — the
+  server beacons a `contract_version` on every result so a stale block re-onboards, and a missing
+  block degrades to the served floor — but that is the agent's own act, never an operator step.
+  (Claude Code only: optional lifecycle-hook nudges + the read-verb auto-approve allowlist are
+  listed in the `hive_health` tool description — merge into the project `.claude/settings.json` for
+  active recall / capture reminders.)
