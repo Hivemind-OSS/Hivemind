@@ -4,7 +4,6 @@ single-source guarantee (instructions and the rules block share ONE taxonomy, no
 parseable claude-code hooks bundle that wires the recall/capture nudges to lifecycle events."""
 from __future__ import annotations
 
-import hashlib
 import json
 import re
 
@@ -13,13 +12,14 @@ from hive.app.onboard_ref import (
     AGENT_RULES_BLOCK, AUTO_APPROVE_TOOLS, BAD_VS_STALE, CAPTURE_TAXONOMY,
     CLAUDE_CODE_HOOKS, CONTRACT_VERSION, ONBOARDING_PROCEDURE, ONBOARDING_REFERENCE,
     RULES_END, RULES_START, SERVER_INSTRUCTIONS, VALUE_RUBRIC, WRITE_VS_CAPTURE,
-    render_agent_rules_block, render_allowlist,
+    bundle_digest, render_agent_rules_block, render_allowlist,
 )
 from hive.app.tool_defs import TOOL_DEFINITIONS
 from hive.domain.kinds import render_taxonomy
 
-# Regenerate when the bundle legitimately changes (and bump CONTRACT_VERSION):
-#   python -c "import hashlib; from hive.app.onboard_ref import render_agent_rules_block as b, CLAUDE_CODE_HOOKS as h, render_allowlist as a; print(hashlib.sha256((b()+h+a()).encode()).hexdigest())"
+# Regenerate when the bundle legitimately changes (and bump CONTRACT_VERSION) — the pre-commit
+# contract-version guard does this automatically, or by hand:
+#   python -c "from hive.app.onboard_ref import bundle_digest; print(bundle_digest())"
 _GOLDEN_BUNDLE_SHA256 = "ec5012f967d862208ab6e3d84c53e0cf89ed9714bd8cbdf3a8946c1edb72a22c"
 
 
@@ -129,9 +129,7 @@ def test_contract_version_pins_bundle_hash():
     three without bumping CONTRACT_VERSION + regenerating this golden goes RED — silent contract
     drift at equal version becomes unconstructable (Law 1). To regenerate, run the one-liner in
     the module-level comment above and bump CONTRACT_VERSION."""
-    bundle = render_agent_rules_block() + CLAUDE_CODE_HOOKS + render_allowlist()
-    digest = hashlib.sha256(bundle.encode("utf-8")).hexdigest()
-    assert digest == _GOLDEN_BUNDLE_SHA256, (
+    assert bundle_digest() == _GOLDEN_BUNDLE_SHA256, (
         "you edited the contract bundle; bump CONTRACT_VERSION and regenerate this golden")
 
 

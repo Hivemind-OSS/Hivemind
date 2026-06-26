@@ -38,6 +38,8 @@ The served pieces, layered weakest-enforcement to strongest:
 """
 from __future__ import annotations
 
+import hashlib
+
 from hive.domain.kinds import render_taxonomy
 
 # ── the versioned agent-contract bundle (CONTRACT_VERSION versions all three: the rules block,
@@ -256,6 +258,16 @@ def render_agent_rules_block() -> str:
 
 # The block as a module constant (== the renderer's output; the renderer is the single author).
 AGENT_RULES_BLOCK: str = render_agent_rules_block()
+
+
+def bundle_digest() -> str:
+    """SHA-256 of the installable contract bundle (the agent rules block + the claude hooks + the
+    auto-approve allowlist) — the SINGLE owner of the keystone hash pinning the bundle to
+    CONTRACT_VERSION (Law 1/7). The keystone test asserts it equals the golden literal and the
+    pre-commit version guard regenerates that golden from this same function, so the hashed-byte
+    composition has one definition and cannot fork across its consumers."""
+    bundle = render_agent_rules_block() + CLAUDE_CODE_HOOKS + render_allowlist()
+    return hashlib.sha256(bundle.encode("utf-8")).hexdigest()
 
 # The served identity/auth + optional-block + optional-hooks reference surfaced via the hive_health
 # tool DESCRIPTION — a SECONDARY copy for clients that read tool descriptions. The always-on floor
