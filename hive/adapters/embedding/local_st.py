@@ -71,7 +71,7 @@ class LocalSTEmbedder:
         if native != self.d:
             raise GeometryError(
                 f"model native dim {native} != declared d {self.d} — the embedder emits the "
-                "model's native vector unchanged; re-initialise the store (hive nuke) after a "
+                "model's native vector unchanged; re-initialise the store (hive reset) after a "
                 "model/dim change")
         _log.info("embedding.warm name=%s native_dim=%d", self.name, native)
         self.loaded = True

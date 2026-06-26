@@ -1,0 +1,20 @@
+# Dev sidecar — an ISOLATED second Hivemind instance for testing in-development changes WITHOUT
+# touching your live dogfood memory. The `hive` CLI always drives the PROD instance (project
+# `hive`, volume `hive-data`, port 8765); this override is the one sanctioned raw-compose path for
+# a second, disposable instance. Run with:
+#
+#   docker compose -p hive-dev -f compose.yaml -f compose.dev.yaml up -d --build hive-server
+#   # connect a throwaway agent:  http://localhost:8775/mcp
+#   docker compose -p hive-dev -f compose.yaml -f compose.dev.yaml down -v   # nuke freely
+#
+# `down -v` on THIS project can NEVER reach the real `hive-data` volume — it is renamed below
+# (the compose `name:` is global, so renaming it is what defuses the shared-volume footgun).
+# See CONTEXT/ACTIVE_DOGFOOD.md for the full workflow.
+services:
+  hive-server:
+    image: hive:dev                 # own tag — a dev `--build` never re-tags prod's hive:vmin
+    ports:
+      - "127.0.0.1:8775:8765"       # dev loopback on host 8775 (prod stays on 8765)
+volumes:
+  hive-data:
+    name: hive-data-dev             # the global-name footgun, defused: dev gets its own volume

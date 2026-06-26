@@ -140,7 +140,7 @@ def test_migrate_passes_dim_guard_on_fresh_store(tmp_path):
 
 def test_migrate_raises_on_stored_vector_dim_mismatch(tmp_path):
     """A persisted episode vector whose width != the embedder's native dim means the store was
-    written under a DIFFERENT geometry (a forgotten `hive nuke` after a model/dim swap). Boot
+    written under a DIFFERENT geometry (a forgotten `hive reset` after a model/dim swap). Boot
     fails fast (→ EX_SOFTWARE) rather than silently serving/searching mixed-dim garbage
     (Law 5 + Law 6)."""
     import numpy as np

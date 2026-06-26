@@ -246,11 +246,12 @@ def test_backup_retention_keeps_30(image):
 
 
 @live
-def test_nuke_destroys_volume_up_recreates_empty(image, tmp_path):
-    """The lifecycle: up creates the named volume, nuke (down -v) destroys it, up recreates
-    it empty. compose.yaml hard-names the volume `hive-data` (a fixed operator-UX name, NOT
-    project-prefixed), so a compose OVERRIDE renames it to an ISOLATED test volume — this test
-    can never touch an operator's real hive-data (asserted)."""
+def test_reset_destroys_volume_up_recreates_empty(image, tmp_path):
+    """The clean-start primitive `reset` builds on: up creates the named volume, `down -v`
+    destroys it, up recreates it empty. compose.yaml hard-names the volume `hive-data` (a fixed
+    operator-UX name, NOT project-prefixed), so a compose OVERRIDE renames it to an ISOLATED test
+    volume — this test can never touch an operator's real hive-data (asserted). (`reset`'s
+    snapshot-then-destroy ordering + abort-on-failure are unit-tested in test_cli.py.)"""
     proj = f"hivee2e{uuid.uuid4().hex[:8]}"
     vol = f"hive-e2e-{uuid.uuid4().hex[:10]}"
     assert vol != "hive-data"                          # hard safety: never the operator's volume
@@ -270,7 +271,7 @@ def test_nuke_destroys_volume_up_recreates_empty(image, tmp_path):
         assert compose("up", "-d", "--build", "--wait", "hive-server").returncode == 0
         assert _vol_exists()
         assert compose("down", "-v").returncode == 0
-        assert not _vol_exists()                       # nuke destroyed the isolated volume
+        assert not _vol_exists()                       # reset's down -v destroyed the isolated volume
         assert compose("up", "-d", "--build", "--wait", "hive-server").returncode == 0
         ex = compose("exec", "-T", "hive-server", "python", "-c",
                      "import sqlite3;print(sqlite3.connect('/data/shared.db')"

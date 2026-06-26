@@ -14,7 +14,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   no server-driven handshake.
 - `hive` operator CLI (`hive/tools/cli.py`, stdlib-only, `[project.scripts]` entry
   point; uninstalled: `python -m hive.tools.cli`): `up [--tunnel]` (bounded
-  health-wait; tunnel secrets fail-fast), `down`, `logs`, `nuke` (typed confirm),
+  health-wait; tunnel secrets fail-fast), `down`, `logs`, `reset` (snapshot the store out
+  of the volume, then destroy + recreate it empty — recoverable; aborts if the snapshot fails),
+  `restore` (replace the live store from a snapshot — the inverse of reset),
   `status` (health + tunnel + seat count), `token`/`revoke`/`tokens` (shell to the
   in-container authctl — crypto + schema stay single-sourced), `connect` (teammate
   MCP registration line; transport only, no per-repo onboarding).

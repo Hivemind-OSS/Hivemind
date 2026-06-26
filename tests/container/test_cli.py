@@ -8,6 +8,7 @@ successor verbs (e.g. `credit`) add their argv tests here against the same fake.
 from __future__ import annotations
 
 import io
+import os
 import subprocess
 
 import pytest
@@ -57,7 +58,7 @@ def test_down_is_compose_down_never_volume_destroying():
     assert len(fake.calls) == 1
     assert fake.calls[0][:2] == ["docker", "compose"]
     assert seq_in(fake.calls[0], "down")
-    assert "-v" not in fake.calls[0]          # down PRESERVES the volume (nuke destroys)
+    assert "-v" not in fake.calls[0]          # down PRESERVES the volume (reset destroys)
 
 
 def test_logs_follows_optional_service():
@@ -193,21 +194,134 @@ def test_up_missing_container_is_unavailable():
     assert rc == cli.EX_UNAVAILABLE
 
 
-# ── nuke: typed confirmation guards the volume ──────────────────────────────────
+# ── reset: snapshot OUT of the volume FIRST, then destroy + recreate (recoverable) ──
+
+# the snapshot runs backupctl in a throwaway container; locate that call by its module args
+# (NOT a contiguous "python -m ..." — python is the --entrypoint value, the module is the cmd).
+def _is_snapshot(c):
+    return c[:2] == ["docker", "run"] and seq_in(c, "-m", "hive.tools.backupctl")
 
 
-def test_nuke_requires_confirmation():
+def test_reset_requires_confirmation():
     fake = FakeRun()
-    rc = cli.main(["nuke"], run=fake, out=io.StringIO(), env=ENV, ask=lambda _p: "no")
+    rc = cli.main(["reset"], run=fake, out=io.StringIO(), env=ENV, ask=lambda _p: "no")
     assert rc == cli.EX_USAGE
-    assert not any("-v" in c for c in fake.calls)      # down -v was NOT issued
+    assert fake.calls == []                             # confirmation gates BEFORE any work
 
 
-def test_nuke_confirmed_issues_down_v():
-    fake = FakeRun()
-    rc = cli.main(["nuke"], run=fake, out=io.StringIO(), env=ENV, ask=lambda _p: "nuke")
+def test_reset_snapshots_before_destroying():
+    # the safety invariant: the store is snapshotted OUT of the volume BEFORE `down -v`,
+    # and the daemon is recreated after — one verb does the whole clean-start.
+    fake = FakeRun(script=list(_HEALTHY))
+    rc = cli.main(["reset"], run=fake, out=io.StringIO(), env=ENV, ask=lambda _p: "reset")
+    assert rc == cli.EX_OK
+    snap_idx = next(i for i, c in enumerate(fake.calls) if _is_snapshot(c))
+    downv_idx = next(i for i, c in enumerate(fake.calls) if seq_in(c, "down", "-v"))
+    snap = fake.calls[snap_idx]
+    assert seq_in(snap, "--user", "0:0")                   # root: reads the uid-owned store + writes host
+    assert seq_in(snap, "--entrypoint", "python")          # override the image's daemon ENTRYPOINT
+    assert snap_idx < downv_idx                            # snapshot BEFORE destroy
+    assert any(seq_in(c, "up", "-d", "--build", "hive-server") for c in fake.calls)
+
+
+def test_reset_aborts_without_destroying_if_snapshot_fails():
+    # if the pre-reset snapshot fails, the volume is NEVER destroyed (fail-safe toward
+    # preservation) — an accidental or re-failing reset costs nothing.
+    fake = FakeRun(script=[(_is_snapshot, proc(rc=1, stderr="backup boom"))])
+    rc = cli.main(["reset"], run=fake, out=io.StringIO(), env=ENV, ask=lambda _p: "reset")
+    assert rc == cli.EX_UNAVAILABLE
+    assert any(_is_snapshot(c) for c in fake.calls)
+    assert not any(seq_in(c, "down", "-v") for c in fake.calls)         # destroy NOT reached
+    assert not any(seq_in(c, "--entrypoint", "chown") for c in fake.calls)
+
+
+def test_reset_chowns_snapshot_back_to_operator():
+    fake = FakeRun(script=list(_HEALTHY))
+    cli.main(["reset", "--yes"], run=fake, out=io.StringIO(), env=ENV)
+    chown = next(c for c in fake.calls if seq_in(c, "--entrypoint", "chown"))
+    assert seq_in(chown, "-R", f"{os.getuid()}:{os.getgid()}", "/out")
+
+
+def test_reset_yes_skips_confirmation():
+    def _no_ask(_p):
+        raise AssertionError("--yes must not prompt")
+    fake = FakeRun(script=list(_HEALTHY))
+    rc = cli.main(["reset", "--yes"], run=fake, out=io.StringIO(), env=ENV, ask=_no_ask)
     assert rc == cli.EX_OK
     assert any(seq_in(c, "down", "-v") for c in fake.calls)
+
+
+def test_reset_snapshot_targets_host_out_dir(tmp_path, monkeypatch):
+    # the snapshot lands in a HOST bind dir (default ./hive-backups, abspath'd so docker reads
+    # it as a bind, not a named volume); --out overrides it. Env routes backupctl's dest to /out.
+    monkeypatch.chdir(tmp_path)
+    fake = FakeRun(script=list(_HEALTHY))
+    assert cli.main(["reset", "--yes"], run=fake, out=io.StringIO(), env=ENV) == cli.EX_OK
+    snap = next(c for c in fake.calls if _is_snapshot(c))
+    assert any(tok.startswith("/") and tok.endswith("/hive-backups:/out") for tok in snap)
+    assert seq_in(snap, "-v", "hive-data:/data")
+    assert seq_in(snap, "-e", "HIVE_RETENTION__BACKUP_DIR=/out")
+    fake2 = FakeRun(script=list(_HEALTHY))
+    cli.main(["reset", "--yes", "--out", "/custom/dir"], run=fake2, out=io.StringIO(), env=ENV)
+    snap2 = next(c for c in fake2.calls if _is_snapshot(c))
+    assert seq_in(snap2, "-v", "/custom/dir:/out")
+
+
+# ── restore: replace the live store with a host snapshot (inverse of reset) ─────────
+
+
+def test_restore_rejects_missing_file():
+    fake = FakeRun()
+    rc = cli.main(["restore", "/no/such/snap.db"], run=fake, out=io.StringIO(), env=ENV,
+                  ask=lambda _p: "restore")
+    assert rc == cli.EX_USAGE
+    assert fake.calls == []                             # never touches the stack for a missing file
+
+
+def test_restore_requires_confirmation(tmp_path):
+    snap = tmp_path / "snap.db"
+    snap.write_bytes(b"sqlite")
+    fake = FakeRun()
+    rc = cli.main(["restore", str(snap)], run=fake, out=io.StringIO(), env=ENV, ask=lambda _p: "no")
+    assert rc == cli.EX_USAGE
+    assert fake.calls == []                             # nothing stopped, nothing copied
+
+
+def test_restore_copies_into_volume_between_down_and_up(tmp_path):
+    snap = tmp_path / "snap.db"
+    snap.write_bytes(b"sqlite")
+    fake = FakeRun(script=list(_HEALTHY))
+    rc = cli.main(["restore", str(snap)], run=fake, out=io.StringIO(), env=ENV, ask=lambda _p: "restore")
+    assert rc == cli.EX_OK
+    down_idx = next(i for i, c in enumerate(fake.calls) if seq_in(c, "down") and "-v" not in c)
+    cp_idx = next(i for i, c in enumerate(fake.calls)
+                  if c[:2] == ["docker", "run"] and seq_in(c, "--entrypoint", "sh"))
+    up_idx = next(i for i, c in enumerate(fake.calls) if seq_in(c, "up", "-d", "--build"))
+    assert down_idx < cp_idx < up_idx                  # stop → overwrite → restart
+    cp = fake.calls[cp_idx]
+    assert seq_in(cp, "-v", "hive-data:/data")
+    assert any("cp /in/snap.db /data/shared.db" in tok for tok in cp)
+
+
+def test_restore_yes_skips_confirmation(tmp_path):
+    snap = tmp_path / "snap.db"
+    snap.write_bytes(b"sqlite")
+
+    def _no_ask(_p):
+        raise AssertionError("--yes must not prompt")
+    fake = FakeRun(script=list(_HEALTHY))
+    rc = cli.main(["restore", str(snap), "--yes"], run=fake, out=io.StringIO(), env=ENV, ask=_no_ask)
+    assert rc == cli.EX_OK
+
+
+def test_restore_aborts_if_copy_fails(tmp_path):
+    snap = tmp_path / "snap.db"
+    snap.write_bytes(b"sqlite")
+    fake = FakeRun(script=[(lambda a: a[:2] == ["docker", "run"] and seq_in(a, "--entrypoint", "sh"),
+                            proc(rc=1, stderr="cp boom"))])
+    rc = cli.main(["restore", str(snap), "--yes"], run=fake, out=io.StringIO(), env=ENV)
+    assert rc == cli.EX_UNAVAILABLE
+    assert not any(seq_in(c, "up", "-d") for c in fake.calls)   # no restart after a failed copy
 
 
 # ── status: aggregation (ps + in-container healthcheck + tunnel + seat count) ───

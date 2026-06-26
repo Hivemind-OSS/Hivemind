@@ -29,6 +29,8 @@ import time
 from typing import Callable, Mapping, Optional, Sequence, TextIO
 
 SERVICE = "hive-server"           # single source of the compose service name (mirrors compose.yaml)
+IMAGE = "hive:vmin"               # the built image tag (mirrors compose.yaml `image:`) — `reset`
+                                  # runs backupctl in a throwaway container off the data volume
 HTTP_PORT = 8765                  # the daemon's loopback HTTP port (mirrors compose.yaml)
 AUTHCTL = ("python", "-m", "hive.tools.authctl")    # the in-container admin tool
 TUNNEL_PROFILE = "tunnel"         # mirrors the compose `profiles: ["tunnel"]` gate
@@ -165,12 +167,91 @@ def _up(args, *, run: Run, out: TextIO, env: Mapping[str, str], ask) -> int:
     return _wait_healthy(run, env)
 
 
-def _nuke(args, *, run: Run, out: TextIO, env: Mapping[str, str], ask) -> int:
-    answer = ask("hive nuke DESTROYS the data volume (hive-data). Type 'nuke' to confirm: ")
-    if (answer or "").strip() != "nuke":
-        print("hive: not confirmed — nothing destroyed", file=sys.stderr)
+_DEFAULT_RESET_OUT = "hive-backups"   # host dir (cwd-relative) for reset's pre-destroy snapshot
+
+
+def _reset(args, *, run: Run, out: TextIO, env: Mapping[str, str], ask) -> int:
+    """Recoverable clean-start: snapshot the store OUT of the volume to the host, THEN destroy +
+    recreate it empty. The snapshot is the safety net — `reset` ABORTS before any destructive
+    `down -v` if it fails (fail-safe toward preservation, Law 6), so an accidental reset costs a
+    restart, not the memory.
+
+    The snapshot runs `backupctl` in a THROWAWAY container, as ROOT (`--user 0:0`) so it can read
+    the image-user-owned live WAL store and write the operator's host dir, with `--entrypoint
+    python` overriding the image's daemon ENTRYPOINT so the args actually reach backupctl — a pure
+    file-level SQLite backup that never constructs the store, so it works even when the daemon
+    CANNOT boot against a schema/geometry-incompatible store (the very case reset exists for). A
+    second root `chown` hands the snapshot back to the operator. Unlike a bare `down -v`, the prior
+    store survives on the host. // O(db size) + a clean restart."""
+    abs_out = os.path.abspath(args.out or _DEFAULT_RESET_OUT)
+    if not args.yes:
+        answer = ask(f"hive reset DESTROYS the data volume (a snapshot is saved to {abs_out} "
+                     "first). Type 'reset' to confirm: ")
+        if (answer or "").strip() != "reset":
+            print("hive: not confirmed — nothing destroyed", file=sys.stderr)
+            return EX_USAGE
+    # 1. snapshot OUT of the volume FIRST — the recoverable safety net. Root + entrypoint override
+    #    so it actually runs backupctl and can write the operator's host dir; works even when the
+    #    daemon can't boot against an incompatible store (backupctl never builds the store).
+    snap = run(["docker", "run", "--rm", "--user", "0:0", "--entrypoint", "python",
+                "-v", "hive-data:/data", "-v", f"{abs_out}:/out",
+                "-e", "HIVE_RETENTION__BACKUP_DIR=/out",
+                IMAGE, "-m", "hive.tools.backupctl"], env)
+    if snap.returncode != 0:
+        sys.stderr.write(snap.stderr or "")
+        print("hive: pre-reset snapshot FAILED — nothing destroyed "
+              "(run `hive up` if you meant to start a fresh store)", file=sys.stderr)
+        return EX_UNAVAILABLE
+    snap_name = os.path.basename((snap.stdout or "").strip())
+    host_dest = os.path.join(abs_out, snap_name) if snap_name else abs_out
+    # hand the root-written snapshot back to the operator (best-effort — it is already safe and
+    # world-readable, so restore works regardless; this just makes it the operator's to manage).
+    run(["docker", "run", "--rm", "--user", "0:0", "--entrypoint", "chown",
+         "-v", f"{abs_out}:/out", IMAGE, "-R", f"{os.getuid()}:{os.getgid()}", "/out"], env)
+    # 2. only now is it safe to destroy the volume + recreate it empty + warm.
+    if run(_compose("down", "-v"), env, capture=False).returncode != 0:
+        return EX_UNAVAILABLE
+    if run(_compose("up", "-d", "--build", SERVICE), env, capture=False).returncode != 0:
+        return EX_UNAVAILABLE
+    rc = _wait_healthy(run, env)
+    print(f"hive: reset complete — prior store saved to {host_dest}\n"
+          f"      roll back with: hive restore {host_dest}", file=sys.stderr)
+    return rc
+
+
+def _restore(args, *, run: Run, out: TextIO, env: Mapping[str, str], ask) -> int:
+    """Replace the live store with a host snapshot — the inverse of `reset`. Stops the daemon to
+    release the WAL locks, copies the snapshot into the volume as `/data/shared.db` (clearing stale
+    WAL sidecars), then rebuilds + restarts. The copy runs as the default image user (which owns
+    `/data`); a `reset`-produced snapshot is world-readable, so it reads regardless of owner. The
+    `--entrypoint sh` override is required — the image's ENTRYPOINT is the daemon, not a shell.
+    // O(db size) + a clean restart."""
+    src = os.path.abspath(args.file)
+    if not os.path.isfile(src):
+        print(f"hive: no such snapshot: {args.file}", file=sys.stderr)
         return EX_USAGE
-    return _rc(run(_compose("down", "-v"), env, capture=False))
+    if not args.yes:
+        answer = ask(f"hive restore OVERWRITES the live store with {src}. Type 'restore' to confirm: ")
+        if (answer or "").strip() != "restore":
+            print("hive: not confirmed — store unchanged", file=sys.stderr)
+            return EX_USAGE
+    # stop the daemon to release WAL locks before overwriting the db file; preserves the volume.
+    if run(_compose("down"), env, capture=False).returncode != 0:
+        return EX_UNAVAILABLE
+    name = os.path.basename(src)
+    cp = run(["docker", "run", "--rm", "--entrypoint", "sh",
+              "-v", "hive-data:/data", "-v", f"{os.path.dirname(src)}:/in", IMAGE,
+              "-c", f"cp /in/{name} /data/shared.db && "
+                    "rm -f /data/shared.db-wal /data/shared.db-shm"], env)
+    if cp.returncode != 0:
+        sys.stderr.write(cp.stderr or "")
+        print("hive: restore copy FAILED — the daemon is stopped; run `hive up`", file=sys.stderr)
+        return EX_UNAVAILABLE
+    if run(_compose("up", "-d", "--build", SERVICE), env, capture=False).returncode != 0:
+        return EX_UNAVAILABLE
+    rc = _wait_healthy(run, env)
+    print(f"hive: restore complete — store replaced from {src}", file=sys.stderr)
+    return rc
 
 
 def _status(args, *, run: Run, out: TextIO, env: Mapping[str, str], ask) -> int:
@@ -289,7 +370,8 @@ _HANDLERS: dict[str, Callable[..., int]] = {
     "down": _down,
     "logs": _logs,
     "backup": _backup,
-    "nuke": _nuke,
+    "reset": _reset,
+    "restore": _restore,
     "status": _status,
     "token": _token,
     "revoke": _revoke,
@@ -329,7 +411,17 @@ def main(argv: Optional[list[str]] = None, *, run: Optional[Run] = None,
     p_logs = sub.add_parser("logs", help="follow logs (optionally one service)")
     p_logs.add_argument("service", nargs="?", default=None,
                         help=f"compose service (e.g. {SERVICE}, ngrok)")
-    sub.add_parser("nuke", help="DESTROY the stack incl. the data volume (asks to confirm)")
+    p_reset = sub.add_parser(
+        "reset", help="snapshot the store out of the volume, then destroy + recreate it empty "
+                      "(recoverable clean-start; asks to confirm)")
+    p_reset.add_argument("--out", default=None,
+                         help=f"host dir for the pre-reset snapshot (default: ./{_DEFAULT_RESET_OUT})")
+    p_reset.add_argument("--yes", action="store_true",
+                         help="skip the typed confirmation (for scripted dev resets)")
+    p_restore = sub.add_parser(
+        "restore", help="replace the live store with a snapshot .db (inverse of reset; asks to confirm)")
+    p_restore.add_argument("file", help="path to a snapshot .db (e.g. ./hive-backups/hive-<stamp>.db)")
+    p_restore.add_argument("--yes", action="store_true", help="skip the typed confirmation")
     sub.add_parser("backup", help="snapshot the store now (manual; keeps the backup_keep most-recent you take)")
     sub.add_parser("status", help="server health, tunnel state + URL, seat count")
     p_token = sub.add_parser("token", help="mint a per-seat token (printed ONCE to stdout)")

@@ -24,11 +24,12 @@ hive up                     # build + start (zero-config); blocks until the daem
   **127.0.0.1:8765** (local agents) and a token-required **tunnel** door (compose-internal
   `8766`, ngrok-forwarded — the only remote-reachable one). Public exposure is never implicit —
   see section 3.
-- Data lives in the `hive-data` volume: `hive down` preserves it, `hive nuke` destroys
-  it (typed confirmation).
+- Data lives in the `hive-data` volume: `hive down` preserves it, `hive reset` snapshots it
+  out to the host and then recreates it empty (recoverable; typed confirmation).
 - **Upgrading across schema generations**: this build refuses old-format tables at boot
   (no silent migration). If `hive up` crash-loops after a rebuild, the volume predates
-  the current schema — `hive nuke`, then `hive up` for a clean store.
+  the current schema — run `hive reset` for a clean store (it snapshots the prior store to
+  the host first, so the upgrade is recoverable).
 
 ## 2. Connect an agent
 
@@ -107,7 +108,8 @@ crash) — remove it.
 | `hive tokens` | provisioned seat labels (never the tokens) |
 | `hive revoke <seat>` | offboard a seat (next request → 401) |
 | `hive backup` | snapshot the store now — manual (no scheduler); keeps the `backup_keep` most-recent you take |
-| `hive down` / `hive nuke` | stop (keep data) / destroy (typed confirm) |
+| `hive down` / `hive reset` | stop (keep data) / snapshot-out then recreate empty (recoverable; typed confirm) |
+| `hive restore <snap>` | replace the live store from a snapshot (inverse of reset; typed confirm) |
 
 **Demand-health KPIs:** call `hive_health(include_trends=true)` over MCP — current vs previous
 7d window + deltas (`confident_rate` + `demand_entropy`), read-only off the warm store. This

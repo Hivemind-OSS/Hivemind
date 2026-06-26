@@ -95,7 +95,7 @@ class Container:
 
     def _assert_stored_vectors_match_embedder_dim(self) -> None:
         """Law 5 + Law 6 boot guard: any persisted episode vector whose width != the embedder's
-        native dim means the store was written under a DIFFERENT geometry (a forgotten `hive nuke`
+        native dim means the store was written under a DIFFERENT geometry (a forgotten `hive reset`
         after a model/dim swap). Fail fast at boot (→ EX_SOFTWARE) rather than build the index from
         mixed-dim rows and serve garbage. A fresh store (no vectors) passes trivially; values are
         float32 BLOBs, so the width is the byte length / 4."""
@@ -109,7 +109,7 @@ class Container:
             _log.error("container.stored_dim_mismatch width=%d embedder_d=%d", width, d)
             raise RuntimeError(
                 f"stored vector dim {width} != embedder dim {d} — the store was written under a "
-                "different geometry; re-initialise it (hive nuke) before serving")
+                "different geometry; re-initialise it (hive reset) before serving")
 
     def build_index(self) -> None:
         """Boot order: decay sweep FIRST (materialize lazy TTL deaths so the
