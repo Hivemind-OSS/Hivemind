@@ -280,5 +280,4 @@ generations is `hive nuke` then `hive up` (no in-place migration ships).
 ---
 
 *Further reading in this repository:* `README.md` (quickstart), `HOWTO.md` (operator guide),
-`THIRD_PARTY_NOTICES.md` + `LICENSES/` (embedding-model attribution). The project version is in
-`VERSION.md`.
+`THIRD_PARTY_NOTICES.md` + `LICENSES/` (embedding-model attribution).
