@@ -125,5 +125,6 @@ tests/                the test suite
 compose.yaml          the single-service stack (+ opt-in ngrok tunnel profile)
 Dockerfile            the hermetically-offline server image (embedder baked at build)
 HIVE-ADMIN.md         admin & operator guide
+skills/               operator runbook-skills (bringup, connect, backup/restore, operate)
 THIRD_PARTY_NOTICES.md / LICENSES/   embedding-model attribution + license
 ```

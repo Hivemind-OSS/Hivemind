@@ -1,11 +1,8 @@
 # Changelog
 
 All notable changes to this project are documented here.
-The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
-and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
-### Added
+## Added
 - `skills/` — operator runbook-skills (`hive-bringup`, `hive-connect-team`,
   `hive-backup-restore`, `hive-operate`), each a self-contained `SKILL.md` with trigger
   frontmatter, so an agent can run the load-bearing lifecycle / connect / backup / tuning
@@ -43,7 +40,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and `include_gaps` (clustered demand-gap report).
 - `autonomy` config group (`enabled` + demand / TTL knobs); like all
   config it is resolved at boot — there is no live reload (tune via `.env` then `hive up`).
-### Changed
+
+## Changed
 - Auth is now a property of the **listening socket**, not a config mode: the daemon binds a
   tokenless **loopback** door (host-published `127.0.0.1:8765`) and a token-required **tunnel**
   door (compose-internal `8766`, ngrok-forwarded). `HIVE_AUTH__MODE` (the `token|open` switch)
@@ -59,8 +57,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (established, or fresh provisional) at the scan, the index sync, the pipeline resolve
   step, and the per-hit belt.
 - Boot order: decay sweep runs before the index rebuild.
-### Fixed
-### Removed
+
+## Removed
 - `autonomy.solo_mode` + `autonomy.solo_min_span_days` — demand-promotion is now ONE
   identity-diversity rule for solo and team alike. A solo dev's independent agents each carry a
   distinct per-session identity, so their shared demand promotes with no flag (the elapsed-span
