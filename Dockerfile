@@ -13,16 +13,23 @@ ENV PATH="/opt/venv/bin:$PATH"
 # disk-safe. sentence-transformers then sees torch already satisfied.
 RUN pip install --no-cache-dir torch --index-url https://download.pytorch.org/whl/cpu
 RUN pip install --no-cache-dir ".[embed]"
+# Bake the Qwen3-Embedding-0.6B weights OFFLINE into an image layer (no hot-path download) BEFORE
+# the volatile `COPY hive/`, so a hive/ source edit never invalidates — and re-downloads — this
+# ~1.2 GB weights layer (fp32; budget ~2.5–3 GB resident RAM on CPU at runtime). bake_model.py is
+# self-contained (stdlib + a lazy sentence_transformers import; both package __init__.py are empty),
+# so the model layer depends on ONLY these three copied files and rebuilds only when bake_model.py
+# itself changes. --dest is the HF HUB cache dir ($HF_HOME/hub), EXACTLY where the offline runtime
+# (HF_HOME=/opt/hf-cache, cache_folder unset) resolves the model — bake and load must agree on the
+# same root or the runtime finds nothing under --network none.
+ENV HF_HOME=/opt/hf-cache
+COPY hive/__init__.py ./hive/__init__.py
+COPY hive/tools/__init__.py ./hive/tools/__init__.py
+COPY hive/tools/bake_model.py ./hive/tools/bake_model.py
+RUN python -m hive.tools.bake_model --model Qwen/Qwen3-Embedding-0.6B --dest /opt/hf-cache/hub
+# Volatile source — copied AFTER the model layer so editing it never re-bakes the weights.
 COPY hive/ ./hive/
 RUN pip install --no-cache-dir ".[embed]" \
  && python -m compileall -q hive
-# Bake the Qwen3-Embedding-0.6B weights OFFLINE into an image layer (no hot-path download).
-# This is a ~1.2 GB weights layer (fp32; budget ~2.5–3 GB resident RAM on CPU at runtime).
-# --dest is the HF HUB cache dir ($HF_HOME/hub), which is EXACTLY where the offline runtime
-# (HF_HOME=/opt/hf-cache, cache_folder unset) resolves the model — bake and load must agree
-# on the same root or the runtime finds nothing under --network none.
-ENV HF_HOME=/opt/hf-cache
-RUN python -m hive.tools.bake_model --model Qwen/Qwen3-Embedding-0.6B --dest /opt/hf-cache/hub
 
 # ---------- runtime ----------
 FROM python:3.12-slim AS runtime

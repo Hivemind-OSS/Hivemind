@@ -61,6 +61,20 @@ def test_weights_baked_in_builder():
     assert "Qwen/Qwen3-Embedding-0.6B" in builder
 
 
+def test_model_baked_before_volatile_source_copy():
+    # BUILD-CACHE invariant (BUG-014): the ~1.2 GB bake must precede the wholesale `COPY hive/ ./hive/`,
+    # so editing any hive/ source never invalidates — and re-downloads — the weights layer. The bake
+    # depends only on the three self-contained files (the two empty __init__.py + bake_model.py),
+    # which are copied BEFORE it; the full source is copied AFTER.
+    builder = _stages()["builder"]
+    bake_at = builder.index("hive.tools.bake_model")          # the RUN (dotted module path)
+    wholesale = re.search(r"(?im)^COPY\s+hive/\s+\./hive/\s*$", builder)
+    assert wholesale, "no wholesale `COPY hive/ ./hive/` in builder"
+    assert bake_at < wholesale.start(), "the model bake must precede `COPY hive/` or the cache is defeated"
+    for f in ("hive/__init__.py", "hive/tools/__init__.py", "hive/tools/bake_model.py"):
+        assert builder.index(f"COPY {f}") < bake_at, f"{f} must be copied before the bake"
+
+
 def test_bake_dest_matches_runtime_hub_resolution():
     # bake --dest and the offline runtime's resolution must agree on ONE directory: with
     # HF_HOME=X and cache_folder unset, ST/huggingface_hub resolve X/hub — so the bake MUST
