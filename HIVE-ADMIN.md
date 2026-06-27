@@ -3,7 +3,8 @@
 The administrator's reference for standing up a Hivemind server, connecting a fleet, tuning the
 safety/recall knobs, and running it day-2. Everything here goes through the `hive` CLI
 (`pip install -e .` provides the command; uninstalled, `python -m hive.tools.cli` is identical).
-For *what Hivemind is* and the agent-facing memory contract, see `llms.txt`; for the quickstart,
+For *what Hivemind is* and the agent-facing memory contract, see `llms-full.txt` (the complete
+self-contained guide; `llms.txt` is the short link index); for the quickstart,
 `README.md`. Agent-runnable runbook-skills for the procedures below live in `skills/`
 (`skills/README.md`).
 

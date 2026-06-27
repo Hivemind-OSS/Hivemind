@@ -73,7 +73,8 @@ written into a rules file.** On **Claude Code only**, the `hive_health` tool des
 lists optional lifecycle-hook nudges you can merge into `.claude/settings.json`.
 
 ## Agents
-Read ```llms.txt``` for a detailed explanation.
+Read **[`llms-full.txt`](llms-full.txt)** for the complete, self-contained explanation of how
+agents use the memory; **[`llms.txt`](llms.txt)** is the short link index to every project doc.
 
 ## Configuration
 
@@ -131,6 +132,8 @@ hive/                 the server: domain core, adapters (SQLite store, embedder)
 tests/                the test suite
 compose.yaml          the single-service stack (+ opt-in ngrok tunnel profile)
 Dockerfile            the hermetically-offline server image (embedder baked at build)
+llms.txt              link index to the project docs (llmstxt.org convention)
+llms-full.txt         the complete, self-contained operating guide for agents & integrators
 HIVE-ADMIN.md         admin & operator guide
 skills/               operator runbook-skills (bringup, connect, backup/restore, operate)
 THIRD_PARTY_NOTICES.md / LICENSES/   embedding-model attribution + license

@@ -48,6 +48,12 @@ All notable changes to this project are documented here.
   config it is resolved at boot — there is no live reload (tune via `.env` then `hive up`).
 
 ## Changed
+- Documentation follows the [llmstxt.org](https://llmstxt.org) convention: the self-contained
+  operating guide moved `llms.txt` → `llms-full.txt`, and `llms.txt` is now the short curated
+  link index over the project docs (`llms-full.txt`, `README.md`, `HIVE-ADMIN.md`,
+  `skills/README.md`, `docs/OPERATIONS.md`, and the attribution notice). `README.md` and
+  `HIVE-ADMIN.md` now point the detailed explanation at `llms-full.txt` and name `llms.txt` as
+  the index.
 - Agent-contract `CONTRACT_VERSION` `v.01` → `v.02`: the served onboarding is raised from MAY →
   **MUST install** (the `initialize` instructions, the `hive_health` reference, the installed rules
   block, and the onboarding procedure now direct the install, while keeping the honest "degrades
