@@ -46,9 +46,10 @@ hive up                   # build + start; blocks until the daemon is healthy
 `hive up` is zero-config to boot, but **the store defaults to in-memory (`:memory:`) — ephemeral,
 so all memory is lost on restart.** Copy `.env.example` to `.env` (above) to persist into the
 `hive-data` volume via `HIVE_STORE__DB_PATH=/data/shared.db`; an ephemeral boot WARNs loudly and
-`hive_health` reports `store_ephemeral`. The `skills/` directory ships the runnable step-by-step
-versions of these operations — **`hive-bringup`** (start / health-check / diagnose the server) and
-**`hive-connect-team`** (register agents & teammates).
+`hive_health` reports `store_ephemeral`. **Agents should bring the server up with the runnable
+[`hive-bringup`](skills/hive-bringup/SKILL.md) skill** rather than the raw commands above — it
+carries the bounded health-wait, the boot failure modes, and the schema-refusal recovery;
+**[`hive-connect-team`](skills/hive-connect-team/SKILL.md)** then registers agents & teammates.
 
 The daemon serves MCP over **two
 doors**: a tokenless **loopback** door on **127.0.0.1:8765** for local agents, and a
