@@ -59,6 +59,23 @@ def test_health_omits_secret_scan_key_when_enabled():
     assert "secret_scan_disabled" not in snap
 
 
+def test_health_surfaces_store_ephemeral_when_in_memory():
+    # the in-memory (:memory:) store loses all memory on restart: the loss-prone posture is
+    # never silent — it shows in health (mirrors secret_scan_disabled).
+    server, _ = build_real_server()                          # :memory: ⇒ db_path=""
+    snap = content(tool_call(server, "hive_health", {}))
+    assert snap["ok"] is True
+    assert snap["store_ephemeral"] is True
+
+
+def test_health_omits_store_ephemeral_when_persistent():
+    # a persistent store (db_path set) ⇒ the key is ABSENT ⇒ the envelope is byte-identical.
+    server, _ = build_real_server()
+    server.db_path = "/data/shared.db"                       # the handler reads self.db_path
+    snap = content(tool_call(server, "hive_health", {}))
+    assert "store_ephemeral" not in snap
+
+
 def test_health_has_no_contested():
     # the contested-memory review queue was cut; include_gaps still serves the demand-gap
     # report, but never a contested block (no _contested_report wiring remains).

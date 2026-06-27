@@ -160,6 +160,14 @@ def build_container(cfg: Config, *, tenant_id: str, agent_id: str,
 
     // construction is torch-cheap: the heavy SentenceTransformer load is deferred to
     ``warm_embedder``; here we only open the DB, apply schema, and wire."""
+    # The store path defaults to :memory: (a safe default that cannot corrupt a persistent store).
+    # But an in-memory store loses ALL captured memory on restart, so — like the disabled secret
+    # floor — this loss-prone posture is never silent: a loud boot WARN here, plus a hive_health
+    # key when ephemeral. Persisting is the operator opt-in (HIVE_STORE__DB_PATH=/data/shared.db).
+    if cfg.db_path == _MEMORY_DB:
+        _log.warning("container.store_ephemeral: HIVE_STORE__DB_PATH is unset — the store is "
+                     "IN-MEMORY (:memory:) and ALL captured memory is LOST on restart. Set "
+                     "HIVE_STORE__DB_PATH=/data/shared.db in .env to persist into the hive-data volume")
     conn = connect(cfg.db_path, check_same_thread=False)   # shared across HTTP handler threads (lock-serialized)
     # The embedder is built FIRST (torch-cheap — the model load is deferred to warm): its native
     # ``d`` is the SINGLE source of the store/index vector width, so they can never disagree.

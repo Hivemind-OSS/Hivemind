@@ -39,10 +39,18 @@ A connected agent gets exactly eight tools:
 ```bash
 git clone <repo-url> hivemind && cd hivemind
 pip install -e .          # installs the `hive` command (uninstalled: python -m hive.tools.cli)
+cp .env.example .env      # persist the store across restarts (sets HIVE_STORE__DB_PATH)
 hive up                   # build + start; blocks until the daemon is healthy
 ```
 
-`hive up` is zero-config — it boots on safe code defaults. The daemon serves MCP over **two
+`hive up` is zero-config to boot, but **the store defaults to in-memory (`:memory:`) — ephemeral,
+so all memory is lost on restart.** Copy `.env.example` to `.env` (above) to persist into the
+`hive-data` volume via `HIVE_STORE__DB_PATH=/data/shared.db`; an ephemeral boot WARNs loudly and
+`hive_health` reports `store_ephemeral`. The `skills/` directory ships the runnable step-by-step
+versions of these operations — **`hive-bringup`** (start / health-check / diagnose the server) and
+**`hive-connect-team`** (register agents & teammates).
+
+The daemon serves MCP over **two
 doors**: a tokenless **loopback** door on **127.0.0.1:8765** for local agents, and a
 token-required **tunnel** door for remote teammates (compose-internal, never host-published).
 Identity is per-agent-session — every connection gets its own identity automatically (the

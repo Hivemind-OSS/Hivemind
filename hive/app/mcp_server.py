@@ -568,6 +568,12 @@ class HiveMCPServer:
                 # it is never silent. Present ONLY when disabled ⇒ the default envelope is
                 # byte-identical (dropping this guard ⇒ the always-emits mutation).
                 snap["secret_scan_disabled"] = True
+            if not self.db_path:
+                # an empty db_path means the store is in-memory (:memory:) — all memory is LOST on
+                # restart. Surface the loss-prone posture so it is never silent (mirrors
+                # secret_scan_disabled). Present ONLY when ephemeral ⇒ a persistent store's
+                # envelope is byte-identical (dropping this guard ⇒ the always-emits mutation).
+                snap["store_ephemeral"] = True
             # trust-lifecycle telemetry: quarantine pile-up must be visible, never
             # silent. Best-effort — an older store double (tests) may lack these.
             try:

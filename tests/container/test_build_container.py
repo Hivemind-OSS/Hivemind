@@ -126,6 +126,25 @@ def test_build_container_threads_secret_scan_disabled():
     assert c.scanner.scan("AKIAIOSFODNN7EXAMPLE").action == CLEAN
 
 
+# ── ephemeral-store boot WARN (the :memory: posture loses memory on restart — never silent) ──
+def test_build_container_warns_on_ephemeral_store(caplog):
+    """A store left at the :memory: default loses all captured memory on restart. Like the
+    disabled secret floor, this loss-prone posture is surfaced loudly at boot (a WARN)."""
+    import logging
+    with caplog.at_level(logging.WARNING, logger="hive.container"):
+        _build()                                   # default cfg db = ":memory:"
+    assert any("store_ephemeral" in r.getMessage() for r in caplog.records), \
+        "an in-memory store must warn loudly at boot (memory is lost on restart)"
+
+
+def test_build_container_no_ephemeral_warn_on_persistent_store(tmp_path, caplog):
+    """A persistent db_path (a file in the volume) is the intended posture — no WARN fires."""
+    import logging
+    with caplog.at_level(logging.WARNING, logger="hive.container"):
+        _build(tmp_path)                           # _cfg(tmp_path) → a real file db
+    assert not any("store_ephemeral" in r.getMessage() for r in caplog.records)
+
+
 # ── warm / migrate / index (the boot steps) ───────────────────────────────────
 def test_warm_embedder_sets_loaded(tmp_path):
     c = _build(tmp_path)

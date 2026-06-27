@@ -16,14 +16,18 @@ which drives Compose). Then:
 ```bash
 git clone <repo-url> hivemind && cd hivemind
 pip install -e .            # installs the `hive` command
-hive up                    # build + start; zero-config; blocks until the daemon is healthy
+cp .env.example .env        # persist the store across restarts (sets HIVE_STORE__DB_PATH)
+hive up                    # build + start; blocks until the daemon is healthy
 ```
 
-- **Zero config to boot.** Every knob has a safe code default. Copy `.env.example` to `.env` only
-  to set a deliberate override (§4) or the ngrok tunnel secrets (§3).
-- **Data lives in the `hive-data` Docker volume** (the in-container store is `/data/shared.db`).
-  `hive down` stops the stack and preserves it; `hive reset` snapshots it out to the host and
-  recreates it empty (recoverable — §5).
+- **Zero config to boot**, but the store DEFAULTS to in-memory (`:memory:`) — ephemeral. Copy
+  `.env.example` to `.env` to **persist memory across restarts** (it sets
+  `HIVE_STORE__DB_PATH=/data/shared.db`), and for any other deliberate override (§4) or the ngrok
+  tunnel secrets (§3).
+- **A persistent store lives in the `hive-data` Docker volume** once `HIVE_STORE__DB_PATH` points
+  at it (`/data/shared.db`); **without it the store is in-memory and lost on restart** — an
+  ephemeral boot WARNs loudly and `hive_health` reports `store_ephemeral`. `hive down` preserves
+  the volume; `hive reset` snapshots it out to the host and recreates it empty (recoverable — §5).
 - **Schema upgrades are not in-place.** This build refuses old-format tables at boot (no silent
   migration). If `hive up` crash-loops after pulling a new build, the volume predates the current
   schema — run `hive reset` for a clean store. Reset snapshots the prior store to the host first,

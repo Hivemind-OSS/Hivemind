@@ -18,11 +18,15 @@ a running server use **hive-operate**. Full reference: `HIVE-ADMIN.md` §1 & §5
 ## Bring it up
 
 ```bash
-hive up        # zero-config: builds the image, warms the embedder, blocks until healthy
+cp .env.example .env   # persist the store (sets HIVE_STORE__DB_PATH); without it memory is in-RAM only
+hive up                # zero-config: builds the image, warms the embedder, blocks until healthy
 ```
 
-- **Zero config to boot** — every knob has a safe default. Only `cp .env.example .env` and edit it
-  for a deliberate override (**hive-operate**) or the tunnel secrets (**hive-connect-team**).
+- **Persist the store, or lose it on restart.** The store DEFAULTS to in-memory (`:memory:`) —
+  ephemeral. `cp .env.example .env` sets `HIVE_STORE__DB_PATH=/data/shared.db` to persist into the
+  `hive-data` volume; an ephemeral boot WARNs loudly (`container.store_ephemeral`) and `hive_health`
+  reports `store_ephemeral`. Edit `.env` for any other override (**hive-operate**) or the tunnel
+  secrets (**hive-connect-team**).
 - **The first `hive up` is slow, and that is normal** — it builds the image and bakes the offline
   embedder (no network at runtime). It is not hung.
 - `up` then **blocks on a bounded health-wait** (default 180 s; "healthy" ≡ the embedder is
