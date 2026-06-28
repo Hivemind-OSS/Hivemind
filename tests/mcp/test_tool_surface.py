@@ -1,4 +1,4 @@
-"""M06 protocol surface: exactly-4 tools, the dropped verbs absent (the AgentCortex-7,
+"""M06 protocol surface: exactly-8 tools, the dropped verbs absent (the AgentCortex-era verbs,
 the removed approval queue hive_pending/approve/reject, the onboarding handshake hive_init,
 AND no hive_evidence — client-fed evidence does not exist in this build), JSON-RPC error
 semantics, the schema-enforcement belt (malformed call never reaches a port — ★), and

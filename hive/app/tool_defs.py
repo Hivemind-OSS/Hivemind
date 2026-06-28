@@ -1,5 +1,6 @@
 """TOOL_DEFINITIONS — the static ``tools/list`` schema table for the MCP surface.
-EXACTLY 4 tools: hive_write / hive_capture / hive_recall / hive_health. The onboarding
+EXACTLY 8 tools: hive_write / hive_capture / hive_recall / hive_supersede / hive_prune /
+hive_flag / hive_outcome / hive_health. The onboarding
 handshake (``hive_init``) is gone — the contract reaches every agent via the always-on
 ``initialize`` instructions (the served FLOOR), with a secondary reference carried in the
 ``hive_health`` description. On top of that floor an OPTIONAL, versioned rules block MAY be
@@ -8,8 +9,8 @@ installed as an enhancement layer (``onboard_ref.AGENT_RULES_BLOCK`` — version
 installs nothing, and a missing/stale block degrades safely to it. ``hive_evidence`` deliberately does NOT exist (no
 client-fed evidence in this build); the server-side approval QUEUE (hive_pending /
 hive_approve / hive_reject) was removed with the move to client-gated capture; and the
-AgentCortex-era 7 (consolidate/schemas/recall_cold/restore_cold/reconsolidate/audit/
-outcome) are absent by construction.
+AgentCortex-era consolidate / schemas / recall_cold / restore_cold / reconsolidate / audit
+verbs are absent by construction.
 
 A pure module constant — no runtime state. The same table is the source of truth
 for (a) the ``tools/list`` reply and (b) the pre-dispatch schema-validation belt in
@@ -33,7 +34,7 @@ _WRITE_GUIDANCE = (
     "Write one dense, self-contained fact — don't pad or restate the obvious; verbosity "
     "flattens the embedding and makes recall abstain.")
 
-# The four hive_* verbs. Frozen via the module boundary; handlers read args
+# The eight hive_* verbs. Frozen via the module boundary; handlers read args
 # permissively (.get) so the ONLY required-field guard is _validate over this table.
 TOOL_DEFINITIONS: list[dict] = [
     {"name": "hive_write",
