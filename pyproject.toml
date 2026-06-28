@@ -10,7 +10,7 @@ readme = "README.md"
 license = "Apache-2.0"
 license-files = ["LICENSE"]
 requires-python = ">=3.11"
-authors = [{ name = "Derek Wingard", email = "derekwingard@gmail.com" }]
+authors = [{ name = "Hivemind-OSS" }]
 classifiers = [
     "Intended Audience :: Developers",
     "Programming Language :: Python :: 3",
@@ -21,6 +21,11 @@ classifiers = [
 dependencies = [
     "numpy>=1.24",
 ]
+
+[project.urls]
+Homepage = "https://github.com/Hivemind-OSS/Hivemind"
+Repository = "https://github.com/Hivemind-OSS/Hivemind"
+Issues = "https://github.com/Hivemind-OSS/Hivemind/issues"
 
 [project.scripts]
 # the operator CLI (stdlib-only); uninstalled: `python -m hive.tools.cli`

@@ -14,7 +14,7 @@ On the server host: **Docker** + **Docker Compose v2**, and **Python 3.11+** (fo
 which drives Compose). Then:
 
 ```bash
-git clone <repo-url> hivemind && cd hivemind
+git clone https://github.com/Hivemind-OSS/Hivemind.git hivemind && cd hivemind
 pip install -e .            # installs the `hive` command
 cp .env.example .env        # persist the store across restarts (sets HIVE_STORE__DB_PATH)
 hive up                    # build + start; blocks until the daemon is healthy
