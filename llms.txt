@@ -18,7 +18,7 @@ load only one file, read `llms-full.txt` — it is the complete guide and assume
 ## Operator runbooks
 
 - [skills/README.md](skills/README.md): Index of the runnable operator skills (bringup, connect-team, backup-restore, operate) for the load-bearing `hive` operations.
-- [docs/OPERATIONS.md](docs/OPERATIONS.md): Long-form operations reference and the tuning evidence behind the KPI thresholds.
+- [OPERATIONS.md](OPERATIONS.md): Long-form operations reference and the tuning evidence behind the KPI thresholds.
 
 ## Attribution
 

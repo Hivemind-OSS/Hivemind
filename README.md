@@ -144,6 +144,8 @@ Dockerfile            the hermetically-offline server image (embedder baked at b
 llms.txt              link index to the project docs (llmstxt.org convention)
 llms-full.txt         the complete, self-contained operating guide for agents & integrators
 HIVE-ADMIN.md         admin & operator guide
+OPERATIONS.md         long-form operations reference & the tuning evidence behind the knobs
 skills/               operator runbook-skills (bringup, connect, backup/restore, operate)
-THIRD_PARTY_NOTICES.md / LICENSES/   embedding-model attribution + license
+LICENSE               this project's license (Apache-2.0)
+THIRD_PARTY_NOTICES.md / LICENSES/   embedding-model attribution + license (the embedder)
 ```

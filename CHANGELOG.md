@@ -3,6 +3,9 @@
 All notable changes to this project are documented here.
 
 ## Added
+- `LICENSE` — the project is released under the **Apache License 2.0**, declared in
+  `pyproject.toml` via the PEP 639 `license` / `license-files` fields (build requires
+  `setuptools>=77`).
 - `scripts/contract_version_guard.py` + `.githooks/pre-commit` — a non-blocking pre-commit guard
   that keeps the agent-contract `CONTRACT_VERSION` monotonic: when a commit stages a change to the
   served-contract source (`hive/app/onboard_ref.py` / `hive/domain/kinds.py`) it bumps the version
@@ -13,7 +16,7 @@ All notable changes to this project are documented here.
   `hive-backup-restore`, `hive-operate`), each a self-contained `SKILL.md` with trigger
   frontmatter, so an agent can run the load-bearing lifecycle / connect / backup / tuning
   procedures without rediscovering them. Indexed in `skills/README.md`; the long-form reference
-  stays in `HIVE-ADMIN.md` + `docs/OPERATIONS.md`.
+  stays in `HIVE-ADMIN.md` + `OPERATIONS.md`.
 - `HIVE_SECRET_SCAN__ENABLED` (config group `secret_scan`, default `true`) — an operator
   opt-out for the credential secret floor. On by default it is byte-identical to the prior
   always-on scan; `false` bypasses the pre-persist scan so raw text (secrets included) is
@@ -48,10 +51,13 @@ All notable changes to this project are documented here.
   config it is resolved at boot — there is no live reload (tune via `.env` then `hive up`).
 
 ## Changed
+- `OPERATIONS.md` moved from the gitignored `docs/` tree to the repo root so it ships with the
+  release; the long-form operations & tuning-evidence reference now travels with the repo, and the
+  references in `llms.txt`, `skills/`, and the README layout point at the new location.
 - Documentation follows the [llmstxt.org](https://llmstxt.org) convention: the self-contained
   operating guide moved `llms.txt` → `llms-full.txt`, and `llms.txt` is now the short curated
   link index over the project docs (`llms-full.txt`, `README.md`, `HIVE-ADMIN.md`,
-  `skills/README.md`, `docs/OPERATIONS.md`, and the attribution notice). `README.md` and
+  `skills/README.md`, `OPERATIONS.md`, and the attribution notice). `README.md` and
   `HIVE-ADMIN.md` now point the detailed explanation at `llms-full.txt` and name `llms.txt` as
   the index.
 - Agent-contract `CONTRACT_VERSION` `v.01` → `v.02`: the served onboarding is raised from MAY →

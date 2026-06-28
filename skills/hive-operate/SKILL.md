@@ -6,7 +6,7 @@ description: "Operate and tune a running Hivemind server: read the convergence K
 # hive-operate — watch the KPIs & turn the knobs
 
 Keep a running server lean and current. The store does not clean itself — **maintenance is the
-product.** Full leverage map: `docs/OPERATIONS.md`; knob tables: `HIVE-ADMIN.md` §4 & §6.
+product.** Full leverage map: `OPERATIONS.md`; knob tables: `HIVE-ADMIN.md` §4 & §6.
 
 ## The KPIs — read-only over MCP, off the warm store
 
@@ -44,4 +44,4 @@ nothing cleans it automatically.
 Usefulness is a **flow, not a stock**: a bigger store is a *worse* one — past an optimum, dilution
 and staleness outrun the fixed recall bandwidth. Keep it small, let unused memory expire, run agents
 as **distinct sessions** (that diversity is what promotes good captures), and spend scarce human
-review on the established tier. See `docs/OPERATIONS.md` for the evidence behind each lever.
+review on the established tier. See `OPERATIONS.md` for the evidence behind each lever.

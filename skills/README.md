@@ -2,7 +2,7 @@
 
 Runbook-skills for the load-bearing `hive` operations, so an agent (or a human) can perform them
 without rediscovering the process each time. They ship with the repo; the authoritative long-form
-reference is `HIVE-ADMIN.md` (and `docs/OPERATIONS.md` for the tuning evidence).
+reference is `HIVE-ADMIN.md` (and `OPERATIONS.md` for the tuning evidence).
 
 | Skill | Use it to |
 |---|---|
