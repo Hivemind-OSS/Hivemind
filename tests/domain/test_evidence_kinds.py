@@ -22,12 +22,18 @@ def test_exact_values_pin_the_stored_vocabulary():
     assert ek.EK_OUTCOME_HELPED == "outcome_helped"
     assert ek.EK_OUTCOME_HURT == "outcome_hurt"
     assert ek.EK_CHANGE_OUTCOME == "change_outcome"
+    assert ek.EK_OUTCOME_VERIFIED_HELPED == "outcome_verified_helped"
+    assert ek.EK_OUTCOME_VERIFIED_HURT == "outcome_verified_hurt"
+    assert ek.EK_VERIFY_CURRENT == "verify_current"
+    assert ek.EK_VERIFY_STALE == "verify_stale"
 
 
-def test_membership_set_is_exactly_the_seven_constants():
+def test_membership_set_is_exactly_the_eleven_constants():
     assert ek.EVIDENCE_KINDS == frozenset({
         "promote", "supersede", "prune", "ttl_expired",
-        "outcome_helped", "outcome_hurt", "change_outcome"})
+        "outcome_helped", "outcome_hurt", "change_outcome",
+        "outcome_verified_helped", "outcome_verified_hurt",
+        "verify_current", "verify_stale"})
 
 
 def test_pure_data_module_imports_nothing():
