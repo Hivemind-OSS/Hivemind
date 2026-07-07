@@ -28,8 +28,9 @@ from hive.research.bench.llm import FakeLLM
 from hive.research.bench.poison_agent import PoisonArmObs, PoisonTaskObs
 from hive.research.bench.poison_run import (
     ARM_L4_OFF, ARM_L4_ON, _REQUIRED_PROVENANCE_L4, inject_verified_evidence,
-    main, score_l4_arms,
+    main, pool_l4_reports, score_l4_arms,
 )
+from hive.research.bench.scoring import paired_delta_ci
 from hive.research.bench.poison_substrate import PoisonTaskCase, preload_captures
 from tests.mcp._helpers import build_real_server
 
@@ -284,6 +285,92 @@ def test_main_l4_offline_writes_a_provenance_stamped_gate_report(tmp_path):
         assert prov["evidence_injected"][arm]["hurt_rows"] >= 1
     assert prov["autonomy"]["demand_m"] == 10**9
     assert prov["verified_stamp"]["combdrift"] and prov["verified_stamp"]["matrix_head"]
+
+
+# ── per-case rows + cross-seed pooling: the powered-rerun machinery ─────────────
+# One seed's corrected slice (~12 cases) cannot power the gate CI; the pooled verdict
+# concatenates the per-case PAIRED vectors across independent seeds and rescores through
+# the SAME score_l4_arms path, so the pooled clean_win semantics can never drift from a
+# single run's. The per-case rows are the serialized PoisonTaskObs constructor fields —
+# derived axes (success/false_serve) stay derived, so a tampered row cannot contradict them.
+
+def _offline_report(tmp_path, name: str, seed: int) -> dict:
+    out = tmp_path / name
+    rc = main(["--l4", "--dataset", str(_FIX), "--out", str(out),
+               "--seeds", str(seed), "--poison-frac", "1.0"],
+              l4_env_factory=_offline_env_factory,
+              llm_factory=lambda arm: FakeLLM())
+    assert rc == 0
+    return json.loads(out.read_text())
+
+
+def test_l4_report_arms_carry_reconstructable_per_case_rows(tmp_path):
+    rep = _offline_report(tmp_path, "l4.json", 0)
+    for arm_name, arm in rep["arms"].items():
+        rows = arm["cases"]
+        assert len(rows) == arm["n"]
+        tasks = [PoisonTaskObs(**row) for row in rows]         # rows ARE the frozen carrier
+        assert sum(1 for t in tasks if t.success) / len(tasks) == arm["success_rate"]
+        assert sum(t.served_text_count for t in tasks) == arm["served_text_total"]
+
+
+def test_pool_l4_reports_pools_the_paired_vectors_across_seeds(tmp_path):
+    r0 = _offline_report(tmp_path, "s0.json", 0)
+    r1 = _offline_report(tmp_path, "s1.json", 1)
+    pooled = pool_l4_reports([r0, r1], seed=0)
+    for arm in (ARM_L4_OFF, ARM_L4_ON):
+        assert pooled["arms"][arm]["n"] == r0["arms"][arm]["n"] + r1["arms"][arm]["n"]
+    # the pooled CI is the paired bootstrap over the CONCATENATED corrected vectors —
+    # recompute it independently from the per-case rows and pin equality.
+    vec: dict[str, dict[str, list[float]]] = {}
+    for arm in (ARM_L4_OFF, ARM_L4_ON):
+        tasks = [PoisonTaskObs(**row) for r in (r0, r1) for row in r["arms"][arm]["cases"]]
+        corrected = [t for t in tasks if t.regime == "corrected" and t.answerable]
+        vec[arm] = {"s": [1.0 if t.success else 0.0 for t in corrected],
+                    "f": [1.0 if t.false_serve else 0.0 for t in corrected]}
+    sp, slo, shi = paired_delta_ci(vec[ARM_L4_ON]["s"], vec[ARM_L4_OFF]["s"], seed=0)
+    d = pooled["deltas"]["E-Cprime"]
+    assert (d["success"]["point"], d["success"]["lo"], d["success"]["hi"]) == (sp, slo, shi)
+    assert d["clean_win"] == (d["success"]["improves"] and not d["false_serve"]["worsens"])
+    prov = pooled["provenance"]
+    assert prov["seeds"] == [0, 1] and len(prov["pooled_from"]) == 2
+    assert prov["n_cases"] == r0["provenance"]["n_cases"] + r1["provenance"]["n_cases"]
+
+
+def test_pool_l4_reports_refuses_parity_mismatch_and_seed_overlap(tmp_path):
+    r0 = _offline_report(tmp_path, "s0.json", 0)
+    r1 = _offline_report(tmp_path, "s1.json", 1)
+    tampered = json.loads(json.dumps(r1))
+    tampered["provenance"]["dataset_hash"] = "deadbeef"
+    with pytest.raises(ValueError, match="dataset_hash"):
+        pool_l4_reports([r0, tampered])
+    dup = json.loads(json.dumps(r1))
+    dup["provenance"]["seeds"] = [0]                           # same seed ⇒ same tasks twice
+    with pytest.raises(ValueError, match="seed"):
+        pool_l4_reports([r0, dup])
+    with pytest.raises(ValueError, match="2"):
+        pool_l4_reports([r0])
+
+
+def test_pool_l4_reports_refuses_a_legacy_report_without_case_rows(tmp_path):
+    r0 = _offline_report(tmp_path, "s0.json", 0)
+    legacy = _offline_report(tmp_path, "s1.json", 1)
+    for arm in legacy["arms"].values():
+        arm.pop("cases")                                       # the pre-powered artifact shape
+    with pytest.raises(ValueError, match="cases"):
+        pool_l4_reports([r0, legacy])
+
+
+def test_main_l4_pool_cli_writes_the_pooled_report(tmp_path):
+    _offline_report(tmp_path, "s0.json", 0)
+    _offline_report(tmp_path, "s1.json", 1)
+    out = tmp_path / "pooled.json"
+    rc = main(["--l4-pool", str(tmp_path / "s0.json"), str(tmp_path / "s1.json"),
+               "--out", str(out)])                             # no dataset / LLM needed
+    assert rc == 0 and out.exists()
+    pooled = json.loads(out.read_text())
+    assert pooled["provenance"]["seeds"] == [0, 1]
+    assert set(pooled["deltas"]) == {"E-Cprime"}
 
 
 def test_main_l4_raises_when_the_off_arm_promotes(tmp_path):

@@ -53,6 +53,7 @@ import json
 import logging
 import os
 import time
+from dataclasses import asdict
 from pathlib import Path
 from typing import Callable, Optional, Sequence
 
@@ -66,7 +67,7 @@ from hive.domain.evidence_kinds import (
 from hive.research.bench.backends import MemoryBackend
 from hive.research.bench.dataset import load_longmemeval
 from hive.research.bench.llm import LLM
-from hive.research.bench.poison_agent import PoisonArmObs, run_poison_arm
+from hive.research.bench.poison_agent import PoisonArmObs, PoisonTaskObs, run_poison_arm
 from hive.research.bench.poison_substrate import (
     POISON_VERSION, PoisonTaskCase, Preloaded, build_poison_substrate, drive_demand,
     make_credential_text, plant_falsehood_unvouched, preload_captures,
@@ -148,7 +149,12 @@ def _arm_summary(obs: PoisonArmObs, *, matched_point: int) -> dict:
     ``false_serve_rate`` is over the CORRECTED-ANSWERABLE slice (the only slice carrying a falsehood);
     ``per_served_false_rate_full`` normalizes false serves by total served VOLUME (the anti-confound: a
     win by serving fewer items cannot read as a selection win); ``per_served_false_rate_matched`` holds
-    every arm to the leanest arm's served budget. ``secret_floor`` is reported separately (top-level)."""
+    every arm to the leanest arm's served budget. ``secret_floor`` is reported separately (top-level).
+
+    ``cases`` carries every task's frozen ``PoisonTaskObs`` constructor fields in task order —
+    the per-case paired vectors a cross-seed pool (``pool_l4_reports``) rebuilds and rescores.
+    Derived axes (``success``/``false_serve``) stay derived, never stored, so a row cannot
+    contradict its own aggregates."""
     tasks = obs.tasks
     corrected = [t for t in tasks if _is_corrected_answerable(t)]
     served_total = sum(t.served_text_count for t in tasks)
@@ -177,6 +183,7 @@ def _arm_summary(obs: PoisonArmObs, *, matched_point: int) -> dict:
         "per_served_false_rate_full": (false_total / served_total) if served_total > 0 else 0.0,
         "per_served_false_rate_matched": _matched_false_rate(obs, matched_point=matched_point),
         "by_regime": by_regime,
+        "cases": [asdict(t) for t in tasks],
     }
 
 
@@ -278,6 +285,90 @@ def score_l4_arms(arm_obs: dict[str, PoisonArmObs], *, seed: int = 0) -> dict:
     arms = {name: _arm_summary(obs, matched_point=matched_point) for name, obs in arm_obs.items()}
     deltas = {_L4_DELTA_KEY: _l4_delta(arm_obs[ARM_L4_ON], arm_obs[ARM_L4_OFF], seed=seed)}
     return {"arms": arms, "deltas": deltas, "matched_serve_point": matched_point}
+
+
+# ── cross-seed pooling: the powered rerun's reducer ─────────────────────────────
+
+# One seed's corrected slice (~12 cases) cannot power the gate CI (the recorded seed-0 run
+# read +0.25 with CI [0.0, 0.5] — indecisive purely on n). Pooling concatenates the per-case
+# PAIRED vectors of ≥2 independent-seed runs and rescores through the SAME score_l4_arms
+# path, so the pooled clean_win semantics can never drift from a single run's.
+
+# Same-config keys that must be IDENTICAL across pooled runs — a delta over mixed configs
+# (different gate threshold, poison recipe, agent model, …) is meaningless and is REFUSED.
+_POOL_PARITY_KEYS = (
+    "dataset_hash", "embedder_model", "poison_version", "poison_frac", "poison_kinds",
+    "tau_serve", "autonomy", "model", "top_k", "served_tokenizer")
+
+# The pooled report's stamp set: the shared config once, the pooled identity (seeds, summed
+# counts), and the full per-input provenances under pooled_from (llm_digest / verified_stamp /
+# poison_value_map_hash are per-seed values — they live there, never flattened to the top).
+_REQUIRED_PROVENANCE_L4_POOLED = (
+    "arms", "served_tokenizer", "dataset_hash", "n_cases", "embedder_model", "poison_version",
+    "poison_frac", "poison_kinds", "tau_serve", "autonomy", "model", "seeds", "regime_mix",
+    "matched_serve_point", "promoted", "top_k", "pooled_from", "bootstrap_seed")
+
+
+def pool_l4_reports(reports: Sequence[dict], *, seed: int = 0) -> dict:
+    """Pool ≥2 single-seed L4 gate reports into ONE powered verdict: rebuild each report's
+    frozen per-case carriers from its ``cases`` rows, concatenate the task-paired vectors per
+    arm across seeds (deterministic seed order), and rescore via ``score_l4_arms``.
+
+    REFUSED (never masked) when the runs are not poolable: fewer than two reports, a seed
+    appearing twice (the same tasks would enter the paired CI twice), any config-parity
+    mismatch, or a legacy report without per-case rows (aggregates alone cannot rebuild the
+    paired vectors). ``seed`` is the pooled bootstrap seed, stamped as ``bootstrap_seed``."""
+    if len(reports) < 2:
+        raise ValueError(f"pooling requires >= 2 reports, got {len(reports)}")
+    provs = [r.get("provenance") or {} for r in reports]
+    for key in _POOL_PARITY_KEYS:
+        vals = [p.get(key) for p in provs]
+        if any(v != vals[0] for v in vals[1:]):
+            raise ValueError(
+                f"config-parity mismatch on {key!r}: {vals} — only same-config runs pool")
+    seen: list[int] = []
+    for p in provs:
+        for s in p.get("seeds") or ():
+            if s in seen:
+                raise ValueError(
+                    f"seed {s} appears in more than one report — the same tasks would enter "
+                    "the paired CI twice")
+            seen.append(int(s))
+    order = sorted(range(len(reports)), key=lambda i: tuple(provs[i].get("seeds") or ()))
+    arm_obs: dict[str, PoisonArmObs] = {}
+    for arm in _L4_ARMS:
+        tasks: list[PoisonTaskObs] = []
+        for i in order:
+            rows = ((reports[i].get("arms") or {}).get(arm) or {}).get("cases")
+            if rows is None:
+                raise ValueError(
+                    f"report #{i} arm {arm!r} carries no per-case 'cases' rows (a pre-powered "
+                    "legacy artifact?) — aggregates alone cannot rebuild the paired vectors")
+            try:
+                tasks.extend(PoisonTaskObs(**row) for row in rows)
+            except (TypeError, ValueError) as e:
+                raise ValueError(f"report #{i} arm {arm!r}: malformed case row: {e}") from e
+        arm_obs[arm] = PoisonArmObs(arm=arm, tasks=tuple(tasks))
+    scored = score_l4_arms(arm_obs, seed=seed)
+    ordered_provs = [provs[i] for i in order]
+    regime_mix: dict[str, int] = {}
+    for p in ordered_provs:
+        for r, n in (p.get("regime_mix") or {}).items():
+            regime_mix[r] = regime_mix.get(r, 0) + int(n)
+    provenance = {
+        **{k: ordered_provs[0].get(k) for k in _POOL_PARITY_KEYS},
+        "arms": list(_L4_ARMS),
+        "seeds": sorted(seen),
+        "n_cases": sum(int(p.get("n_cases") or 0) for p in ordered_provs),
+        "regime_mix": regime_mix,
+        "matched_serve_point": scored["matched_serve_point"],
+        "promoted": {arm: sum(int((p.get("promoted") or {}).get(arm, 0))
+                              for p in ordered_provs) for arm in _L4_ARMS},
+        "pooled_from": ordered_provs,
+        "bootstrap_seed": seed,
+    }
+    return build_poison_report(arms=scored["arms"], deltas=scored["deltas"],
+                               provenance=provenance, required=_REQUIRED_PROVENANCE_L4_POOLED)
 
 
 def _evidence_sources(cases: Sequence[PoisonTaskCase]) -> tuple[set[str], set[str]]:
@@ -628,9 +719,13 @@ def _parse_args(argv: Optional[Sequence[str]]) -> argparse.Namespace:
                         "l4-off: capture-only plants + injected verified evidence, the "
                         "verified_promotion flag the sole difference; both arms at "
                         "--tau-serve-on) instead of the four serve-time arms")
+    p.add_argument("--l4-pool", dest="l4_pool", nargs="+", metavar="REPORT.json",
+                   help="pool >=2 single-seed --l4 gate reports into one powered report at "
+                        "--out (config-parity enforced, per-case paired vectors concatenated "
+                        "and rescored); needs no dataset or LLM")
     p.add_argument("--out", required=True)
     a = p.parse_args(argv)
-    if not a.dataset:
+    if not a.dataset and not a.l4_pool:
         p.error("no dataset: pass --dataset or set HIVE_BENCH_LME_PATH")
     a.seeds = [int(s) for s in str(a.seeds).split(",") if s != ""]
     a.poison_kinds = tuple(k for k in str(a.poison_kinds).split(",") if k != "")
@@ -670,6 +765,15 @@ def main(argv: Optional[Sequence[str]] = None, *,
     # CLI observability: the long phases log at INFO; a bare invocation must surface them on
     # stderr (nohup-visible). No-op when a handler is already installed (tests, embedding apps).
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(message)s")
+
+    if cfg.l4_pool:                                  # pure reduce over existing reports
+        reports = [json.loads(Path(pth).read_text(encoding="utf-8")) for pth in cfg.l4_pool]
+        pooled = pool_l4_reports(reports)
+        Path(cfg.out).write_text(json.dumps(pooled, indent=2, sort_keys=True), encoding="utf-8")
+        _log.info("pooled %d reports (seeds %s) -> %s",
+                  len(reports), pooled["provenance"]["seeds"], cfg.out)
+        return 0
+
     seed = cfg.seeds[0]
     make_llm = llm_factory or _default_llm_factory(cfg)
 
