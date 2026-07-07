@@ -437,6 +437,79 @@ def test_default_run_forwards_stdin_input():
     assert p.returncode == 0 and p.stdout == "ndjson-line\n"
 
 
+# ── ingest: feed a census receipt to the in-container censusctl over stdin ─────
+
+
+def test_ingest_execs_censusctl_with_stdin_pipe(tmp_path):
+    receipt = tmp_path / "r.json"
+    receipt.write_text('{"payloadType": "x"}')
+    fake = FakeRun(script=[(lambda a: seq_in(a, "hive.tools.censusctl"),
+                            proc(stdout='{"matched":0}\n'))])
+    out = io.StringIO()
+    rc = cli.main(["ingest", str(receipt)], run=fake, out=out, env=ENV)
+    assert rc == cli.EX_OK
+    call = fake.calls[0]
+    assert call[:2] == ["docker", "compose"]
+    assert seq_in(call, "exec", "-T", "hive-server", "python", "-m",
+                  "hive.tools.censusctl", "ingest", "-")
+    # the receipt rides stdin — a host path does not exist in-container (BUG-012 class)
+    assert str(receipt) not in call
+    assert fake.kws[0].get("input") == '{"payloadType": "x"}'
+    assert out.getvalue() == '{"matched":0}\n'       # the JSON report, forwarded verbatim
+
+
+def test_ingest_missing_host_file_is_usage_error_without_a_child():
+    fake = FakeRun()
+    rc = cli.main(["ingest", "/no/such/receipt.json"], run=fake, out=io.StringIO(),
+                  env=ENV)
+    assert rc == cli.EX_USAGE
+    assert fake.calls == []                          # fail fast: nothing spawned
+
+
+def test_ingest_post_merge_flags_ride_the_child_argv(tmp_path):
+    receipt = tmp_path / "r.json"
+    receipt.write_text("{}")
+    fake = FakeRun()
+    rc = cli.main(["ingest", str(receipt), "--post-merge", "--verdict", "fail",
+                   "--signal", "canary"], run=fake, out=io.StringIO(), env=ENV)
+    assert rc == cli.EX_OK
+    assert seq_in(fake.calls[0], "ingest", "-", "--post-merge", "--verdict", "fail",
+                  "--signal", "canary")
+
+
+def test_ingest_pre_merge_passes_no_outcome_flags(tmp_path):
+    # pre-merge verdicts are derived from the receipt in-kernel — the CLI asserts nothing
+    receipt = tmp_path / "r.json"
+    receipt.write_text("{}")
+    fake = FakeRun()
+    cli.main(["ingest", str(receipt)], run=fake, out=io.StringIO(), env=ENV)
+    call = fake.calls[0]
+    assert "--post-merge" not in call
+    assert "--verdict" not in call and "--signal" not in call
+
+
+def test_ingest_post_merge_without_verdict_is_usage_error_without_a_child(tmp_path):
+    receipt = tmp_path / "r.json"
+    receipt.write_text("{}")
+    fake = FakeRun()
+    rc = cli.main(["ingest", str(receipt), "--post-merge"], run=fake,
+                  out=io.StringIO(), env=ENV)
+    assert rc == cli.EX_USAGE
+    assert fake.calls == []
+
+
+def test_ingest_child_exit_code_passes_through(tmp_path, capsys):
+    receipt = tmp_path / "r.json"
+    receipt.write_text("{}")
+    fake = FakeRun(script=[(lambda a: seq_in(a, "hive.tools.censusctl"),
+                            proc(rc=65, stderr="censusctl: receipt refused: bad\n"))])
+    out = io.StringIO()
+    rc = cli.main(["ingest", str(receipt)], run=fake, out=out, env=ENV)
+    assert rc == 65                                  # censusctl already speaks sysexits
+    assert out.getvalue() == ""                      # no report line on failure
+    assert "refused" in capsys.readouterr().err
+
+
 # ── backup: one-shot snapshot (exec → backupctl, dest path forwarded) ──────────
 def test_backup_forwards_child_stdout():
     path = "/data/backups/hive-20260616-000000.db\n"

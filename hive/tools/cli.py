@@ -34,6 +34,7 @@ IMAGE = "hive:vmin"               # the built image tag (mirrors compose.yaml `i
                                   # runs backupctl in a throwaway container off the data volume
 HTTP_PORT = 8765                  # the daemon's loopback HTTP port (mirrors compose.yaml)
 AUTHCTL = ("python", "-m", "hive.tools.authctl")    # the in-container admin tool
+CENSUSCTL = ("python", "-m", "hive.tools.censusctl")  # the in-container ingest tool
 TUNNEL_PROFILE = "tunnel"         # mirrors the compose `profiles: ["tunnel"]` gate
 
 # sysexits.h — mirror authctl/entrypoint (an exit code cannot lie like a log can)
@@ -366,6 +367,33 @@ def _backup(args, *, run: Run, out: TextIO, env: Mapping[str, str], ask) -> int:
     return EX_OK
 
 
+def _ingest(args, *, run: Run, out: TextIO, env: Mapping[str, str], ask) -> int:
+    """Feed a signed census receipt's change outcome into the evidence ledger — exec
+    the in-container censusctl with the receipt piped over stdin (the documented
+    `input=` seam): a host path does not exist in-container, so the bytes travel, not
+    the name. Post-merge outcomes ride flags; the tag stays server-derived. Forwards
+    the child's one-line JSON report verbatim; censusctl already speaks sysexits, so
+    its exit code passes through."""
+    if args.post_merge and not args.verdict:
+        print("hive: --post-merge requires --verdict {pass,fail}", file=sys.stderr)
+        return EX_USAGE
+    try:
+        with open(args.receipt, encoding="utf-8") as fh:
+            receipt_text = fh.read()
+    except OSError as error:
+        print(f"hive: cannot read receipt {args.receipt!r}: {error}", file=sys.stderr)
+        return EX_USAGE
+    flags = (["--post-merge", "--verdict", args.verdict, "--signal", args.signal]
+             if args.post_merge else [])
+    child = run(_compose("exec", "-T", SERVICE, *CENSUSCTL, "ingest", "-", *flags),
+                env, input=receipt_text)
+    sys.stderr.write(child.stderr or "")
+    if child.returncode != 0:
+        return child.returncode                        # censusctl already speaks sysexits
+    out.write(child.stdout or "")                      # the one-line JSON report, verbatim
+    return EX_OK
+
+
 _HANDLERS: dict[str, Callable[..., int]] = {
     "up": _up,
     "down": _down,
@@ -378,6 +406,7 @@ _HANDLERS: dict[str, Callable[..., int]] = {
     "revoke": _revoke,
     "tokens": _tokens,
     "connect": _connect,
+    "ingest": _ingest,
 }
 
 def _ask_stderr(prompt: str) -> str:
@@ -431,6 +460,20 @@ def main(argv: Optional[list[str]] = None, *, run: Optional[Run] = None,
     p_revoke.add_argument("seat", help="the seat label to revoke")
     sub.add_parser("tokens", help="list provisioned seat labels (never the tokens)")
     sub.add_parser("connect", help="print the teammate's `claude mcp add` line (transport only)")
+    p_ingest = sub.add_parser(
+        "ingest", help="feed a signed census receipt's outcome into the evidence ledger")
+    p_ingest.add_argument("receipt", help="path to the receipt JSON "
+                                          "(piped to the in-container censusctl)")
+    p_ingest.add_argument("--post-merge", action="store_true",
+                          help="record a post-merge outcome (requires --verdict; the "
+                               "server derives the tag from --signal)")
+    p_ingest.add_argument("--verdict", choices=("pass", "fail"), default=None,
+                          help="the post-merge outcome (pre-merge verdicts are derived "
+                               "from the receipt, never asserted)")
+    p_ingest.add_argument("--signal", choices=("randomized", "canary", "none"),
+                          default="none",
+                          help="post-merge evidence signal — machine-checked requires "
+                               "randomized/canary")
     args = parser.parse_args(argv)
     return _HANDLERS[args.cmd](args, run=run, out=out, env=env, ask=ask)
 

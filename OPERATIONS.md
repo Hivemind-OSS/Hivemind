@@ -142,6 +142,11 @@ The trends window is the **only** view into silent fail-open rot — keep it ins
 read it on a fixed cadence (weekly is enough for a small team). Convert gaps into
 `hive_write`s and contested rows into supersessions in the same pass.
 
+The evidence ledger also takes one operator-fed input: `hive ingest <receipt.json>` appends a
+signed census receipt's SHA-bound change outcome as `change_outcome` evidence rows on the
+episodes whose anchors the change touched — append-only, idempotent, trust-untouched
+(detect/surface only: it changes nothing about what is served).
+
 ## Decisions that are yours (operator taste)
 
 The model gives directions, not a single setpoint — these depend on your costs:

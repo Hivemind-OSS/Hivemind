@@ -1,6 +1,6 @@
 ---
 name: hive-operate
-description: "Operate and tune a running Hivemind server: read the convergence KPIs over MCP, interpret them, and turn the recall / safety knobs. Use when asked to check hive health or KPIs, run the weekly maintenance sweep, tune recall or promotion, fix coverage starvation or silent rot, or decide demand_m / tau_serve / conflict.tau. Knobs apply at boot — restart to take effect."
+description: "Operate and tune a running Hivemind server: read the convergence KPIs over MCP, interpret them, turn the recall / safety knobs, and feed census change-outcome receipts into the evidence ledger (hive ingest). Use when asked to check hive health or KPIs, run the weekly maintenance sweep, tune recall or promotion, fix coverage starvation or silent rot, decide demand_m / tau_serve / conflict.tau, or ingest a census receipt. Knobs apply at boot — restart to take effect."
 ---
 
 # hive-operate — watch the KPIs & turn the knobs
@@ -38,6 +38,27 @@ nothing cleans it automatically.
 | `HIVE_CONFLICT__TAU` | 0.80 | distinct facts get merged (→ raise) or near-duplicate twins slip through (→ lower) |
 | `HIVE_AUTONOMY__QUARANTINE_TTL_DAYS` / `…__PROVISIONAL_TTL_DAYS` | 14 / 45 | **do not lengthen to hoard** — expiry of unused memory is doing real work |
 | `HIVE_AGI__MODE` | false | only to deliberately let the fleet self-authorize the human-gated trust actions |
+
+## Feeding change outcomes (`hive ingest`)
+
+`hive ingest <receipt.json>` feeds a signed census receipt's change outcome into the append-only
+evidence ledger. The in-container censusctl validates the DSSE receipt (shape + predicate digest;
+a refused receipt writes **zero** rows, exit 65), derives the verdict server-side (pre-merge:
+decided execution lines only — a receipt with nothing decided refuses), joins the receipt's
+touched `path::Symbol` subjects against episode anchors, and appends one `change_outcome` row per
+matched episode in one transaction. Idempotent — re-ingesting the same receipt reports
+`already_recorded` and adds nothing — and trust-untouched (evidence only; recall serves the same
+bytes). Post-merge rollout outcomes ride flags:
+
+```bash
+hive ingest receipt.json                                        # pre-merge: verdict derived
+hive ingest receipt.json --post-merge --verdict fail --signal canary   # rollout outcome
+```
+
+`--signal randomized|canary` is what makes a post-merge outcome machine-checked (anything else
+records unverified judgment). The one-line JSON report on stdout carries
+`inserted/already_recorded/matched/skipped_lines/keyid`; check the keyid against your census
+signing key out-of-band — signature verification stays census-side.
 
 ## Posture (why)
 
