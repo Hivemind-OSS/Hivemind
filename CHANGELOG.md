@@ -162,6 +162,14 @@ All notable changes to this project are documented here.
   old-format `episodes` table is refused at store construction.
 
 ## Fixed
+- Bench `claude -p` calls loaded the operator's Claude Code hooks: a user- or
+  project-level Stop hook appends its own prompt turn after the answer, and the json
+  `result` (the last assistant text) became the hook-turn reply instead of the
+  measured answer — every real success/refusal axis read garbage while the offline
+  suite stayed green (the real-CLI-only class; hook sibling of the MCP-subprocess
+  leak). `ClaudeSubscriptionLLM` now passes `--setting-sources ""` (no user/project/
+  local settings ⇒ no hooks; OAuth unaffected, unlike `--bare` which drops keychain
+  auth). Replay caches stay valid (the cache key is prompt/system/model-based).
 - `hive token` / `hive tokens` / `hive revoke` failed on a zero-config install (no `.env`):
   `authctl` alone fail-fasted when `HIVE_STORE__DB_PATH` was unset, instead of defaulting to the
   in-container `/data/shared.db` like its sibling tools (entrypoint / healthcheck / backupctl).

@@ -195,7 +195,14 @@ class ClaudeSubscriptionLLM:
         # leaking GBs across a long run until the host OOMs (it killed a full n=60 run). The cache key
         # (_key) is prompt/system/model-based, NOT argv-based, so adding this flag does not invalidate
         # any existing --llm-log replay cache.
-        argv = [self._bin, "-p", prompt, "--output-format", "json", "--strict-mcp-config"]
+        # --setting-sources "": load NO settings sources (user, project, local) ⇒ ignore the
+        # operator's hooks. A user/project Stop hook otherwise appends its own prompt turn to EVERY
+        # call and the json `result` (the LAST assistant text) becomes the hook-turn reply instead
+        # of the answer — every measured reply silently replaced (BUG-015, the hook sibling of the
+        # MCP leak above). OAuth is untouched (credentials are not a settings source), unlike
+        # --bare which drops keychain auth entirely.
+        argv = [self._bin, "-p", prompt, "--output-format", "json", "--strict-mcp-config",
+                "--setting-sources", ""]
         if system:
             argv += ["--append-system-prompt", system]
         if self._model:

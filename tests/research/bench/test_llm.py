@@ -45,6 +45,10 @@ def test_complete_builds_headless_json_argv():
     # the bench answers from injected memory alone — load NO MCP servers, so a long run never leaks
     # the operator's un-reaped MCP subprocesses into an OOM (the n=60 host-kill).
     assert "--strict-mcp-config" in argv
+    # ...and load NO settings sources: an operator's user/project hooks (e.g. a Stop hook that
+    # appends its own prompt turn) otherwise ride into every call and REPLACE the answer in the
+    # json `result` field with the hook-turn reply (BUG-015 — the hook sibling of the MCP leak).
+    assert argv[argv.index("--setting-sources") + 1] == ""
     assert "--append-system-prompt" not in argv          # none supplied
 
 
