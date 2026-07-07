@@ -86,6 +86,15 @@ def test_isolation_frac_is_cut():
         Config.load(utility={"isolation_frac": 0.05})
 
 
+def test_autonomy_verified_promotion_defaults_off_and_env_coerces():
+    # the verified-promotion rung LOOSENS the one-mechanical-rung posture, so the
+    # loosened state ships OFF (§9.9); the env opt-in coerces like every bool field.
+    assert Config.load(db_path=":memory:").autonomy.verified_promotion is False
+    on = Config.load(db_path=":memory:",
+                     env={"HIVE_AUTONOMY__VERIFIED_PROMOTION": "true"})
+    assert on.autonomy.verified_promotion is True
+
+
 def test_autonomy_solo_knobs_removed():
     # MODE-COLLAPSE: solo_mode + solo_min_span_days are deleted (promotion is one
     # identity-diversity rule for solo and team). Each is now an unknown override field.

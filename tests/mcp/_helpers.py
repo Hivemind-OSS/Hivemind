@@ -52,7 +52,8 @@ def build_real_server(*, d: int = 64, tau_serve: float = 0.70, k_min: int = 1,
         quarantine_ttl_s=aut.quarantine_ttl_days * _DAY_S,
         provisional_ttl_s=aut.provisional_ttl_days * _DAY_S,
         enabled=aut.enabled, anomaly_tau=aut.anomaly_tau,
-        anomaly_min_cluster=aut.anomaly_min_cluster)
+        anomaly_min_cluster=aut.anomaly_min_cluster,
+        verified_reader=store if aut.verified_promotion else None)
     admission = AdmissionService(store, scanner, embedder, now=clock.now,
                                  lifecycle=lifecycle, autonomy_enabled=aut.enabled)
     recall = RecallPipeline(

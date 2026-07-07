@@ -1,6 +1,8 @@
-"""SqliteEpisodeStore.settled_wins — the subset of requested ids carrying >= 1
-``outcome_helped`` evidence audit (a self-reported settled win from hive_outcome). Read-only;
-powers the suspect-consensus martingale clause. Conforms to the SettledWinReader port."""
+"""SqliteEpisodeStore.settled_wins — the subset of requested ids carrying >= 1 settled
+win audit: ``outcome_helped`` (self-reported via hive_outcome) OR ``outcome_verified_helped``
+(SHA-bound census corroboration) — the union form. Read-only; powers the suspect-consensus
+martingale clause. Conforms to the SettledWinReader port. ``verified_wins`` is the
+verified-only sibling read the verified-promotion rung consumes."""
 from __future__ import annotations
 
 import numpy as np
@@ -66,3 +68,44 @@ def test_mixed_ids_returns_only_the_helped_subset():
 
 def test_empty_ids_returns_empty_set():
     assert _store().settled_wins([]) == set()
+
+
+# ── the union: a verified win settles exactly like a self-reported one ─────────
+
+
+def test_verified_helped_alone_is_a_settled_win():
+    s = _store()
+    eid = _seed(s, "verified win only")
+    s.insert_audit(eid, "outcome_verified_helped", "census", 11, "{}")
+    assert s.settled_wins([eid]) == {eid}
+
+
+def test_union_pins_both_sources_and_excludes_hurt_kinds():
+    s = _store()
+    self_only = _seed(s, "self-reported only")
+    verified_only = _seed(s, "census-verified only")
+    hurt_only = _seed(s, "hurt only, never a win")
+    s.insert_audit(self_only, "outcome_helped", "agent", 11, "{}")
+    s.insert_audit(verified_only, "outcome_verified_helped", "census", 11, "{}")
+    s.insert_audit(hurt_only, "outcome_hurt", "agent", 11, "{}")
+    s.insert_audit(hurt_only, "outcome_verified_hurt", "census", 11, "{}")
+    assert s.settled_wins([self_only, verified_only, hurt_only]) == \
+        {self_only, verified_only}
+
+
+# ── verified_wins: the verified-ONLY read the promotion rung consumes ──────────
+
+
+def test_verified_wins_counts_only_the_verified_helped_kind():
+    s = _store()
+    self_report = _seed(s, "helped by self-report")
+    verified = _seed(s, "helped by census verification")
+    hurt = _seed(s, "verified hurt")
+    s.insert_audit(self_report, "outcome_helped", "agent", 11, "{}")
+    s.insert_audit(verified, "outcome_verified_helped", "census", 11, "{}")
+    s.insert_audit(hurt, "outcome_verified_hurt", "census", 11, "{}")
+    assert s.verified_wins([self_report, verified, hurt]) == {verified}
+
+
+def test_verified_wins_empty_ids_returns_empty_set():
+    assert _store().verified_wins([]) == set()

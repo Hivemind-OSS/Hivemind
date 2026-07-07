@@ -31,7 +31,7 @@ from typing import Callable, Optional, Sequence
 import numpy as np  # permitted in domain (not in the forbidden I/O set)
 
 from hive.domain.anomaly import cluster_anomaly
-from hive.domain.evidence_kinds import EK_PROMOTE
+from hive.domain.evidence_kinds import EK_OUTCOME_VERIFIED_HELPED, EK_PROMOTE
 
 _log = logging.getLogger("hive.lifecycle")
 
@@ -220,18 +220,47 @@ class DemandRule:
             return PromotionDecision(False, 0, 0, 0.0, "error")
 
 
+def verified_win_decision(*, has_verified_win: bool, competitor_top_sim: float,
+                          competitor_tau: float) -> PromotionDecision:
+    """The verified-win rung's pure verdict — the SECOND mechanical path out of
+    quarantine, reachable only when the operator wires a verified reader (default
+    OFF). Promote IFF a SHA-bound ``outcome_verified_helped`` audit exists AND no
+    servable competitor already answers (the veto is retained, inclusive at the
+    threshold — DemandRule parity). Demand and identity-diversity are NOT required:
+    ``evidence_events`` is server-written only and the verified row's writer is the
+    operator-run census ingest, so a memory's writer structurally cannot manufacture
+    the corroboration. Non-finite competitor sim ⇒ fail-closed. Pure, total, never
+    raises.  // O(1)."""
+    try:
+        comp = float(competitor_top_sim)
+    except (TypeError, ValueError):
+        return PromotionDecision(False, 0, 0, 0.0, "non_finite")
+    if not math.isfinite(comp):
+        return PromotionDecision(False, 0, 0, 0.0, "non_finite")
+    if not has_verified_win:
+        return PromotionDecision(False, 0, 0, comp, "no_verified_win")
+    if comp >= competitor_tau:
+        return PromotionDecision(False, 0, 0, comp, "competitor_answers")
+    return PromotionDecision(True, 0, 0, comp, "verified_win")
+
+
 class LifecycleService:
     """The promotion/decay driver, composed from duck-typed store + index handles,
     the pure DemandRule, and an injected clock. Trigger sites are SYNCHRONOUS at
     the two moments demand can change — a capture arriving (check it against the
     existing miss window) and a miss arriving (scan live quarantined candidates).
     Every entry point is fail-open for its CALLER (a promotion fault must never
-    break the capture/recall that triggered it) and inert when disabled."""
+    break the capture/recall that triggered it) and inert when disabled.
+
+    ``verified_reader`` (default ``None``) wires the verified-win rung: when the
+    demand rule does NOT promote a candidate, a SHA-bound verified win promotes it
+    instead (competitor veto retained). ``None`` makes the rung UNREACHABLE — the
+    read is never consulted, every envelope byte-identical (default OFF)."""
 
     def __init__(self, *, store, index, rule: DemandRule, now: Callable[[], int],
                  demand_window_s: int, quarantine_ttl_s: int, provisional_ttl_s: int,
                  enabled: bool = True, anomaly_tau: float = 0.95,
-                 anomaly_min_cluster: int = 5) -> None:
+                 anomaly_min_cluster: int = 5, verified_reader=None) -> None:
         self._store = store
         self._index = index
         self._rule = rule
@@ -243,6 +272,7 @@ class LifecycleService:
         # promotion-time embedding-cluster anomaly flag thresholds (detection-only, advisory)
         self._anomaly_tau = float(anomaly_tau)
         self._anomaly_min_cluster = int(anomaly_min_cluster)
+        self._verified_reader = verified_reader      # None ⇒ the rung is unreachable
 
     # ── trigger: a capture arrived — does existing demand already want it? ────
     def on_capture(self, episode_id: int) -> Optional[PromotionDecision]:
@@ -338,4 +368,24 @@ class LifecycleService:
                 "competitor_sim": d.competitor_sim, "reason": d.reason}))
             _log.info("lifecycle.promoted episode_id=%s n_misses=%d n_other=%d anomaly=%s",
                       episode_id, d.n_misses, d.n_other_identities, anomaly)
-        return d
+            return d
+        # the verified-win rung: consulted ONLY when the demand rule did not promote,
+        # and only when a reader is wired (None ⇒ unreachable — the default-OFF form).
+        if d.promote or self._verified_reader is None:
+            return d
+        has_win = int(episode_id) in self._verified_reader.verified_wins(
+            [int(episode_id)])
+        if not has_win:
+            return d
+        v = verified_win_decision(has_verified_win=True,
+                                  competitor_top_sim=self._competitor_top_sim(vec),
+                                  competitor_tau=self._rule.competitor_tau)
+        if v.promote and self._store.set_trust(episode_id, PROVISIONAL, now=t):
+            self._store.insert_audit(episode_id, EK_PROMOTE, "server", t, json.dumps({
+                "rule": "verified_win",
+                "evidence_kind": EK_OUTCOME_VERIFIED_HELPED,
+                "competitor_sim": v.competitor_sim, "reason": v.reason}))
+            _log.info("lifecycle.promoted_verified episode_id=%s competitor_sim=%.4f",
+                      episode_id, v.competitor_sim)
+            return v
+        return d                                     # richer demand diagnostics on no-op

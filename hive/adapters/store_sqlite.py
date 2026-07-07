@@ -16,8 +16,8 @@ import numpy as np
 
 from hive.adapters.sqlite_db import tx
 from hive.domain.evidence_kinds import (
-    EK_OUTCOME_HELPED, EK_PROMOTE, EK_PRUNE, EK_SUPERSEDE, EK_TTL_EXPIRED,
-    EK_VERIFY_CURRENT, EK_VERIFY_STALE,
+    EK_OUTCOME_HELPED, EK_OUTCOME_VERIFIED_HELPED, EK_PROMOTE, EK_PRUNE,
+    EK_SUPERSEDE, EK_TTL_EXPIRED, EK_VERIFY_CURRENT, EK_VERIFY_STALE,
 )
 from hive.domain.kinds import DEFAULT_KIND, KIND_NAMES
 from hive.domain.lifecycle import (
@@ -520,18 +520,37 @@ class SqliteEpisodeStore:
         return out
 
     def settled_wins(self, episode_ids: Sequence[int]) -> set[int]:
-        """SettledWinReader: the subset of ``episode_ids`` carrying >= 1 ``outcome_helped``
-        evidence_events audit (a self-reported settled win logged via ``hive_outcome``).
-        Read-only, no DDL. Powers the suspect-consensus martingale clause (thin AND no settled
-        win = the sharper 'popular-but-uncorroborated' signal). An id with no helped event is
-        simply ABSENT from the set (under-claim). Empty input → empty set. // O(rows)."""
+        """SettledWinReader: the subset of ``episode_ids`` carrying >= 1 settled-win
+        audit — ``outcome_helped`` (self-reported via ``hive_outcome``) OR
+        ``outcome_verified_helped`` (SHA-bound census corroboration): the UNION form,
+        so the martingale clause honors a verified win with zero consumer change.
+        Read-only, no DDL. Powers the suspect-consensus martingale clause (thin AND no
+        settled win = the sharper 'popular-but-uncorroborated' signal). An id with no
+        win audit is simply ABSENT from the set (under-claim). Empty input → empty
+        set. // O(rows)."""
         ids = [int(e) for e in episode_ids]
         if not ids:
             return set()
         placeholders = ",".join("?" for _ in ids)
         return {int(r["episode_id"]) for r in self.conn.execute(
             f"SELECT DISTINCT episode_id FROM evidence_events "
-            f"WHERE kind=? AND episode_id IN ({placeholders})", [EK_OUTCOME_HELPED, *ids])}
+            f"WHERE kind IN (?,?) AND episode_id IN ({placeholders})",
+            [EK_OUTCOME_HELPED, EK_OUTCOME_VERIFIED_HELPED, *ids])}
+
+    def verified_wins(self, episode_ids: Sequence[int]) -> set[int]:
+        """The verified-ONLY settled-win read (no port — consumed by the composition
+        root as the verified-promotion rung's reader): the subset of ``episode_ids``
+        carrying >= 1 ``outcome_verified_helped`` audit. Self-reported helps never
+        count here — the rung keys on the non-forgeable SHA-bound artifact alone.
+        Empty input → empty set. // O(rows)."""
+        ids = [int(e) for e in episode_ids]
+        if not ids:
+            return set()
+        placeholders = ",".join("?" for _ in ids)
+        return {int(r["episode_id"]) for r in self.conn.execute(
+            f"SELECT DISTINCT episode_id FROM evidence_events "
+            f"WHERE kind=? AND episode_id IN ({placeholders})",
+            [EK_OUTCOME_VERIFIED_HELPED, *ids])}
 
     def last_verification(self, episode_ids: Sequence[int]
                           ) -> dict[int, tuple[int, str, str]]:

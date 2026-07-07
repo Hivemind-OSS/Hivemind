@@ -57,6 +57,14 @@ def test_token_store_wired_create_verify_end_to_end():
     assert c.token_store.verify(tok) is None
 
 
+def test_verified_promotion_wiring_follows_the_flag():
+    # default OFF: no reader handle wired ⇒ the verified rung is unreachable
+    # (byte-inert); ON: the store itself is the verified-wins reader.
+    assert _build().lifecycle._verified_reader is None
+    on = _build(autonomy={"verified_promotion": True})
+    assert on.lifecycle._verified_reader is on.store
+
+
 def test_gate_floor_is_wired_by_identity():
     """The frozen cfg.recall object is handed to the gate BY IDENTITY (CONFIG_DRIFT killed
     structurally) — not a copied float."""

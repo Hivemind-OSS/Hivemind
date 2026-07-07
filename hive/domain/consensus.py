@@ -15,14 +15,14 @@ the resolution rail stays the human ``hive_supersede`` / ``hive_write(replaces=)
 self-asserting note carrying ids + numbers ONLY (Law 4 — no memory text).
 
 ``martingale_warning`` is the sharpened clause: a provisional that is BOTH thin AND has no
-settled win is "popular but uncorroborated" — the sharper signal. The settled-win source is
-``hive_outcome``: an ``outcome_helped`` audit on a provisional (read via the ``SettledWinReader``
-port) marks ``has_settled_win=True``, so a thin-but-corroborated promotion drops to
-``martingale_warning=False`` while a thin-uncorroborated one stays True. This is a TRUSTED-SOLO
-self-report (a hostile fleet could self-report ``helped`` to suppress its own flag; moot under
-the trusted-solo stance, and the worklist is detection-only); the fleet-safe verified-artifact
-+ decorrelated-identity form stays deferred. The clause is structural either way — the detector
-never changes, only the wired source does.
+settled win is "popular but uncorroborated" — the sharper signal. The settled-win source
+(read via the ``SettledWinReader`` port) is the UNION of ``outcome_helped`` (a self-report
+logged via ``hive_outcome`` — trusted-solo: a hostile fleet could self-report to suppress its
+own flag, moot under the trusted-solo stance and the worklist is detection-only) and
+``outcome_verified_helped`` (the SHA-bound census corroboration — non-forgeable by the
+memory's writer). Either marks ``has_settled_win=True``, so a thin-but-corroborated promotion
+drops to ``martingale_warning=False`` while a thin-uncorroborated one stays True. The clause
+is structural either way — the detector never changes, only the wired source does.
 
 PURE: stdlib ``math`` only. The purity gate (tests/test_purity.py) forbids
 sqlite3 | torch | subprocess | os | git | time imports anywhere in hive/domain/. The detector

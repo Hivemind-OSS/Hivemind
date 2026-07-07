@@ -737,15 +737,15 @@ class HiveMCPServer:
         detector. Ids-only wire dicts (no memory text, Law 4); a provisional with no stamp
         (pre-3b promotion, or never demand-promoted) under-claims (omitted).
 
-        ``has_settled_win`` is now SOURCED from ``store.settled_wins`` (ids with >= 1
-        ``outcome_helped`` audit logged via hive_outcome — a self-reported settled win). The
-        martingale clause sharpens: a thin provisional WITH a helped report drops to
-        ``martingale_warning=False`` (popular-but-corroborated), one WITHOUT stays True
-        (popular-but-uncorroborated). NOTE this is a TRUSTED-SOLO self-report: in a hostile
-        fleet a poisoner could self-report ``helped`` on its poison to suppress its own flag —
-        moot in the operator's trusted-solo stance, and the worklist is detection-only (no
-        auto-action). The fleet-safe form (verified-artifact binding + helped from >= N
-        decorrelated identities) stays deferred.
+        ``has_settled_win`` is SOURCED from ``store.settled_wins`` — the UNION of
+        ``outcome_helped`` (self-reported via hive_outcome) and ``outcome_verified_helped``
+        (SHA-bound census corroboration). The martingale clause sharpens: a thin provisional
+        WITH a settled win drops to ``martingale_warning=False`` (popular-but-corroborated),
+        one WITHOUT stays True (popular-but-uncorroborated). NOTE the self-report half is
+        TRUSTED-SOLO: in a hostile fleet a poisoner could self-report ``helped`` on its
+        poison to suppress its own flag — moot in the operator's trusted-solo stance, and
+        the worklist is detection-only (no auto-action); the verified half is non-forgeable
+        by the memory's writer (evidence_events is server-written only).
 
         Degrades to [] on any probe fault (a side-channel must never break health, fail-open)."""
         try:

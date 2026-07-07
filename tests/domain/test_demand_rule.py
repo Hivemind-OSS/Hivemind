@@ -16,7 +16,7 @@ import pytest
 from hive.domain.evidence_kinds import EVIDENCE_KINDS
 from hive.domain.lifecycle import (
     PROVISIONAL, QUARANTINED, DemandRule, LifecycleService, MissRow,
-    PromotionDecision, _demand_independence,
+    PromotionDecision, _demand_independence, verified_win_decision,
 )
 from tests.fakes import FakeIndex
 
@@ -386,3 +386,111 @@ def test_n_eff_is_value_independent_of_the_verdict(monkeypatch):
     monkeypatch.setattr(lc, "_demand_independence", lambda matched: (0.0, 9999.0))
     assert _decide(_rule(), _demand()).promote is True       # huge n_eff does not change it
     assert _decide(_rule(), [_miss("writer-1")]).promote is False   # gated paths untouched
+
+
+# ── the verified-win rung: second mechanical path, DEFAULT-unreachable ──────────
+
+
+def test_verified_win_decision_truth_table():
+    win = verified_win_decision(has_verified_win=True, competitor_top_sim=-1.0,
+                                competitor_tau=0.85)
+    assert win.promote is True and win.reason == "verified_win"
+    no_win = verified_win_decision(has_verified_win=False, competitor_top_sim=-1.0,
+                                   competitor_tau=0.85)
+    assert no_win.promote is False and no_win.reason == "no_verified_win"
+    # the competitor veto is retained, inclusive at the threshold (DemandRule parity)
+    veto = verified_win_decision(has_verified_win=True, competitor_top_sim=0.85,
+                                 competitor_tau=0.85)
+    assert veto.promote is False and veto.reason == "competitor_answers"
+    below = verified_win_decision(has_verified_win=True, competitor_top_sim=0.80,
+                                  competitor_tau=0.85)
+    assert below.promote is True
+
+
+def test_verified_win_decision_nonfinite_fails_closed():
+    for bad in (float("nan"), float("inf"), float("-inf")):
+        d = verified_win_decision(has_verified_win=True, competitor_top_sim=bad,
+                                  competitor_tau=0.85)
+        assert d.promote is False and d.reason == "non_finite"
+
+
+class _VerifiedLifeStore(_LifeStore):
+    """The _LifeStore plus the verified-wins read, recording every consult."""
+
+    def __init__(self, *args, verified: set[int] | None = None, **kw):
+        super().__init__(*args, **kw)
+        self.verified = set(verified or ())
+        self.verified_calls: list[list[int]] = []
+
+    def verified_wins(self, episode_ids):
+        self.verified_calls.append([int(e) for e in episode_ids])
+        return {e for e in map(int, episode_ids) if e in self.verified}
+
+
+def _thin_demand() -> list[MissRow]:
+    return [_miss("other-1")]                        # 1 < demand_m=3: demand rejects
+
+
+def test_default_off_never_touches_the_verified_read():
+    # no verified_reader wired (the default) ⇒ the rung is UNREACHABLE: the store's
+    # verified read is never consulted even though a verified win exists.
+    st = _VerifiedLifeStore(candidates=[(7, CAND, "writer-1", NOW - 5, NOW - 5)],
+                            misses=_thin_demand(), index=FakeIndex(), verified={7})
+    out = _service(st).on_miss(_at_cos(0.95), agent_id="other-9")
+    assert dict(out)[7].promote is False
+    assert st.verified_calls == []                   # the handle is never touched
+    assert st.trust == {} and st.audits == []
+
+
+def _verified_service(store, *, index=None):
+    return LifecycleService(
+        store=store, index=index if index is not None else (store.index or FakeIndex()),
+        rule=_rule(), now=lambda: NOW, demand_window_s=WINDOW_S,
+        quarantine_ttl_s=Q_TTL, provisional_ttl_s=P_TTL,
+        verified_reader=store)
+
+
+def test_verified_win_promotes_when_demand_did_not():
+    st = _VerifiedLifeStore(candidates=[(7, CAND, "writer-1", NOW - 5, NOW - 5)],
+                            misses=_thin_demand(), index=FakeIndex(), verified={7})
+    out = _verified_service(st).on_miss(_at_cos(0.95), agent_id="other-9")
+    d = dict(out)[7]
+    assert d.promote is True and d.reason == "verified_win"
+    assert st.trust[7] == (PROVISIONAL, NOW)
+    assert st.verified_calls == [[7]]
+    eid, kind, actor, ts, payload = st.audits[0]
+    assert (eid, kind, actor, ts) == (7, "promote", "server", NOW)
+    assert kind in EVIDENCE_KINDS
+    body = json.loads(payload)
+    assert body == {"rule": "verified_win",
+                    "evidence_kind": "outcome_verified_helped",
+                    "competitor_sim": -1.0, "reason": "verified_win"}
+
+
+def test_no_verified_win_means_no_second_rung_promotion():
+    st = _VerifiedLifeStore(candidates=[(7, CAND, "writer-1", NOW - 5, NOW - 5)],
+                            misses=_thin_demand(), index=FakeIndex(), verified=set())
+    out = _verified_service(st).on_miss(_at_cos(0.95), agent_id="other-9")
+    assert dict(out)[7].promote is False
+    assert st.trust == {} and st.audits == []
+
+
+def test_verified_rung_keeps_the_competitor_veto():
+    idx = FakeIndex()
+    idx.add(99, CAND)                                # a servable near-dup already answers
+    st = _VerifiedLifeStore(candidates=[(7, CAND, "writer-1", NOW - 5, NOW - 5)],
+                            misses=_thin_demand(), index=idx, verified={7})
+    out = _verified_service(st, index=idx).on_miss(_at_cos(0.95), agent_id="other-9")
+    assert dict(out)[7].promote is False
+    assert st.trust == {} and st.audits == []
+
+
+def test_demand_promotion_never_consults_the_verified_read():
+    # the rung runs ONLY when the demand rule did not promote — a demand-promoted
+    # candidate keeps its demand audit and the verified read stays untouched.
+    st = _VerifiedLifeStore(candidates=[(7, CAND, "writer-1", NOW - 5, NOW - 5)],
+                            misses=_demand(), index=FakeIndex(), verified={7})
+    out = _verified_service(st).on_miss(_at_cos(0.95), agent_id="other-9")
+    assert dict(out)[7].reason == "demand"
+    assert st.verified_calls == []
+    assert json.loads(st.audits[0][4])["rule"] == "demand"

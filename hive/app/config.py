@@ -105,6 +105,12 @@ class AutonomyConfig:
     # in the promote audit (the MINJA/AgentPoison flood signature); it NEVER blocks promotion.
     anomaly_tau: float = 0.95       # compact-cluster cosine floor (tighter than near-dup)
     anomaly_min_cluster: int = 5    # >= this many near-identical neighbors ⇒ flag
+    # the verified-promotion rung (HIVE_AUTONOMY__VERIFIED_PROMOTION): when ON, a
+    # quarantined memory carrying a SHA-bound outcome_verified_helped audit promotes at
+    # the next demand tick (competitor veto retained). It adds a second mechanical path
+    # out of quarantine, so the loosened state ships OFF and byte-inert (§9.9): no
+    # reader handle is wired, the rung is unreachable, every envelope is byte-identical.
+    verified_promotion: bool = False
 
     def __post_init__(self) -> None:
         for name in ("demand_m", "demand_window_days", "quarantine_ttl_days",

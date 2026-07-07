@@ -201,7 +201,9 @@ def build_container(cfg: Config, *, tenant_id: str, agent_id: str,
         quarantine_ttl_s=aut.quarantine_ttl_days * _DAY_S,
         provisional_ttl_s=aut.provisional_ttl_days * _DAY_S,
         enabled=aut.enabled, anomaly_tau=aut.anomaly_tau,
-        anomaly_min_cluster=aut.anomaly_min_cluster)
+        anomaly_min_cluster=aut.anomaly_min_cluster,
+        # verified-promotion rung: OFF ⇒ no handle ⇒ unreachable, byte-inert (§9.9)
+        verified_reader=store if aut.verified_promotion else None)
     recall = RecallPipeline(
         embedder=embedder, index=index, gate=gate,
         reader=store,
