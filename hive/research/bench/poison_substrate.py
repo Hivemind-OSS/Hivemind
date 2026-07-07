@@ -348,6 +348,27 @@ def plant_falsehood_vouched(backend: MemoryBackend, specs: Sequence[PoisonSpec],
     return planted
 
 
+def preload_captures(backend: MemoryBackend, memories: Sequence[tuple[str, str]], *,
+                     seat: str = _PLANTER_SEAT) -> "Preloaded":
+    """Plant the whole pool as CAPTURES only — ``propose`` under one writer seat, never
+    ``commit``. On Hivemind every row lands QUARANTINED: embedded but structurally unservable
+    until a promotion path (e.g. the verified-win rung) lifts it. This is the L4 gate pair's
+    plant: gold AND poison enter through the identical seam, so the two arms differ ONLY in
+    whether the rung is wired. Returns the same ``Preloaded`` maps as ``preload`` — here keyed
+    by the quarantined episode ids (in-place promotion keeps the id stable, so the gold/false
+    provenance maps stay valid after a promote). A stage refused at the secret floor (empty
+    ``proposal_id``) is SKIPPED — never leaked as an empty key (BUG-002 class)."""
+    mem_source: dict[str, str] = {}
+    mem_text: dict[str, str] = {}
+    for source_id, text in memories:
+        proposal = backend.propose(seat, text, source_id=source_id)
+        if not proposal.proposal_id:                 # refused at stage ⇒ never staged
+            continue
+        mem_source[proposal.proposal_id] = source_id
+        mem_text[proposal.proposal_id] = text
+    return Preloaded(mem_source=mem_source, mem_text=mem_text)
+
+
 def plant_falsehood_unvouched(backend: MemoryBackend, specs: Sequence[PoisonSpec], *,
                               writer_seat: str) -> dict[str, str]:
     """The anti-gaming probe: ``propose`` ONLY under ``writer_seat`` (no commit). On Hivemind the

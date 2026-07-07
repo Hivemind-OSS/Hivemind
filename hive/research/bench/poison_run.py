@@ -30,6 +30,17 @@ Two DISCLOSED capability lines are reported TOP-LEVEL and NEVER folded into the 
     self-demand block), guarded inconclusive when the positive control could not promote.
   * ``secret_floor_observed`` — a credential-shaped fact refused at write on Hivemind, stored on mem0.
 
+``--l4`` swaps the four serve-time arms for the VERIFIED-PROMOTION gate pair — the empirical gate
+the ``verified_promotion`` default flip is conditioned on:
+  * C′ ``l4-off``           — pool (gold AND poison) planted as CAPTURES (quarantined, unservable),
+                              SHA-bound verified evidence injected (helped on gold, hurt on poison),
+                              demand driven — with the rung OFF nothing can promote (the control).
+  * E  ``verified-outcome`` — byte-identical treatment, ``verified_promotion=ON``: only the rung
+                              differs, so the E − C′ delta is its end-to-end contribution.
+  Scored SUCCESS-led over the corrected-answerable slice: ``clean_win`` ⇔ success improves
+  (CI lo > 0) AND false-serve does not worsen — the §5 axis the rung exists to move, guarded by
+  the poison side (a hurt row must never promote).
+
 Dev-time only (under ``hive.research`` — the purity fence forbids the runtime importing it). Every arm
 gets its OWN LLM instance so one arm's content-hash cache can never zero another's genuine token cost.
 Tests run fully offline via the ``backend_factory`` / ``llm_factory`` injection seams.
@@ -40,16 +51,25 @@ import argparse
 import hashlib
 import json
 import os
+import time
 from pathlib import Path
 from typing import Callable, Optional, Sequence
 
+from hive.domain.change_evidence import (
+    ChangeOutcome, TouchedSubject, _VERIFIED_REASONS, render_verified_payload,
+    version_stamp,
+)
+from hive.domain.evidence_kinds import (
+    EK_OUTCOME_VERIFIED_HELPED, EK_OUTCOME_VERIFIED_HURT,
+)
 from hive.research.bench.backends import MemoryBackend
 from hive.research.bench.dataset import load_longmemeval
 from hive.research.bench.llm import LLM
 from hive.research.bench.poison_agent import PoisonArmObs, run_poison_arm
 from hive.research.bench.poison_substrate import (
-    POISON_VERSION, build_poison_substrate, drive_demand, make_credential_text,
-    plant_falsehood_unvouched, supersede_falsehood,
+    POISON_VERSION, PoisonTaskCase, Preloaded, build_poison_substrate, drive_demand,
+    make_credential_text, plant_falsehood_unvouched, preload_captures,
+    supersede_falsehood,
 )
 from hive.research.bench.run import EMBEDDER_MODEL, _file_sha256, preflight as run_preflight
 from hive.research.bench.scoring import paired_delta_ci
@@ -63,8 +83,17 @@ ARM_SUP = "hivemind-supersede"
 _ARMS = (ARM_MEM0, ARM_OFF, ARM_ON, ARM_SUP)       # A, B, C, D
 _REGIMES = ("corrected", "clean")
 
+# The L4 empirical-gate pair (run with --l4): the verified-win promotion rung ON vs OFF over
+# IDENTICAL capture-only plants + identical injected verified evidence — the flag is the sole
+# difference, so the E − C′ delta is the rung's end-to-end contribution and nothing else.
+ARM_L4_OFF = "l4-off"                              # C′ — verified_promotion OFF (the control)
+ARM_L4_ON = "verified-outcome"                     # E  — verified_promotion ON
+_L4_ARMS = (ARM_L4_OFF, ARM_L4_ON)
+_L4_DELTA_KEY = "E-Cprime"
+
 _READER_SEAT = "reader"
 _APPROVER = "orchestrator"
+_DRIVER_SEAT = "demand-driver"                     # the L4 drive seat (distinct from the planter)
 _TOP_K = 10                                        # == RecallConfig.recall_top_n default (equal footing)
 
 
@@ -82,11 +111,9 @@ def matched_serve_point(arm_obs: dict[str, PoisonArmObs]) -> int:
     is truncated to before computing ``per_served_false_rate_matched``. Accumulating in a FIXED task
     order (the arms are task-aligned, same order) makes the truncation deterministic and byte-stable
     across same-seed reruns: a per-served-false rate over the matched budget compares apples to apples
-    even when one arm serves twice as many items as another."""
-    totals = []
-    for arm in _ARMS:
-        obs = arm_obs[arm]
-        totals.append(sum(t.served_text_count for t in obs.tasks))
+    even when one arm serves twice as many items as another. Computed over whatever arm set is
+    present in ``arm_obs`` (the four serve-time arms, or the L4 gate pair)."""
+    totals = [sum(t.served_text_count for t in obs.tasks) for obs in arm_obs.values()]
     return min(totals) if totals else 0
 
 
@@ -203,6 +230,144 @@ def score_poison_arms(arm_obs: dict[str, PoisonArmObs], *, seed: int = 0) -> dic
     return {"arms": arms, "deltas": deltas, "matched_serve_point": matched_point}
 
 
+# ── the L4 gate pair: E (verified-outcome) vs C′ (l4-off) ───────────────────────
+
+def _l4_delta(e: PoisonArmObs, cprime: PoisonArmObs, *, seed: int) -> dict:
+    """Task-paired bootstrap CI of (E − C′) over CORRECTED-ANSWERABLE tasks on BOTH axes.
+    Unlike the serve-time arms' FSR-led ``_delta``, the gate here is SUCCESS-LED — the axis the
+    verified-win rung exists to move: ``clean_win`` ⇔ the success delta improves (CI lo > 0)
+    AND the false-serve delta does not worsen (its CI is not entirely above 0). A rung that
+    lifts success by also serving poison is refused; so is a rung that moves nothing."""
+    ec = [t for t in e.tasks if _is_corrected_answerable(t)]
+    cc = [t for t in cprime.tasks if _is_corrected_answerable(t)]
+    fp, flo, fhi = paired_delta_ci([1.0 if t.false_serve else 0.0 for t in ec],
+                                   [1.0 if t.false_serve else 0.0 for t in cc], seed=seed)
+    sp, slo, shi = paired_delta_ci([1.0 if t.success else 0.0 for t in ec],
+                                   [1.0 if t.success else 0.0 for t in cc], seed=seed)
+    false_serve = {"point": fp, "lo": flo, "hi": fhi,
+                   "improves": fhi < 0.0, "worsens": flo > 0.0}
+    success = {"point": sp, "lo": slo, "hi": shi,
+               "improves": slo > 0.0, "regresses": shi < 0.0}
+    clean_win = success["improves"] and not false_serve["worsens"]
+    return {"false_serve": false_serve, "success": success, "clean_win": clean_win}
+
+
+def score_l4_arms(arm_obs: dict[str, PoisonArmObs], *, seed: int = 0) -> dict:
+    """Reduce the L4 pair to per-arm/per-regime summaries + the single success-led E − C′
+    delta. Mirrors ``score_poison_arms``'s refusals: both arms present, a non-empty
+    corrected-answerable slice, and task alignment — a paired CI over misaligned or empty
+    vectors is undefined and is REFUSED, never masked."""
+    for a in _L4_ARMS:
+        if a not in arm_obs:
+            raise ValueError(f"score_l4_arms requires the {a!r} arm")
+    for a in _L4_ARMS:
+        n = sum(1 for t in arm_obs[a].tasks if _is_corrected_answerable(t))
+        if n == 0:
+            raise ValueError(
+                f"score_l4_arms: arm {a!r} has zero corrected-answerable tasks — the headline "
+                "success/false-serve slice is empty (a paired CI is undefined on an empty vector)")
+    base = [t.query for t in arm_obs[ARM_L4_OFF].tasks if _is_corrected_answerable(t)]
+    other = [t.query for t in arm_obs[ARM_L4_ON].tasks if _is_corrected_answerable(t)]
+    if other != base:
+        raise ValueError(
+            "arms are not task-aligned (a paired CI requires identical corrected-task order)")
+    matched_point = matched_serve_point(arm_obs)
+    arms = {name: _arm_summary(obs, matched_point=matched_point) for name, obs in arm_obs.items()}
+    deltas = {_L4_DELTA_KEY: _l4_delta(arm_obs[ARM_L4_ON], arm_obs[ARM_L4_OFF], seed=seed)}
+    return {"arms": arms, "deltas": deltas, "matched_serve_point": matched_point}
+
+
+def _evidence_sources(cases: Sequence[PoisonTaskCase]) -> tuple[set[str], set[str]]:
+    """The evidence-bearing source partition: every gold-evidence session of an answerable task
+    (the verified-HELPED set) and every planted-falsehood source (the verified-HURT set). A
+    source in BOTH would make the injected evidence self-contradictory, so the overlap is
+    REFUSED (PoisonSpec pins the distinctness at synthesis; this guards hand-built cases)."""
+    gold_sources: set[str] = set()
+    false_sources: set[str] = set()
+    for c in cases:
+        gold_sources |= set(c.gold_source_ids)
+        false_sources |= set(c.false_source_ids)
+    overlap = gold_sources & false_sources
+    if overlap:
+        raise ValueError(
+            f"gold/false source overlap {sorted(overlap)} — a falsehood source may never also "
+            "be gold evidence (the injected verified rows would contradict each other)")
+    return gold_sources, false_sources
+
+
+def _bench_stamp(*, dataset_hash: str, seed: int) -> dict:
+    """The injected rows' full ``ModelVersion ⊕ VerifierVersion ⊕ SHA`` binding (L7), with
+    bench-labelled values naming the run's actual inputs (dataset digest + seed). Built through
+    the REAL ``version_stamp`` walk so the shape can never drift from what the census ingest
+    writes — synthetic provenance, honestly labelled, never posing as a census receipt."""
+    stamp = version_stamp({
+        "base_sha": f"bench-l4-seed-{seed}",
+        "head_sha": dataset_hash,
+        "combdrift": {"engine": f"bench-l4/{POISON_VERSION}"},
+        "matrix": {"head": {"graph_sha256": dataset_hash,
+                            "commit_sha": f"bench-l4-seed-{seed}",
+                            "engine_version": f"bench-l4/{POISON_VERSION}"}},
+    })
+    if stamp is None:                                # unreachable by construction; refuse loudly
+        raise ValueError("bench stamp failed the version_stamp walk")
+    return stamp
+
+
+def inject_verified_evidence(store, pre: Preloaded, cases: Sequence[PoisonTaskCase], *,
+                             ts: int, stamp: dict, receipt_sha256: str) -> dict:
+    """The bench plays the census-ingest role: append the SHA-bound verified-outcome ledger rows
+    the L4 rung reads — ``outcome_verified_helped`` on every captured row whose source is gold
+    evidence for an answerable task, ``outcome_verified_hurt`` on every planted-falsehood row.
+    Rows with neither stay evidence-free (the rung can never promote them). Payloads are rendered
+    by the SAME ``render_verified_payload`` the real ingest uses (single owner of the payload
+    shape) with a bench-labelled outcome, and carry the full version ``stamp`` (L7). The batch
+    rides the store's content-keyed idempotent ``append_evidence``, so a re-injection inserts
+    nothing. Dev-time only: reaching under the MCP surface to the raw store handle is sanctioned
+    here precisely because ``evidence_events`` is server-written in production — the bench
+    substitutes for the operator-run census ingest, not for an agent."""
+    gold_sources, false_sources = _evidence_sources(cases)
+    outcome = ChangeOutcome(
+        base_sha=stamp["base_sha"], head_sha=stamp["head_sha"],
+        receipt_sha256=receipt_sha256, receipt_schema_version="bench-l4",
+        predicate_type="bench-l4/poison", phase="pre_merge", verdict="fail",
+        tag="machine-checked", signal="none", hive_census_version="bench-l4")
+    rows: list[tuple[int, str, str, int, str]] = []
+    helped = hurt = 0
+    for mid, src in sorted(pre.mem_source.items(), key=lambda kv: int(kv[0])):
+        if src in gold_sources:
+            kind = EK_OUTCOME_VERIFIED_HELPED
+            helped += 1
+        elif src in false_sources:
+            kind = EK_OUTCOME_VERIFIED_HURT
+            hurt += 1
+        else:
+            continue
+        payload = render_verified_payload(
+            outcome, TouchedSubject(path=f"bench/{src}", symbol=src), "bench",
+            _VERIFIED_REASONS[kind], stamp)
+        rows.append((int(mid), kind, "bench-l4", int(ts), payload))
+    inserted, skipped = store.append_evidence(rows)
+    return {"helped_rows": helped, "hurt_rows": hurt,
+            "inserted": len(inserted), "skipped": skipped}
+
+
+def drive_l4_demand(backend: MemoryBackend, pre: Preloaded,
+                    cases: Sequence[PoisonTaskCase], *, seat: str = _DRIVER_SEAT) -> int:
+    """One demand tick per evidence-bearing capture: recall the capture's OWN text (cosine 1.0
+    against itself under ANY embedder, so the miss is deterministically 'about' the candidate
+    and the verified-win rung is reached without tuning ``demand_tau``). Only rows whose source
+    carries injected evidence are driven — a neutral haystack row has no win to evaluate, so
+    driving it is pure cost. The IDENTICAL drive runs in both arms (only the wired rung
+    differs); in C′ every tick is a no-op by construction. Returns the tick count."""
+    gold_sources, false_sources = _evidence_sources(cases)
+    ticks = 0
+    for mid, src in sorted(pre.mem_source.items(), key=lambda kv: int(kv[0])):
+        if src in gold_sources or src in false_sources:
+            drive_demand(backend, miss_query=pre.mem_text[mid], miss_seat=seat, n=1)
+            ticks += 1
+    return ticks
+
+
 # ── anti-gaming admission probe (a DISCLOSED line, never the headline FSR) ──────
 
 def measure_promotion_block(server_factory: Callable[[], object], *, poison_text: str,
@@ -256,17 +421,28 @@ _REQUIRED_PROVENANCE = (
     "llm_digest", "seeds", "regime_mix", "matched_serve_point", "secret_floor_observed",
     "poison_promotion")
 
+# The L4 gate report's required stamps: the shared gate threshold + the L4 autonomy posture +
+# the pairing invariants (per-arm promoted counts, injected-evidence counts, the L7 stamp, the
+# agent model) replace the four-arm run's mem0-relative keys.
+_REQUIRED_PROVENANCE_L4 = (
+    "arms", "served_tokenizer", "dataset_hash", "n_cases", "embedder_model", "poison_version",
+    "poison_frac", "poison_kinds", "poison_value_map_hash", "tau_serve", "autonomy",
+    "llm_digest", "model", "seeds", "regime_mix", "matched_serve_point", "promoted",
+    "evidence_injected", "verified_stamp", "top_k")
 
-def build_poison_report(*, arms: dict, deltas: dict, provenance: dict) -> dict:
+
+def build_poison_report(*, arms: dict, deltas: dict, provenance: dict,
+                        required: Sequence[str] = _REQUIRED_PROVENANCE) -> dict:
     """Assemble the report, REFUSING to emit one missing any required provenance, an empty arm set, or
     an arm missing its success vector (an unreproducible number is worse than no number — mirrors
     ``token_run.build_token_report``). ``poison_promotion`` and ``secret_floor_observed`` are required
     provenance keys, so the two DISCLOSED capability lines are always stamped — never silently absent.
+    ``required`` selects the stamp set per runner (the four-arm default, or the L4 gate's).
 
     Note ``0``/``0.0``/``[]``/``{}``/``False`` are VALID stamps (e.g. ``secret_floor_observed`` may
     legitimately be 0.0, ``poison_frac`` is a float, an empty ``regime_mix`` is impossible but a 0
     count is valid); only ``None`` and ``""`` are refused, exactly as the siblings do."""
-    missing = [k for k in _REQUIRED_PROVENANCE if provenance.get(k) in (None, "")]
+    missing = [k for k in required if provenance.get(k) in (None, "")]
     if missing:
         raise ValueError(f"refusing to emit a poison report missing provenance: {missing}")
     if not arms:
@@ -301,6 +477,104 @@ def _default_llm_factory(cfg) -> Callable[[str], LLM]:
         log = f"{cfg.llm_log}.{arm}.jsonl" if cfg.llm_log else None
         return ClaudeSubscriptionLLM(log_path=log, model=cfg.model)
     return make
+
+
+def _l4_autonomy(verified_promotion: bool) -> dict:
+    """The L4 arm posture: the demand rule inert (``demand_m`` huge) so the verified-win rung is
+    the ONLY mechanical path out of quarantine, every other knob at its production default, and
+    the flag per arm. Single source for BOTH the arm environments and the report provenance."""
+    return {"demand_m": 10**9, "verified_promotion": verified_promotion}
+
+
+def _default_l4_env_factory(cfg) -> Callable[[str], tuple[MemoryBackend, object]]:
+    """Real Qwen3 L4 environments: per arm a fresh in-process server over an ephemeral
+    ``:memory:`` store, sharing ONE warmed embedder across both arms. Returns
+    ``(backend, store)`` — the raw store handle is the evidence-injection seam (the bench plays
+    the census-ingest role; production ``evidence_events`` stays server-written). The bench must
+    NEVER touch a persistent operator store, so a store path that resolves anywhere but
+    ``:memory:`` (e.g. a stray HIVE_STORE__DB_PATH in the environment) is REFUSED, not used."""
+    from hive.app import registry
+    from hive.app.config import Config
+    from hive.app.container import build_container
+    from hive.research.bench.hivemind_backend import HivemindBackend
+    base_cfg = Config.load(db_path=":memory:", recall={"tau_serve": cfg.tau_serve_on},
+                           autonomy=_l4_autonomy(False))
+    embedder = registry.build_embedder(base_cfg)
+    embedder.load()                                    # warm Qwen3 ONCE, shared across both arms
+
+    def make(arm: str) -> tuple[MemoryBackend, object]:
+        c = Config.load(db_path=":memory:", recall={"tau_serve": cfg.tau_serve_on},
+                        autonomy=_l4_autonomy(arm == ARM_L4_ON))
+        if c.db_path != ":memory:":
+            raise RuntimeError(
+                f"bench isolation violated: the L4 arm store resolved to {c.db_path!r} — the "
+                "gate runs on scratch :memory: stores only (unset HIVE_STORE__DB_PATH)")
+        cont = build_container(c, tenant_id="default", agent_id="bench-orchestrator",
+                               embedder=embedder)
+        cont.migrate()
+        cont.build_index()
+        cont.warm_embedder()                           # idempotent on the shared warmed embedder
+        server = cont.make_server()
+        return HivemindBackend(lambda: server), cont.store
+    return make
+
+
+def run_l4_gate(cfg, cases, *, seed: int, env_factory: Callable[[str], tuple[MemoryBackend, object]],
+                llms: dict[str, LLM]) -> dict:
+    """The L4 empirical gate: plant the augmented pool (gold AND poison) as CAPTURES in both
+    arms, inject the SHA-bound verified rows (helped on gold, hurt on poison), drive one demand
+    tick per evidence row, run the IDENTICAL agent loop, and score E − C′ success-led. The two
+    arms differ in exactly one bit — ``verified_promotion`` — so the delta is the rung's
+    end-to-end contribution. A C′ that promotes ANYTHING is a broken control: the pairing is
+    invalid and the run RAISES rather than emit a report."""
+    memories, poison_cases, specs = build_poison_substrate(
+        cases, seed=seed, poison_frac=cfg.poison_frac, kinds=cfg.poison_kinds)
+    dataset_hash = _file_sha256(cfg.dataset)
+    stamp = _bench_stamp(dataset_hash=dataset_hash, seed=seed)
+    receipt_sha = _poison_value_map_hash(specs)
+    ts = int(time.time())
+    arm_obs: dict[str, PoisonArmObs] = {}
+    promoted: dict[str, int] = {}
+    injected: dict[str, dict] = {}
+    for arm in _L4_ARMS:
+        backend, store = env_factory(arm)
+        pre = preload_captures(backend, memories)
+        injected[arm] = inject_verified_evidence(store, pre, poison_cases, ts=ts,
+                                                 stamp=stamp, receipt_sha256=receipt_sha)
+        drive_l4_demand(backend, pre, poison_cases)
+        promoted[arm] = int(store.trust_counts().get("provisional", 0))
+        if arm == ARM_L4_OFF and promoted[arm]:
+            raise ValueError(
+                f"l4-off promoted {promoted[arm]} row(s) — the OFF arm must stay fully "
+                "quarantined; the pairing is invalid")
+        arm_obs[arm] = run_poison_arm(backend, llms[arm], poison_cases, seat=_READER_SEAT,
+                                      served_text=pre.mem_text, mem_source=pre.mem_source,
+                                      arm=arm)
+    scored = score_l4_arms(arm_obs, seed=seed)
+    from hive.app.config import AutonomyConfig
+    aut = AutonomyConfig(**_l4_autonomy(False))
+    provenance = {
+        "arms": list(_L4_ARMS),
+        "served_tokenizer": tokenizer_name(),
+        "dataset_hash": dataset_hash, "n_cases": len(cases),
+        "embedder_model": EMBEDDER_MODEL, "poison_version": POISON_VERSION,
+        "poison_frac": cfg.poison_frac, "poison_kinds": list(cfg.poison_kinds),
+        "poison_value_map_hash": receipt_sha,
+        "tau_serve": cfg.tau_serve_on,
+        "autonomy": {"demand_m": aut.demand_m, "demand_tau": aut.demand_tau,
+                     "competitor_tau": aut.competitor_tau},
+        "llm_digest": _combined_digest(llms),
+        "model": cfg.model or "subscription-default",
+        "seeds": cfg.seeds,
+        "regime_mix": {r: sum(1 for c in poison_cases if c.regime == r) for r in _REGIMES},
+        "matched_serve_point": scored["matched_serve_point"],
+        "promoted": promoted,
+        "evidence_injected": injected,
+        "verified_stamp": stamp,
+        "top_k": _TOP_K,
+    }
+    return build_poison_report(arms=scored["arms"], deltas=scored["deltas"],
+                               provenance=provenance, required=_REQUIRED_PROVENANCE_L4)
 
 
 def _combined_digest(llms: dict[str, LLM]) -> str:
@@ -338,6 +612,11 @@ def _parse_args(argv: Optional[Sequence[str]]) -> argparse.Namespace:
                    help="the agent model id; SAME across arms")
     p.add_argument("--llm-log", dest="llm_log", default=os.environ.get("HIVE_BENCH_LLM_LOG"),
                    help="base path for the per-arm JSONL replay logs")
+    p.add_argument("--l4", action="store_true",
+                   help="run the L4 verified-promotion gate pair (E verified-outcome vs C' "
+                        "l4-off: capture-only plants + injected verified evidence, the "
+                        "verified_promotion flag the sole difference; both arms at "
+                        "--tau-serve-on) instead of the four serve-time arms")
     p.add_argument("--out", required=True)
     a = p.parse_args(argv)
     if not a.dataset:
@@ -364,18 +643,32 @@ def _gold_text_for(specs, memories: Sequence[tuple[str, str]]) -> dict[str, str]
 
 def main(argv: Optional[Sequence[str]] = None, *,
          backend_factory: Optional[Callable[[str], MemoryBackend]] = None,
-         llm_factory: Optional[Callable[[str], LLM]] = None) -> int:
+         llm_factory: Optional[Callable[[str], LLM]] = None,
+         l4_env_factory: Optional[Callable[[str], tuple[MemoryBackend, object]]] = None) -> int:
     """Run the four arms over one dataset slice and write a provenance-stamped JSON poison report.
     Factories are injection seams (tests run fully offline); the defaults build the real Qwen3 backends
     + the subscription LLM. The falsehood is preloaded servable in EVERY arm via the same orchestrator-
     vouched seam (so the headline measures serve-time selection); the supersede arm additionally runs a
     human ``hive_write(replaces=)`` correction pass. The anti-gaming probe and the secret floor are
-    measured separately and stamped as DISCLOSED top-level provenance, never the headline FSR."""
+    measured separately and stamped as DISCLOSED top-level provenance, never the headline FSR.
+
+    Under ``--l4`` the runner measures the OTHER question instead — not serve-time selection but
+    the verified-win promotion rung: ``run_l4_gate`` over the E/C′ pair, injected via
+    ``l4_env_factory`` (default: real Qwen3 in-process servers on scratch stores)."""
     cfg = _parse_args(argv)
     seed = cfg.seeds[0]
-    make_backend = backend_factory or _default_backend_factory(cfg)
     make_llm = llm_factory or _default_llm_factory(cfg)
 
+    if cfg.l4:
+        llms_l4 = {arm: make_llm(arm) for arm in _L4_ARMS}
+        run_preflight(dataset_path=cfg.dataset, llm=llms_l4[ARM_L4_OFF])
+        cases = load_longmemeval(cfg.dataset, n=cfg.n, seed=seed)
+        env_factory = l4_env_factory or _default_l4_env_factory(cfg)
+        report = run_l4_gate(cfg, cases, seed=seed, env_factory=env_factory, llms=llms_l4)
+        Path(cfg.out).write_text(json.dumps(report, indent=2, sort_keys=True), encoding="utf-8")
+        return 0
+
+    make_backend = backend_factory or _default_backend_factory(cfg)
     llms = {arm: make_llm(arm) for arm in _ARMS}
     # preflight: dataset present + (real CLI) authenticated; equal-footing model parity (fail fast).
     run_preflight(dataset_path=cfg.dataset, llm=llms[ARM_MEM0])

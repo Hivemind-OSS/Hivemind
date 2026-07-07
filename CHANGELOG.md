@@ -3,6 +3,18 @@
 All notable changes to this project are documented here.
 
 ## Added
+- L4 empirical-gate arm pair in the poison bench (`poison_run.py --l4`) — the run the
+  `verified_promotion` default flip is conditioned on: arm E (`verified-outcome`) vs
+  arm C′ (`l4-off`), both planting the pool (gold AND poison) as capture-only
+  quarantined rows and injecting SHA-bound `outcome_verified_helped`/`_hurt` ledger
+  rows through the store's idempotent `append_evidence` (payloads rendered by the same
+  `render_verified_payload` the census ingest uses, full L7 version stamp), then
+  driving one demand tick per evidence row — the flag is the sole difference, so the
+  E − C′ delta is the rung's end-to-end contribution. Scored success-led with the
+  existing paired-CI machinery: `clean_win` ⇔ success improves AND false-serve does
+  not worsen. A C′ that promotes anything invalidates the pairing and the run refuses
+  to emit a report; per-arm promoted counts and injected-evidence counts are required
+  provenance.
 - Resurrected the dev-time benchmark harness (`hive/research/bench/`, poison subset)
   from history: the four-arm poisoned-shared-store false-serve runner
   (`poison_run.py` + substrate/agent/backends/LLM seam and their offline tests),
