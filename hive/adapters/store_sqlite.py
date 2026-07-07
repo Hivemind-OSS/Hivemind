@@ -518,6 +518,45 @@ class SqliteEpisodeStore:
             f"SELECT DISTINCT episode_id FROM evidence_events "
             f"WHERE kind=? AND episode_id IN ({placeholders})", [EK_OUTCOME_HELPED, *ids])}
 
+    def anchored_episodes(self) -> list[tuple[int, str]]:
+        """AnchoredEpisodeReader: ``(id, anchor)`` for approved rows with a non-empty
+        anchor — the change→episode join's candidate set. ALL trust states included
+        (mirrors hive_outcome's known-id rule: evidence on a deprecated row is honest
+        ledger history). Read-only, no DDL. // O(rows)."""
+        return [(int(r["id"]), r["anchor"]) for r in self.conn.execute(
+            "SELECT id, anchor FROM episodes "
+            "WHERE status='approved' AND anchor != '' ORDER BY id")]
+
+    def append_evidence(self, rows: Sequence[tuple[int, str, str, int, str]]
+                        ) -> tuple[list[int], int]:
+        """ChangeEvidenceAppender: batch-append ``(episode_id, kind, actor, ts, payload)``
+        rows in ONE ``tx()`` — an atomic receipt (a fault on ANY row rolls back ALL;
+        ``tx()`` is non-reentrant, so looping ``insert_audit`` could never be made atomic
+        from outside — the batch method is required, not stylistic). A row whose exact
+        ``(episode_id, kind, payload)`` already exists is SKIPPED — idempotency keyed on
+        content, never on ts/actor, so a re-ingest of the same receipt cannot duplicate
+        the ledger. Returns (inserted row ids, skipped count). Append-only: this module
+        still contains no UPDATE/DELETE against evidence_events. // O(batch)."""
+        inserted: list[int] = []
+        skipped = 0
+        with tx(self.conn):
+            for episode_id, kind, actor, ts, payload in rows:
+                dup = self.conn.execute(
+                    "SELECT 1 FROM evidence_events "
+                    "WHERE episode_id=? AND kind=? AND payload=? LIMIT 1",
+                    (episode_id, kind, payload)).fetchone()
+                if dup is not None:
+                    skipped += 1
+                    continue
+                cur = self.conn.execute(
+                    "INSERT INTO evidence_events(episode_id, kind, actor, ts, payload) "
+                    "VALUES(?,?,?,?,?)", (episode_id, kind, actor, ts, payload))
+                inserted.append(int(cur.lastrowid))
+        if inserted or skipped:
+            _log.info("store.append_evidence inserted=%d skipped=%d",
+                      len(inserted), skipped)
+        return inserted, skipped
+
     def trust_counts(self) -> dict[str, int]:
         """Per-trust-state row counts for hive_health — ALL four states present
         (a zero is signal: quarantine pile-up must be visible, never silent)."""

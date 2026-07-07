@@ -98,6 +98,29 @@ class SettledWinReader(Protocol):
 
 
 @runtime_checkable
+class AnchoredEpisodeReader(Protocol):
+    """The change→episode join's candidate read: ``(id, anchor)`` for approved rows with
+    a non-empty anchor — ALL trust states (mirrors ``hive_outcome``'s known-id rule:
+    evidence on a deprecated row is honest ledger history). A SEPARATE narrow port (not a
+    widening) so existing narrow fakes stay conformant; the SqliteEpisodeStore satisfies
+    it with one new read method."""
+    def anchored_episodes(self) -> list[tuple[int, str]]: ...
+
+
+@runtime_checkable
+class ChangeEvidenceAppender(Protocol):
+    """The change-outcome feed's durable write seam: batch-append
+    ``(episode_id, kind, actor, ts, payload)`` evidence rows in ONE transaction (an
+    atomic receipt — a fault on any row rolls back all; never a partial receipt) with
+    content-keyed idempotency (an exact ``(episode_id, kind, payload)`` duplicate is
+    skipped, so a CI re-ingest cannot corrupt the ledger). Returns
+    ``(inserted row ids, skipped count)``. Append-only: implementors never UPDATE or
+    DELETE evidence rows."""
+    def append_evidence(self, rows: Sequence[tuple[int, str, str, int, str]]
+                        ) -> tuple[list[int], int]: ...
+
+
+@runtime_checkable
 class ConflictFlagStore(Protocol):
     """The ONE new narrow port: the durable write seam for an advisory conflict flag. The
     ConflictFlagService depends on this (+ ``EpisodeReader`` for id-exists + ``SecretScanner``
