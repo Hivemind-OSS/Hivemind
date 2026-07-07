@@ -3,6 +3,14 @@
 All notable changes to this project are documented here.
 
 ## Added
+- Resurrected the dev-time benchmark harness (`hive/research/bench/`, poison subset)
+  from history: the four-arm poisoned-shared-store false-serve runner
+  (`poison_run.py` + substrate/agent/backends/LLM seam and their offline tests),
+  restored verbatim and re-fenced (wheel-excluded via `pyproject` `exclude`,
+  `.dockerignore`d out of the image, `test_research_not_imported_by_runtime`
+  re-added). Its scoring layer now sources the IR/significance primitives from
+  `scripts/eval_metrics.py`, which gains the missing `mrr` and `bootstrap_ci`
+  (with their locked tests) instead of a parallel metrics module.
 - Verified-outcome rider on the census ingest (Flow A) — the same atomic
   `hive ingest` batch now also writes, per matched episode (pre-merge only, and only
   when the receipt carries the full `ModelVersion ⊕ VerifierVersion ⊕ SHA` provenance

@@ -1,6 +1,7 @@
 """AST import-linter (P0.0). A blocking gate:
   - hive/domain/** may not import any I/O module (sqlite3|torch|subprocess|os|git|time).
   - hive/domain|adapters|app/** may not import the build-excluded scripts/ utilities.
+  - hive/domain|adapters|app/** may not import hive.research (dev-time only).
 The gate has teeth: the mutation (add `import sqlite3` to a domain file)
 must turn test_domain_imports_no_io red.
 """
@@ -79,3 +80,25 @@ def test_scripts_not_imported_by_runtime() -> None:
         if hits:
             offenders[str(path.relative_to(ROOT))] = hits
     assert not offenders, f"runtime must not import the build-excluded scripts/ utilities: {offenders}"
+
+
+def test_research_not_imported_by_runtime() -> None:
+    # hive/research is the dev-time benchmark harness: wheel-excluded (pyproject
+    # ``packages.find`` excludes ``hive.research*``) and .dockerignore'd out of the image.
+    # It sits ON TOP of the runtime and may import it; the reverse direction would crash an
+    # operator's installed package at import time, so it is forbidden by AST.
+    offenders: dict[str, set[str]] = {}
+    for path in _full_module_paths("domain", "adapters", "app"):
+        # detect `import hive.research...` / `from hive.research import ...`
+        tree = ast.parse(path.read_text(), filename=str(path))
+        hits = set()
+        for node in ast.walk(tree):
+            if isinstance(node, ast.ImportFrom) and node.module and node.module.startswith("hive.research"):
+                hits.add(node.module)
+            if isinstance(node, ast.Import):
+                for alias in node.names:
+                    if alias.name.startswith("hive.research"):
+                        hits.add(alias.name)
+        if hits:
+            offenders[str(path.relative_to(ROOT))] = hits
+    assert not offenders, f"runtime must not import hive.research: {offenders}"

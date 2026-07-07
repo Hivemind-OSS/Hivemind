@@ -1,22 +1,28 @@
 """Information-retrieval & selective-prediction evaluation metrics.
 
-General-purpose, dependency-light (stdlib + ``math`` only) scorers for evaluating any
-retrieval / ranking system and any system that can abstain ("answer or not"):
+General-purpose scorers for evaluating any retrieval / ranking system and any system
+that can abstain ("answer or not"):
 
 - ``recall_at_k`` — retrieval quality: of the items that SHOULD be retrieved, how many
   land in the top-k distinct ranks.
+- ``mrr`` — rank quality: reciprocal rank of the first relevant item (order matters).
 - ``abstention_auroc`` — abstention-signal quality: does a confidence score separate the
   queries that have a real answer from the ones a system should decline, threshold-free.
+- ``bootstrap_ci`` — the ship gate for paired A/B deltas: a percentile bootstrap CI on a
+  per-query delta vector; a difference is CI-significant iff the interval excludes 0.
 
 Design rule carried over verbatim from where these were first written: degenerate inputs
-(k<=0, empty relevant set, single-class AUROC, NaN scores, length mismatch) RAISE rather
-than return a defined-looking default — an untestable number is refused, never masked, so
-a caller bug surfaces instead of hiding behind a plausible 0.0/0.5.
+(k<=0, empty relevant set, single-class AUROC, NaN scores, length mismatch, empty delta
+vector) RAISE rather than return a defined-looking default — an untestable number is
+refused, never masked, so a caller bug surfaces instead of hiding behind a plausible
+0.0/0.5. The IR/AUROC scorers are stdlib-only; ``bootstrap_ci`` needs numpy.
 """
 from __future__ import annotations
 
 import math
 from typing import Sequence
+
+import numpy as np
 
 
 # ── pure IR metrics ───────────────────────────────────────────────────────────
@@ -51,6 +57,23 @@ def recall_at_k(retrieved: Sequence[str], relevant: set[str], k: int) -> float:
         return 0.0
     hits = sum(1 for item in _topk_unique(retrieved, k) if item in relevant)
     return hits / len(relevant)
+
+
+def mrr(retrieved: Sequence[str], relevant: set[str]) -> float:
+    """Reciprocal rank of the *first* relevant item (1-indexed); 0.0 if none are
+    relevant. Scans the full ranked list (no cutoff). // O(R) time."""
+    if not relevant:
+        return 0.0
+    seen: set[str] = set()
+    rank = 0
+    for item in retrieved:
+        if item in seen:
+            continue
+        seen.add(item)
+        rank += 1
+        if item in relevant:
+            return 1.0 / rank
+    return 0.0
 
 
 # ── selective-prediction (abstention) metric ──────────────────────────────────
@@ -109,3 +132,33 @@ def abstention_auroc(scores: Sequence[float], is_miss: Sequence[bool]) -> float:
     # U_hit counts (hit > miss) pairs (+0.5 per tie); AUROC = U_hit / (n_hit·n_miss).
     u_hit = sum_ranks_hit - n_hit * (n_hit + 1) / 2.0
     return u_hit / (n_hit * n_miss)
+
+
+# ── paired-delta significance (the ship gate) ─────────────────────────────────
+
+def bootstrap_ci(
+    deltas: Sequence[float], *, n_boot: int = 10_000, alpha: float = 0.05,
+    seed: int = 0,
+) -> tuple[float, float, float]:
+    """Percentile bootstrap CI on a paired per-query delta vector. Returns
+    ``(point, lo, hi)`` where ``point`` is the observed mean and ``[lo, hi]`` is
+    the central ``1-alpha`` percentile interval of the bootstrap means.
+
+    The ship rule reads this as **CI-significant iff ``lo > 0`` (improvement)
+    or ``hi < 0`` (regression)** — a change ships only on a CI-significant delta,
+    never a bare point estimate. **Deterministic** for a fixed ``seed``; **empty
+    ``deltas`` RAISE** ``ValueError`` (an undefined CI is refused, not masked).
+    // O(n_boot · n) time, O(n_boot + n) space.
+    """
+    arr = np.asarray(list(deltas), dtype=np.float64)
+    if arr.size == 0:
+        raise ValueError("bootstrap_ci requires ≥1 delta (empty is undefined)")
+    if not (0.0 < alpha < 1.0):
+        raise ValueError(f"alpha must be in (0,1), got {alpha}")
+    rng = np.random.default_rng(seed)
+    # resample indices with replacement: (n_boot, n) → per-resample means
+    idx = rng.integers(0, arr.size, size=(int(n_boot), arr.size))
+    boot_means = arr[idx].mean(axis=1)
+    lo = float(np.percentile(boot_means, 100.0 * (alpha / 2.0)))
+    hi = float(np.percentile(boot_means, 100.0 * (1.0 - alpha / 2.0)))
+    return (float(arr.mean()), lo, hi)

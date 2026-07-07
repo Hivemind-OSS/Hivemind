@@ -1,0 +1,49 @@
+[
+  {
+    "question_id": "q1",
+    "question_type": "single-session-user",
+    "question": "What port did I say the dev server uses?",
+    "answer": "8080",
+    "question_date": "2023/06/01 (Thu) 10:00",
+    "haystack_session_ids": ["s1", "s2"],
+    "haystack_dates": ["2023/05/01 (Mon) 09:00", "2023/05/02 (Tue) 09:00"],
+    "haystack_sessions": [
+      [
+        {"role": "user", "content": "the dev server runs on port 8080", "has_answer": true},
+        {"role": "assistant", "content": "Got it — port 8080 for the dev server."}
+      ],
+      [
+        {"role": "user", "content": "i really like green tea in the morning"},
+        {"role": "assistant", "content": "Green tea is a great choice."}
+      ]
+    ],
+    "answer_session_ids": ["s1"]
+  },
+  {
+    "question_id": "q2",
+    "question_type": "multi-session",
+    "question": "What database and which port did I mention?",
+    "answer": "postgres on port 5432",
+    "question_date": "2023/06/02 (Fri) 11:00",
+    "haystack_session_ids": ["s3", "s4"],
+    "haystack_dates": ["2023/05/03 (Wed) 09:00", "2023/05/04 (Thu) 09:00"],
+    "haystack_sessions": [
+      [{"role": "user", "content": "we use postgres for the main store", "has_answer": true}],
+      [{"role": "user", "content": "the db listens on port 5432", "has_answer": true}]
+    ],
+    "answer_session_ids": ["s3", "s4"]
+  },
+  {
+    "question_id": "q3_abs",
+    "question_type": "single-session-user",
+    "question": "What did I say about my pet dragon?",
+    "answer": "No information about a pet dragon is available.",
+    "question_date": "2023/06/03 (Sat) 12:00",
+    "haystack_session_ids": ["s5"],
+    "haystack_dates": ["2023/05/05 (Fri) 09:00"],
+    "haystack_sessions": [
+      [{"role": "user", "content": "i had a coffee this afternoon"}]
+    ],
+    "answer_session_ids": []
+  }
+]
