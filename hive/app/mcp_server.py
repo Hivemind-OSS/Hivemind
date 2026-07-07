@@ -49,6 +49,7 @@ from hive.domain.consensus import (
     SuspectConsensusItem, detect_suspect_consensus,
 )
 from hive.domain.errors import SecretRefused
+from hive.domain.evidence_kinds import EK_OUTCOME_HELPED, EK_OUTCOME_HURT
 from hive.domain.kinds import DEFAULT_KIND
 from hive.domain.lifecycle import is_servable
 from hive.domain.models import CONFIDENT
@@ -517,8 +518,8 @@ class HiveMCPServer:
                 recorded.append(eid)
             return recorded
 
-        helped = _record(args.get("helped"), "outcome_helped")
-        hurt = _record(args.get("hurt"), "outcome_hurt")
+        helped = _record(args.get("helped"), EK_OUTCOME_HELPED)
+        hurt = _record(args.get("hurt"), EK_OUTCOME_HURT)
         _log.info("mcp.outcome", extra={"event": "mcp.outcome", "agent_id": actor,
                   "n_helped": len(helped), "n_hurt": len(hurt)})
         return {"status": "recorded", "helped": helped, "hurt": hurt}

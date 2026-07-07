@@ -9,6 +9,7 @@ import numpy as np
 from hive.adapters.index_exhaustive import ExhaustiveCosineIndex
 from hive.adapters.sqlite_db import connect
 from hive.adapters.store_sqlite import SqliteEpisodeStore
+from hive.domain.evidence_kinds import EVIDENCE_KINDS
 
 DIM = 4
 
@@ -34,6 +35,8 @@ def test_deprecate_flips_trust_and_writes_prune_audit():
     rows = s.conn.execute(
         "SELECT kind, actor FROM evidence_events WHERE episode_id=?", (eid,)).fetchall()
     assert [(r["kind"], r["actor"]) for r in rows] == [("prune", "human")]
+    # the write site emits a registry member (evidence_events has no DDL CHECK)
+    assert {r["kind"] for r in rows} <= EVIDENCE_KINDS
 
 
 def test_deprecate_de_indexes_so_not_recalled():

@@ -12,6 +12,7 @@ import pytest
 from hive.adapters.index_exhaustive import ExhaustiveCosineIndex
 from hive.adapters.sqlite_db import connect
 from hive.adapters.store_sqlite import SqliteEpisodeStore
+from hive.domain.evidence_kinds import EVIDENCE_KINDS
 from hive.domain.lifecycle import (
     DEPRECATED, ESTABLISHED, PROVISIONAL, QUARANTINED, MissRow,
 )
@@ -252,6 +253,9 @@ def test_supersede_atomic_idempotent_self_refused():
     assert ep.trust == DEPRECATED and ep.superseded_by == new     # retired + stamped
     assert old not in _index_ids(s) and new in _index_ids(s)      # de-indexed
     assert len(_audits(s, old, "supersede")) == 1                 # ONE audit row
+    # the write site emits a registry member (evidence_events has no DDL CHECK)
+    assert {r["kind"] for r in s.conn.execute(
+        "SELECT kind FROM evidence_events")} <= EVIDENCE_KINDS
     assert s.supersede(old, new, actor="h", ts=101) is True       # idempotent re-run
     assert len(_audits(s, old, "supersede")) == 1                 # no duplicate audit
     assert s.supersede(old, old, actor="h", ts=102) is False      # self-supersede refused
@@ -294,6 +298,9 @@ def test_sweep_decays_and_deindexes():
     assert s.get_episode(dead_p).trust == DEPRECATED
     assert len(_audits(s, dead_q, "ttl_expired")) == 1
     assert len(_audits(s, dead_p, "ttl_expired")) == 1
+    # the sweep's write site emits a registry member
+    assert {r["kind"] for r in s.conn.execute(
+        "SELECT kind FROM evidence_events")} <= EVIDENCE_KINDS
     assert dead_p not in _index_ids(s)                            # lapsed provisional de-indexed
     assert live_p in _index_ids(s)
     assert s.get_episode(live_q).trust == QUARANTINED             # untouched

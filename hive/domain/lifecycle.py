@@ -31,6 +31,7 @@ from typing import Callable, Optional, Sequence
 import numpy as np  # permitted in domain (not in the forbidden I/O set)
 
 from hive.domain.anomaly import cluster_anomaly
+from hive.domain.evidence_kinds import EK_PROMOTE
 
 _log = logging.getLogger("hive.lifecycle")
 
@@ -328,7 +329,7 @@ class LifecycleService:
             # audit; it NEVER blocks promotion (O7 — resolution stays the human rail).
             anomaly = cluster_anomaly(vec, neighbor_vecs, tau=self._anomaly_tau,
                                       min_cluster=self._anomaly_min_cluster)
-            self._store.insert_audit(episode_id, "promote", "server", t, json.dumps({
+            self._store.insert_audit(episode_id, EK_PROMOTE, "server", t, json.dumps({
                 "rule": "demand", "n_misses": d.n_misses,
                 "demand_independence": {"rho_bar": d.rho_bar, "n_eff": d.n_eff,
                                         "k": d.n_misses},

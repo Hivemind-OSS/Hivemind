@@ -13,6 +13,7 @@ import math
 import numpy as np
 import pytest
 
+from hive.domain.evidence_kinds import EVIDENCE_KINDS
 from hive.domain.lifecycle import (
     PROVISIONAL, QUARANTINED, DemandRule, LifecycleService, MissRow,
     PromotionDecision, _demand_independence,
@@ -189,6 +190,7 @@ def test_on_capture_promotes_against_staged_demand():
     # the audit payload round-trips the decision, machine-readable
     eid, kind, actor, ts, payload = st.audits[0]
     assert (eid, kind, actor, ts) == (7, "promote", "server", NOW)
+    assert kind in EVIDENCE_KINDS               # the write site emits a registry member
     body = json.loads(payload)
     di = body.pop("demand_independence")             # the decorrelated-demand stamp (3b)
     assert body.pop("cluster_anomaly") is False      # the advisory anomaly flag (3c); no cluster here

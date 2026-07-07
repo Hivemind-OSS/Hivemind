@@ -8,6 +8,7 @@ from __future__ import annotations
 import json
 
 from hive.app.onboard_ref import CONTRACT_VERSION
+from hive.domain.evidence_kinds import EVIDENCE_KINDS
 from tests.mcp._helpers import build_real_server, content, is_error, tool_call, write_text
 
 
@@ -25,6 +26,8 @@ def test_records_helped_and_hurt_audits_for_known_ids():
     assert out["helped"] == [a] and out["hurt"] == [b]
     assert "outcome_helped" in _kinds_for(server, a)
     assert "outcome_hurt" in _kinds_for(server, b)
+    # the write sites emit registry members (evidence_events has no DDL CHECK)
+    assert set(_kinds_for(server, a) + _kinds_for(server, b)) <= EVIDENCE_KINDS
     # the recording agent is the audit actor
     actor = server.store.conn.execute(
         "SELECT actor FROM evidence_events WHERE episode_id=? AND kind='outcome_helped'",

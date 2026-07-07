@@ -15,6 +15,9 @@ from typing import Optional, Sequence
 import numpy as np
 
 from hive.adapters.sqlite_db import tx
+from hive.domain.evidence_kinds import (
+    EK_OUTCOME_HELPED, EK_PROMOTE, EK_PRUNE, EK_SUPERSEDE, EK_TTL_EXPIRED,
+)
 from hive.domain.kinds import DEFAULT_KIND, KIND_NAMES
 from hive.domain.lifecycle import (
     DEPRECATED, ESTABLISHED, PROVISIONAL, QUARANTINED, TRUST_STATES,
@@ -356,7 +359,7 @@ class SqliteEpisodeStore:
             self.conn.execute(
                 "INSERT INTO evidence_events(episode_id, kind, actor, ts, payload) "
                 "VALUES(?,?,?,?,?)",
-                (target_id, "supersede", actor, ts,
+                (target_id, EK_SUPERSEDE, actor, ts,
                  json.dumps({"replacement_id": replacement_id})))
         if self.index is not None:
             try:
@@ -391,7 +394,7 @@ class SqliteEpisodeStore:
             self.conn.execute(
                 "INSERT INTO evidence_events(episode_id, kind, actor, ts, payload) "
                 "VALUES(?,?,?,?,?)",
-                (episode_id, "prune", actor, ts, json.dumps({"from": old_trust})))
+                (episode_id, EK_PRUNE, actor, ts, json.dumps({"from": old_trust})))
         if self.index is not None and old_trust in (ESTABLISHED, PROVISIONAL):
             try:                                   # quarantined rows were never indexed
                 self.index.remove(episode_id)
@@ -423,7 +426,7 @@ class SqliteEpisodeStore:
                 self.conn.execute(
                     "INSERT INTO evidence_events(episode_id, kind, actor, ts, payload) "
                     "VALUES(?,?,?,?,?)",
-                    (eid, "ttl_expired", "server", now,
+                    (eid, EK_TTL_EXPIRED, "server", now,
                      json.dumps({"from": old_trust})))
         if self.index is not None:
             for eid, old_trust in flips:
@@ -487,8 +490,8 @@ class SqliteEpisodeStore:
         # newest-first per episode: ORDER BY ts DESC, id DESC, take the first stamp we can parse.
         for r in self.conn.execute(
                 f"SELECT episode_id, payload FROM evidence_events "
-                f"WHERE kind='promote' AND episode_id IN ({placeholders}) "
-                f"ORDER BY episode_id, ts DESC, id DESC", ids):
+                f"WHERE kind=? AND episode_id IN ({placeholders}) "
+                f"ORDER BY episode_id, ts DESC, id DESC", [EK_PROMOTE, *ids]):
             eid = int(r["episode_id"])
             if eid in out:
                 continue                                  # already have the newest for this id
@@ -513,7 +516,7 @@ class SqliteEpisodeStore:
         placeholders = ",".join("?" for _ in ids)
         return {int(r["episode_id"]) for r in self.conn.execute(
             f"SELECT DISTINCT episode_id FROM evidence_events "
-            f"WHERE kind='outcome_helped' AND episode_id IN ({placeholders})", ids)}
+            f"WHERE kind=? AND episode_id IN ({placeholders})", [EK_OUTCOME_HELPED, *ids])}
 
     def trust_counts(self) -> dict[str, int]:
         """Per-trust-state row counts for hive_health — ALL four states present
