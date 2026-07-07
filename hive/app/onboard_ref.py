@@ -49,7 +49,7 @@ from hive.domain.kinds import render_taxonomy
 # The single owner of the bundle version. Bump it (and regenerate the keystone golden) on ANY
 # change to AGENT_RULES_BLOCK / CLAUDE_CODE_HOOKS / the rendered allowlist. The beacon stamps this
 # on every tool result; an agent whose installed marker differs re-onboards.
-CONTRACT_VERSION: str = "v.03"
+CONTRACT_VERSION: str = "v.04"
 
 # Marker fences make the installed block a one-regex, idempotent replace (no clobber, no duplicate).
 # The START marker carries the version so an extract reads it straight off the rules file; the
@@ -227,12 +227,16 @@ CAPTURE_RECALL_FLOOR = (
     "- RECALL BEFORE EDIT — before modifying a file or symbol, hive_recall its anchor "
     "(query \"<path> <symbol>\") so a known gotcha or contract on that exact spot surfaces "
     "BEFORE the change, not after it breaks.\n"
-    "- TASK-END CAPTURE — when your task changed code, end it with AT MOST ONE structured "
-    "hive_capture: text = WHAT (the durable lesson) + WHERE as path/file.py:symbol + WHY "
+    "- TASK-END CAPTURE — when your task changed code, sweep the session and capture EACH "
+    "durable lesson that clears the bar as its OWN single-pointed hive_capture (one intent "
+    "per entry, never bundled — a bundled entry dilutes toward the centroid and the recall "
+    "gate abstains on it; usually zero or one entry, several when a rich session earned "
+    "them): text = WHAT (the durable lesson) + WHERE as path/file.py:symbol + WHY "
     "(the non-obvious part), and anchor=<that same file:symbol> — the WHERE rides in BOTH "
-    "the body text and the anchor (recall matches content only). Capture-only at task end: "
-    "NEVER hive_write here — write requires an approver; this path is quarantine-only by "
-    "design.\n"
+    "the body text and the anchor (recall matches content only). Write path: NEVER "
+    "hive_write autonomously at task end — write requires an approver; when a lesson is "
+    "load-bearing and must serve teammates NOW, ask your operator to approve a hive_write "
+    "rather than silently downgrading it to capture.\n"
     "- " + NOISE_FLOOR + "\n"
     "- ZERO-CAPTURE ESCAPE — if nothing clears that bar, capture NOTHING and finish: "
     "declining is compliance; a forced capture manufactures noise.\n"
