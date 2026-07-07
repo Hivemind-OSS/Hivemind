@@ -260,13 +260,14 @@ def test_report_golden_one_json_line_on_stdout():
     report = json.loads(lines[0])
     assert set(report) == {"inserted", "already_recorded", "matched",
                            "skipped_lines", "keyid", "verified_helped",
-                           "verified_hurt", "verify_current", "verify_stale"}
+                           "verified_hurt", "verify_current", "verify_stale",
+                           "stale_suspects"}
     envelope = json.loads(REAL_RECEIPT.read_text())
     assert lines[0] == json.dumps(
         {"already_recorded": 0, "inserted": report["inserted"],
          "keyid": envelope["signatures"][0]["keyid"], "matched": 1,
-         "skipped_lines": 0, "verified_helped": 0, "verified_hurt": 0,
-         "verify_current": 0, "verify_stale": 1},
+         "skipped_lines": 0, "stale_suspects": 0, "verified_helped": 0,
+         "verified_hurt": 0, "verify_current": 0, "verify_stale": 1},
         sort_keys=True, separators=(",", ":"))
 
 

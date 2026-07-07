@@ -14,7 +14,10 @@ version stamp — a mechanical ``outcome_verified_helped``/``_hurt`` row when th
 polarity-aware three-way regression clause decides (drift at the anchor ∧ a DECIDED
 failing test run ∧ blast-radius reach; abstention is the default), plus a
 ``verify_current``/``verify_stale`` row recording what the verifier proved about the
-anchor itself at head SHA.
+anchor itself at head SHA — and, when the receipt carries the optional census
+``propagation`` block, an advisory ``stale_suspect`` row per episode whose anchor sits
+in a breaking/removed seed's blast radius (neighbourhood suspicion; a directly-matched
+episode's point row dominates and suppresses it).
 
 Named safe directions (Law 6): receipt-global malformation REFUSES loudly
 (``ReceiptRefused`` — no row is ever written from a receipt this module cannot vouch
@@ -39,7 +42,7 @@ from typing import Callable, Optional, Sequence
 
 from hive.domain.evidence_kinds import (
     EK_CHANGE_OUTCOME, EK_OUTCOME_VERIFIED_HELPED, EK_OUTCOME_VERIFIED_HURT,
-    EK_VERIFY_CURRENT, EK_VERIFY_STALE,
+    EK_STALE_SUSPECT, EK_VERIFY_CURRENT, EK_VERIFY_STALE,
 )
 from hive.domain.ports import AnchoredEpisodeReader, ChangeEvidenceAppender
 
@@ -51,6 +54,7 @@ _STATEMENT_TYPE = "https://in-toto.io/Statement/v1"
 PAYLOAD_SCHEMA = "change_outcome/v1"      # versions the rendered evidence payload
 VERIFIED_PAYLOAD_SCHEMA = "outcome_verified/v1"   # versions the verified-outcome payload
 VERIFY_PAYLOAD_SCHEMA = "verify/v1"       # versions the anchor-verification payload
+SUSPECT_PAYLOAD_SCHEMA = "stale_suspect/v1"       # versions the neighbourhood-staleness payload
 CHANGE_ACTOR = "census"                   # the feeding organ (provenance rides the payload)
 
 _PHASES = frozenset({"pre_merge", "post_merge"})
@@ -143,9 +147,9 @@ class SubjectEvidence:
 @dataclass(frozen=True, slots=True)
 class IngestReport:
     """The machine-readable result of one ingest (ids + counts + keyid, never prose).
-    The four verified/verify counters count rows RENDERED into the batch (mirroring
-    ``matched``'s join-level semantics) — a re-ingest keeps the counts while
-    ``already_recorded`` absorbs the skips."""
+    The four verified/verify counters and ``stale_suspects`` count rows RENDERED into
+    the batch (mirroring ``matched``'s join-level semantics) — a re-ingest keeps the
+    counts while ``already_recorded`` absorbs the skips."""
     inserted: tuple[int, ...]
     already_recorded: int
     matched: int
@@ -155,6 +159,7 @@ class IngestReport:
     verified_hurt: int = 0
     verify_current: int = 0
     verify_stale: int = 0
+    stale_suspects: int = 0
 
 
 # ── parsing (D8: .get() + coerce everywhere; refuse the receipt, never crash) ──
@@ -250,6 +255,48 @@ def touched_subjects(lines: list) -> tuple[list[TouchedSubject], int]:
             seen.add((path, symbol))
             subjects.append(TouchedSubject(path=path, symbol=symbol))
     return subjects, skipped
+
+
+def propagation_subjects(predicate: object
+                         ) -> tuple[list[tuple[TouchedSubject, str, str]], int]:
+    """The ``(neighbour subject, seed, drift)`` triples of the receipt's OPTIONAL
+    ``propagation`` block (T2 — census ``--propagate`` blast-radius expansion), in
+    block order, deduplicated on the exact triple. D8 at the write boundary: an
+    absent / non-list block is simply empty (byte-inert); a malformed ENTRY — non-dict,
+    non-str seed, drift outside breaking/removed (the only drifts that justify
+    suspicion), neighbors not a list — is skipped AND counted; an individual neighbour
+    that is not a ``path::Symbol`` string is a benign skip (mirrors
+    ``touched_subjects``' non-counting for ``::``-less subjects)."""
+    if not isinstance(predicate, dict):
+        return [], 0
+    block = predicate.get("propagation")
+    if not isinstance(block, list):
+        return [], 0
+    triples: list[tuple[TouchedSubject, str, str]] = []
+    seen: set[tuple[TouchedSubject, str, str]] = set()
+    skipped = 0
+    for entry in block:
+        if not isinstance(entry, dict):
+            skipped += 1
+            continue
+        seed, drift = entry.get("seed"), entry.get("drift")
+        neighbors = entry.get("neighbors")
+        if (not isinstance(seed, str) or not seed
+                or drift not in _BREAKING_DRIFTS
+                or not isinstance(neighbors, list)):
+            skipped += 1
+            continue
+        for neighbor in neighbors:
+            if not isinstance(neighbor, str) or "::" not in neighbor:
+                continue
+            path, _, symbol = neighbor.partition("::")
+            if not path or not symbol:
+                continue
+            triple = (TouchedSubject(path=path, symbol=symbol), seed, drift)
+            if triple not in seen:
+                seen.add(triple)
+                triples.append(triple)
+    return triples, skipped
 
 
 # ── derivation (§3.3 — server-derived, never caller-asserted) ──────────────────
@@ -541,6 +588,22 @@ def render_verify_payload(subject: TouchedSubject, ev: SubjectEvidence,
     }, sort_keys=True, separators=(",", ":"))
 
 
+def render_suspect_payload(subject: TouchedSubject, seed: str, drift: str,
+                           stamp: dict) -> str:
+    """The neighbourhood-staleness payload: the suspected neighbour + the
+    breaking/removed seed whose blast radius reached it + the full version stamp
+    (the SHAs ride the stamp). Ids/enums/hashes only — never receipt prose (Law 4);
+    receipt-digest-free like the verify payload, so a re-issued receipt for the same
+    change dedups to the same row (content-keyed idempotency)."""
+    return json.dumps({
+        "schema": SUSPECT_PAYLOAD_SCHEMA,
+        "matched": {"path": subject.path, "symbol": subject.symbol},
+        "seed": seed,
+        "drift": drift,
+        "stamp": stamp,
+    }, sort_keys=True, separators=(",", ":"))
+
+
 # ── the orchestrating service (ports in, ONE batch out) ────────────────────────
 
 
@@ -617,6 +680,30 @@ class ChangeEvidenceService:
                 rows.append((episode_id, verify_kind, CHANGE_ACTOR, ts,
                              render_verify_payload(subject, ev, stamp)))
                 counts[verify_kind] += 1
+        # T2 rider: graph-propagated staleness — join the receipt's OPTIONAL propagation
+        # neighbours with the SAME anchor rule, in the same atomic batch. Stamp-gated like
+        # the verified/verify rows (the payload carries the version stamp, so pre-merge
+        # only); an episode already carrying a POINT row this ingest gets no suspect row
+        # (point evidence dominates neighbourhood suspicion). Detection fuel only — the
+        # worklist proposes re-verification, nothing here retires anything.
+        stale_suspects = 0
+        if stamp is not None:
+            triples, prop_skipped = propagation_subjects(predicate)
+            skipped_lines += prop_skipped
+            if triples:
+                seed_drift_by_subject: dict[TouchedSubject, tuple[str, str]] = {}
+                for subject, seed, drift in triples:
+                    seed_drift_by_subject.setdefault(subject, (seed, drift))
+                neighbour_matches = match_anchors(
+                    list(seed_drift_by_subject),
+                    [(eid, anchor) for eid, anchor, _pol in anchored])
+                for episode_id, (subject, _level) in neighbour_matches.items():
+                    if episode_id in matches:
+                        continue               # point evidence dominates suspicion
+                    seed, drift = seed_drift_by_subject[subject]
+                    rows.append((episode_id, EK_STALE_SUSPECT, CHANGE_ACTOR, ts,
+                                 render_suspect_payload(subject, seed, drift, stamp)))
+                    stale_suspects += 1
         inserted, already = self._appender.append_evidence(rows) if rows else ([], 0)
         return IngestReport(inserted=tuple(inserted), already_recorded=already,
                             matched=len(matches), skipped_lines=skipped_lines,
@@ -624,4 +711,5 @@ class ChangeEvidenceService:
                             verified_helped=counts[EK_OUTCOME_VERIFIED_HELPED],
                             verified_hurt=counts[EK_OUTCOME_VERIFIED_HURT],
                             verify_current=counts[EK_VERIFY_CURRENT],
-                            verify_stale=counts[EK_VERIFY_STALE])
+                            verify_stale=counts[EK_VERIFY_STALE],
+                            stale_suspects=stale_suspects)

@@ -3,6 +3,18 @@
 All notable changes to this project are documented here.
 
 ## Added
+- Graph-propagated staleness, detection-only: the census ingest now honors the
+  receipt's optional `propagation` block (built census-side under
+  `hive-census build --propagate`) — the same atomic batch appends one advisory
+  `stale_suspect` evidence row per episode whose anchor joins a breaking/removed
+  seed's blast-radius neighbours (the same anchor rule as the point join;
+  stamp-gated pre-merge like the verified/verify riders; a directly-matched
+  episode's point row dominates and suppresses its suspect row).
+  `hive_health(include_stale_suspects=true)` surfaces the worklist — per SERVABLE
+  episode the newest suspect `{episode_id, anchor, seed, drift, head_sha, ts}`,
+  anchor-bucketed, request-flag gated (byte-inert until asked), fail-open to `[]`;
+  resolution stays human (re-verify, then `hive_supersede`/`hive_prune`). The
+  censusctl report line gains the `stale_suspects` counter.
 - Recorded the first REAL L4 empirical-gate run (`hive/research/bench/runs/l4_gate_s0.json`
   + per-arm replay logs): LongMemEval-S n=30 (seed 0), haiku, production gate/autonomy
   knobs. The mechanism behaved exactly as designed — the OFF control promoted nothing

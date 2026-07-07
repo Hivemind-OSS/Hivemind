@@ -17,7 +17,8 @@ import numpy as np
 from hive.adapters.sqlite_db import tx
 from hive.domain.evidence_kinds import (
     EK_OUTCOME_HELPED, EK_OUTCOME_VERIFIED_HELPED, EK_PROMOTE, EK_PRUNE,
-    EK_SUPERSEDE, EK_TTL_EXPIRED, EK_VERIFY_CURRENT, EK_VERIFY_STALE,
+    EK_STALE_SUSPECT, EK_SUPERSEDE, EK_TTL_EXPIRED, EK_VERIFY_CURRENT,
+    EK_VERIFY_STALE,
 )
 from hive.domain.kinds import DEFAULT_KIND, KIND_NAMES
 from hive.domain.lifecycle import (
@@ -584,6 +585,25 @@ class SqliteEpisodeStore:
                 out[eid] = (int(r["ts"]), head_sha, state)
             except (TypeError, ValueError, json.JSONDecodeError):
                 continue                              # malformed ⇒ skip, never raise
+        return out
+
+    def stale_suspect_rows(self) -> list[tuple[int, int, str]]:
+        """The newest ``stale_suspect`` ledger row per episode →
+        ``[(episode_id, ts, payload)]`` (no port — consumed by the hive_health
+        ``include_stale_suspects`` report, which owns the servable filter and the
+        defensive payload parse; the payload rides OPAQUE here). Newest per id:
+        ``ORDER BY ts DESC, id DESC``, first row per id wins. Read-only, no DDL.
+        // O(rows)."""
+        out: list[tuple[int, int, str]] = []
+        seen: set[int] = set()
+        for r in self.conn.execute(
+                "SELECT episode_id, ts, payload FROM evidence_events WHERE kind=? "
+                "ORDER BY episode_id, ts DESC, id DESC", [EK_STALE_SUSPECT]):
+            eid = int(r["episode_id"])
+            if eid in seen:
+                continue                              # already have the newest for this id
+            seen.add(eid)
+            out.append((eid, int(r["ts"]), r["payload"]))
         return out
 
     def anchored_episodes(self) -> list[tuple[int, str, str]]:

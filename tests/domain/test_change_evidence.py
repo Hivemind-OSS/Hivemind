@@ -19,11 +19,12 @@ from hive.domain.change_evidence import (
     ChangeEvidenceService, ChangeOutcome, IngestReport, ReceiptRefused, SubjectEvidence,
     TouchedSubject, classify_verified, classify_verify, decided_tests_state,
     derive_post_merge_tag, derive_pre_merge, match_anchors, parse_receipt,
-    render_payload, subject_evidence, touched_subjects, version_stamp,
+    propagation_subjects, render_payload, subject_evidence, touched_subjects,
+    version_stamp,
 )
 from hive.domain.evidence_kinds import (
     EK_CHANGE_OUTCOME, EK_OUTCOME_VERIFIED_HELPED, EK_OUTCOME_VERIFIED_HURT,
-    EK_VERIFY_CURRENT, EK_VERIFY_STALE,
+    EK_STALE_SUSPECT, EK_VERIFY_CURRENT, EK_VERIFY_STALE,
 )
 
 BASE = "a" * 40
@@ -780,3 +781,156 @@ def test_report_counters_default_zero_and_are_additive():
                        skipped_lines=0, keyid="")
     assert (rep.verified_helped, rep.verified_hurt,
             rep.verify_current, rep.verify_stale) == (0, 0, 0, 0)
+    assert rep.stale_suspects == 0
+
+
+# ═══ T2: graph-propagated staleness — the propagation block → stale_suspect rows ═
+
+_SEED = "matrix/x.py::LanguageConfig"
+_NEIGHBOR_ANCHOR = "pkg/caller.py::caller_fn"
+
+
+def _prop_entry(*, seed=_SEED, drift="removed", depth=2,
+                neighbors=("pkg/caller.py::caller_fn",)):
+    return {"seed": seed, "drift": drift, "depth": depth,
+            "neighbors": list(neighbors)}
+
+
+def _prop_receipt(lines, propagation, *, provenance=None):
+    """A stamped receipt whose predicate carries the optional propagation block."""
+    prov = provenance if provenance is not None else json.loads(json.dumps(_STAMPED_PROV))
+    predicate = {"schema_version": "v0", "lines": lines or [],
+                 "provenance": prov, "propagation": propagation}
+    d = hashlib.sha256(_canon(predicate)).hexdigest()
+    statement = {"_type": "https://in-toto.io/Statement/v1",
+                 "subject": [{"name": "hive-census-receipt", "digest": {"sha256": d}}],
+                 "predicateType": "urn:hive-census:receipt:v0", "predicate": predicate}
+    return {"payload": base64.b64encode(_canon(statement)).decode("ascii"),
+            "payloadType": "application/vnd.in-toto+json",
+            "signatures": [{"keyid": "key-1", "sig": "c2ln"}]}
+
+
+# ── propagation_subjects: D8 over the optional block ───────────────────────────
+
+
+def test_propagation_subjects_parses_neighbor_seed_drift_triples():
+    subjects, skipped = propagation_subjects({"propagation": [
+        _prop_entry(neighbors=["a.py::F", "b.py::G"]),
+        _prop_entry(seed="matrix/y.py::Other", drift="breaking",
+                    neighbors=["a.py::F"]),                    # dup subject, second seed
+    ]})
+    assert skipped == 0
+    assert subjects == [
+        (TouchedSubject("a.py", "F"), _SEED, "removed"),
+        (TouchedSubject("b.py", "G"), _SEED, "removed"),
+        (TouchedSubject("a.py", "F"), "matrix/y.py::Other", "breaking"),
+    ]
+
+
+def test_propagation_subjects_absent_or_non_list_block_is_empty():
+    assert propagation_subjects({}) == ([], 0)
+    assert propagation_subjects({"propagation": "nope"}) == ([], 0)
+    assert propagation_subjects("not-a-dict") == ([], 0)
+    assert propagation_subjects({"propagation": []}) == ([], 0)
+
+
+def test_propagation_subjects_malformed_entries_skipped_and_counted():
+    subjects, skipped = propagation_subjects({"propagation": [
+        "garbage",                                             # non-dict entry
+        {"seed": 7, "drift": "removed", "neighbors": ["a.py::F"]},   # non-str seed
+        {"seed": _SEED, "drift": "additive", "neighbors": ["a.py::F"]},  # off-vocabulary drift
+        {"seed": _SEED, "drift": "removed", "neighbors": "a.py::F"},     # non-list neighbors
+        _prop_entry(neighbors=["ok.py::Fine", 7, "no-separator", "::NoPath", "no-symbol::"]),
+    ]})
+    assert skipped == 4                                        # entry-level malformation only
+    assert subjects == [(TouchedSubject("ok.py", "Fine"), _SEED, "removed")]
+
+
+def test_propagation_subjects_dedupes_identical_triples():
+    subjects, _ = propagation_subjects({"propagation": [
+        _prop_entry(neighbors=["a.py::F", "a.py::F"]),
+        _prop_entry(neighbors=["a.py::F"]),
+    ]})
+    assert subjects == [(TouchedSubject("a.py", "F"), _SEED, "removed")]
+
+
+# ── the ingest rider: suspect rows in the same batch, point-dominated ───────────
+
+
+def test_ingest_writes_stale_suspect_rows_in_the_same_batch():
+    svc, appender = _service([(7, _NEIGHBOR_ANCHOR, "neutral")])
+    report = svc.ingest(_prop_receipt(_verified_lines(), [_prop_entry()]))
+    assert len(appender.batches) == 1                          # ONE atomic batch
+    suspect_rows = [row for row in appender.batches[0] if row[1] == EK_STALE_SUSPECT]
+    assert len(suspect_rows) == 1
+    eid, kind, actor, ts, payload = suspect_rows[0]
+    assert (eid, actor, ts) == (7, "census", 12_345)
+    body = json.loads(payload)
+    assert set(body) == {"schema", "matched", "seed", "drift", "stamp"}
+    assert body["schema"] == "stale_suspect/v1"
+    assert body["matched"] == {"path": "pkg/caller.py", "symbol": "caller_fn"}
+    assert (body["seed"], body["drift"]) == (_SEED, "removed")
+    assert body["stamp"]["head_sha"] == HEAD                   # the T1 version stamp rides
+    assert report.stale_suspects == 1
+    # re-ingest: content-keyed idempotency covers the suspect kind too
+    again = svc.ingest(_prop_receipt(_verified_lines(), [_prop_entry()]))
+    assert again.inserted == () and again.already_recorded >= 1
+    assert again.stale_suspects == 1                           # rendered, not re-inserted
+
+
+def test_point_match_suppresses_the_suspect_row_for_the_same_episode():
+    # the episode's anchor matches the receipt's TOUCHED subject (a point row) AND a
+    # propagation neighbor names the same subject — point evidence dominates: no suspect row.
+    svc, appender = _service([(7, _ANCHOR, "dont")])
+    report = svc.ingest(_prop_receipt(
+        _verified_lines(), [_prop_entry(neighbors=[_SEED])]))
+    kinds = [row[1] for row in appender.batches[0]]
+    assert EK_CHANGE_OUTCOME in kinds and EK_STALE_SUSPECT not in kinds
+    assert report.stale_suspects == 0
+
+
+def test_propagation_free_receipt_writes_zero_suspect_rows():
+    # byte-inert: the S4/T1 batch is unchanged when no propagation block rides the receipt.
+    svc, appender = _service([(7, _ANCHOR, "dont"), (9, _NEIGHBOR_ANCHOR, "neutral")])
+    report = svc.ingest(_stamped_receipt(_verified_lines()))
+    assert all(row[1] != EK_STALE_SUSPECT for row in appender.batches[0])
+    assert report.stale_suspects == 0
+
+
+def test_suspect_rows_require_full_version_stamp():
+    # L7: a stamp-less receipt writes NO suspect rows (the payload carries the stamp).
+    prov = {"base_sha": BASE, "head_sha": HEAD, "hive_census_version": "0.1.0"}
+    svc, appender = _service([(7, _NEIGHBOR_ANCHOR, "neutral"), (9, _ANCHOR, "dont")])
+    report = svc.ingest(_prop_receipt(_verified_lines(), [_prop_entry()],
+                                      provenance=prov))
+    assert all(row[1] != EK_STALE_SUSPECT for row in appender.batches[0])
+    assert report.stale_suspects == 0
+
+
+def test_post_merge_ingest_writes_no_suspect_rows():
+    svc, appender = _service([(7, _NEIGHBOR_ANCHOR, "neutral"), (9, _ANCHOR, "dont")])
+    report = svc.ingest(_prop_receipt(_verified_lines(), [_prop_entry()]),
+                        phase="post_merge", verdict="fail", signal="canary")
+    assert all(row[1] != EK_STALE_SUSPECT for row in appender.batches[0])
+    assert report.stale_suspects == 0
+
+
+def test_suspect_payload_is_ids_enums_and_stamps_only_and_byte_stable():
+    prose = "REASONPROSE the flange rotated"
+    entry = _prop_entry()
+    entry["reason"] = prose                                    # unknown keys never ride
+    svc, appender = _service([(7, _NEIGHBOR_ANCHOR, "neutral")])
+    svc.ingest(_prop_receipt(_verified_lines(), [entry]))
+    suspect = next(row for row in appender.batches[0] if row[1] == EK_STALE_SUSPECT)
+    assert "REASONPROSE" not in suspect[4]                     # Law 4: no receipt prose
+    svc2, appender2 = _service([(7, _NEIGHBOR_ANCHOR, "neutral")])
+    svc2.ingest(_prop_receipt(_verified_lines(), [entry]))
+    assert appender2.batches[0] == appender.batches[0]         # the idempotency bytes
+
+
+def test_malformed_propagation_entries_count_into_skipped_lines():
+    svc, _ = _service([(7, _NEIGHBOR_ANCHOR, "neutral")])
+    report = svc.ingest(_prop_receipt(
+        _verified_lines(), ["garbage", _prop_entry()]))
+    assert report.skipped_lines == 1                           # the malformed entry, counted
+    assert report.stale_suspects == 1                          # the good one still lands

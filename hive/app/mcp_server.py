@@ -630,6 +630,10 @@ class HiveMCPServer:
             # toggle — byte-inert until requested); dropping the request flag ⇒ always-emits mutation.
             if args.get("include_suspect_consensus"):
                 snap["suspect_consensus"] = self._suspect_consensus_report()
+            # the graph-propagated staleness worklist: same sole-request-flag gate, no
+            # config knob; dropping the request flag ⇒ always-emits mutation.
+            if args.get("include_stale_suspects"):
+                snap["stale_suspects"] = self._stale_suspects_report()
             return snap
         except Exception as e:                               # fail-closed subset ONLY
             _log.error("mcp.health_probe_fail", extra={"event": "mcp.health_probe_fail",
@@ -773,6 +777,47 @@ class HiveMCPServer:
         except Exception:                                # noqa: BLE001 — telemetry only
             _log.warning("mcp.suspect_consensus_report_failed", extra={
                 "event": "mcp.suspect_consensus_report_failed"}, exc_info=True)
+            return []
+
+    def _stale_suspects_report(self) -> list[dict]:
+        """The graph-propagated staleness worklist (detection, never resolution): per
+        SERVABLE episode, the newest ``stale_suspect`` ledger row — written by the census
+        ingest when the episode's anchor sat in a breaking/removed change's blast radius
+        (the receipt's ``--propagate`` block). Ids/enums/hashes only (Law 4): episode_id +
+        its anchor + the seed subject, drift, head SHA and row ts; anchor-bucketed order
+        (sorted by anchor, then id). A non-servable episode is DROPPED (retired/decayed
+        suspicion is dead worklist noise); a malformed payload is OMITTED (under-claim).
+        Resolution stays human — re-verify the anchor, then hive_supersede / hive_prune.
+        Degrades to [] on any probe fault (a side-channel must never break health)."""
+        try:
+            now = int(self.now())
+            ttl_s = int(self.autonomy.provisional_ttl_days) * _DAY_S
+            anchor_by_id = {
+                row[0]: row[3] for row in self.store.scan_servable_labeled(
+                    now=now, provisional_ttl_s=ttl_s)}
+            out: list[dict] = []
+            for eid, ts, payload in self.store.stale_suspect_rows():
+                if eid not in anchor_by_id:
+                    continue                             # non-servable: dropped
+                try:
+                    doc = json.loads(payload)
+                except ValueError:
+                    continue                             # malformed: under-claim
+                if not isinstance(doc, dict):
+                    continue
+                seed, drift = doc.get("seed"), doc.get("drift")
+                stamp = doc.get("stamp")
+                head_sha = stamp.get("head_sha") if isinstance(stamp, dict) else None
+                if not all(isinstance(v, str) and v for v in (seed, drift, head_sha)):
+                    continue                             # half-shaped: under-claim
+                out.append({"episode_id": eid, "anchor": anchor_by_id[eid],
+                            "seed": seed, "drift": drift, "head_sha": head_sha,
+                            "ts": int(ts)})
+            out.sort(key=lambda r: (r["anchor"], r["episode_id"]))
+            return out
+        except Exception:                                # noqa: BLE001 — telemetry only
+            _log.warning("mcp.stale_suspects_report_failed", extra={
+                "event": "mcp.stale_suspects_report_failed"}, exc_info=True)
             return []
 
     def _db_size(self) -> int:

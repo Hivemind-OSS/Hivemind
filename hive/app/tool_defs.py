@@ -165,6 +165,11 @@ TOOL_DEFINITIONS: list[dict] = [
                     "provisional promotions whose demand had thin effective independence "
                     "(promoted on correlated asks, the confidently-wrong-but-popular case) "
                     "for a human to re-examine. "
+                    "include_stale_suspects=true adds the graph-propagated staleness "
+                    "worklist: servable memories whose anchor sat in the blast radius of a "
+                    "breaking/removed change (census --propagate evidence) — re-verify each "
+                    "against the code, then retire via hive_supersede/hive_prune if truly "
+                    "stale. "
                     "embedder_loaded reports whether this process's embedder is resident "
                     "(the container HEALTHCHECK is a separate process reading boot markers)."
                     "\n\n" + ONBOARDING_REFERENCE,
@@ -172,7 +177,8 @@ TOOL_DEFINITIONS: list[dict] = [
                      "properties": {"include_gaps": {"type": "boolean"},
                                     "include_trends": {"type": "boolean"},
                                     "include_conflicts": {"type": "boolean"},
-                                    "include_suspect_consensus": {"type": "boolean"}}}},
+                                    "include_suspect_consensus": {"type": "boolean"},
+                                    "include_stale_suspects": {"type": "boolean"}}}},
 ]
 
 # The canonical tool name set — the dropped-verb guard reads this.
