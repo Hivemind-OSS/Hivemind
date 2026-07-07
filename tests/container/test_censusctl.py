@@ -16,7 +16,7 @@ import pytest
 
 from hive.adapters.sqlite_db import connect
 from hive.adapters.store_sqlite import SqliteEpisodeStore
-from hive.domain.evidence_kinds import EK_CHANGE_OUTCOME
+from hive.domain.evidence_kinds import EK_CHANGE_OUTCOME, EK_VERIFY_STALE
 from hive.tools import censusctl
 
 _DATA = pathlib.Path(__file__).resolve().parents[1] / "data"
@@ -95,13 +95,13 @@ def test_stdin_dash_and_file_input_are_equivalent():
 
     assert rc_f == rc_s == censusctl.EX_OK
     assert json.loads(out_f) == json.loads(out_s)    # identical machine report
-    assert len(_rows(cf_file.conn)) == len(_rows(cf_stdin.conn)) == 1
+    assert len(_rows(cf_file.conn)) == len(_rows(cf_stdin.conn)) == 2
 
 
 # ── the REAL signed receipt against a seeded real store (offline D7 half) ─────
 
 
-def test_real_receipt_lands_one_change_outcome_row_with_the_receipt_shas():
+def test_real_receipt_lands_change_outcome_and_verify_rows_with_the_receipt_shas():
     cf = RecordingConnect()
     eid = _seed_anchored(cf.conn, "LanguageConfig gotcha", REAL_ANCHOR)
     _seed_anchored(cf.conn, "unrelated memory", "other/place.py::Elsewhere")
@@ -109,7 +109,7 @@ def test_real_receipt_lands_one_change_outcome_row_with_the_receipt_shas():
     assert rc == censusctl.EX_OK
 
     rows = _rows(cf.conn)
-    assert len(rows) == 1                            # exactly one matched episode
+    assert len(rows) == 2                            # one matched episode, two kinds
     row = rows[0]
     assert row["episode_id"] == eid
     assert row["kind"] == EK_CHANGE_OUTCOME and row["actor"] == "census"
@@ -128,9 +128,24 @@ def test_real_receipt_lands_one_change_outcome_row_with_the_receipt_shas():
     assert body["phase"] == "pre_merge"
     assert body["verdict"] == "fail" and body["tag"] == "bounded-estimate"
 
+    # the Flow A rider on the real receipt: LanguageConfig was REMOVED at head
+    # (existence exists_after=false, contract drift=removed) ⇒ one verify_stale row,
+    # SHA-and-version-stamped from the receipt's combdrift + matrix.head blocks…
+    verify = rows[1]
+    assert verify["episode_id"] == eid and verify["kind"] == EK_VERIFY_STALE
+    vbody = json.loads(verify["payload"])
+    assert vbody["schema"] == "verify/v1"
+    assert (vbody["exists_after"], vbody["drift"]) == (False, "removed")
+    assert vbody["stamp"]["head_sha"] == prov["head_sha"]
+    assert vbody["stamp"]["matrix_head"]["graph_sha256"] == \
+        prov["matrix"]["head"]["graph_sha256"]
+    # …and ZERO verified rows: the tests line is not_run and the regression reach is
+    # empty — the honest abstention (only a DECIDED failing run with reach backwrites).
     report = json.loads(out)
-    assert report["matched"] == 1 and len(report["inserted"]) == 1
+    assert report["matched"] == 1 and len(report["inserted"]) == 2
     assert report["keyid"] == envelope["signatures"][0]["keyid"]
+    assert (report["verified_helped"], report["verified_hurt"]) == (0, 0)
+    assert (report["verify_current"], report["verify_stale"]) == (0, 1)
 
 
 def test_reingest_of_the_same_receipt_is_idempotent():
@@ -139,9 +154,9 @@ def test_reingest_of_the_same_receipt_is_idempotent():
     rc1, _, _ = _run(["ingest", str(REAL_RECEIPT)], connect_fn=cf)
     rc2, out2, _ = _run(["ingest", str(REAL_RECEIPT)], connect_fn=cf)
     assert rc1 == rc2 == censusctl.EX_OK
-    assert len(_rows(cf.conn)) == 1                  # still ONE row
+    assert len(_rows(cf.conn)) == 2                  # still the same two rows
     report = json.loads(out2)
-    assert report["already_recorded"] == 1 and report["inserted"] == []
+    assert report["already_recorded"] == 2 and report["inserted"] == []
 
 
 # ── refusal semantics: exit 65, reason on stderr, ZERO rows, no report ─────────
@@ -244,12 +259,15 @@ def test_report_golden_one_json_line_on_stdout():
     assert len(lines) == 1                           # stdout is the report, nothing else
     report = json.loads(lines[0])
     assert set(report) == {"inserted", "already_recorded", "matched",
-                           "skipped_lines", "keyid"}
+                           "skipped_lines", "keyid", "verified_helped",
+                           "verified_hurt", "verify_current", "verify_stale"}
     envelope = json.loads(REAL_RECEIPT.read_text())
     assert lines[0] == json.dumps(
         {"already_recorded": 0, "inserted": report["inserted"],
          "keyid": envelope["signatures"][0]["keyid"], "matched": 1,
-         "skipped_lines": 0}, sort_keys=True, separators=(",", ":"))
+         "skipped_lines": 0, "verified_helped": 0, "verified_hurt": 0,
+         "verify_current": 0, "verify_stale": 1},
+        sort_keys=True, separators=(",", ":"))
 
 
 def test_matched_zero_is_success_with_an_honest_report():

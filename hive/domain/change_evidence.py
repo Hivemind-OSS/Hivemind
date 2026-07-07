@@ -8,6 +8,14 @@ rule is structurally unconstructable to violate), join the receipt's touched
 ``path::Symbol`` subjects against episode anchors (deterministic, precision-first), and
 render ONE canonical-JSON payload per matched episode (byte-stable — the idempotency key).
 
+The same batch also carries the verified-outcome rider (Flow A): for each matched
+episode — pre-merge only, and only under a full ``ModelVersion ⊕ VerifierVersion ⊕ SHA``
+version stamp — a mechanical ``outcome_verified_helped``/``_hurt`` row when the
+polarity-aware three-way regression clause decides (drift at the anchor ∧ a DECIDED
+failing test run ∧ blast-radius reach; abstention is the default), plus a
+``verify_current``/``verify_stale`` row recording what the verifier proved about the
+anchor itself at head SHA.
+
 Named safe directions (Law 6): receipt-global malformation REFUSES loudly
 (``ReceiptRefused`` — no row is ever written from a receipt this module cannot vouch
 for); a malformed individual line is SKIPPED AND COUNTED (under-claim — one bad line
@@ -29,7 +37,10 @@ import re
 from dataclasses import dataclass
 from typing import Callable, Optional, Sequence
 
-from hive.domain.evidence_kinds import EK_CHANGE_OUTCOME
+from hive.domain.evidence_kinds import (
+    EK_CHANGE_OUTCOME, EK_OUTCOME_VERIFIED_HELPED, EK_OUTCOME_VERIFIED_HURT,
+    EK_VERIFY_CURRENT, EK_VERIFY_STALE,
+)
 from hive.domain.ports import AnchoredEpisodeReader, ChangeEvidenceAppender
 
 # ── the receipt contract (version-bound; never guess a schema) ─────────────────
@@ -38,6 +49,8 @@ _PAYLOAD_TYPE = "application/vnd.in-toto+json"
 _STATEMENT_TYPE = "https://in-toto.io/Statement/v1"
 
 PAYLOAD_SCHEMA = "change_outcome/v1"      # versions the rendered evidence payload
+VERIFIED_PAYLOAD_SCHEMA = "outcome_verified/v1"   # versions the verified-outcome payload
+VERIFY_PAYLOAD_SCHEMA = "verify/v1"       # versions the anchor-verification payload
 CHANGE_ACTOR = "census"                   # the feeding organ (provenance rides the payload)
 
 _PHASES = frozenset({"pre_merge", "post_merge"})
@@ -48,6 +61,16 @@ _SIGNALS_MACHINE = frozenset({"randomized", "canary"})
 _JOIN_CLASSES = frozenset({"existence", "contract", "regression"})
 _EXECUTION_CLASSES = frozenset({"typecheck", "tests"})
 _DECIDED_STATES = frozenset({"passed", "failed"})
+
+# the verified/verify drift vocabularies (VISION_LIFT §5.2, pinned exactly):
+# breaking/removed prove the anchor moved; unchanged/additive/"" prove it held.
+# Anything else (indeterminate, unknown) is an under-claim — no row.
+_BREAKING_DRIFTS = frozenset({"breaking", "removed"})
+_CURRENT_DRIFTS = frozenset({"unchanged", "additive", ""})
+
+# the machine reason enum riding the verified payload (never receipt prose)
+_VERIFIED_REASONS = {EK_OUTCOME_VERIFIED_HELPED: "corroborated",
+                     EK_OUTCOME_VERIFIED_HURT: "contradicted"}
 
 # §3.4 boundary sets: where a path may start/end inside a free-text anchor.
 _PRE_BOUNDARY = frozenset({" ", "(", "`", "'", '"'})           # or string start
@@ -104,13 +127,34 @@ class TouchedSubject:
 
 
 @dataclass(frozen=True, slots=True)
+class SubjectEvidence:
+    """The per-(path, symbol) distillation of a receipt's evidence lines (D8: every
+    field defaults to the under-claiming absent value, so a malformed line can only
+    LOSE evidence, never fabricate it). ``drift`` is the contract line's verdict;
+    ``exists_after`` the existence line's; ``regression_tests`` the regression line's
+    blast-radius test reach (``has_regression_line`` distinguishes an absent line
+    from an empty reach)."""
+    drift: str = ""                          # contract line detail.drift ("" when absent)
+    exists_after: Optional[bool] = None      # existence line detail.exists_after
+    regression_tests: tuple[str, ...] = ()   # regression line detail.tests
+    has_regression_line: bool = False
+
+
+@dataclass(frozen=True, slots=True)
 class IngestReport:
-    """The machine-readable result of one ingest (ids + counts + keyid, never prose)."""
+    """The machine-readable result of one ingest (ids + counts + keyid, never prose).
+    The four verified/verify counters count rows RENDERED into the batch (mirroring
+    ``matched``'s join-level semantics) — a re-ingest keeps the counts while
+    ``already_recorded`` absorbs the skips."""
     inserted: tuple[int, ...]
     already_recorded: int
     matched: int
     skipped_lines: int
     keyid: str
+    verified_helped: int = 0
+    verified_hurt: int = 0
+    verify_current: int = 0
+    verify_stale: int = 0
 
 
 # ── parsing (D8: .get() + coerce everywhere; refuse the receipt, never crash) ──
@@ -242,6 +286,129 @@ def derive_post_merge_tag(signal: str) -> str:
     return "machine-checked" if signal in _SIGNALS_MACHINE else "unverified-judgment"
 
 
+# ── Flow A: the verified/verify distillation + classifiers (mechanical, D8) ────
+
+
+def subject_evidence(lines: list) -> dict[tuple[str, str], SubjectEvidence]:
+    """Distill the evidence lines into one ``SubjectEvidence`` per ``path::Symbol``.
+    Total and defensive: a malformed line/detail/field is simply DROPPED (the
+    under-claim direction — the defaults assert nothing), never a raise. A field
+    stated by more than one line is last-write-wins over the parseable statements
+    (receipts state each once; the rule only needs determinism)."""
+    acc: dict[tuple[str, str], dict] = {}
+    for line in lines if isinstance(lines, list) else []:
+        if not isinstance(line, dict):
+            continue
+        cls, subject = line.get("class"), line.get("subject")
+        if cls not in _JOIN_CLASSES or not isinstance(subject, str) or "::" not in subject:
+            continue
+        path, _, symbol = subject.partition("::")
+        if not path or not symbol:
+            continue
+        detail = line.get("detail")
+        detail = detail if isinstance(detail, dict) else {}
+        slot = acc.setdefault((path, symbol), {})
+        if cls == "contract":
+            drift = detail.get("drift")
+            if isinstance(drift, str):
+                slot["drift"] = drift
+        elif cls == "existence":
+            exists_after = detail.get("exists_after")
+            if isinstance(exists_after, bool):
+                slot["exists_after"] = exists_after
+        elif cls == "regression":
+            slot["has_regression_line"] = True
+            tests = detail.get("tests")
+            if isinstance(tests, list):
+                slot["regression_tests"] = tuple(
+                    t for t in tests if isinstance(t, str))
+    return {key: SubjectEvidence(**fields) for key, fields in acc.items()}
+
+
+def decided_tests_state(lines: list) -> Optional[str]:
+    """The DECIDED state of the ``tests`` execution line(s): ``"failed"`` if any
+    decided run failed, ``"passed"`` if every decided run passed, ``None`` when
+    nothing is decided (not_run / errored / absent — "tooling broke" is never
+    "change failed"). Total, never raises."""
+    states: list[str] = []
+    for line in lines if isinstance(lines, list) else []:
+        if not isinstance(line, dict) or line.get("class") != "tests":
+            continue
+        detail = line.get("detail")
+        state = detail.get("state") if isinstance(detail, dict) else None
+        if state in _DECIDED_STATES:
+            states.append(state)
+    if not states:
+        return None
+    return "failed" if "failed" in states else "passed"
+
+
+def classify_verified(polarity: str, ev: SubjectEvidence,
+                      tests_state: Optional[str]) -> Optional[str]:
+    """The mechanical corroborated/contradicted join over the regression line
+    (VISION_LIFT §5.2, pinned exactly). HELPED iff a ``dont`` memory's anchor drifted
+    breaking/removed AND a decided-failing test run reached it (the three-way clause:
+    drift at X ∧ a failing affected-test run ∧ tests reaching X). HURT iff a ``do``
+    memory's anchor took a decided-failing run with reach. Everything else — neutral
+    polarity, decided-pass, not_run/errored, no reach, no drift — is ``None``:
+    fail-closed, abstention is the default; only a DECIDED failing run with
+    blast-radius reach backwrites."""
+    if tests_state != "failed" or not ev.regression_tests:
+        return None
+    if polarity == "dont" and ev.drift in _BREAKING_DRIFTS:
+        return EK_OUTCOME_VERIFIED_HELPED
+    if polarity == "do":
+        return EK_OUTCOME_VERIFIED_HURT
+    return None
+
+
+def classify_verify(ev: SubjectEvidence) -> Optional[str]:
+    """The anchor-verification classifier: STALE iff the symbol is gone
+    (``exists_after is False``) or its contract drifted breaking/removed (gone trumps
+    a benign drift reading); CURRENT iff it verifiably exists AND the drift is
+    benign (unchanged/additive/absent). Indeterminate/unknown ⇒ ``None``
+    (under-claim)."""
+    if ev.exists_after is False or ev.drift in _BREAKING_DRIFTS:
+        return EK_VERIFY_STALE
+    if ev.exists_after is True and ev.drift in _CURRENT_DRIFTS:
+        return EK_VERIFY_CURRENT
+    return None
+
+
+def version_stamp(provenance: object) -> Optional[dict]:
+    """The full ``ModelVersion ⊕ VerifierVersion ⊕ SHA`` binding (L7): base/head SHAs
+    + the combdrift block (flat string entries only — the VerifierVersion) + the
+    matrix HEAD graph identity (graph_sha256/commit_sha/engine_version — the
+    ModelVersion). ``None`` unless EVERY part parses (D8 ``.get()`` walks): a
+    verified/verify row is never written without its full stamp — the plain
+    change_outcome row still lands."""
+    if not isinstance(provenance, dict):
+        return None
+    base_sha, head_sha = provenance.get("base_sha"), provenance.get("head_sha")
+    if not (isinstance(base_sha, str) and base_sha.strip()
+            and isinstance(head_sha, str) and head_sha.strip()):
+        return None
+    combdrift_raw = provenance.get("combdrift")
+    if not isinstance(combdrift_raw, dict):
+        return None
+    combdrift = {k: v for k, v in combdrift_raw.items()
+                 if isinstance(k, str) and isinstance(v, str)}
+    if not combdrift:
+        return None
+    matrix = provenance.get("matrix")
+    head_block = matrix.get("head") if isinstance(matrix, dict) else None
+    if not isinstance(head_block, dict):
+        return None
+    matrix_head: dict[str, str] = {}
+    for key in ("graph_sha256", "commit_sha", "engine_version"):
+        value = head_block.get(key)
+        if not (isinstance(value, str) and value.strip()):
+            return None
+        matrix_head[key] = value
+    return {"base_sha": base_sha, "head_sha": head_sha,
+            "combdrift": combdrift, "matrix_head": matrix_head}
+
+
 # ── the change→episode join (§3.4 — deterministic, pure, precision-first) ─────
 
 
@@ -342,6 +509,38 @@ def render_payload(outcome: ChangeOutcome, subject: TouchedSubject, level: str) 
     }, sort_keys=True, separators=(",", ":"))
 
 
+def render_verified_payload(outcome: ChangeOutcome, subject: TouchedSubject,
+                            level: str, kind_reason: str, stamp: dict) -> str:
+    """The verified-outcome payload: canonical JSON, ids/enums/stamps only.
+    ``kind_reason`` is the machine enum (corroborated/contradicted), never receipt
+    prose; the full version ``stamp`` binds the row (L7)."""
+    return json.dumps({
+        "schema": VERIFIED_PAYLOAD_SCHEMA,
+        "receipt_sha256": outcome.receipt_sha256,
+        "phase": outcome.phase,
+        "verdict": outcome.verdict,
+        "tag": outcome.tag,
+        "matched": {"path": subject.path, "symbol": subject.symbol, "level": level},
+        "reason": kind_reason,
+        "stamp": stamp,
+    }, sort_keys=True, separators=(",", ":"))
+
+
+def render_verify_payload(subject: TouchedSubject, ev: SubjectEvidence,
+                          stamp: dict) -> str:
+    """The anchor-verification payload: the observed existence/drift facts + the full
+    version stamp. Deliberately receipt-digest-free — the verification state of an
+    anchor at a head SHA is a fact about the CHANGE, so a re-issued receipt for the
+    same change dedups to the same row (content-keyed idempotency)."""
+    return json.dumps({
+        "schema": VERIFY_PAYLOAD_SCHEMA,
+        "matched": {"path": subject.path, "symbol": subject.symbol},
+        "exists_after": ev.exists_after,
+        "drift": ev.drift,
+        "stamp": stamp,
+    }, sort_keys=True, separators=(",", ":"))
+
+
 # ── the orchestrating service (ports in, ONE batch out) ────────────────────────
 
 
@@ -385,12 +584,44 @@ class ChangeEvidenceService:
             predicate_type=str(statement.get("predicateType")),
             phase=phase, verdict=derived_verdict, tag=tag, signal=signal,
             hive_census_version=str(provenance.get("hive_census_version") or ""))
-        matches = match_anchors(subjects, self._reader.anchored_episodes())
+        anchored = self._reader.anchored_episodes()
+        polarity_by_id = {int(eid): pol for eid, _anchor, pol in anchored}
+        matches = match_anchors(
+            subjects, [(eid, anchor) for eid, anchor, _pol in anchored])
         ts = int(self._now())
-        rows = [(episode_id, EK_CHANGE_OUTCOME, CHANGE_ACTOR, ts,
-                 render_payload(outcome, subject, level))
-                for episode_id, (subject, level) in matches.items()]
+        # Flow A rider: pre-merge only, and ONLY under a full version stamp (L7) — a
+        # post-merge assertion carries no per-subject machine evidence, and a
+        # stamp-less receipt still lands its plain change_outcome rows unchanged.
+        stamp = version_stamp(provenance) if phase == "pre_merge" else None
+        ev_by_subject = subject_evidence(lines) if stamp is not None else {}
+        tests_state = decided_tests_state(lines) if stamp is not None else None
+        counts = {EK_OUTCOME_VERIFIED_HELPED: 0, EK_OUTCOME_VERIFIED_HURT: 0,
+                  EK_VERIFY_CURRENT: 0, EK_VERIFY_STALE: 0}
+        rows: list[tuple[int, str, str, int, str]] = []
+        for episode_id, (subject, level) in matches.items():
+            rows.append((episode_id, EK_CHANGE_OUTCOME, CHANGE_ACTOR, ts,
+                         render_payload(outcome, subject, level)))
+            if stamp is None:
+                continue
+            ev = ev_by_subject.get((subject.path, subject.symbol), SubjectEvidence())
+            verified_kind = classify_verified(
+                polarity_by_id.get(episode_id, "neutral"), ev, tests_state)
+            if verified_kind is not None:
+                rows.append((episode_id, verified_kind, CHANGE_ACTOR, ts,
+                             render_verified_payload(
+                                 outcome, subject, level,
+                                 _VERIFIED_REASONS[verified_kind], stamp)))
+                counts[verified_kind] += 1
+            verify_kind = classify_verify(ev)
+            if verify_kind is not None:
+                rows.append((episode_id, verify_kind, CHANGE_ACTOR, ts,
+                             render_verify_payload(subject, ev, stamp)))
+                counts[verify_kind] += 1
         inserted, already = self._appender.append_evidence(rows) if rows else ([], 0)
         return IngestReport(inserted=tuple(inserted), already_recorded=already,
                             matched=len(matches), skipped_lines=skipped_lines,
-                            keyid=keyid)
+                            keyid=keyid,
+                            verified_helped=counts[EK_OUTCOME_VERIFIED_HELPED],
+                            verified_hurt=counts[EK_OUTCOME_VERIFIED_HURT],
+                            verify_current=counts[EK_VERIFY_CURRENT],
+                            verify_stale=counts[EK_VERIFY_STALE])

@@ -99,12 +99,13 @@ class SettledWinReader(Protocol):
 
 @runtime_checkable
 class AnchoredEpisodeReader(Protocol):
-    """The change→episode join's candidate read: ``(id, anchor)`` for approved rows with
-    a non-empty anchor — ALL trust states (mirrors ``hive_outcome``'s known-id rule:
-    evidence on a deprecated row is honest ledger history). A SEPARATE narrow port (not a
-    widening) so existing narrow fakes stay conformant; the SqliteEpisodeStore satisfies
-    it with one new read method."""
-    def anchored_episodes(self) -> list[tuple[int, str]]: ...
+    """The change→episode join's candidate read: ``(id, anchor, polarity)`` for approved
+    rows with a non-empty anchor — ALL trust states (mirrors ``hive_outcome``'s known-id
+    rule: evidence on a deprecated row is honest ledger history). ``polarity`` is read
+    for the verified-outcome classification only — the join itself stays anchor-driven.
+    A SEPARATE narrow port (not a widening) so existing narrow fakes stay conformant;
+    the SqliteEpisodeStore satisfies it with one read method."""
+    def anchored_episodes(self) -> list[tuple[int, str, str]]: ...
 
 
 @runtime_checkable

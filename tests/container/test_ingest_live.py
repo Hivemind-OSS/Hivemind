@@ -163,12 +163,17 @@ def test_d7_gate_real_receipt_real_row_o7_idempotent_byte_inert(stack):
     assert ing.returncode == 0, f"hive ingest failed:\n{ing.stderr[-3000:]}"
     report = json.loads(ing.stdout.strip().splitlines()[-1])
     print(f"D7-EVIDENCE ingest-report: {json.dumps(report, sort_keys=True)}")
-    assert report["matched"] == 1 and len(report["inserted"]) == 1, report
+    # one matched episode ⇒ two rows: change_outcome + the verify_stale rider
+    # (LanguageConfig was removed at head); ZERO verified rows — the receipt's tests
+    # line is not_run and its regression reach is empty (the honest abstention).
+    assert report["matched"] == 1 and len(report["inserted"]) == 2, report
+    assert (report["verified_helped"], report["verified_hurt"]) == (0, 0), report
+    assert (report["verify_current"], report["verify_stale"]) == (0, 1), report
     assert report["keyid"] == envelope["signatures"][0]["keyid"]
 
-    # 4. exactly one REAL row, in the SAME store the daemon serves, SHA-bound
+    # 4. exactly the two REAL rows, in the SAME store the daemon serves, SHA-bound
     rows = _evidence_rows(env)
-    assert len(rows) == 1, rows
+    assert len(rows) == 2, rows
     row = rows[0]
     print(f"D7-EVIDENCE evidence-row: {json.dumps(row, sort_keys=True)}")
     assert row["episode_id"] == eid and row["actor"] == "census"
@@ -177,6 +182,12 @@ def test_d7_gate_real_receipt_real_row_o7_idempotent_byte_inert(stack):
     assert body["head_sha"] == prov["head_sha"]
     assert body["receipt_sha256"] == statement["subject"][0]["digest"]["sha256"]
     assert body["matched"]["symbol"] == "LanguageConfig"
+    verify_row = rows[1]
+    print(f"D7-EVIDENCE verify-row: {json.dumps(verify_row, sort_keys=True)}")
+    assert verify_row["episode_id"] == eid and verify_row["kind"] == "verify_stale"
+    vbody = json.loads(verify_row["payload"])
+    assert (vbody["exists_after"], vbody["drift"]) == (False, "removed")
+    assert vbody["stamp"]["head_sha"] == prov["head_sha"]
 
     # 5. O7 live: the feed mutated NO trust
     health_after = _mcp(port, "hive_health", {})
@@ -191,8 +202,8 @@ def test_d7_gate_real_receipt_real_row_o7_idempotent_byte_inert(stack):
     assert ing2.returncode == 0, ing2.stderr[-2000:]
     report2 = json.loads(ing2.stdout.strip().splitlines()[-1])
     print(f"D7-EVIDENCE reingest-report: {json.dumps(report2, sort_keys=True)}")
-    assert report2["already_recorded"] == 1 and report2["inserted"] == []
-    assert len(_evidence_rows(env)) == 1           # row count unchanged
+    assert report2["already_recorded"] == 2 and report2["inserted"] == []
+    assert len(_evidence_rows(env)) == 2           # row count unchanged
 
     # 7. byte-inert read path: the served envelope is unchanged by the ingest
     #    (trace_id is the per-call correlation id — the one by-design fresh value)
@@ -252,9 +263,14 @@ def test_d7_optional_leg_fresh_signed_receipt_ingests(stack, tmp_path):
     report = json.loads(ing.stdout.strip().splitlines()[-1])
     print(f"D7-EVIDENCE fresh-receipt-report: {json.dumps(report, sort_keys=True)}")
     assert report["matched"] >= 1                  # the anchored episode(s) join
-    # a fresh receipt is a DIFFERENT signed artifact (new stamps ⇒ new digest) ⇒ new rows
-    assert len(report["inserted"]) == report["matched"]
+    # per matched episode the batch renders change_outcome + verify_stale. The fresh
+    # receipt is a DIFFERENT signed artifact (new timestamps ⇒ new digest ⇒ new
+    # change_outcome rows); the verify rows are digest-free change-level facts, so
+    # they dedup against the gate test's rows when the rebuilt graph identity matches.
+    rendered = 2 * report["matched"]
+    assert len(report["inserted"]) + report["already_recorded"] == rendered
+    assert len(report["inserted"]) >= report["matched"]
     assert len(_evidence_rows(env)) == rows_before + len(report["inserted"])
     ing2 = _cli(env, "ingest", str(fresh), timeout=300)
     report2 = json.loads(ing2.stdout.strip().splitlines()[-1])
-    assert report2["already_recorded"] == report["matched"] and report2["inserted"] == []
+    assert report2["already_recorded"] == rendered and report2["inserted"] == []

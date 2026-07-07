@@ -20,8 +20,9 @@ def _store() -> SqliteEpisodeStore:
 
 
 def _approved(s: SqliteEpisodeStore, text: str, *, anchor: str = "",
-              trust: str = "established") -> int:
-    eid, _ = s.stage(text=text, weight=1.0, tags="", proposed_by="w", ts=10, anchor=anchor)
+              trust: str = "established", polarity: str = "neutral") -> int:
+    eid, _ = s.stage(text=text, weight=1.0, tags="", proposed_by="w", ts=10,
+                     anchor=anchor, polarity=polarity)
     assert s.complete(eid, np.eye(DIM, dtype=np.float32)[0], expected_version=0,
                       trust=trust, approver="h", approved_ts=10, last_active_ts=10)
     return eid
@@ -48,18 +49,19 @@ def test_real_store_satisfies_change_evidence_appender():
     assert isinstance(_store(), ChangeEvidenceAppender)
 
 
-# ── anchored_episodes: approved + non-empty anchor, ALL trust states ──────────
+# ── anchored_episodes: approved + non-empty anchor + polarity, ALL trust states ─
 
 
-def test_anchored_episodes_returns_approved_anchored_rows_only():
+def test_anchored_episodes_returns_approved_anchored_rows_with_polarity():
     s = _store()
-    a = _approved(s, "anchored fact", anchor="hive/app/mcp_server.py::handle")
+    a = _approved(s, "anchored prohibition", anchor="hive/app/mcp_server.py::handle",
+                  polarity="dont")
     _approved(s, "anchorless fact", anchor="")               # empty anchor ⇒ excluded
     pend, _ = s.stage(text="still pending", weight=1.0, tags="", proposed_by="w",
                       ts=10, anchor="hive/x.py::f")          # pending ⇒ excluded
     rows = s.anchored_episodes()
-    assert rows == [(a, "hive/app/mcp_server.py::handle")]
-    assert pend not in {i for i, _ in rows}
+    assert rows == [(a, "hive/app/mcp_server.py::handle", "dont")]
+    assert pend not in {i for i, _a, _p in rows}
 
 
 def test_anchored_episodes_includes_all_trust_states():
@@ -70,7 +72,7 @@ def test_anchored_episodes_includes_all_trust_states():
     quar = _approved(s, "quarantined", anchor="b.py::g", trust="quarantined")
     dep = _approved(s, "deprecated", anchor="c.py::h", trust="established")
     s.deprecate(dep, actor="human", ts=20)
-    ids = {i for i, _ in s.anchored_episodes()}
+    ids = {i for i, _a, _p in s.anchored_episodes()}
     assert ids == {est, quar, dep}
 
 

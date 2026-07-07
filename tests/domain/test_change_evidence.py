@@ -16,11 +16,15 @@ import pytest
 
 from hive.domain import change_evidence as ce
 from hive.domain.change_evidence import (
-    ChangeEvidenceService, ChangeOutcome, IngestReport, ReceiptRefused, TouchedSubject,
+    ChangeEvidenceService, ChangeOutcome, IngestReport, ReceiptRefused, SubjectEvidence,
+    TouchedSubject, classify_verified, classify_verify, decided_tests_state,
     derive_post_merge_tag, derive_pre_merge, match_anchors, parse_receipt,
-    render_payload, touched_subjects,
+    render_payload, subject_evidence, touched_subjects, version_stamp,
 )
-from hive.domain.evidence_kinds import EK_CHANGE_OUTCOME
+from hive.domain.evidence_kinds import (
+    EK_CHANGE_OUTCOME, EK_OUTCOME_VERIFIED_HELPED, EK_OUTCOME_VERIFIED_HURT,
+    EK_VERIFY_CURRENT, EK_VERIFY_STALE,
+)
 
 BASE = "a" * 40
 HEAD = "b" * 40
@@ -63,6 +67,8 @@ def _subj_line(cls, subject, tag="machine-checked"):
 
 
 class FakeReader:
+    """Honors the evolved AnchoredEpisodeReader contract: (id, anchor, polarity)."""
+
     def __init__(self, rows):
         self.rows = list(rows)
 
@@ -93,7 +99,9 @@ class FakeAppender:
 
 
 def _service(reader_rows=(), *, now=lambda: 12_345):
-    reader, appender = FakeReader(reader_rows), FakeAppender()
+    """reader_rows: (id, anchor) pairs default to neutral polarity; triples pass through."""
+    rows = [r if len(r) == 3 else (*r, "neutral") for r in reader_rows]
+    reader, appender = FakeReader(rows), FakeAppender()
     return ChangeEvidenceService(reader=reader, appender=appender, now=now), appender
 
 
@@ -488,3 +496,287 @@ def test_module_references_no_trust_mutation_surface():
     src = inspect.getsource(ce)
     for forbidden in ("set_trust", "approve", "supersede", "deprecate"):
         assert forbidden not in src, f"change_evidence must not reference {forbidden!r}"
+
+
+# ═══ Flow A: the verified-outcome + verify extension of the same ingest ═════════
+
+_COMBDRIFT_BLOCK = {"base_sha": BASE, "head_sha": HEAD,
+                    "combdrift_version": "0.1.0", "fingerprint_version": "1"}
+_MATRIX_BLOCK = {
+    "base": {"graph_sha256": "e" * 64, "commit_sha": BASE, "engine_version": "0.1.0"},
+    "head": {"graph_sha256": "f" * 64, "commit_sha": HEAD, "engine_version": "0.1.0"},
+}
+_STAMPED_PROV = {"base_sha": BASE, "head_sha": HEAD, "hive_census_version": "0.1.0",
+                 "combdrift": _COMBDRIFT_BLOCK, "matrix": _MATRIX_BLOCK}
+
+
+def _detail_line(cls, subject, detail, *, tag="machine-checked", reason=""):
+    return {"class": cls, "subject": subject, "tag": tag, "detail": detail,
+            "reason": reason}
+
+
+def _verified_lines(*, drift="breaking", exists_after=True,
+                    reg_tests=("t_node_1",), tests_state="failed",
+                    subject=_ANCHOR):
+    """The three-way regression shape: contract drift + regression reach + a decided
+    tests run — plus an existence line and a decided typecheck (so pre_merge derives)."""
+    return [
+        _detail_line("existence", subject, {"existed_before": True,
+                                            "exists_after": exists_after}),
+        _detail_line("contract", subject, {"drift": drift, "old_fingerprint": "fp"}),
+        _detail_line("regression", subject,
+                     {"drift": drift, "seed": "n1", "depth": 1,
+                      "callers": ["c1"], "dependents": [], "tests": list(reg_tests)}),
+        _exec_line("typecheck", "passed"),
+        _exec_line("tests", tests_state),
+    ]
+
+
+# ── 1. subject_evidence: defensive per-subject distillation ────────────────────
+
+
+def test_subject_evidence_distills_lines_defensively():
+    lines = [
+        "garbage",                                             # non-dict: skipped
+        {"class": "contract"},                                 # no subject: skipped
+        _detail_line("contract", "a.py::F", {"drift": 42}),    # wrong-typed drift: dropped
+        _detail_line("contract", "a.py::F", {"drift": "breaking"}),
+        _detail_line("existence", "a.py::F", {"exists_after": "yes"}),  # non-bool: dropped
+        _detail_line("existence", "a.py::F", {"exists_after": False}),
+        _detail_line("regression", "a.py::F", {"tests": ["t1", 7, "t2"]}),  # non-str filtered
+        _detail_line("contract", "b.py::G", {}),               # drift absent ⇒ default ""
+        _detail_line("blast-radius", "a.py::F", {"drift": "removed"}),  # not an evidence class
+    ]
+    ev = subject_evidence(lines)
+    assert ev[("a.py", "F")] == SubjectEvidence(
+        drift="breaking", exists_after=False, regression_tests=("t1", "t2"),
+        has_regression_line=True)
+    assert ev[("b.py", "G")] == SubjectEvidence()
+    assert set(ev) == {("a.py", "F"), ("b.py", "G")}
+    assert subject_evidence("not-a-list") == {}                # total, never raises
+
+
+# ── decided_tests_state: tests-class execution state, decided only ─────────────
+
+
+@pytest.mark.parametrize("lines, expected", [
+    ([_exec_line("tests", "failed")], "failed"),
+    ([_exec_line("tests", "passed")], "passed"),
+    ([_exec_line("tests", "not_run")], None),
+    ([_exec_line("tests", "errored")], None),                  # tooling broke ≠ decided
+    ([_exec_line("typecheck", "failed")], None),               # not the tests class
+    ([], None),
+    ("not-a-list", None),
+    ([_exec_line("tests", "passed"), _exec_line("tests", "failed")], "failed"),
+])
+def test_decided_tests_state_truth_table(lines, expected):
+    assert decided_tests_state(lines) == expected
+
+
+# ── 2. classify_verified: the full mechanical predicate grid ──────────────────
+
+
+@pytest.mark.parametrize("polarity, drift, tests_state, reg_tests, expected", [
+    # the corroborated prohibition: dont + breaking/removed drift + failing reach
+    ("dont", "breaking", "failed", ("t1",), EK_OUTCOME_VERIFIED_HELPED),
+    ("dont", "removed", "failed", ("t1",), EK_OUTCOME_VERIFIED_HELPED),
+    # the contradicted prescription: do + failing reach (drift-independent)
+    ("do", "unchanged", "failed", ("t1",), EK_OUTCOME_VERIFIED_HURT),
+    ("do", "", "failed", ("t1",), EK_OUTCOME_VERIFIED_HURT),
+    # each single clause removed ⇒ None (fail-closed abstention)
+    ("dont", "unchanged", "failed", ("t1",), None),            # no breaking drift
+    ("dont", "additive", "failed", ("t1",), None),
+    ("dont", "breaking", "passed", ("t1",), None),             # decided-pass
+    ("dont", "breaking", None, ("t1",), None),                 # not_run/errored/absent
+    ("dont", "breaking", "failed", (), None),                  # no regression reach
+    ("do", "breaking", "passed", ("t1",), None),
+    ("do", "breaking", None, ("t1",), None),
+    ("do", "breaking", "failed", (), None),
+    ("neutral", "breaking", "failed", ("t1",), None),          # neutral polarity
+])
+def test_classify_verified_truth_table(polarity, drift, tests_state, reg_tests, expected):
+    ev = SubjectEvidence(drift=drift, regression_tests=tuple(reg_tests),
+                         has_regression_line=bool(reg_tests))
+    assert classify_verified(polarity, ev, tests_state) == expected
+
+
+# ── 4. classify_verify: current/stale/None per the drift/existence grid ────────
+
+
+@pytest.mark.parametrize("exists_after, drift, expected", [
+    (True, "unchanged", EK_VERIFY_CURRENT),
+    (True, "additive", EK_VERIFY_CURRENT),
+    (True, "", EK_VERIFY_CURRENT),
+    (False, "", EK_VERIFY_STALE),
+    (False, "unchanged", EK_VERIFY_STALE),                     # gone trumps drift
+    (True, "removed", EK_VERIFY_STALE),
+    (True, "breaking", EK_VERIFY_STALE),
+    (None, "breaking", EK_VERIFY_STALE),                       # drift alone proves stale
+    (None, "", None),                                          # nothing proven: under-claim
+    (None, "unchanged", None),                                 # existence unknown
+    (True, "indeterminate", None),                             # unknown drift: under-claim
+])
+def test_verify_kind_truth_table(exists_after, drift, expected):
+    assert classify_verify(SubjectEvidence(drift=drift, exists_after=exists_after)) \
+        == expected
+
+
+# ── version_stamp: L7 — no stamp, no verified/verify row ───────────────────────
+
+
+def test_version_stamp_extracts_the_full_version_binding():
+    stamp = version_stamp(_STAMPED_PROV)
+    assert stamp == {
+        "base_sha": BASE, "head_sha": HEAD,
+        "combdrift": {"base_sha": BASE, "head_sha": HEAD,
+                      "combdrift_version": "0.1.0", "fingerprint_version": "1"},
+        "matrix_head": {"graph_sha256": "f" * 64, "commit_sha": HEAD,
+                        "engine_version": "0.1.0"},
+    }
+
+
+@pytest.mark.parametrize("mutate", [
+    lambda p: p.pop("combdrift"),                              # verifier block absent
+    lambda p: p.pop("matrix"),                                 # model block absent
+    lambda p: p["matrix"].pop("head"),                         # head graph absent
+    lambda p: p["matrix"]["head"].pop("graph_sha256"),         # incomplete ModelVersion
+    lambda p: p["matrix"]["head"].update(engine_version=""),   # blank version
+    lambda p: p.update(combdrift="not-a-dict"),
+    lambda p: p.update(base_sha=""),
+])
+def test_version_stamp_absent_or_partial_blocks_return_none(mutate):
+    prov = json.loads(json.dumps(_STAMPED_PROV))               # deep copy per case
+    mutate(prov)
+    assert version_stamp(prov) is None
+
+
+def test_version_stamp_keeps_only_flat_string_values_of_the_combdrift_block():
+    prov = json.loads(json.dumps(_STAMPED_PROV))
+    prov["combdrift"]["nested"] = {"a": 1}                     # non-str: filtered out
+    prov["combdrift"]["n"] = 7
+    assert version_stamp(prov)["combdrift"] == _COMBDRIFT_BLOCK
+
+
+# ── 3+5+7. the service extension: one batch, stamp-gated, idempotent, counted ──
+
+
+def _stamped_receipt(lines):
+    return _receipt(lines, provenance=json.loads(json.dumps(_STAMPED_PROV)))
+
+
+def test_ingest_batch_is_atomic_and_idempotent_across_kinds():
+    svc, appender = _service([(7, _ANCHOR, "dont")])
+    report = svc.ingest(_stamped_receipt(_verified_lines()))
+    # ONE batch carrying change_outcome + verified + verify (never a second tx)
+    assert len(appender.batches) == 1
+    kinds = [row[1] for row in appender.batches[0]]
+    assert kinds == [EK_CHANGE_OUTCOME, EK_OUTCOME_VERIFIED_HELPED, EK_VERIFY_STALE]
+    assert len(report.inserted) == 3 and report.already_recorded == 0
+    assert (report.verified_helped, report.verified_hurt) == (1, 0)
+    assert (report.verify_current, report.verify_stale) == (0, 1)
+    # re-ingest: content-keyed idempotency covers ALL kinds
+    again = svc.ingest(_stamped_receipt(_verified_lines()))
+    assert again.inserted == () and again.already_recorded == 3
+    assert (again.verified_helped, again.verify_stale) == (1, 1)   # rendered, not re-inserted
+
+
+def test_do_polarity_contradiction_writes_verified_hurt():
+    svc, appender = _service([(7, _ANCHOR, "do")])
+    report = svc.ingest(_stamped_receipt(_verified_lines(drift="unchanged",
+                                                         exists_after=True)))
+    kinds = [row[1] for row in appender.batches[0]]
+    assert kinds == [EK_CHANGE_OUTCOME, EK_OUTCOME_VERIFIED_HURT, EK_VERIFY_CURRENT]
+    assert report.verified_hurt == 1 and report.verify_current == 1
+
+
+def test_verified_rows_require_full_version_stamp():
+    # provenance missing matrix/combdrift ⇒ change_outcome row ONLY (L7 fail-closed)
+    for drop in ("matrix", "combdrift"):
+        prov = json.loads(json.dumps(_STAMPED_PROV))
+        prov.pop(drop)
+        svc, appender = _service([(7, _ANCHOR, "dont")])
+        report = svc.ingest(_receipt(_verified_lines(), provenance=prov))
+        assert [row[1] for row in appender.batches[0]] == [EK_CHANGE_OUTCOME]
+        assert report.matched == 1 and len(report.inserted) == 1
+        assert (report.verified_helped, report.verified_hurt,
+                report.verify_current, report.verify_stale) == (0, 0, 0, 0)
+
+
+def test_neutral_polarity_abstains_from_verified_but_still_verifies():
+    svc, appender = _service([(7, _ANCHOR)])                   # neutral polarity
+    report = svc.ingest(_stamped_receipt(_verified_lines()))
+    kinds = [row[1] for row in appender.batches[0]]
+    assert kinds == [EK_CHANGE_OUTCOME, EK_VERIFY_STALE]       # no verified row
+    assert report.verified_helped == 0 and report.verify_stale == 1
+
+
+def test_post_merge_ingest_writes_no_verified_or_verify_rows():
+    # no per-subject machine evidence rides a post-merge assertion (v1 ruling)
+    svc, appender = _service([(7, _ANCHOR, "dont")])
+    report = svc.ingest(_stamped_receipt(_verified_lines()), phase="post_merge",
+                        verdict="fail", signal="canary")
+    assert [row[1] for row in appender.batches[0]] == [EK_CHANGE_OUTCOME]
+    assert (report.verified_helped, report.verified_hurt,
+            report.verify_current, report.verify_stale) == (0, 0, 0, 0)
+
+
+def test_change_outcome_row_shape_is_unchanged_by_the_extension():
+    # the S4 golden holds: the change_outcome payload keeps its exact key set (the
+    # byte pin lives in test_render_payload_exact_golden_bytes) even when verified/
+    # verify rows ride the same batch — the extension leaks nothing into it.
+    svc, appender = _service([(7, _ANCHOR, "dont")])
+    svc.ingest(_stamped_receipt(_verified_lines()))
+    outcome_payload = json.loads(appender.batches[0][0][4])
+    assert set(outcome_payload) == {
+        "schema", "base_sha", "head_sha", "receipt_sha256", "receipt_schema_version",
+        "predicate_type", "phase", "verdict", "tag", "signal", "matched",
+        "hive_census_version"}
+    assert outcome_payload["schema"] == "change_outcome/v1"
+
+
+def test_payloads_are_ids_enums_and_stamps_only():
+    prose = "REASONPROSE the loader crashed because the flange rotated"
+    lines = [
+        _detail_line("existence", _ANCHOR,
+                     {"existed_before": True, "exists_after": False}, reason=prose),
+        _detail_line("contract", _ANCHOR, {"drift": "removed"}, reason=prose),
+        _detail_line("regression", _ANCHOR,
+                     {"drift": "removed", "tests": ["t_reach"]}, reason=prose),
+        _exec_line("typecheck", "passed"), _exec_line("tests", "failed"),
+    ]
+    svc, appender = _service([(7, _ANCHOR, "dont")])
+    svc.ingest(_stamped_receipt(lines))
+    by_kind = {row[1]: row[4] for row in appender.batches[0]}
+    verified = json.loads(by_kind[EK_OUTCOME_VERIFIED_HELPED])
+    assert set(verified) == {"schema", "receipt_sha256", "phase", "verdict", "tag",
+                             "matched", "reason", "stamp"}
+    assert verified["schema"] == "outcome_verified/v1"
+    assert verified["reason"] == "corroborated"                # a machine enum, never prose
+    assert verified["matched"] == {"path": "matrix/x.py", "symbol": "LanguageConfig",
+                                   "level": "symbol"}
+    assert verified["stamp"]["matrix_head"]["graph_sha256"] == "f" * 64
+    verify = json.loads(by_kind[EK_VERIFY_STALE])
+    assert set(verify) == {"schema", "matched", "exists_after", "drift", "stamp"}
+    assert verify["schema"] == "verify/v1"
+    assert (verify["exists_after"], verify["drift"]) == (False, "removed")
+    assert verify["stamp"]["head_sha"] == HEAD
+    for payload in by_kind.values():                           # Law 4: no receipt prose
+        assert "REASONPROSE" not in payload
+    # byte-stable across calls (the idempotency key across all three kinds)
+    svc2, appender2 = _service([(7, _ANCHOR, "dont")])
+    svc2.ingest(_stamped_receipt(lines))
+    assert appender2.batches[0] == appender.batches[0]
+
+
+def test_hurt_reason_is_contradicted():
+    svc, appender = _service([(7, _ANCHOR, "do")])
+    svc.ingest(_stamped_receipt(_verified_lines(drift="unchanged")))
+    by_kind = {row[1]: row[4] for row in appender.batches[0]}
+    assert json.loads(by_kind[EK_OUTCOME_VERIFIED_HURT])["reason"] == "contradicted"
+
+
+def test_report_counters_default_zero_and_are_additive():
+    rep = IngestReport(inserted=(), already_recorded=0, matched=0,
+                       skipped_lines=0, keyid="")
+    assert (rep.verified_helped, rep.verified_hurt,
+            rep.verify_current, rep.verify_stale) == (0, 0, 0, 0)

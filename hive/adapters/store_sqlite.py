@@ -532,13 +532,14 @@ class SqliteEpisodeStore:
             f"SELECT DISTINCT episode_id FROM evidence_events "
             f"WHERE kind=? AND episode_id IN ({placeholders})", [EK_OUTCOME_HELPED, *ids])}
 
-    def anchored_episodes(self) -> list[tuple[int, str]]:
-        """AnchoredEpisodeReader: ``(id, anchor)`` for approved rows with a non-empty
-        anchor — the change→episode join's candidate set. ALL trust states included
-        (mirrors hive_outcome's known-id rule: evidence on a deprecated row is honest
-        ledger history). Read-only, no DDL. // O(rows)."""
-        return [(int(r["id"]), r["anchor"]) for r in self.conn.execute(
-            "SELECT id, anchor FROM episodes "
+    def anchored_episodes(self) -> list[tuple[int, str, str]]:
+        """AnchoredEpisodeReader: ``(id, anchor, polarity)`` for approved rows with a
+        non-empty anchor — the change→episode join's candidate set. ALL trust states
+        included (mirrors hive_outcome's known-id rule: evidence on a deprecated row is
+        honest ledger history); polarity rides for the verified-outcome classification
+        only. Read-only, no DDL. // O(rows)."""
+        return [(int(r["id"]), r["anchor"], r["polarity"]) for r in self.conn.execute(
+            "SELECT id, anchor, polarity FROM episodes "
             "WHERE status='approved' AND anchor != '' ORDER BY id")]
 
     def append_evidence(self, rows: Sequence[tuple[int, str, str, int, str]]

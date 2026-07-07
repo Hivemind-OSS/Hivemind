@@ -3,9 +3,10 @@
 `python -m hive.tools.censusctl ingest <receipt.json|->` decodes a signed census DSSE
 receipt, derives the SHA-bound change outcome server-side, joins the receipt's touched
 ``path::Symbol`` subjects against episode anchors, and appends one ``change_outcome``
-evidence row per matched episode in ONE transaction — idempotent, trust-untouched. The
-`hive ingest` operator verb execs this in-container and pipes the receipt over stdin
-(no host path leaks into the container).
+evidence row per matched episode — plus, pre-merge under a full version stamp, the
+mechanical ``outcome_verified_*`` / ``verify_*`` rider rows — in ONE transaction,
+idempotent, trust-untouched. The `hive ingest` operator verb execs this in-container
+and pipes the receipt over stdin (no host path leaks into the container).
 
 A sibling of `authctl` / `backupctl` (operational tools live in `hive/tools/`). The
 db_path resolves from `--db` or `$HIVE_STORE__DB_PATH`, else defaults to
@@ -16,7 +17,8 @@ recall path. Injection seams (`connect_fn` / `stdin` / `out` / `now`) keep the w
 unit-testable without a real DB file.
 
 STDOUT carries exactly ONE machine-readable JSON report line
-(inserted/already_recorded/matched/skipped_lines/keyid); human notes go to STDERR.
+(inserted/already_recorded/matched/skipped_lines/keyid + the verified_helped/
+verified_hurt/verify_current/verify_stale rider counters); human notes go to STDERR.
 Exit codes are the contract (an exit code cannot lie like a log can): 0 ok — including
 an honest matched=0; 65 EX_DATAERR — the receipt is refused (unreadable/not JSON/bad
 DSSE shape/digest mismatch/no decided evidence), ZERO rows written; 70 EX_SOFTWARE —
@@ -125,11 +127,19 @@ def main(argv: Optional[list[str]] = None, *, env: Optional[Mapping[str, str]] =
                       "inserted": list(report.inserted),
                       "keyid": report.keyid,
                       "matched": report.matched,
-                      "skipped_lines": report.skipped_lines},
+                      "skipped_lines": report.skipped_lines,
+                      "verified_helped": report.verified_helped,
+                      "verified_hurt": report.verified_hurt,
+                      "verify_current": report.verify_current,
+                      "verify_stale": report.verify_stale},
                      sort_keys=True, separators=(",", ":")), file=out)
     print(f"censusctl: matched={report.matched} inserted={len(report.inserted)} "
           f"already_recorded={report.already_recorded} "
-          f"skipped_lines={report.skipped_lines} keyid={report.keyid}",
+          f"skipped_lines={report.skipped_lines} "
+          f"verified_helped={report.verified_helped} "
+          f"verified_hurt={report.verified_hurt} "
+          f"verify_current={report.verify_current} "
+          f"verify_stale={report.verify_stale} keyid={report.keyid}",
           file=sys.stderr)
     return EX_OK
 
