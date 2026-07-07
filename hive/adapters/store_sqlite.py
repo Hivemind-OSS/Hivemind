@@ -17,6 +17,7 @@ import numpy as np
 from hive.adapters.sqlite_db import tx
 from hive.domain.evidence_kinds import (
     EK_OUTCOME_HELPED, EK_PROMOTE, EK_PRUNE, EK_SUPERSEDE, EK_TTL_EXPIRED,
+    EK_VERIFY_CURRENT, EK_VERIFY_STALE,
 )
 from hive.domain.kinds import DEFAULT_KIND, KIND_NAMES
 from hive.domain.lifecycle import (
@@ -531,6 +532,40 @@ class SqliteEpisodeStore:
         return {int(r["episode_id"]) for r in self.conn.execute(
             f"SELECT DISTINCT episode_id FROM evidence_events "
             f"WHERE kind=? AND episode_id IN ({placeholders})", [EK_OUTCOME_HELPED, *ids])}
+
+    def last_verification(self, episode_ids: Sequence[int]
+                          ) -> dict[int, tuple[int, str, str]]:
+        """LastVerificationReader: the newest ``verify_current``/``verify_stale``
+        ledger row per requested id → ``{eid: (ts, head_sha, state)}``, state derived
+        from the kind. Read-only, no DDL. DEFENSIVE payload parse (the
+        ``promotion_provenance`` idiom): a malformed payload or a missing
+        ``stamp.head_sha`` SKIPS that row — an older parseable row may still answer;
+        an id with nothing parseable is simply ABSENT (under-claim, never a raise).
+        // O(rows)."""
+        ids = [int(e) for e in episode_ids]
+        if not ids:
+            return {}
+        out: dict[int, tuple[int, str, str]] = {}
+        placeholders = ",".join("?" for _ in ids)
+        # newest-first per episode: ORDER BY ts DESC, id DESC, first parseable wins.
+        for r in self.conn.execute(
+                f"SELECT episode_id, kind, ts, payload FROM evidence_events "
+                f"WHERE kind IN (?,?) AND episode_id IN ({placeholders}) "
+                f"ORDER BY episode_id, ts DESC, id DESC",
+                [EK_VERIFY_CURRENT, EK_VERIFY_STALE, *ids]):
+            eid = int(r["episode_id"])
+            if eid in out:
+                continue                              # already have the newest for this id
+            try:
+                stamp = json.loads(r["payload"]).get("stamp")
+                head_sha = stamp.get("head_sha") if isinstance(stamp, dict) else None
+                if not isinstance(head_sha, str) or not head_sha:
+                    continue                          # stamp-less row ⇒ skip (under-claim)
+                state = "current" if r["kind"] == EK_VERIFY_CURRENT else "stale"
+                out[eid] = (int(r["ts"]), head_sha, state)
+            except (TypeError, ValueError, json.JSONDecodeError):
+                continue                              # malformed ⇒ skip, never raise
+        return out
 
     def anchored_episodes(self) -> list[tuple[int, str, str]]:
         """AnchoredEpisodeReader: ``(id, anchor, polarity)`` for approved rows with a

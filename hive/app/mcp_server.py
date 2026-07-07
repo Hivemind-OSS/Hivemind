@@ -447,6 +447,23 @@ class HiveMCPServer:
             if h.meta:            # omit-when-empty: the no-meta envelope is byte-inert
                 hit["meta"] = h.meta
             hits.append(hit)
+        # verification-recency stamp: derived ledger evidence enriched at the boundary,
+        # its own FAIL-OPEN side-channel — a reader fault serves the envelope without
+        # stamps, never breaks recall. A never-verified hit emits NO key (byte-inert);
+        # the kernel never judges churn — the stamp is carried, the edge decides.
+        if hits:
+            try:
+                lv = self.store.last_verification([h["episode_id"] for h in hits])
+                for hit in hits:
+                    stamp = lv.get(hit["episode_id"])
+                    if stamp is not None:            # absent ⇒ no key, never null
+                        verified_ts, sha, state = stamp
+                        hit["last_verified"] = {"ts": verified_ts, "sha": sha,
+                                                "state": state}
+            except Exception:                        # noqa: BLE001 — side-channel only
+                _log.warning("mcp.recall_last_verified_failed", extra={
+                    "event": "mcp.recall_last_verified_failed",
+                    "trace_id": result.trace_id}, exc_info=True)
         # an empty post-belt set is an ABSTAIN, never a confident-empty (never-hallucinate)
         abstained = (result.state != CONFIDENT) or (not hits)
         env: dict = {"reference_context": hits, "abstained": abstained,

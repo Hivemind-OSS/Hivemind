@@ -98,6 +98,19 @@ class SettledWinReader(Protocol):
 
 
 @runtime_checkable
+class LastVerificationReader(Protocol):
+    """The verification-recency read the recall boundary enriches hits with: for each
+    requested episode id, the NEWEST ``verify_current``/``verify_stale`` ledger row as
+    ``(ts, head_sha, state)``, ``state ∈ {"current","stale"}`` derived from the kind.
+    A SEPARATE narrow port (not a widening of an existing one) so existing narrow fakes
+    stay conformant; the SqliteEpisodeStore satisfies it with one read method. A
+    never-verified id is simply ABSENT (under-claim — the boundary then emits no key);
+    the kernel never judges churn — the stamp is carried, the edge decides."""
+    def last_verification(self, episode_ids: Sequence[int]
+                          ) -> dict[int, tuple[int, str, str]]: ...
+
+
+@runtime_checkable
 class AnchoredEpisodeReader(Protocol):
     """The change→episode join's candidate read: ``(id, anchor, polarity)`` for approved
     rows with a non-empty anchor — ALL trust states (mirrors ``hive_outcome``'s known-id
