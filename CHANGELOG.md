@@ -3,6 +3,29 @@
 All notable changes to this project are documented here.
 
 ## Added
+- Verified-outcome rider on the census ingest (Flow A) — the same atomic
+  `hive ingest` batch now also writes, per matched episode (pre-merge only, and only
+  when the receipt carries the full `ModelVersion ⊕ VerifierVersion ⊕ SHA` provenance
+  stamp), the mechanical `outcome_verified_helped` / `outcome_verified_hurt` rows
+  (a `dont` memory corroborated by breaking/removed drift + a DECIDED failing test
+  run with blast-radius reach; a `do` memory contradicted by a decided-failing run
+  with reach; everything else abstains, fail-closed) and the `verify_current` /
+  `verify_stale` anchor-verification rows. Four new registry kinds in
+  `hive/domain/evidence_kinds.py`; the censusctl stdout report gains the four
+  counters; `AnchoredEpisodeReader` carries `(id, anchor, polarity)`.
+- `last_verified` recency stamp on recall hits — a hit whose episode carries a
+  `verify_current`/`verify_stale` ledger row rides `{ts, sha, state}` from the newest
+  row (new narrow `LastVerificationReader` port; fail-OPEN boundary side-channel;
+  never-verified hits emit no key, so the envelope stays byte-identical). The kernel
+  never judges churn — the edge compares the stamp to the code.
+- Verified-win promotion rung, **default OFF** (`HIVE_AUTONOMY__VERIFIED_PROMOTION`) —
+  when enabled, a quarantined memory carrying a SHA-bound `outcome_verified_helped`
+  audit promotes at the next demand tick even when demand alone would not (competitor
+  veto retained; the corroboration is non-forgeable by the memory's writer because
+  `evidence_events` is server-written only). OFF wires no reader handle: the rung is
+  structurally unreachable and every envelope byte-identical. `settled_wins` becomes
+  the UNION of self-reported and verified wins, so the suspect-consensus martingale
+  honors a verified win with zero consumer change.
 - `meta` map carrier on `hive_capture` / `hive_write` — an optional namespaced map of
   opaque machine handles (`{"tool/attr": "value"}`, e.g. a capture-time `combdrift/fp`
   interface fingerprint) normalized once at the boundary (`hive/domain/meta.py`:
