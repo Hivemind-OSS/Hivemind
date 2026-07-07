@@ -14,6 +14,7 @@ so the demand drive deterministically reaches the rung), zero API, zero model do
 from __future__ import annotations
 
 import json
+import logging
 from pathlib import Path
 
 import pytest
@@ -78,6 +79,50 @@ def test_preload_captures_lands_quarantined_and_maps_sources():
     # captures are structurally unservable: even an exact-text recall abstains
     assert backend.recall("reader", _GOLD_TEXT).abstained is True
     assert backend.recall("reader", _POISON_TEXT).abstained is True
+
+
+class _ProposeOnlyBackend:
+    """The narrowest seam the plant loop touches: ``propose`` returns a fresh quarantined
+    handle. Lets the progress-logging contract be asserted over thousands of rows without an
+    embedder (the real plant is CPU-embed-bound — exactly why the loop must be observable)."""
+    def __init__(self) -> None:
+        self._n = 0
+
+    def propose(self, seat: str, text: str, *, source_id: str):
+        from hive.research.bench.backends import Proposal
+        self._n += 1
+        return Proposal(proposal_id=str(self._n), seat=seat, text=text, source_id=source_id)
+
+
+def test_preload_captures_logs_progress_and_completion(caplog):
+    # The plant is the run's longest silent phase (~7.4k CPU-embedded rows per arm): the loop
+    # must emit a progress line every _PLANT_LOG_EVERY rows and a completion line, each with
+    # rows-done/total + elapsed, so a detached (nohup) run is observable from its console log.
+    memories = [(f"s{i}", f"row {i}") for i in range(1200)]
+    with caplog.at_level(logging.INFO, logger="hive.research.bench.poison_substrate"):
+        pre = preload_captures(_ProposeOnlyBackend(), memories)
+    assert len(pre.mem_source) == 1200
+    msgs = caplog.messages
+    assert any("500/1200" in m for m in msgs), "no progress line at row 500"
+    assert any("1000/1200" in m for m in msgs), "no progress line at row 1000"
+    done = [m for m in msgs if "1200/1200" in m]
+    assert done and "planted" in done[-1], "no completion line with the planted count"
+    assert all("elapsed" in m for m in msgs if "/1200" in m), "a plant line lacks elapsed"
+
+
+def test_main_l4_logs_phase_transitions_per_arm(tmp_path, caplog):
+    # Each arm's long phases (plant → inject → demand → agent loop) must announce themselves,
+    # so a console log always shows which phase a detached run is in (hang diagnosis).
+    out = tmp_path / "l4.json"
+    with caplog.at_level(logging.INFO, logger="hive.research.bench.poison_run"):
+        rc = main(["--l4", "--dataset", str(_FIX), "--out", str(out)],
+                  l4_env_factory=_offline_env_factory,
+                  llm_factory=lambda arm: FakeLLM())
+    assert rc == 0
+    msgs = caplog.messages
+    for arm in (ARM_L4_OFF, ARM_L4_ON):
+        for phase in ("plant", "inject", "demand", "agent loop"):
+            assert any(m.startswith(f"[{arm}] {phase}") for m in msgs), (arm, phase)
 
 
 # ── inject_verified_evidence: helped on gold, hurt on poison, stamped, idempotent ──

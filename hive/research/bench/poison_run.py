@@ -50,6 +50,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import logging
 import os
 import time
 from pathlib import Path
@@ -90,6 +91,8 @@ ARM_L4_OFF = "l4-off"                              # C′ — verified_promotion
 ARM_L4_ON = "verified-outcome"                     # E  — verified_promotion ON
 _L4_ARMS = (ARM_L4_OFF, ARM_L4_ON)
 _L4_DELTA_KEY = "E-Cprime"
+
+_log = logging.getLogger(__name__)
 
 _READER_SEAT = "reader"
 _APPROVER = "orchestrator"
@@ -538,15 +541,23 @@ def run_l4_gate(cfg, cases, *, seed: int, env_factory: Callable[[str], tuple[Mem
     injected: dict[str, dict] = {}
     for arm in _L4_ARMS:
         backend, store = env_factory(arm)
+        # phase-transition lines: each long phase announces itself so a detached run's console
+        # log always shows where the wall-clock is going (the plant loop adds its own heartbeat).
+        _log.info("[%s] plant: %d rows", arm, len(memories))
         pre = preload_captures(backend, memories)
         injected[arm] = inject_verified_evidence(store, pre, poison_cases, ts=ts,
                                                  stamp=stamp, receipt_sha256=receipt_sha)
-        drive_l4_demand(backend, pre, poison_cases)
+        _log.info("[%s] inject: helped=%d hurt=%d inserted=%d skipped=%d", arm,
+                  injected[arm]["helped_rows"], injected[arm]["hurt_rows"],
+                  injected[arm]["inserted"], injected[arm]["skipped"])
+        ticks = drive_l4_demand(backend, pre, poison_cases)
         promoted[arm] = int(store.trust_counts().get("provisional", 0))
+        _log.info("[%s] demand: %d ticks, promoted=%d", arm, ticks, promoted[arm])
         if arm == ARM_L4_OFF and promoted[arm]:
             raise ValueError(
                 f"l4-off promoted {promoted[arm]} row(s) — the OFF arm must stay fully "
                 "quarantined; the pairing is invalid")
+        _log.info("[%s] agent loop: %d tasks", arm, len(poison_cases))
         arm_obs[arm] = run_poison_arm(backend, llms[arm], poison_cases, seat=_READER_SEAT,
                                       served_text=pre.mem_text, mem_source=pre.mem_source,
                                       arm=arm)
@@ -656,6 +667,9 @@ def main(argv: Optional[Sequence[str]] = None, *,
     the verified-win promotion rung: ``run_l4_gate`` over the E/C′ pair, injected via
     ``l4_env_factory`` (default: real Qwen3 in-process servers on scratch stores)."""
     cfg = _parse_args(argv)
+    # CLI observability: the long phases log at INFO; a bare invocation must surface them on
+    # stderr (nohup-visible). No-op when a handler is already installed (tests, embedding apps).
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(message)s")
     seed = cfg.seeds[0]
     make_llm = llm_factory or _default_llm_factory(cfg)
 

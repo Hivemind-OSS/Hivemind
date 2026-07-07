@@ -27,7 +27,9 @@ loop's answer scorer.
 """
 from __future__ import annotations
 
+import logging
 import random
+import time
 from dataclasses import dataclass
 from typing import Sequence
 
@@ -37,6 +39,13 @@ from hive.research.bench.substrate import Preloaded, build_substrate
 from hive.research.bench.task_agent import _content_tokens
 
 POISON_VERSION = "poison.v1"
+
+_log = logging.getLogger(__name__)
+
+# The capture-only plant embeds every row on CPU (~7.4k rows ≈ hours per arm), so the loop
+# announces progress: one line per this many rows keeps a detached run's console log alive
+# without flooding it. A measured right answer, not an operator knob (§9 #14).
+_PLANT_LOG_EVERY = 500
 
 # The orchestrator-vouched plant lands the falsehood servable in BOTH backends through the same
 # propose→commit seam that loads the clean pool — so the headline win measures serve-time SELECTION
@@ -360,12 +369,20 @@ def preload_captures(backend: MemoryBackend, memories: Sequence[tuple[str, str]]
     ``proposal_id``) is SKIPPED — never leaked as an empty key (BUG-002 class)."""
     mem_source: dict[str, str] = {}
     mem_text: dict[str, str] = {}
-    for source_id, text in memories:
+    total = len(memories)
+    t0 = time.monotonic()
+    for i, (source_id, text) in enumerate(memories, start=1):
         proposal = backend.propose(seat, text, source_id=source_id)
+        # progress heartbeat: the plant is the run's longest phase (CPU-embed-bound), so a
+        # detached run's console log must show it moving — rows-done/total + elapsed.
+        if i % _PLANT_LOG_EVERY == 0:
+            _log.info("plant: %d/%d rows (elapsed %.1fs)", i, total, time.monotonic() - t0)
         if not proposal.proposal_id:                 # refused at stage ⇒ never staged
             continue
         mem_source[proposal.proposal_id] = source_id
         mem_text[proposal.proposal_id] = text
+    _log.info("plant: done %d/%d rows, %d planted (elapsed %.1fs)",
+              total, total, len(mem_source), time.monotonic() - t0)
     return Preloaded(mem_source=mem_source, mem_text=mem_text)
 
 
