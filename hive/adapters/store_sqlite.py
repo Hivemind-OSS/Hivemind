@@ -68,7 +68,8 @@ CREATE TABLE IF NOT EXISTS episodes(
   last_active_ts INTEGER NOT NULL DEFAULT 0,
   polarity TEXT NOT NULL DEFAULT 'neutral' CHECK(polarity IN ('do','dont','neutral')),
   __KIND_COLUMN__,
-  anchor TEXT NOT NULL DEFAULT '');
+  anchor TEXT NOT NULL DEFAULT '',
+  meta TEXT NOT NULL DEFAULT '');
 CREATE INDEX IF NOT EXISTS idx_episodes_status ON episodes(status);
 CREATE INDEX IF NOT EXISTS idx_episodes_hash ON episodes(content_hash);
 CREATE INDEX IF NOT EXISTS idx_episodes_trust ON episodes(trust);
@@ -123,6 +124,17 @@ class SqliteEpisodeStore:
             raise RuntimeError(
                 f"episodes table predates the current schema (no {missing} column); "
                 "this build has no migration — start from a clean store/volume")
+        # The ONE explicit additive migration: a lifecycle-current table that merely
+        # predates `meta` gains the column in place — additive + defaulted (provably
+        # lossless), loud, one column, one direction. Refuse-and-reset here would
+        # brick `hive restore` of any pre-meta backup (the restored file would
+        # re-trigger the refusal); genuinely pre-lifecycle tables still refuse above.
+        if cols and "meta" not in cols:
+            _log.warning(
+                "store.migrate_add_meta adding episodes.meta TEXT NOT NULL DEFAULT '' "
+                "(one-way additive column migration; existing rows read back '')")
+            conn.execute(
+                "ALTER TABLE episodes ADD COLUMN meta TEXT NOT NULL DEFAULT ''")
         conn.executescript(_SCHEMA)
 
     # ── episodes / blob group (admission CAS state machine) ───────────────────
@@ -130,16 +142,17 @@ class SqliteEpisodeStore:
               proposed_by: str, tenant_id: str = "default", ts: int = 0,
               provenance: str = DEFAULT_PROVENANCE,
               polarity: str = "neutral", kind: str = DEFAULT_KIND,
-              anchor: str = "") -> tuple[int, bool]:
+              anchor: str = "", meta: str = "") -> tuple[int, bool]:
         """Insert a PENDING row (value NULL — not recallable, not indexed) + its blob.
         Dedup by content_hash: a repeat of identical text returns the existing id,
         deduped=True, no second row. ``provenance`` (the ORIGIN — provenance.py),
-        ``polarity`` (do|dont|neutral), ``kind`` (registry vocabulary), and ``anchor``
-        (the WHERE — file/module/symbol) are the carried-not-interpreted consumer labels,
+        ``polarity`` (do|dont|neutral), ``kind`` (registry vocabulary), ``anchor``
+        (the WHERE — file/module/symbol), and ``meta`` (the serialized opaque map —
+        meta.py owns the grammar) are the carried-not-interpreted consumer labels,
         never embedded; they default fail-safe (agent_reasoned / neutral / note / empty).
         ``provenance`` and ``kind`` are CHECK-constrained by the DDL; ``anchor`` is free
-        text. On dedup the existing row's labels are preserved (identity is the text hash
-        alone, never the labels)."""
+        text. On dedup the existing row's labels are preserved — including ``meta``,
+        which is never merged/overwritten (identity is the text hash alone)."""
         h = content_hash(text)
         with tx(self.conn):
             existing = self.conn.execute(
@@ -150,10 +163,10 @@ class SqliteEpisodeStore:
                 "INSERT OR IGNORE INTO blobs(content_hash, text) VALUES(?,?)", (h, text))
             cur = self.conn.execute(
                 "INSERT INTO episodes(tenant_id, text, value, weight, ts, provenance, tags, "
-                "content_hash, status, proposed_by, version, polarity, kind, anchor) "
-                "VALUES(?,?,NULL,?,?,?,?,?,'pending',?,0,?,?,?)",
+                "content_hash, status, proposed_by, version, polarity, kind, anchor, meta) "
+                "VALUES(?,?,NULL,?,?,?,?,?,'pending',?,0,?,?,?,?)",
                 (tenant_id, text, weight, ts, provenance, tags, h, proposed_by, polarity,
-                 kind, anchor))
+                 kind, anchor, meta))
             return int(cur.lastrowid), False
 
     def complete(self, episode_id: int, value: "np.ndarray", *, expected_version: int,
@@ -273,7 +286,8 @@ class SqliteEpisodeStore:
             approved_by=r["approved_by"], approved_ts=r["approved_ts"], version=r["version"],
             trust=r["trust"], superseded_by=r["superseded_by"],
             last_active_ts=r["last_active_ts"], polarity=r["polarity"],
-            kind=r["kind"], anchor=r["anchor"], provenance=r["provenance"])
+            kind=r["kind"], anchor=r["anchor"], provenance=r["provenance"],
+            meta=r["meta"])
 
     def counts(self) -> tuple[int, int]:
         """(n_approved, n_pending) for hive_health — one grouped scan.  // O(N) time."""

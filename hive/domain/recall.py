@@ -314,7 +314,7 @@ class RecallPipeline:
             hits = tuple(
                 RecallHit(s.episode_id, ep.text, s.sim, trust=ep.trust, ts=ep.ts,
                           polarity=ep.polarity, kind=ep.kind, anchor=ep.anchor,
-                          provenance=ep.provenance)
+                          provenance=ep.provenance, meta=ep.meta)
                 for s, ep in selected)
         except Exception as exc:                       # noqa: BLE001 — fail closed
             _log.error("recall surface failure (agent_id=%s): %r → EMPTY_NO_DATA",

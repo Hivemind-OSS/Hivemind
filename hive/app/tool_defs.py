@@ -34,6 +34,15 @@ _WRITE_GUIDANCE = (
     "Write one dense, self-contained fact — don't pad or restate the obvious; verbosity "
     "flattens the embedding and makes recall abstain.")
 
+# The optional opaque metadata map on the two write-side verbs — one shared spec so the
+# advertised grammar cannot fork between them. Tool-agnostic by design: it names no producer.
+_META_PROPERTY: dict = {
+    "type": "object", "additionalProperties": {"type": "string"},
+    "description": "Optional machine-metadata map, carried on the memory and served back "
+                   "verbatim on recall hits — never interpreted by the server, never "
+                   "embedded. Namespace each key by its producing tool as 'tool/attr' "
+                   "(lowercase); values are compact string handles, not payloads."}
+
 # The eight hive_* verbs. Frozen via the module boundary; handlers read args
 # permissively (.get) so the ONLY required-field guard is _validate over this table.
 TOOL_DEFINITIONS: list[dict] = [
@@ -61,7 +70,8 @@ TOOL_DEFINITIONS: list[dict] = [
                                     "polarity": {"type": "string",
                                                  "enum": ["do", "dont", "neutral"]},
                                     "kind": {"type": "string", "enum": _KIND_ENUM},
-                                    "anchor": {"type": "string"}}}},
+                                    "anchor": {"type": "string"},
+                                    "meta": _META_PROPERTY}}},
     {"name": "hive_capture",
      "description": "Capture an insight WITHOUT asking — anything durable you believe useful and "
                     "can ground in VERIFIABLE EVIDENCE you observed (a bug you hit, a behavior you "
@@ -78,7 +88,8 @@ TOOL_DEFINITIONS: list[dict] = [
                                     "polarity": {"type": "string",
                                                  "enum": ["do", "dont", "neutral"]},
                                     "kind": {"type": "string", "enum": _KIND_ENUM},
-                                    "anchor": {"type": "string"}}}},
+                                    "anchor": {"type": "string"},
+                                    "meta": _META_PROPERTY}}},
     {"name": "hive_recall",
      "description": "Retrieve servable memories. Returns {reference_context:[hits], "
                     "abstained, state, top_cos}; on abstain reference_context is [] "

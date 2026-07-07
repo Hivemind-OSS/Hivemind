@@ -106,6 +106,26 @@ class AdmissionService:
                 "request_id": request_id})
         return verdict
 
+    def _meta_gate(self, meta: str, *, proposed_by: str, request_id: str) -> None:
+        """The REFUSE-ONLY secret floor on the serialized ``meta`` carrier: ANY finding
+        raises SecretRefused (0 rows) — meta is never redacted, because a masked handle
+        is garbage to its consumer. Runs BEFORE the text gauntlet so a credential-bearing
+        handle never reaches staging. Logged fields are rule names/counts only."""
+        if not meta:
+            return
+        verdict = self._scanner.scan(meta)
+        if verdict.findings:
+            _log.warning("admission.meta_refused", extra={
+                "event": "admission.meta_refused",
+                "rules": [f.rule for f in verdict.findings],
+                "n_findings": len(verdict.findings), "proposed_by": proposed_by,
+                "request_id": request_id})
+            raise SecretRefused(
+                f"refused: credential detected in meta ({len(verdict.findings)} "
+                f"finding(s), rules={[f.rule for f in verdict.findings]})",
+                rules=[f.rule for f in verdict.findings],
+                n_findings=len(verdict.findings))
+
     def _apply_supersession(self, replaces: Optional[int], new_id: int, *,
                             actor: str, request_id: str) -> Optional[int]:
         """Run the human-vouched supersession AFTER the replacement landed. A
@@ -131,7 +151,7 @@ class AdmissionService:
               weight: float = 1.0, request_id: str = "-",
               replaces: Optional[int] = None,
               polarity: str = "neutral", kind: str = DEFAULT_KIND,
-              anchor: str = "") -> WriteResult:
+              anchor: str = "", meta: str = "") -> WriteResult:
         """Capture a human-approved insight in one call. ``approved_by`` is the
         principal that approved this write in native chat (client-gated trust);
         ``proposed_by`` is the agent that proposed it — both are recorded. REFUSE raises
@@ -150,13 +170,19 @@ class AdmissionService:
         ``replaces`` (human-vouched supersession): the named target is retired in
         favor of this write — validated to EXIST before anything is staged (an
         unknown target fails the WHOLE call: no stored-but-not-retired partial);
-        the supersession itself runs after the new row lands. // O(1) DB ops + one embed."""
+        the supersession itself runs after the new row lands.
+
+        ``meta`` is the already-normalized serialized carrier (the boundary owns the
+        grammar); it is secret-scanned refuse-only BEFORE the text gauntlet. On a
+        dedup hit the existing row is returned UNCHANGED — meta is NOT merged
+        (immutability: a new meta needs new text or supersession). // O(1) DB ops + one embed."""
         if replaces is not None and self._store.get_episode(int(replaces)) is None:
             _log.warning("admission.replaces_unknown_target", extra={
                 "event": "admission.replaces_unknown_target", "target": int(replaces),
                 "proposed_by": proposed_by, "request_id": request_id})
             raise ValueError(f"replaces target {int(replaces)} does not exist — "
                              "nothing stored, nothing retired")
+        self._meta_gate(meta, proposed_by=proposed_by, request_id=request_id)
         verdict = self._scan_gate(text, proposed_by=proposed_by,
                                   approved_by=approved_by, request_id=request_id)
         staged_text = verdict.redacted_text if verdict.action == REDACT else text
@@ -172,7 +198,7 @@ class AdmissionService:
             eid, deduped = self._store.stage(
                 text=staged_text, weight=weight, tags="",
                 proposed_by=proposed_by, ts=self._now(), provenance=provenance,
-                polarity=polarity, kind=kind, anchor=anchor)
+                polarity=polarity, kind=kind, anchor=anchor, meta=meta)
         except Exception:
             _log.error("admission.stage_fail", extra={
                 "event": "admission.stage_fail", "proposed_by": proposed_by,
@@ -271,7 +297,8 @@ class AdmissionService:
     # ── capture: the autonomous path — lands embedded but UNSERVABLE ───────────
     def capture(self, text: str, *, proposed_by: str, weight: float = 1.0,
                 request_id: str = "-", polarity: str = "neutral",
-                kind: str = DEFAULT_KIND, anchor: str = "") -> WriteResult:
+                kind: str = DEFAULT_KIND, anchor: str = "",
+                meta: str = "") -> WriteResult:
         """Capture WITHOUT asking: scan → stage (dedup) → embed → complete
         ``trust='quarantined'`` (``approved_by`` NULL — embedded but structurally
         unservable until measured demand promotes it) → synchronous promotion
@@ -279,7 +306,10 @@ class AdmissionService:
         quarantined capture must never gain retirement power. With autonomy
         disabled, returns ``status='disabled'`` before anything (even the scan)
         runs — the store is untouched. The secret floor is IDENTICAL to write's
-        (refuse raises, 0 rows). Provenance is TRANSPORT-SET to ``agent_reasoned`` (an
+        (refuse raises, 0 rows); ``meta`` (the already-normalized serialized carrier)
+        is scanned refuse-only BEFORE the text gauntlet, and on a dedup hit the
+        existing row's meta is preserved unmerged (identity is the text hash alone).
+        Provenance is TRANSPORT-SET to ``agent_reasoned`` (an
         agent reasoned the content) — never a caller field (INV-2). // O(1) DB ops + one
         embed + the O(Q·d) trigger."""
         if not self._autonomy_enabled:
@@ -288,6 +318,7 @@ class AdmissionService:
                 "request_id": request_id})
             return WriteResult(status="disabled", episode_id=None,
                                content_hash=None, scan=None)
+        self._meta_gate(meta, proposed_by=proposed_by, request_id=request_id)
         verdict = self._scan_gate(text, proposed_by=proposed_by, approved_by=None,
                                   request_id=request_id)
         staged_text = verdict.redacted_text if verdict.action == REDACT else text
@@ -296,7 +327,7 @@ class AdmissionService:
             eid, deduped = self._store.stage(
                 text=staged_text, weight=weight, tags="",
                 proposed_by=proposed_by, ts=self._now(), provenance="agent_reasoned",
-                polarity=polarity, kind=kind, anchor=anchor)
+                polarity=polarity, kind=kind, anchor=anchor, meta=meta)
         except Exception:
             _log.error("admission.capture_stage_fail", extra={
                 "event": "admission.capture_stage_fail", "proposed_by": proposed_by,

@@ -69,6 +69,7 @@ class RecallHit:
     kind: str = DEFAULT_KIND
     anchor: str = ""
     provenance: str = DEFAULT_PROVENANCE
+    meta: str = ""                     # serialized opaque map (meta.py); carried, never parsed
 
 
 @dataclass(frozen=True, slots=True)
@@ -145,10 +146,14 @@ class Episode:
     kind: str = DEFAULT_KIND          # category label (kinds.py); carried-not-interpreted, never embedded
     anchor: str = ""                  # the WHERE: file/module/symbol; carried, never embedded
     provenance: str = DEFAULT_PROVENANCE  # the ORIGIN (provenance.py); orthogonal to trust, never embedded
+    meta: str = ""                    # serialized opaque map — grammar lives at the boundary
+                                      # (meta.normalize_meta); carried-not-interpreted, never embedded
 
     def __post_init__(self) -> None:
         if self.content_hash != content_hash(self.text):
             raise ValueError("content_hash does not bind text (hash≠sha256(text))")
+        if not isinstance(self.meta, str):
+            raise ValueError("meta must be a str (the serialized carrier form)")
         if self.polarity not in ("do", "dont", "neutral"):
             raise ValueError(f"bad polarity {self.polarity!r}")
         if self.kind not in KIND_NAMES:

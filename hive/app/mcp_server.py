@@ -52,6 +52,7 @@ from hive.domain.errors import SecretRefused
 from hive.domain.evidence_kinds import EK_OUTCOME_HELPED, EK_OUTCOME_HURT
 from hive.domain.kinds import DEFAULT_KIND
 from hive.domain.lifecycle import is_servable
+from hive.domain.meta import BadMeta, normalize_meta
 from hive.domain.models import CONFIDENT
 
 _log = logging.getLogger("hive.app.mcp_server")
@@ -376,9 +377,14 @@ class HiveMCPServer:
         kind = args.get("kind", DEFAULT_KIND)     # registry vocabulary (schema-enum-checked)
         anchor = args.get("anchor", "")           # the WHERE — file/module/symbol (free text)
         try:
+            meta = normalize_meta(args.get("meta"))   # the ONE grammar gate (meta.py)
+        except BadMeta as e:
+            return {"status": "refused", "reason": f"bad meta: {e}"}
+        try:
             res = self.admission.write(text, approved_by=approved_by,
                                        proposed_by=proposed_by, replaces=replaces,
-                                       polarity=polarity, kind=kind, anchor=anchor)
+                                       polarity=polarity, kind=kind, anchor=anchor,
+                                       meta=meta)
         except SecretRefused as e:
             # REFUSE: nothing written (0 rows). Envelope carries rule NAMES, never bytes.
             return {"status": "refused", "reason": str(e),
@@ -399,8 +405,13 @@ class HiveMCPServer:
         kind = args.get("kind", DEFAULT_KIND)     # registry vocabulary (schema-enum-checked)
         anchor = args.get("anchor", "")           # the WHERE — file/module/symbol (free text)
         try:
+            meta = normalize_meta(args.get("meta"))   # the ONE grammar gate (meta.py)
+        except BadMeta as e:
+            return {"status": "refused", "reason": f"bad meta: {e}"}
+        try:
             res = self.admission.capture(text, proposed_by=identity.agent_id,
-                                         polarity=polarity, kind=kind, anchor=anchor)
+                                         polarity=polarity, kind=kind, anchor=anchor,
+                                         meta=meta)
         except SecretRefused as e:
             # REFUSE: nothing written (0 rows). Envelope carries rule NAMES, never bytes.
             return {"status": "refused", "reason": str(e),
@@ -430,9 +441,12 @@ class HiveMCPServer:
                 _log.warning("mcp.recall_belt_drop", extra={"event": "mcp.recall_belt_drop",
                              "trace_id": result.trace_id, "episode_id": h.episode_id})
                 continue
-            hits.append({"episode_id": h.episode_id, "text": h.text,
-                         "sim": float(h.sim), "trust": h.trust, "ts": h.ts,
-                         "polarity": h.polarity, "kind": h.kind, "anchor": h.anchor})
+            hit = {"episode_id": h.episode_id, "text": h.text,
+                   "sim": float(h.sim), "trust": h.trust, "ts": h.ts,
+                   "polarity": h.polarity, "kind": h.kind, "anchor": h.anchor}
+            if h.meta:            # omit-when-empty: the no-meta envelope is byte-inert
+                hit["meta"] = h.meta
+            hits.append(hit)
         # an empty post-belt set is an ABSTAIN, never a confident-empty (never-hallucinate)
         abstained = (result.state != CONFIDENT) or (not hits)
         env: dict = {"reference_context": hits, "abstained": abstained,

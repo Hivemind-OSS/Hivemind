@@ -3,6 +3,18 @@
 All notable changes to this project are documented here.
 
 ## Added
+- `meta` map carrier on `hive_capture` / `hive_write` — an optional namespaced map of
+  opaque machine handles (`{"tool/attr": "value"}`, e.g. a capture-time `combdrift/fp`
+  interface fingerprint) normalized once at the boundary (`hive/domain/meta.py`:
+  canonical key-sorted serialization, loud `BadMeta` refusals), secret-scanned
+  REFUSE-only (a redacted handle is garbage), stored on `episodes.meta`, and served
+  back verbatim on recall hits — the `meta` key rides a hit only when non-empty, so
+  the no-meta envelope is byte-identical to the pre-meta surface. A lifecycle-current
+  store that predates the column gains it via one explicit additive
+  `ALTER TABLE episodes ADD COLUMN meta` migration (loud, defaulted, lossless — so
+  `hive restore` of pre-meta backups keeps working); pre-lifecycle stores still
+  refuse. Dedup preserves the existing row's meta unmerged; recall stays meta-blind
+  (the carrier is never embedded).
 - `hive ingest` + `hive.tools.censusctl` — the change-outcome feed: a signed census
   receipt (stdin or path) lands as one append-only, SHA-bound `change_outcome` row on the
   `evidence_events` ledger, joined to the episodes whose anchors match the receipt's
