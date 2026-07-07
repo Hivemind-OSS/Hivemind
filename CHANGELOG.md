@@ -3,6 +3,16 @@
 All notable changes to this project are documented here.
 
 ## Added
+- Recorded the first REAL L4 empirical-gate run (`hive/research/bench/runs/l4_gate_s0.json`
+  + per-arm replay logs): LongMemEval-S n=30 (seed 0), haiku, production gate/autonomy
+  knobs. The mechanism behaved exactly as designed — the OFF control promoted nothing
+  and served nothing; the ON arm promoted 225 of 302 verified-helped captures, never
+  promoted or served any of the 12 verified-hurt poison rows (FSR 0.0 in both arms),
+  and lifted corrected-slice success 0/12 → 3/12 (E − C′ success delta +0.25, paired
+  bootstrap CI [0.0, 0.5]). The CI does not exclude zero at 12 paired points, so the
+  pre-registered `clean_win` criterion is NOT met: **`verified_promotion` stays
+  default-OFF**; a default flip would need a larger-n rerun whose CI clears zero, plus
+  explicit ratification.
 - L4 empirical-gate arm pair in the poison bench (`poison_run.py --l4`) — the run the
   `verified_promotion` default flip is conditioned on: arm E (`verified-outcome`) vs
   arm C′ (`l4-off`), both planting the pool (gold AND poison) as capture-only
