@@ -9,9 +9,10 @@ import re
 
 from hive.app import onboard_ref
 from hive.app.onboard_ref import (
-    AGENT_RULES_BLOCK, AUTO_APPROVE_TOOLS, BAD_VS_STALE, CAPTURE_TAXONOMY,
-    CLAUDE_CODE_HOOKS, CONTRACT_VERSION, ONBOARDING_PROCEDURE, ONBOARDING_REFERENCE,
-    RULES_END, RULES_START, SERVER_INSTRUCTIONS, VALUE_RUBRIC, WRITE_VS_CAPTURE,
+    AGENT_RULES_BLOCK, AUTO_APPROVE_TOOLS, BAD_VS_STALE, CAPTURE_RECALL_FLOOR,
+    CAPTURE_TAXONOMY, CLAUDE_CODE_HOOKS, CONTRACT_VERSION, NOISE_FLOOR,
+    ONBOARDING_PROCEDURE, ONBOARDING_REFERENCE, RULES_END, RULES_START,
+    SERVER_INSTRUCTIONS, VALUE_RUBRIC, WRITE_VS_CAPTURE,
     bundle_digest, render_agent_rules_block, render_allowlist,
 )
 from hive.app.tool_defs import TOOL_DEFINITIONS
@@ -20,7 +21,7 @@ from hive.domain.kinds import render_taxonomy
 # Regenerate when the bundle legitimately changes (and bump CONTRACT_VERSION) — the pre-commit
 # contract-version guard does this automatically, or by hand:
 #   python -c "from hive.app.onboard_ref import bundle_digest; print(bundle_digest())"
-_GOLDEN_BUNDLE_SHA256 = "4161380b4c8ce07db1fd9a4712ceafe097f9f9520042c54cad4760f55fff2e00"
+_GOLDEN_BUNDLE_SHA256 = "8b9ed8d5581976ab414af9774d3420af911e7f1732241fde87cceaad17debca1"
 
 
 def test_server_instructions_cover_the_verbs_and_search_first_timing():
@@ -272,6 +273,50 @@ def test_instructions_require_single_pointed_recall_query_set():
     assert "single-pointed" in low
     assert "one intent" in low
     assert "never bundle" in low                    # no bulk multi-question query
+
+
+# ── C5: the universal capture/recall discipline floor (cross-platform, in-block) ──
+def test_rules_block_serves_the_capture_recall_discipline_floor():
+    """The persistence block ITSELF carries the discipline as plain rules-file markdown
+    valid verbatim on ANY runtime (CLAUDE.md / AGENTS.md / .cursorrules / .windsurfrules):
+    the task-end capture shape (WHAT + WHERE as file:symbol + WHY, in both body and
+    anchor), capture-only-never-write at task end, the DO-NOT-CAPTURE noise floor, the
+    zero-capture escape, and recall-before-edit-by-anchor."""
+    block = render_agent_rules_block()
+    assert CAPTURE_RECALL_FLOOR in block                  # one source, embedded verbatim
+    f = CAPTURE_RECALL_FLOOR
+    assert "WHAT" in f and "WHY" in f                     # the capture shape…
+    assert "file.py:symbol" in f and "anchor" in f        # …anchored as WHERE, both places
+    low = f.lower()
+    assert "never hive_write" in low                      # capture-only at task end
+    assert "capture nothing" in low                       # the zero-capture escape
+    assert "recall before edit" in low                    # recall-before-edit-by-anchor…
+    assert "hive_recall" in f                             # …via the recall verb
+
+
+def test_floor_carries_the_noise_floor_single_sourced():
+    """The DO-NOT-CAPTURE floor has ONE definition: the same NOISE_FLOOR constant rides
+    the served taxonomy AND the in-block discipline floor — no second copy to drift."""
+    assert NOISE_FLOOR in CAPTURE_TAXONOMY
+    assert NOISE_FLOOR in CAPTURE_RECALL_FLOOR
+    low = NOISE_FLOOR.lower()
+    assert "do not capture" in low and "litmus" in low and "secret" in low
+
+
+def test_floor_documents_its_own_tiering():
+    """The tiering is stated in the served text itself: an ADVISORY rules-text floor on
+    every platform, made DETERMINISTIC where the platform has lifecycle hooks — so a
+    hook-less runtime knows exactly what tier it is on."""
+    low = CAPTURE_RECALL_FLOOR.lower()
+    assert "advisory" in low
+    assert "deterministic" in low
+    assert "hooks" in low
+
+
+def test_floor_reaches_the_served_instructions():
+    """The always-on floor (the initialize instructions) carries the discipline text at
+    connect — every platform receives it without installing anything."""
+    assert CAPTURE_RECALL_FLOOR in SERVER_INSTRUCTIONS
 
 
 def test_claude_code_hooks_is_valid_json_with_the_three_nudge_events():

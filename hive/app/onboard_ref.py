@@ -49,7 +49,7 @@ from hive.domain.kinds import render_taxonomy
 # The single owner of the bundle version. Bump it (and regenerate the keystone golden) on ANY
 # change to AGENT_RULES_BLOCK / CLAUDE_CODE_HOOKS / the rendered allowlist. The beacon stamps this
 # on every tool result; an agent whose installed marker differs re-onboards.
-CONTRACT_VERSION: str = "v.02"
+CONTRACT_VERSION: str = "v.03"
 
 # Marker fences make the installed block a one-regex, idempotent replace (no clobber, no duplicate).
 # The START marker carries the version so an extract reads it straight off the rules file; the
@@ -128,20 +128,23 @@ VALUE_RUBRIC = (
     "anchor (the file/module/symbol it is about) so the trace is grounded in code, not memory."
 )
 
-# The fleet capture taxonomy — the one definition of WHAT to store. The value bar (VALUE_RUBRIC) +
-# the kind vocabulary (kinds + body templates + the polar-language and density rules, RENDERED from
-# hive.domain.kinds so it can never drift from the enforced enum) + the noise floor (what NOT to
-# capture). Framing: write for a TEAMMATE agent who lacks your context — durable, reusable,
-# NON-OBVIOUS facts only; noise (obvious/transient/duplicate) poisons recall for the whole fleet.
-CAPTURE_TAXONOMY = (
-    VALUE_RUBRIC + "\n\n"
-    + render_taxonomy() + "\n\n"
+# The noise floor — the ONE definition of what NOT to capture. Embedded by the taxonomy
+# (below) and by the in-block discipline floor (CAPTURE_RECALL_FLOOR), so the two served
+# copies cannot drift.
+NOISE_FLOOR = (
     "DO NOT CAPTURE (noise poisons recall for everyone): anything obvious from the code or its "
     "tests; transient / session / TODO state; restated docs or general programming knowledge; "
     "secrets; a fact you can already recall (search first, then capture only the delta). "
     "Litmus: a teammate agent hits this exact spot in 3 months — does it save real time AND is it "
     "not obvious from the code? Both yes -> capture."
 )
+
+# The fleet capture taxonomy — the one definition of WHAT to store. The value bar (VALUE_RUBRIC) +
+# the kind vocabulary (kinds + body templates + the polar-language and density rules, RENDERED from
+# hive.domain.kinds so it can never drift from the enforced enum) + the noise floor (what NOT to
+# capture). Framing: write for a TEAMMATE agent who lacks your context — durable, reusable,
+# NON-OBVIOUS facts only; noise (obvious/transient/duplicate) poisons recall for the whole fleet.
+CAPTURE_TAXONOMY = VALUE_RUBRIC + "\n\n" + render_taxonomy() + "\n\n" + NOISE_FLOOR
 
 # claude-code ONLY — OPTIONAL lifecycle hooks that give the nudges teeth. Merge into the PROJECT
 # .claude/settings.json (never ~/.claude) WITHOUT clobbering existing keys. UserPromptSubmit prints
@@ -212,6 +215,33 @@ BAD_VS_STALE = (
 )
 
 
+# The cross-platform capture/recall discipline floor (the universal floor): the task-end
+# capture shape and recall-before-edit-by-anchor, as plain rules-file markdown valid VERBATIM
+# in any runtime's project rules file (CLAUDE.md / AGENTS.md / .cursorrules / .windsurfrules).
+# It rides the installable block — and through it the served initialize instructions — so
+# every MCP client on every platform receives the same discipline; the tiering is stated in
+# the text itself (advisory by nature everywhere, deterministic where a platform has
+# lifecycle hooks to give it teeth).
+CAPTURE_RECALL_FLOOR = (
+    "CAPTURE/RECALL DISCIPLINE (the universal floor — applies on EVERY platform):\n"
+    "- RECALL BEFORE EDIT — before modifying a file or symbol, hive_recall its anchor "
+    "(query \"<path> <symbol>\") so a known gotcha or contract on that exact spot surfaces "
+    "BEFORE the change, not after it breaks.\n"
+    "- TASK-END CAPTURE — when your task changed code, end it with AT MOST ONE structured "
+    "hive_capture: text = WHAT (the durable lesson) + WHERE as path/file.py:symbol + WHY "
+    "(the non-obvious part), and anchor=<that same file:symbol> — the WHERE rides in BOTH "
+    "the body text and the anchor (recall matches content only). Capture-only at task end: "
+    "NEVER hive_write here — write requires an approver; this path is quarantine-only by "
+    "design.\n"
+    "- " + NOISE_FLOOR + "\n"
+    "- ZERO-CAPTURE ESCAPE — if nothing clears that bar, capture NOTHING and finish: "
+    "declining is compliance; a forced capture manufactures noise.\n"
+    "TIERING: this floor is ADVISORY rules-file text on every platform; where your platform "
+    "has lifecycle hooks (e.g. claude-code's Stop/UserPromptSubmit) the served hooks make "
+    "the same discipline DETERMINISTIC — same rules, harder trigger."
+)
+
+
 def render_agent_rules_block() -> str:
     """The OPTIONAL, version-stamped agent-contract block an agent transcribes VERBATIM into its
     runtime's PROJECT rules file (D2 — the server authors it, the agent copies it; composing it from
@@ -247,6 +277,8 @@ def render_agent_rules_block() -> str:
         "never retire on your own judgment. " + BAD_VS_STALE + " Retire a stale memory via "
         "hive_supersede(loser, winner) or hive_write(replaces=); retire a bad one via hive_prune; "
         "hive_outcome(helped=/hurt=) records evidence only (it retires nothing).\n"
+        "\n"
+        + CAPTURE_RECALL_FLOOR + "\n"
         "\n"
         "PROJECT-SCOPED: this block lives in THIS repo's rules file (never a home/global file). On "
         "Claude Code, auto-approve the read verbs (hive_recall, hive_capture, hive_health, "

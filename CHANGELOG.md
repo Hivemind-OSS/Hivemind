@@ -3,6 +3,18 @@
 All notable changes to this project are documented here.
 
 ## Added
+- The universal capture/recall discipline floor (contract v.03): the served
+  HIVEMIND-RULES block — and through it the initialize-instructions floor every
+  MCP client receives at connect — now carries the cross-platform discipline as
+  plain rules-file markdown (valid verbatim in CLAUDE.md / AGENTS.md /
+  .cursorrules / .windsurfrules): recall-before-edit-by-anchor, the task-end
+  capture shape (WHAT + WHERE as `path/file.py:symbol` in both body and anchor +
+  WHY), capture-only-never-write at task end, the DO-NOT-CAPTURE noise floor
+  (single-sourced with the taxonomy via the new `NOISE_FLOOR` constant), and the
+  zero-capture escape — with the tiering documented in the text itself (advisory
+  everywhere; deterministic where a platform has lifecycle hooks).
+  `CONTRACT_VERSION` bumped v.02 → v.03 by the pre-commit guard, keystone golden
+  regenerated; connected agents re-onboard on the beacon mismatch.
 - Graph-propagated staleness, detection-only: the census ingest now honors the
   receipt's optional `propagation` block (built census-side under
   `hive-census build --propagate`) — the same atomic batch appends one advisory
