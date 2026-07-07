@@ -3,6 +3,15 @@
 All notable changes to this project are documented here.
 
 ## Added
+- `hive ingest` + `hive.tools.censusctl` — the change-outcome feed: a signed census
+  receipt (stdin or path) lands as one append-only, SHA-bound `change_outcome` row on the
+  `evidence_events` ledger, joined to the episodes whose anchors match the receipt's
+  touched symbols. Fail-closed end to end: decided execution lines only, nothing-decided
+  refuses (exit 65, no row), idempotent re-ingest, malformed payloads refused loudly, no
+  trust mutation (O7) and recall byte-inert. Backed by the new
+  `hive/domain/evidence_kinds.py` registry (the six existing ledger-kind literals
+  retrofitted onto the single source) and two narrow ports
+  (`AnchoredEpisodeReader`, `ChangeEvidenceAppender`).
 - `LICENSE` — the project is released under the **Apache License 2.0**, declared in
   `pyproject.toml` via the PEP 639 `license` / `license-files` fields (build requires
   `setuptools>=77`).
