@@ -3,6 +3,27 @@
 All notable changes to this project are documented here.
 
 ## Added
+- POWERED rerun of the L4 empirical gate: three independent-seed runs
+  (`hive/research/bench/runs/l4_gate_powered_s{0,1,2}.json` + per-arm replay logs,
+  seeds 0/1/2, n=30 each, haiku, the recorded run's tau/poison config) pooled via
+  the new `--l4-pool` reducer into `l4_gate_powered_pooled.json`. Every C′ control
+  promoted nothing (0/3 seeds); the rung promoted only verified-helped captures
+  (225/194/212) and never a verified-hurt row. Pooled corrected slice n=37:
+  success 0/37 (C′) vs 9/37 (E), FSR 0.0 in both arms, success delta +0.243 with
+  paired bootstrap CI [0.108, 0.378] — the CI clears zero with FSR non-worsening,
+  so the pre-registered `clean_win` criterion is MET. **`verified_promotion`
+  remains default-OFF**: the flip is a separate one-line change gated on explicit
+  human ratification with this report in hand.
+- Cross-seed pooling for the L4 gate (`poison_run.py --l4-pool <reports...>`):
+  each arm summary now carries its per-task frozen `PoisonTaskObs` rows under
+  `cases`, and `pool_l4_reports` rebuilds those carriers across >=2 independent-seed
+  reports, concatenates the task-paired vectors, and rescores through the same
+  `score_l4_arms` path (config-parity enforced; duplicate seeds, legacy
+  reports without case rows, and mismatched configs are refused).
+- The L4 bench plant phase is observable: `preload_captures` logs a
+  rows-done/total + elapsed heartbeat every 500 rows plus a completion line, and
+  `run_l4_gate` announces each arm's plant/inject/demand/agent-loop transitions,
+  so a detached (nohup) run's console log always shows where the wall-clock goes.
 - The universal capture/recall discipline floor (contract v.03): the served
   HIVEMIND-RULES block — and through it the initialize-instructions floor every
   MCP client receives at connect — now carries the cross-platform discipline as
