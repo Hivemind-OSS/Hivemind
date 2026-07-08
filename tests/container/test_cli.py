@@ -324,6 +324,132 @@ def test_restore_aborts_if_copy_fails(tmp_path):
     assert not any(seq_in(c, "up", "-d") for c in fake.calls)   # no restart after a failed copy
 
 
+# ── upgrade: move the server to a release ref (snapshot-gated + auto-rollback) ──
+
+def _is_checkout(c, ref):
+    return c[:1] == ["git"] and seq_in(c, "checkout", ref)
+
+
+# a full happy-path upgrade: clean tree (default empty `status`) → fetch + ref resolve
+# (default rc 0) → HEAD captured → host snapshot ok → rebuild container-healthy → app
+# status healthy. Only the calls that must return a payload are scripted; the rest default.
+_UPGRADE_OK = [
+    (lambda a: seq_in(a, "rev-parse", "HEAD"), proc(stdout="oldsha0000\n")),
+    (_is_snapshot, proc(stdout="/out/hive-STAMP.db\n")),
+    (lambda a: seq_in(a, "ps", "-q"), proc(stdout="cid123\n")),
+    (lambda a: a[:2] == ["docker", "inspect"], proc(stdout="healthy\n")),
+    (lambda a: seq_in(a, "ps", "hive-server") and "-q" not in a,
+     proc(stdout="hive-server Up (healthy)\n")),
+    (lambda a: any("healthcheck" in t for t in a), proc(rc=0)),
+]
+
+
+def test_upgrade_order_status_fetch_snapshot_checkout_up():
+    # ordered like reset: check the tree → fetch/verify the ref → snapshot the store OUT →
+    # checkout the ref → rebuild. A wrong order reds here.
+    fake = FakeRun(script=list(_UPGRADE_OK))
+    rc = cli.main(["upgrade", "--yes"], run=fake, out=io.StringIO(), env=ENV)
+    assert rc == cli.EX_OK
+    order = lambda pred: next(i for i, c in enumerate(fake.calls) if pred(c))
+    i_status = order(lambda c: seq_in(c, "status", "--porcelain"))
+    i_fetch = order(lambda c: c[:1] == ["git"] and seq_in(c, "fetch"))
+    i_snap = order(_is_snapshot)
+    i_checkout = order(lambda c: _is_checkout(c, "release"))
+    i_up = order(lambda c: seq_in(c, "up", "-d", "--build", "hive-server"))
+    assert i_status < i_fetch < i_snap < i_checkout < i_up
+
+
+def test_upgrade_aborts_before_checkout_when_snapshot_fails():
+    # the safety invariant (mirrors reset): if the pre-upgrade snapshot fails, the ref is
+    # NEVER checked out and the server is NEVER rebuilt — the running version is untouched.
+    fake = FakeRun(script=[(_is_snapshot, proc(rc=1, stderr="backup boom"))])
+    rc = cli.main(["upgrade", "--yes"], run=fake, out=io.StringIO(), env=ENV)
+    assert rc == cli.EX_UNAVAILABLE
+    assert any(_is_snapshot(c) for c in fake.calls)
+    assert not any(_is_checkout(c, "release") for c in fake.calls)        # checkout NOT reached
+    assert not any(seq_in(c, "up", "-d", "--build") for c in fake.calls)  # no rebuild
+
+
+def test_upgrade_aborts_on_dirty_tree():
+    # a dirty tree aborts BEFORE any fetch/snapshot/checkout — no magic stash.
+    fake = FakeRun(script=[(lambda a: seq_in(a, "status", "--porcelain"),
+                            proc(stdout=" M hive/tools/cli.py\n"))])
+    rc = cli.main(["upgrade", "--yes"], run=fake, out=io.StringIO(), env=ENV)
+    assert rc == cli.EX_USAGE
+    assert not any(c[:1] == ["git"] and seq_in(c, "fetch") for c in fake.calls)
+    assert not any(_is_snapshot(c) for c in fake.calls)
+    assert not any(_is_checkout(c, "release") for c in fake.calls)
+
+
+def test_upgrade_aborts_when_ref_not_found():
+    # a ref that does not resolve after fetch aborts before the snapshot (no work for a bogus ref).
+    fake = FakeRun(script=[(lambda a: seq_in(a, "rev-parse", "--verify", "--quiet", "release"),
+                            proc(rc=1))])
+    rc = cli.main(["upgrade", "--yes"], run=fake, out=io.StringIO(), env=ENV)
+    assert rc == cli.EX_USAGE
+    assert not any(_is_snapshot(c) for c in fake.calls)
+
+
+def test_upgrade_requires_confirmation():
+    fake = FakeRun(script=list(_UPGRADE_OK))
+    rc = cli.main(["upgrade"], run=fake, out=io.StringIO(), env=ENV, ask=lambda _p: "no")
+    assert rc == cli.EX_USAGE
+    assert not any(_is_snapshot(c) for c in fake.calls)     # declined before the snapshot
+
+
+def test_upgrade_yes_skips_confirmation():
+    def _no_ask(_p):
+        raise AssertionError("--yes must not prompt")
+    fake = FakeRun(script=list(_UPGRADE_OK))
+    assert cli.main(["upgrade", "--yes"], run=fake, out=io.StringIO(), env=ENV, ask=_no_ask) == cli.EX_OK
+
+
+def _upgrade_then_unhealthy_status():
+    # rebuild is container-healthy but the app status gate reports UNHEALTHY → triggers rollback.
+    return [
+        (lambda a: seq_in(a, "rev-parse", "HEAD"), proc(stdout="oldsha0000\n")),
+        (_is_snapshot, proc(stdout="/out/hive-STAMP.db\n")),
+        (lambda a: seq_in(a, "ps", "-q"), proc(stdout="cid123\n")),
+        (lambda a: a[:2] == ["docker", "inspect"], proc(stdout="healthy\n")),
+        (lambda a: seq_in(a, "ps", "hive-server") and "-q" not in a, proc(stdout="hive-server Up\n")),
+        (lambda a: any("healthcheck" in t for t in a), proc(rc=1)),   # app-level unhealthy → gate fails
+    ]
+
+
+def test_upgrade_rolls_back_when_health_gate_fails():
+    fake = FakeRun(script=_upgrade_then_unhealthy_status())
+    rc = cli.main(["upgrade", "--yes"], run=fake, out=io.StringIO(), env=ENV)
+    assert rc == cli.EX_UNAVAILABLE                                 # upgrade failed, but recovered
+    assert any(_is_checkout(c, "oldsha0000") for c in fake.calls)   # code reverted to prev
+    cp = next(c for c in fake.calls
+              if c[:2] == ["docker", "run"] and seq_in(c, "--entrypoint", "sh"))
+    assert seq_in(cp, "-v", "hive-data:/data")
+    assert any("cp /in/hive-STAMP.db /data/shared.db" in tok for tok in cp)   # store restored
+    i_revert = next(i for i, c in enumerate(fake.calls) if _is_checkout(c, "oldsha0000"))
+    i_copy = next(i for i, c in enumerate(fake.calls)
+                  if c[:2] == ["docker", "run"] and seq_in(c, "--entrypoint", "sh"))
+    assert i_revert < i_copy                                        # revert code THEN restore store
+
+
+def test_upgrade_prints_manual_hint_when_rollback_itself_fails(capsys):
+    # double failure: the health gate fails AND the revert `git checkout <prev>` also fails →
+    # print the exact manual recovery (git checkout + hive restore) and exit EX_SOFTWARE.
+    script = _upgrade_then_unhealthy_status() + [
+        (lambda a: _is_checkout(a, "oldsha0000"), proc(rc=1, stderr="checkout boom")),
+    ]
+    rc = cli.main(["upgrade", "--yes"], run=FakeRun(script=script), out=io.StringIO(), env=ENV)
+    assert rc == cli.EX_SOFTWARE
+    err = capsys.readouterr().err
+    assert "git checkout oldsha0000" in err
+    assert "hive restore" in err
+
+
+def test_connect_prints_census_edge_tools_breadcrumb(capsys):
+    # connect cross-references the edge-tools install (hive-census init) without merging the verb.
+    cli.main(["connect"], run=FakeRun(), out=io.StringIO(), env=ENV)
+    assert "hive-census init" in capsys.readouterr().err
+
+
 # ── status: aggregation (ps + in-container healthcheck + tunnel + seat count) ───
 
 

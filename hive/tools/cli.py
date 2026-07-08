@@ -184,7 +184,46 @@ def _up(args, *, run: Run, out: TextIO, env: Mapping[str, str], ask) -> int:
     return _wait_healthy(run, env)
 
 
-_DEFAULT_RESET_OUT = "hive-backups"   # host dir (cwd-relative) for reset's pre-destroy snapshot
+_DEFAULT_RESET_OUT = "hive-backups"   # host dir (cwd-relative) for reset's + upgrade's snapshot
+
+
+def _copy_snapshot_into_volume(run: Run, env: Mapping[str, str],
+                               src: str) -> subprocess.CompletedProcess:
+    """Copy a HOST snapshot `.db` onto `/data/shared.db` inside the `hive-data` volume, clearing the
+    stale WAL sidecars, in a THROWAWAY `--entrypoint sh` container (the image ENTRYPOINT is the
+    daemon, not a shell). Single-sourced so `restore` and `upgrade`'s auto-rollback share ONE copy
+    line. The source dir is bind-mounted at `/in`; a `reset`/`upgrade`-produced snapshot is
+    world-readable, so it reads regardless of owner. // O(db size)."""
+    name = os.path.basename(src)
+    return run(["docker", "run", "--rm", "--entrypoint", "sh",
+                "-v", "hive-data:/data", "-v", f"{os.path.dirname(src)}:/in", IMAGE,
+                "-c", f"cp /in/{name} /data/shared.db && "
+                      "rm -f /data/shared.db-wal /data/shared.db-shm"], env)
+
+
+def _snapshot_to_host(run: Run, env: Mapping[str, str],
+                      abs_out: str) -> tuple[subprocess.CompletedProcess, str]:
+    """Snapshot the store OUT of the volume to a host dir as a self-contained, recoverable `.db` —
+    the safety net `reset` and `upgrade` both take BEFORE anything destructive. Runs `backupctl` in
+    a THROWAWAY container as ROOT (`--user 0:0` reads the image-user-owned live WAL store and writes
+    the operator's host bind), with `--entrypoint python` overriding the image's daemon ENTRYPOINT so
+    the args reach backupctl — a pure file-level SQLite backup that works even when the daemon CANNOT
+    boot against an incompatible store. On success a second root `chown` hands the snapshot back to
+    the operator. Returns (the backupctl proc, the host-path snapshot dest — `abs_out` itself if the
+    backup failed or printed no path). // O(db size)."""
+    snap = run(["docker", "run", "--rm", "--user", "0:0", "--entrypoint", "python",
+                "-v", "hive-data:/data", "-v", f"{abs_out}:/out",
+                "-e", "HIVE_RETENTION__BACKUP_DIR=/out",
+                IMAGE, "-m", "hive.tools.backupctl"], env)
+    if snap.returncode != 0:
+        return snap, abs_out
+    snap_name = os.path.basename((snap.stdout or "").strip())
+    host_dest = os.path.join(abs_out, snap_name) if snap_name else abs_out
+    # hand the root-written snapshot back to the operator (best-effort — it is already safe and
+    # world-readable, so restore works regardless; this just makes it the operator's to manage).
+    run(["docker", "run", "--rm", "--user", "0:0", "--entrypoint", "chown",
+         "-v", f"{abs_out}:/out", IMAGE, "-R", f"{os.getuid()}:{os.getgid()}", "/out"], env)
+    return snap, host_dest
 
 
 def _reset(args, *, run: Run, out: TextIO, env: Mapping[str, str], ask) -> int:
@@ -207,24 +246,15 @@ def _reset(args, *, run: Run, out: TextIO, env: Mapping[str, str], ask) -> int:
         if (answer or "").strip() != "reset":
             print("hive: not confirmed — nothing destroyed", file=sys.stderr)
             return EX_USAGE
-    # 1. snapshot OUT of the volume FIRST — the recoverable safety net. Root + entrypoint override
-    #    so it actually runs backupctl and can write the operator's host dir; works even when the
-    #    daemon can't boot against an incompatible store (backupctl never builds the store).
-    snap = run(["docker", "run", "--rm", "--user", "0:0", "--entrypoint", "python",
-                "-v", "hive-data:/data", "-v", f"{abs_out}:/out",
-                "-e", "HIVE_RETENTION__BACKUP_DIR=/out",
-                IMAGE, "-m", "hive.tools.backupctl"], env)
+    # 1. snapshot OUT of the volume FIRST — the recoverable safety net (shared with `upgrade`).
+    #    Works even when the daemon can't boot against an incompatible store (the very case reset
+    #    exists for), and hands the snapshot back to the operator on success.
+    snap, host_dest = _snapshot_to_host(run, env, abs_out)
     if snap.returncode != 0:
         sys.stderr.write(snap.stderr or "")
         print("hive: pre-reset snapshot FAILED — nothing destroyed "
               "(run `hive up` if you meant to start a fresh store)", file=sys.stderr)
         return EX_UNAVAILABLE
-    snap_name = os.path.basename((snap.stdout or "").strip())
-    host_dest = os.path.join(abs_out, snap_name) if snap_name else abs_out
-    # hand the root-written snapshot back to the operator (best-effort — it is already safe and
-    # world-readable, so restore works regardless; this just makes it the operator's to manage).
-    run(["docker", "run", "--rm", "--user", "0:0", "--entrypoint", "chown",
-         "-v", f"{abs_out}:/out", IMAGE, "-R", f"{os.getuid()}:{os.getgid()}", "/out"], env)
     # 2. only now is it safe to destroy the volume + recreate it empty + warm.
     if run(_compose("down", "-v"), env, capture=False).returncode != 0:
         return EX_UNAVAILABLE
@@ -255,11 +285,7 @@ def _restore(args, *, run: Run, out: TextIO, env: Mapping[str, str], ask) -> int
     # stop the daemon to release WAL locks before overwriting the db file; preserves the volume.
     if run(_compose("down"), env, capture=False).returncode != 0:
         return EX_UNAVAILABLE
-    name = os.path.basename(src)
-    cp = run(["docker", "run", "--rm", "--entrypoint", "sh",
-              "-v", "hive-data:/data", "-v", f"{os.path.dirname(src)}:/in", IMAGE,
-              "-c", f"cp /in/{name} /data/shared.db && "
-                    "rm -f /data/shared.db-wal /data/shared.db-shm"], env)
+    cp = _copy_snapshot_into_volume(run, env, src)
     if cp.returncode != 0:
         sys.stderr.write(cp.stderr or "")
         print("hive: restore copy FAILED — the daemon is stopped; run `hive up`", file=sys.stderr)
@@ -269,6 +295,88 @@ def _restore(args, *, run: Run, out: TextIO, env: Mapping[str, str], ask) -> int
     rc = _wait_healthy(run, env)
     print(f"hive: restore complete — store replaced from {src}", file=sys.stderr)
     return rc
+
+
+_DEFAULT_UPGRADE_REF = "release"   # the maintainer's vetted-release pin; roll back with an older tag
+
+
+def _rollback(run: Run, env: Mapping[str, str], *, prev: str, snap: str) -> int:
+    """Bounded auto-revert for a failed `upgrade`: restore the code (`git checkout <prev>`) AND the
+    store (the just-taken host snapshot copied back into the volume), then rebuild + wait. Every step
+    is guarded; if ANY step of the revert ITSELF fails, print the EXACT manual recovery and exit
+    EX_SOFTWARE — the operator is never left without a printed way back (Law 6). Returns EX_UNAVAILABLE
+    when the revert SUCCEEDS (the upgrade still failed, but the server is back on `prev`). // O(db size)."""
+    def _manual(reason: str) -> int:
+        print(f"hive: AUTOMATIC ROLLBACK FAILED ({reason}) — recover manually:\n"
+              f"      git checkout {prev}\n"
+              f"      hive restore {snap}", file=sys.stderr)
+        return EX_SOFTWARE
+    if run(["git", "checkout", prev], env).returncode != 0:
+        return _manual("git checkout")
+    if run(_compose("down"), env, capture=False).returncode != 0:   # release WAL locks before the copy
+        return _manual("compose down")
+    cp = _copy_snapshot_into_volume(run, env, snap)
+    if cp.returncode != 0:
+        sys.stderr.write(cp.stderr or "")
+        return _manual("snapshot restore")
+    if run(_compose("up", "-d", "--build", SERVICE), env, capture=False).returncode != 0:
+        return _manual("rebuild")
+    if _wait_healthy(run, env) != EX_OK:
+        return _manual("post-rollback health")
+    print(f"hive: rolled back to {prev[:12] or 'HEAD'} — store restored from {snap}", file=sys.stderr)
+    return EX_UNAVAILABLE
+
+
+def _upgrade(args, *, run: Run, out: TextIO, env: Mapping[str, str], ask) -> int:
+    """Move the server to a vetted `release` ref: snapshot-gated, health-verified, auto-rolling-back.
+    Ordered like `_reset` (snapshot-first / abort-before-destroy):
+
+    1. a DIRTY tree aborts (no magic stash — the operator resolves it);
+    2. `git fetch` + assert the target ref RESOLVES, before touching anything;
+    3. capture HEAD as the rollback target;
+    4. take a HOST snapshot that MUST succeed before the checkout (the recoverable safety net);
+    5. checkout the ref → rebuild → bounded health-wait → app status gate;
+    6. on ANY post-checkout failure, auto-revert (code + store) via `_rollback`.
+
+    Failures fall toward the recoverable direction (Law 6): before the snapshot nothing has changed;
+    after it, the pre-upgrade store is always on the host. // O(db size) + up to two rebuilds."""
+    ref = args.ref
+    if (run(["git", "status", "--porcelain"], env).stdout or "").strip():
+        print("hive: working tree is dirty — commit or stash before `hive upgrade` "
+              "(nothing changed)", file=sys.stderr)
+        return EX_USAGE
+    if run(["git", "fetch", "--tags"], env).returncode != 0:
+        print("hive: `git fetch` failed — cannot reach the remote (nothing changed)", file=sys.stderr)
+        return EX_UNAVAILABLE
+    if run(["git", "rev-parse", "--verify", "--quiet", ref], env).returncode != 0:
+        print(f"hive: ref {ref!r} not found after fetch (nothing changed)", file=sys.stderr)
+        return EX_USAGE
+    prev = (run(["git", "rev-parse", "HEAD"], env).stdout or "").strip()
+    if not args.yes:
+        answer = ask(f"hive upgrade snapshots the store, checks out {ref!r}, rebuilds, and "
+                     f"health-gates (auto-rollback to {prev[:12] or 'HEAD'} on failure). "
+                     "Type 'upgrade' to confirm: ")
+        if (answer or "").strip() != "upgrade":
+            print("hive: not confirmed — nothing changed", file=sys.stderr)
+            return EX_USAGE
+    abs_out = os.path.abspath(_DEFAULT_RESET_OUT)
+    snap, host_dest = _snapshot_to_host(run, env, abs_out)
+    if snap.returncode != 0:
+        sys.stderr.write(snap.stderr or "")
+        print("hive: pre-upgrade snapshot FAILED — nothing changed", file=sys.stderr)
+        return EX_UNAVAILABLE
+    if run(["git", "checkout", ref], env).returncode != 0:
+        print(f"hive: `git checkout {ref}` failed — server unchanged; snapshot at {host_dest}",
+              file=sys.stderr)
+        return EX_UNAVAILABLE
+    healthy = (run(_compose("up", "-d", "--build", SERVICE), env, capture=False).returncode == 0
+               and _wait_healthy(run, env) == EX_OK
+               and _probe_status(run, env).healthy is True)
+    if healthy:
+        print(f"hive: upgrade complete — now at {ref} (snapshot saved to {host_dest})", file=sys.stderr)
+        return EX_OK
+    print(f"hive: {ref} did not come up healthy — rolling back to {prev[:12] or 'HEAD'}", file=sys.stderr)
+    return _rollback(run, env, prev=prev, snap=host_dest)
 
 
 def _probe_status(run: Run, env: Mapping[str, str]) -> StatusSnapshot:
@@ -379,6 +487,10 @@ def _connect(args, *, run: Run, out: TextIO, env: Mapping[str, str], ask) -> int
               "X-Hive-Agent-Id — Claude Code's headersHelper (fresh UUID per session), a "
               "harness/CI header per agent, ${env:VAR} on Cursor/Windsurf/Cline, ${input:..} "
               "on VS Code, or env_http_headers on Codex.", file=sys.stderr)
+    # edge-tools breadcrumb (transport-only boundary preserved — this is a cross-reference, not a
+    # merged verb): the teammate also installs the census bundle + wires the post-merge hook.
+    print("hive: edge tools — run `hive-census init` to install the census bundle and wire the "
+          "post-merge census hook (see HIVE-ADMIN.md).", file=sys.stderr)
     return EX_OK
 
 
@@ -449,6 +561,7 @@ _HANDLERS: dict[str, Callable[..., int]] = {
     "backup": _backup,
     "reset": _reset,
     "restore": _restore,
+    "upgrade": _upgrade,
     "status": _status,
     "token": _token,
     "revoke": _revoke,
@@ -501,6 +614,13 @@ def main(argv: Optional[list[str]] = None, *, run: Optional[Run] = None,
         "restore", help="replace the live store with a snapshot .db (inverse of reset; asks to confirm)")
     p_restore.add_argument("file", help="path to a snapshot .db (e.g. ./hive-backups/hive-<stamp>.db)")
     p_restore.add_argument("--yes", action="store_true", help="skip the typed confirmation")
+    p_upgrade = sub.add_parser(
+        "upgrade", help="move the server to a vetted release ref: snapshot → checkout → rebuild → "
+                        "health-gate → auto-rollback on failure (backup-gated)")
+    p_upgrade.add_argument("--ref", default=_DEFAULT_UPGRADE_REF,
+                           help=f"git ref to move to (default: {_DEFAULT_UPGRADE_REF}; "
+                                "roll back with an older tag)")
+    p_upgrade.add_argument("--yes", action="store_true", help="skip the typed confirmation")
     sub.add_parser("backup", help="snapshot the store now (manual; keeps the backup_keep most-recent you take)")
     sub.add_parser("status", help="server health, tunnel state + URL, seat count")
     p_token = sub.add_parser("token", help="mint a per-seat token (printed ONCE to stdout)")
