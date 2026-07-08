@@ -603,3 +603,56 @@ def test_health_verb_is_absent():
     assert "health" not in cli._HANDLERS
     with pytest.raises(SystemExit):
         cli.main(["health"], run=FakeRun(script=[]), out=io.StringIO(), env=ENV)
+
+
+# ── ui: one registry entry + a single subparser; the heavy import stays deferred ──
+
+
+def test_ui_verb_dispatches_to_serve_ui_with_the_seams(monkeypatch):
+    from hive.tools import ui
+    captured = {}
+
+    def fake_serve(**kw):
+        captured.update(kw)
+        return cli.EX_OK
+    monkeypatch.setattr(ui, "serve_ui", fake_serve)
+    fake = FakeRun()
+    rc = cli.main(["ui", "--no-open"], run=fake, out=io.StringIO(), env=ENV)
+    assert rc == cli.EX_OK
+    assert captured["host"] == "127.0.0.1" and captured["port"] == 4173
+    assert captured["open_browser"] is False                # --no-open flips it off
+    assert captured["run"] is fake and captured["env"] == ENV   # the injected seams pass through
+
+
+def test_ui_defaults_open_the_browser_on_the_default_loopback_port(monkeypatch):
+    from hive.tools import ui
+    captured = {}
+    monkeypatch.setattr(ui, "serve_ui", lambda **kw: captured.update(kw) or cli.EX_OK)
+    cli.main(["ui"], run=FakeRun(), out=io.StringIO(), env=ENV)
+    assert captured["host"] == "127.0.0.1" and captured["port"] == 4173
+    assert captured["open_browser"] is True                 # default: open the native browser
+
+
+def test_ui_custom_host_and_port(monkeypatch):
+    from hive.tools import ui
+    captured = {}
+    monkeypatch.setattr(ui, "serve_ui", lambda **kw: captured.update(kw) or cli.EX_OK)
+    cli.main(["ui", "--host", "localhost", "--port", "5000", "--no-open"],
+             run=FakeRun(), out=io.StringIO(), env=ENV)
+    assert captured["host"] == "localhost" and captured["port"] == 5000
+
+
+def test_ui_is_a_single_registry_entry():
+    assert "ui" in cli._HANDLERS and cli._HANDLERS["ui"].__name__ == "_ui"
+
+
+def test_cli_module_scope_defers_the_heavy_ui_import():
+    # c5: cli.py imports no http.server/threading/webbrowser/ui at module scope — the heavy
+    # transport import is lazy INSIDE _ui, off every other verb's path.
+    lines = open(cli.__file__, encoding="utf-8").read().splitlines()
+    module_scope = [ln for ln in lines if ln and not ln[0].isspace()]
+    for banned in ("import http", "from http", "import threading", "import webbrowser",
+                   "from hive.tools import ui", "import hive.tools.ui"):
+        assert not any(ln.startswith(banned) for ln in module_scope), \
+            f"{banned!r} must not be a module-scope import in cli.py"
+    assert any(ln.strip() == "from hive.tools import ui" for ln in lines)   # lazy, indented

@@ -433,6 +433,15 @@ def _ingest(args, *, run: Run, out: TextIO, env: Mapping[str, str], ask) -> int:
     return EX_OK
 
 
+def _ui(args, *, run: Run, out: TextIO, env: Mapping[str, str], ask) -> int:
+    """Serve the loopback operator dashboard (`hive ui`) and open it in the native browser.
+    The `ui` module — and its http.server / webbrowser transport imports — is imported LAZILY
+    HERE so that heavy import is deferred off every other verb's path (THEORY §6). // O(1) + serve."""
+    from hive.tools import ui
+    return ui.serve_ui(host=args.host, port=args.port, run=run, env=env,
+                       open_browser=not args.no_open)
+
+
 _HANDLERS: dict[str, Callable[..., int]] = {
     "up": _up,
     "down": _down,
@@ -446,6 +455,7 @@ _HANDLERS: dict[str, Callable[..., int]] = {
     "tokens": _tokens,
     "connect": _connect,
     "ingest": _ingest,
+    "ui": _ui,
 }
 
 def _ask_stderr(prompt: str) -> str:
@@ -499,6 +509,13 @@ def main(argv: Optional[list[str]] = None, *, run: Optional[Run] = None,
     p_revoke.add_argument("seat", help="the seat label to revoke")
     sub.add_parser("tokens", help="list provisioned seat labels (never the tokens)")
     sub.add_parser("connect", help="print the teammate's `claude mcp add` line (transport only)")
+    p_ui = sub.add_parser(
+        "ui", help="serve the loopback operator dashboard and open it in your browser")
+    p_ui.add_argument("--host", default="127.0.0.1",
+                      help="loopback bind host (default: 127.0.0.1; a routable host is refused)")
+    p_ui.add_argument("--port", type=int, default=4173, help="loopback port (default: 4173)")
+    p_ui.add_argument("--no-open", action="store_true",
+                      help="serve without opening the native browser (headless / remote host)")
     p_ingest = sub.add_parser(
         "ingest", help="feed a signed census receipt's outcome into the evidence ledger")
     p_ingest.add_argument("receipt", help="path to the receipt JSON "
