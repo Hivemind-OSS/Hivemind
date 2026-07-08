@@ -58,11 +58,12 @@ def test_token_store_wired_create_verify_end_to_end():
 
 
 def test_verified_promotion_wiring_follows_the_flag():
-    # default OFF: no reader handle wired ⇒ the verified rung is unreachable
-    # (byte-inert); ON: the store itself is the verified-wins reader.
-    assert _build().lifecycle._verified_reader is None
-    on = _build(autonomy={"verified_promotion": True})
-    assert on.lifecycle._verified_reader is on.store
+    # default ON (graduated on the L4 powered gate, §9.9): the store itself is the
+    # verified-wins reader. Explicit opt-OUT ⇒ no handle ⇒ the rung is unreachable (byte-inert).
+    c = _build()
+    assert c.lifecycle._verified_reader is c.store
+    off = _build(autonomy={"verified_promotion": False})
+    assert off.lifecycle._verified_reader is None
 
 
 def test_gate_floor_is_wired_by_identity():

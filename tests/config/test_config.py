@@ -86,13 +86,15 @@ def test_isolation_frac_is_cut():
         Config.load(utility={"isolation_frac": 0.05})
 
 
-def test_autonomy_verified_promotion_defaults_off_and_env_coerces():
-    # the verified-promotion rung LOOSENS the one-mechanical-rung posture, so the
-    # loosened state ships OFF (§9.9); the env opt-in coerces like every bool field.
-    assert Config.load(db_path=":memory:").autonomy.verified_promotion is False
-    on = Config.load(db_path=":memory:",
-                     env={"HIVE_AUTONOMY__VERIFIED_PROMOTION": "true"})
-    assert on.autonomy.verified_promotion is True
+def test_autonomy_verified_promotion_defaults_on_and_env_opts_out():
+    # the verified-promotion rung GRADUATED to default-ON on the L4 powered gate (+0.243
+    # success, FSR 0.0 at power; the §9.9 graduation exception). The operator opts OUT via
+    # env, which coerces like every bool field; the residual receipt-authenticity boundary
+    # (keyid pinning) is tracked separately, NOT closed by this flag.
+    assert Config.load(db_path=":memory:").autonomy.verified_promotion is True
+    off = Config.load(db_path=":memory:",
+                      env={"HIVE_AUTONOMY__VERIFIED_PROMOTION": "false"})
+    assert off.autonomy.verified_promotion is False
 
 
 def test_autonomy_solo_knobs_removed():

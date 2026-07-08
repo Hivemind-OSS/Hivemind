@@ -107,10 +107,13 @@ class AutonomyConfig:
     anomaly_min_cluster: int = 5    # >= this many near-identical neighbors ⇒ flag
     # the verified-promotion rung (HIVE_AUTONOMY__VERIFIED_PROMOTION): when ON, a
     # quarantined memory carrying a SHA-bound outcome_verified_helped audit promotes at
-    # the next demand tick (competitor veto retained). It adds a second mechanical path
-    # out of quarantine, so the loosened state ships OFF and byte-inert (§9.9): no
-    # reader handle is wired, the rung is unreachable, every envelope is byte-identical.
-    verified_promotion: bool = False
+    # the next demand tick (competitor veto retained). It adds a second mechanical path out
+    # of quarantine — a safety-loosening rung — but GRADUATED to default-ON on the L4 powered
+    # gate (+0.243 success, FSR 0.0 at power; the §9.9 graduation exception). Opt OUT with
+    # HIVE_AUTONOMY__VERIFIED_PROMOTION=false ⇒ no reader handle wired, the rung unreachable,
+    # the envelope byte-identical to the strict build. Residual OPEN gate: receipt authenticity
+    # (keyid pinning) — a fabricated receipt still promotes at the ingest door; tracked, not closed.
+    verified_promotion: bool = True
 
     def __post_init__(self) -> None:
         for name in ("demand_m", "demand_window_days", "quarantine_ttl_days",

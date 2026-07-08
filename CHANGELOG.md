@@ -3,6 +3,14 @@
 All notable changes to this project are documented here.
 
 ## Added
+- `verified_promotion` GRADUATED to default-ON (`hive/app/config.py`): the L4 verified-outcome
+  rung now ships enabled, ratified by the powered gate below (+0.243 success, FSR 0.0 at power,
+  CI [0.108, 0.378] clears zero). A safety-loosening rung earns default-ON only as a graduation
+  ratified by a pre-registered benchmark plus operator sign-off; the operator opts OUT with
+  `HIVE_AUTONOMY__VERIFIED_PROMOTION=false` (byte-identical to the strict build when off). Residual
+  OPEN gate carried forward: receipt authenticity (keyid pinning) — a fabricated receipt still
+  promotes at the ingest door. Pinned by `test_autonomy_verified_promotion_defaults_on_and_env_opts_out`
+  and `test_verified_promotion_wiring_follows_the_flag`.
 - POWERED rerun of the L4 empirical gate: three independent-seed runs
   (`hive/research/bench/runs/l4_gate_powered_s{0,1,2}.json` + per-arm replay logs,
   seeds 0/1/2, n=30 each, haiku, the recorded run's tau/poison config) pooled via
@@ -11,9 +19,9 @@ All notable changes to this project are documented here.
   (225/194/212) and never a verified-hurt row. Pooled corrected slice n=37:
   success 0/37 (C′) vs 9/37 (E), FSR 0.0 in both arms, success delta +0.243 with
   paired bootstrap CI [0.108, 0.378] — the CI clears zero with FSR non-worsening,
-  so the pre-registered `clean_win` criterion is MET. **`verified_promotion`
-  remains default-OFF**: the flip is a separate one-line change gated on explicit
-  human ratification with this report in hand.
+  so the pre-registered `clean_win` criterion is MET — and on that evidence
+  `verified_promotion` was subsequently flipped to default-ON (see the graduation
+  entry above).
 - Cross-seed pooling for the L4 gate (`poison_run.py --l4-pool <reports...>`):
   each arm summary now carries its per-task frozen `PoisonTaskObs` rows under
   `cases`, and `pool_l4_reports` rebuilds those carriers across >=2 independent-seed
