@@ -115,14 +115,18 @@ def _seat_arg(body: bytes) -> Optional[str]:
     return seat.strip() if isinstance(seat, str) and seat.strip() else None
 
 
+_LIFECYCLE_ACTIONS = ("up", "down", "tunnel-up", "tunnel-down")
+
+
 def _action_arg(body: bytes) -> Optional[str]:
-    """The lifecycle action, constrained to the two SAFE actions — anything else (incl. `reset`
-    / `restore`) is None (→ 400). reset/restore are unreachable by construction, not hidden."""
+    """The lifecycle action, constrained to the four SAFE actions (start/stop the daemon or the
+    tunnel sidecar). Anything else — incl. `reset` / `restore` — is None (→ 400): reset is absent
+    by construction and restore is its OWN guarded route, neither reachable through this channel."""
     obj = _load_obj(body)
     if obj is None:
         return None
     action = obj.get("action")
-    return action if action in ("up", "down") else None
+    return action if action in _LIFECYCLE_ACTIONS else None
 
 
 def _upstream_failed() -> Response:
@@ -256,6 +260,14 @@ def _h_lifecycle(body, *, run, env) -> Response:
     action = _action_arg(body)
     if action is None:
         return _json(400, {"error": "bad_request"})
+    if action == "tunnel-up":
+        # public exposure: gate the NGROK secrets from ENV ONLY (never the request body), before
+        # any claim or child — mirrors cli._up's fail-fast. ← dropping this gate is a deliberate
+        # mutation (a public tunnel could start with no auth env configured).
+        missing = [k for k in ("NGROK_AUTHTOKEN", "NGROK_DOMAIN")
+                   if not (env.get(k) or "").strip()]
+        if missing:
+            return _json(400, {"error": "missing_secrets", "missing": missing})
     argv, status = _lifecycle_plan(action)
     # single-flight: a second concurrent lifecycle/tunnel/restore op is refused 409, no child.
     if not _try_claim():

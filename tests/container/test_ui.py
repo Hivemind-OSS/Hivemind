@@ -214,6 +214,60 @@ def test_second_concurrent_lifecycle_is_409_operation_in_progress():
         ui._op_in_flight = False
 
 
+# ── f4b: tunnel activate/deactivate — a lifecycle action; up gates NGROK secrets (env ONLY) ──
+def test_tunnel_up_requires_ngrok_secrets_before_any_child():
+    # mirror cli._up's fail-fast: missing NGROK_AUTHTOKEN/NGROK_DOMAIN → 400 naming them, no child.
+    fake = FakeRun()
+    resp = ui.handle_request("POST", "/api/lifecycle", HP,
+                             json.dumps({"action": "tunnel-up"}).encode(), run=fake, env=ENV)
+    assert resp.status == 400
+    body = body_of(resp)
+    assert body["error"] == "missing_secrets"
+    assert set(body["missing"]) == {"NGROK_AUTHTOKEN", "NGROK_DOMAIN"}
+    assert fake.calls == []                                # fail-fast: no child, slot not claimed
+
+
+def test_tunnel_up_names_only_the_missing_secret():
+    fake = FakeRun()
+    env = dict(ENV, NGROK_AUTHTOKEN="tok")                 # only the domain is missing
+    resp = ui.handle_request("POST", "/api/lifecycle", HP,
+                             json.dumps({"action": "tunnel-up"}).encode(), run=fake, env=env)
+    assert resp.status == 400 and body_of(resp)["missing"] == ["NGROK_DOMAIN"]
+    assert fake.calls == []
+
+
+def test_tunnel_up_secrets_come_from_env_not_the_request_body():
+    # secrets are read from ENV ONLY — a body carrying NGROK_* must NOT satisfy the gate.
+    fake = FakeRun()
+    body = json.dumps({"action": "tunnel-up", "NGROK_AUTHTOKEN": "x", "NGROK_DOMAIN": "y"}).encode()
+    resp = ui.handle_request("POST", "/api/lifecycle", HP, body, run=fake, env=ENV)
+    assert resp.status == 400 and body_of(resp)["error"] == "missing_secrets"
+    assert fake.calls == []
+
+
+def test_tunnel_up_starts_only_the_sidecar_behind_the_profile(monkeypatch):
+    _inline_spawn(monkeypatch)
+    fake = FakeRun()
+    env = dict(ENV, NGROK_AUTHTOKEN="tok", NGROK_DOMAIN="brain.ngrok.app")
+    resp = ui.handle_request("POST", "/api/lifecycle", HP,
+                             json.dumps({"action": "tunnel-up"}).encode(), run=fake, env=env)
+    assert resp.status == 202 and body_of(resp) == {"action": "tunnel-up", "status": "starting"}
+    up = fake.calls[0]
+    assert seq_in(up, "--profile", "tunnel") and seq_in(up, "up", "-d", "ngrok")
+    assert "hive-server" not in up                         # ONLY the sidecar; never the daemon
+
+
+def test_tunnel_down_stops_only_the_tunnel(monkeypatch):
+    _inline_spawn(monkeypatch)
+    fake = FakeRun()
+    resp = ui.handle_request("POST", "/api/lifecycle", HP,
+                             json.dumps({"action": "tunnel-down"}).encode(), run=fake, env=ENV)
+    assert resp.status == 202 and body_of(resp) == {"action": "tunnel-down", "status": "stopping"}
+    stop = fake.calls[0]
+    assert seq_in(stop, "stop", "ngrok")
+    assert "down" not in stop and "-v" not in stop and "hive-server" not in stop  # daemon untouched
+
+
 # ── f5: reset / restore are absent BY CONSTRUCTION ──────────────────────────────
 def test_lifecycle_unknown_action_is_400_before_any_child():
     for action in ("reset", "restore", "bogus", ""):
