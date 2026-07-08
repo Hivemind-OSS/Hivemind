@@ -8,6 +8,10 @@ description: "Operate and tune a running Hivemind server: read the convergence K
 Keep a running server lean and current. The store does not clean itself — **maintenance is the
 product.** Full leverage map: `OPERATIONS.md`; knob tables: `HIVE-ADMIN.md` §4 & §6.
 
+For a browser view of the live picture, `hive ui` serves a loopback-only operator dashboard (live
+status, seat mint/revoke, backup, safe start/stop, log tail; no reset/restore) — `--no-open` for a
+headless host. The KPIs below stay MCP-only; the dashboard is the docker-side status/lifecycle surface.
+
 ## The KPIs — read-only over MCP, off the warm store
 
 Call these from any connected agent (there is no host-side verb):
@@ -59,6 +63,20 @@ hive ingest receipt.json --post-merge --verdict fail --signal canary   # rollout
 records unverified judgment). The one-line JSON report on stdout carries
 `inserted/already_recorded/matched/skipped_lines/keyid`; check the keyid against your census
 signing key out-of-band — signature verification stays census-side.
+
+### Automated post-merge wiring (`.githooks/post-merge`)
+
+The repo ships a `post-merge` hook that closes this loop on every merge without an operator in
+the path: it builds a signed receipt for `ORIG_HEAD..HEAD` (`hive-census build --propagate
+--hive-url …`) and feeds it via `hive ingest <receipt> --post-merge --verdict pass --signal
+none` (`none` is honest for a bare local merge — no rollout telemetry checked it, so it records
+as unverified judgment; CI can re-ingest with a stronger signal). Enable once with
+`git config core.hooksPath .githooks`. The signing key lives at `~/.hive-census/signing.pem`
+(ed25519 PEM, `chmod 600`, made with `openssl genpkey -algorithm ed25519`; the derived
+`signing.pub.pem` is what third parties verify with). The hook is a fail-open side-channel:
+build + ingest run detached in the background, output lands in
+`~/.hive-census/last-postmerge.log`, and any missing piece (census venv, key, `ORIG_HEAD`,
+hive CLI) skips silently — a merge is never delayed or failed by evidence plumbing.
 
 ## Posture (why)
 

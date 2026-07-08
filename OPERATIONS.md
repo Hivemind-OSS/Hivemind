@@ -145,7 +145,14 @@ read it on a fixed cadence (weekly is enough for a small team). Convert gaps int
 The evidence ledger also takes one operator-fed input: `hive ingest <receipt.json>` appends a
 signed census receipt's SHA-bound change outcome as `change_outcome` evidence rows on the
 episodes whose anchors the change touched — append-only, idempotent, trust-untouched
-(detect/surface only: it changes nothing about what is served).
+(detect/surface only: it changes nothing about what is served). The repo's tracked
+`.githooks/post-merge` hook automates the feed (build + ingest on every merge, fail-open,
+detached); see `skills/hive-operate/SKILL.md` for the wiring and key setup.
+
+For a browser view of the live picture, `hive ui` serves a loopback-only operator dashboard: the
+same status/seats/logs read plus the safe controls (backup, loopback-only start/stop, seat
+mint/revoke), with no reset/restore surface. It reads the same `StatusSnapshot` the CLI `hive
+status` prints, so the two never disagree.
 
 ## Decisions that are yours (operator taste)
 
