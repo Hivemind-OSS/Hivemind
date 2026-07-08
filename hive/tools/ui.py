@@ -129,6 +129,24 @@ def _action_arg(body: bytes) -> Optional[str]:
     return action if action in _LIFECYCLE_ACTIONS else None
 
 
+def _name_arg(body: bytes) -> Optional[str]:
+    """The non-blank `name` string from a JSON-object body, else None (→ 400 before any child)."""
+    obj = _load_obj(body)
+    if obj is None:
+        return None
+    name = obj.get("name")
+    return name.strip() if isinstance(name, str) and name.strip() else None
+
+
+def _is_safe_backup_name(name: str) -> bool:
+    """A restorable name must be a BARE BASENAME: no path separator, no `..`, not absolute, equal to
+    its own basename. Path traversal ("../shared.db", "/etc/x", "a/b") is refused HERE — before the
+    whitelist membership check and before any child touches the shared data volume. // O(len)."""
+    if "/" in name or "\\" in name or ".." in name or os.path.isabs(name):
+        return False
+    return name == os.path.basename(name)
+
+
 def _upstream_failed() -> Response:
     """A docker/authctl/backup child exited nonzero → 502. Deliberately carries NO child stderr,
     so a token/secret/env value can never ride an error body (secret-safe). // O(1)."""
@@ -254,6 +272,91 @@ def _h_backup(body, *, run, env) -> Response:
     return _json(200, {"path": (child.stdout or "").strip()})
 
 
+# The in-container lister for the in-volume backups dir: emits ONE JSON array (name/size/mtime per
+# *.db), newest-first. Run via `python -c` so we never parse `ls` fragilely; json/os/glob are stdlib.
+_BACKUPS_LISTER = "\n".join((
+    "import json, os, glob",
+    "d = '/data/backups'",
+    "rows = []",
+    "for p in glob.glob(os.path.join(d, '*.db')):",
+    "    try:",
+    "        st = os.stat(p)",
+    "    except OSError:",
+    "        continue",
+    "    rows.append({'name': os.path.basename(p), 'size': st.st_size, 'mtime': int(st.st_mtime)})",
+    "rows.sort(key=lambda r: r['mtime'], reverse=True)",
+    "print(json.dumps(rows))",
+))
+
+
+def _list_backups(run, env) -> Optional[list]:
+    """The in-volume backups listing (newest-first) via the in-container lister, or None on any
+    child/parse failure. SINGLE-OWNED so /api/backups and the restore whitelist read the SAME source
+    — a name is restorable IFF it is a member of THIS listing. // O(1) + the child."""
+    child = run(cli._compose("exec", "-T", cli.SERVICE, "python", "-c", _BACKUPS_LISTER), env)
+    if child.returncode != 0:
+        return None
+    try:
+        rows = json.loads(child.stdout or "")
+    except (json.JSONDecodeError, ValueError, TypeError):
+        return None
+    return rows if isinstance(rows, list) else None
+
+
+def _h_backups(body, *, run, env) -> Response:
+    rows = _list_backups(run, env)
+    if rows is None:
+        return _upstream_failed()
+    return _json(200, {"backups": rows})                   # newest-first, as the lister emits
+
+
+def _restore_worker(name: str, run, env) -> None:
+    """The detached restore mechanism: stop the daemon (release WAL locks), copy the chosen IN-VOLUME
+    snapshot over /data/shared.db (clearing stale WAL sidecars) in a throwaway container, then restart
+    WITHOUT rebuilding. Mirrors cli._restore, but the source is already inside the volume. `name` is a
+    whitelisted bare basename (validated before dispatch). A failed step leaves the daemon down for the
+    operator to see in /api/status. // O(db size) + a restart."""
+    if run(cli._compose("down"), env, capture=False).returncode != 0:
+        return                                             # stop failed → nothing overwritten
+    cp = run(["docker", "run", "--rm", "--entrypoint", "sh", "-v", "hive-data:/data", cli.IMAGE,
+              "-c", f"cp /data/backups/{name} /data/shared.db && "
+                    "rm -f /data/shared.db-wal /data/shared.db-shm"], env)
+    if cp.returncode != 0:
+        return                                             # copy failed → daemon stays down
+    run(cli._compose("up", "-d", cli.SERVICE), env, capture=False)
+
+
+def _h_restore(body, *, run, env) -> Response:
+    name = _name_arg(body)
+    if name is None:
+        return _json(400, {"error": "bad_request"})        # blank/missing name → 400, no child
+    # (1) PATH-TRAVERSAL GUARD — pure, BEFORE any child: a non-basename / traversal / absolute name
+    #     is refused with zero children. ← weakening this to accept a non-basename is a deliberate
+    #     mutation (directory traversal into the shared data volume).
+    if not _is_safe_backup_name(name):
+        return _json(400, {"error": "unknown_backup"})
+    # (2) WHITELIST — the name must be a member of the CURRENT in-volume listing; a well-formed but
+    #     unknown name is refused before the destructive path. ← accepting a non-member is a
+    #     deliberate mutation (restore an arbitrary / nonexistent file).
+    rows = _list_backups(run, env)
+    if rows is None:
+        return _upstream_failed()
+    if name not in {r.get("name") for r in rows if isinstance(r, dict)}:
+        return _json(400, {"error": "unknown_backup"})
+    # (3) single-flight: a concurrent lifecycle/restore op → 409 (no snapshot, no overwrite).
+    if not _try_claim():
+        return _json(409, {"error": "operation_in_progress"})
+    # (4) AUTO SAFETY-SNAPSHOT FIRST (synchronous): the pre-restore store must stay recoverable. If
+    #     it fails, ABORT — do NOT overwrite. ← overwriting before a SUCCESSFUL snapshot is a
+    #     deliberate mutation (an un-snapshotted store is irrecoverably replaced).
+    if cli._exec_backup(run, env).returncode != 0:
+        _release()
+        return _json(500, {"error": "safety_snapshot_failed"})
+    # (5) the destructive down→cp→up runs on a DETACHED worker; /api/status shows the health return.
+    _dispatch(lambda: _restore_worker(name, run, env))
+    return _json(202, {"action": "restore", "status": "restoring"})
+
+
 def _h_lifecycle(body, *, run, env) -> Response:
     # VALIDATE synchronously — an unknown/absent action is 400 before any claim or child (reset is
     # absent by construction; restore is its OWN guarded route, never a lifecycle action here).
@@ -289,8 +392,9 @@ def _h_logs(body, *, run, env) -> Response:
 
 _Handler = Callable[..., Response]
 
-# the (method, path) → handler dispatch table — EXACTLY the eight pinned routes, mirroring the
-# one-registry-entry-per-option idiom of cli._HANDLERS. reset/restore are absent by construction.
+# the (method, path) → handler dispatch table — EXACTLY the ten pinned routes, mirroring the
+# one-registry-entry-per-option idiom of cli._HANDLERS. RESET is absent by construction; restore is
+# present but guarded (bare-basename path-traversal whitelist + a safety snapshot before overwrite).
 _ROUTES: dict[tuple[str, str], _Handler] = {
     ("GET", "/"): _h_page,
     ("GET", "/api/status"): _h_status,
@@ -298,6 +402,8 @@ _ROUTES: dict[tuple[str, str], _Handler] = {
     ("POST", "/api/tokens"): _h_tokens_mint,
     ("POST", "/api/tokens/revoke"): _h_tokens_revoke,
     ("POST", "/api/backup"): _h_backup,
+    ("GET", "/api/backups"): _h_backups,
+    ("POST", "/api/restore"): _h_restore,
     ("POST", "/api/lifecycle"): _h_lifecycle,
     ("GET", "/api/logs"): _h_logs,
 }

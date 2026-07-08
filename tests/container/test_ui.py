@@ -45,7 +45,7 @@ def _inline_spawn(monkeypatch):
 
 
 # ── the router table: EXACTLY the eight pinned routes ──────────────────────────
-def test_router_covers_exactly_the_eight_routes():
+def test_router_covers_exactly_the_ten_routes():
     assert set(ui._ROUTES) == {
         ("GET", "/"),
         ("GET", "/api/status"),
@@ -53,6 +53,8 @@ def test_router_covers_exactly_the_eight_routes():
         ("POST", "/api/tokens"),
         ("POST", "/api/tokens/revoke"),
         ("POST", "/api/backup"),
+        ("GET", "/api/backups"),
+        ("POST", "/api/restore"),
         ("POST", "/api/lifecycle"),
         ("GET", "/api/logs"),
     }
@@ -278,15 +280,121 @@ def test_lifecycle_unknown_action_is_400_before_any_child():
         assert fake.calls == []                            # never a hidden reset/restore child
 
 
-def test_reset_and_restore_paths_are_404():
-    for path in ("/api/reset", "/api/restore"):
-        resp = ui.handle_request("POST", path, HP, b"", run=FakeRun(), env=ENV)
-        assert resp.status == 404 and body_of(resp) == {"error": "not_found"}
+def test_reset_path_is_404_reset_stays_absent_by_construction():
+    # RESET remains absent entirely — no route, no handler (a graded invariant). restore is now a
+    # guarded route, but reset is not reachable at all.
+    resp = ui.handle_request("POST", "/api/reset", HP, b"", run=FakeRun(), env=ENV)
+    assert resp.status == 404 and body_of(resp) == {"error": "not_found"}
 
 
-def test_no_reset_restore_surface_in_the_router():
+def test_no_reset_surface_in_the_router():
     keys = " ".join(f"{m} {p}" for (m, p) in ui._ROUTES).lower()
-    assert "reset" not in keys and "restore" not in keys
+    assert "reset" not in keys                             # reset is absent by construction
+
+
+# ── f7: /api/backups lists in-volume snapshots; /api/restore is guarded (traversal + whitelist) ──
+def _lister(rows):
+    """A FakeRun script entry answering the in-container backups lister (`python -c <script>`)."""
+    return (lambda a: seq_in(a, "python", "-c"), proc(stdout=json.dumps(rows)))
+
+
+_ROWS = [{"name": "hive-20260708.db", "size": 4096, "mtime": 1720000000},
+         {"name": "hive-20260707.db", "size": 2048, "mtime": 1719900000}]
+
+
+def test_backups_route_forwards_the_in_volume_listing():
+    fake = FakeRun(script=[_lister(_ROWS)])
+    resp = ui.handle_request("GET", "/api/backups", H, b"", run=fake, env=ENV)
+    assert resp.status == 200 and body_of(resp) == {"backups": _ROWS}
+    # read by exec'ing an in-container python lister — never by parsing `ls` output.
+    assert any(seq_in(c, "exec", "-T", "hive-server", "python", "-c") for c in fake.calls)
+
+
+def test_backups_route_upstream_failure_is_502():
+    fake = FakeRun(script=[(lambda a: seq_in(a, "python", "-c"), proc(rc=1))])
+    resp = ui.handle_request("GET", "/api/backups", H, b"", run=fake, env=ENV)
+    assert resp.status == 502 and body_of(resp) == {"error": "upstream_failed"}
+
+
+def test_backups_route_malformed_listing_is_502():
+    fake = FakeRun(script=[(lambda a: seq_in(a, "python", "-c"), proc(stdout="not json"))])
+    resp = ui.handle_request("GET", "/api/backups", H, b"", run=fake, env=ENV)
+    assert resp.status == 502 and body_of(resp) == {"error": "upstream_failed"}
+
+
+def test_restore_blank_name_is_400_before_any_child():
+    fake = FakeRun()
+    resp = ui.handle_request("POST", "/api/restore", HP, json.dumps({"name": "  "}).encode(),
+                             run=fake, env=ENV)
+    assert resp.status == 400 and body_of(resp) == {"error": "bad_request"}
+    assert fake.calls == []                                # fail-fast: not even the lister ran
+
+
+def test_restore_rejects_path_traversal_before_any_child():
+    # THE critical new security control: a name that is not a bare basename is refused 400
+    # unknown_backup with ZERO children — path traversal cannot reach the shared data volume.
+    for bad in ("../shared.db", "/etc/passwd", "a/b.db", "..", "foo/../bar.db", "sub\\x.db"):
+        fake = FakeRun(script=[_lister(_ROWS)])
+        resp = ui.handle_request("POST", "/api/restore", HP, json.dumps({"name": bad}).encode(),
+                                 run=fake, env=ENV)
+        assert resp.status == 400 and body_of(resp) == {"error": "unknown_backup"}, bad
+        assert fake.calls == []                            # refused BEFORE any child (pure guard)
+
+
+def test_restore_rejects_a_wellformed_name_not_in_the_listing():
+    # a bare basename that is NOT a member of the current listing is refused (whitelist); the lister
+    # runs (a read), but no destructive child does.
+    fake = FakeRun(script=[_lister(_ROWS)])
+    resp = ui.handle_request("POST", "/api/restore", HP,
+                             json.dumps({"name": "hive-19990101.db"}).encode(), run=fake, env=ENV)
+    assert resp.status == 400 and body_of(resp) == {"error": "unknown_backup"}
+    assert not any(seq_in(c, "hive.tools.backupctl") for c in fake.calls)   # no safety snapshot
+    assert not any(seq_in(c, "down") for c in fake.calls)                    # no destructive child
+
+
+def test_restore_takes_safety_snapshot_before_overwrite_then_dispatches(monkeypatch):
+    _inline_spawn(monkeypatch)
+    fake = FakeRun(script=[_lister(_ROWS)])                 # backupctl/down/run/up default rc-0
+    name = "hive-20260708.db"
+    resp = ui.handle_request("POST", "/api/restore", HP, json.dumps({"name": name}).encode(),
+                             run=fake, env=ENV)
+    assert resp.status == 202 and body_of(resp) == {"action": "restore", "status": "restoring"}
+    snap_idx = next(i for i, c in enumerate(fake.calls) if seq_in(c, "hive.tools.backupctl"))
+    down_idx = next(i for i, c in enumerate(fake.calls) if seq_in(c, "down") and "-v" not in c)
+    cp_idx = next(i for i, c in enumerate(fake.calls)
+                  if c[:2] == ["docker", "run"] and seq_in(c, "--entrypoint", "sh"))
+    up_idx = next(i for i, c in enumerate(fake.calls) if seq_in(c, "up", "-d", "hive-server"))
+    assert snap_idx < down_idx < cp_idx < up_idx           # snapshot FIRST, then stop→overwrite→restart
+    cp = fake.calls[cp_idx]
+    assert seq_in(cp, "-v", "hive-data:/data")             # mounts ONLY the data volume
+    assert any(f"cp /data/backups/{name} /data/shared.db" in tok for tok in cp)   # sources the volume
+    assert any("rm -f /data/shared.db-wal" in tok for tok in cp)                  # clears stale WAL
+    assert not any(seq_in(c, "up", "-d", "--build") for c in fake.calls)          # restart never rebuilds
+
+
+def test_restore_aborts_500_if_the_safety_snapshot_fails(monkeypatch):
+    _inline_spawn(monkeypatch)
+    fake = FakeRun(script=[_lister(_ROWS),
+                           (lambda a: seq_in(a, "hive.tools.backupctl"), proc(rc=1))])
+    resp = ui.handle_request("POST", "/api/restore", HP,
+                             json.dumps({"name": "hive-20260708.db"}).encode(), run=fake, env=ENV)
+    assert resp.status == 500 and body_of(resp) == {"error": "safety_snapshot_failed"}
+    # the store is NOT overwritten when its safety snapshot failed — no down/cp/up ran.
+    assert not any(seq_in(c, "down") for c in fake.calls)
+    assert not any(c[:2] == ["docker", "run"] for c in fake.calls)
+
+
+def test_restore_second_concurrent_is_409(monkeypatch):
+    _inline_spawn(monkeypatch)
+    ui._op_in_flight = True
+    try:
+        fake = FakeRun(script=[_lister(_ROWS)])
+        resp = ui.handle_request("POST", "/api/restore", HP,
+                                 json.dumps({"name": "hive-20260708.db"}).encode(), run=fake, env=ENV)
+        assert resp.status == 409 and body_of(resp) == {"error": "operation_in_progress"}
+        assert not any(seq_in(c, "hive.tools.backupctl") for c in fake.calls)   # no snapshot claimed
+    finally:
+        ui._op_in_flight = False
 
 
 # ── logs tail: bounded, non-blocking (NO -f) ──
@@ -361,6 +469,8 @@ _LIVE_SCRIPT = [
     (lambda a: seq_in(a, "ps", "hive-server"), proc(stdout="hive-server Up (healthy)\n")),
     (lambda a: seq_in(a, "hive.tools.authctl", "create"), proc(stdout="hive_tok_xyz\n")),
     (lambda a: seq_in(a, "hive.tools.authctl", "list"), proc(stdout="alice\nbob\n")),
+    (lambda a: seq_in(a, "python", "-c"),
+     proc(stdout='[{"name": "hive-x.db", "size": 8, "mtime": 100}]')),                 # backups lister
     (lambda a: seq_in(a, "hive.tools.backupctl"), proc(stdout="/data/backups/x.db\n")),
     (lambda a: seq_in(a, "logs"), proc(stdout="log line a\nlog line b\n")),
 ]
@@ -440,7 +550,7 @@ def test_live_get_status_is_200_json(live):
     assert json.loads(body)["server"] == "up"
 
 
-def test_live_all_eight_routes_answer(live, monkeypatch):
+def test_live_all_ten_routes_answer(live, monkeypatch):
     monkeypatch.setattr(ui, "_spawn", lambda target: target())   # deterministic: no worker leak
     port, _ = live
     assert _get(port, "/")[0] == 200
@@ -450,7 +560,9 @@ def test_live_all_eight_routes_answer(live, monkeypatch):
     assert _post(port, "/api/tokens", {"seat": "carol"})[0] == 200
     assert _post(port, "/api/tokens/revoke", {"seat": "carol"})[0] == 200
     assert _post(port, "/api/backup")[0] == 200
-    assert _post(port, "/api/lifecycle", {"action": "up"})[0] == 202   # async: 202 Accepted
+    assert _get(port, "/api/backups")[0] == 200
+    assert _post(port, "/api/restore", {"name": "hive-x.db"})[0] == 202   # guarded + async
+    assert _post(port, "/api/lifecycle", {"action": "up"})[0] == 202      # async: 202 Accepted
 
 
 def test_live_cross_origin_post_is_403(live):
