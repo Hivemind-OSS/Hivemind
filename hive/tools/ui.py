@@ -23,6 +23,7 @@ from __future__ import annotations
 import json
 import os
 import sys
+import threading
 import webbrowser
 from dataclasses import dataclass
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -130,6 +131,74 @@ def _upstream_failed() -> Response:
     return _json(502, {"error": "upstream_failed"})
 
 
+# ── single-flight lifecycle + detached workers ────────────────────────────────
+# The slow docker work (up / down / tunnel / restore) must NEVER block the loopback response: the
+# browser hung once because the lifecycle handler ran `docker compose up -d --build` SYNCHRONOUSLY,
+# rebuilding + bouncing a healthy stack while the request waited. So the discipline is — VALIDATE
+# synchronously (fail fast to 400/409), then run the child on a DETACHED worker and return at once
+# ({"status":"starting"|"stopping"|"restoring"}); the page's /api/status poll reflects the outcome.
+# A single module-level flag, guarded by a lock, admits ONE such op at a time (a shared data volume
+# must not see concurrent lifecycle/restore ops); a second concurrent request is refused 409.
+
+_LIFECYCLE_LOCK = threading.Lock()   # guards _op_in_flight — the check-and-set must be atomic
+_op_in_flight = False                # True while a lifecycle/tunnel/restore worker holds the slot
+
+
+def _try_claim() -> bool:
+    """Atomically claim the single lifecycle slot; return False WITHOUT claiming when an op already
+    holds it (the caller then returns 409). ← always returning True (dropping the non-blocking
+    claim) is a deliberate mutation: concurrent docker ops would race the data volume. // O(1)."""
+    global _op_in_flight
+    with _LIFECYCLE_LOCK:
+        if _op_in_flight:
+            return False
+        _op_in_flight = True
+        return True
+
+
+def _release() -> None:
+    """Free the slot — the worker calls this in its finally. Idempotent (set-False). // O(1)."""
+    global _op_in_flight
+    with _LIFECYCLE_LOCK:
+        _op_in_flight = False
+
+
+def _spawn(target: Callable[[], None]) -> None:
+    """Launch `target` on a detached daemon thread so the slow docker child runs OFF the request
+    thread and the loopback response returns at once. A module-level seam a test runs inline. // O(1)."""
+    threading.Thread(target=target, daemon=True).start()
+
+
+def _dispatch(work: Callable[[], None]) -> None:
+    """Run `work` on a detached worker that RELEASES the claimed slot when it finishes (success or
+    not). The caller MUST already hold the slot (via `_try_claim`). If the spawn itself fails, the
+    slot is freed here so it can never strand every later op at 409. // O(1)."""
+    def _guarded() -> None:
+        try:
+            work()
+        finally:
+            _release()
+    try:
+        _spawn(_guarded)
+    except Exception:
+        _release()
+        raise
+
+
+def _lifecycle_plan(action: str) -> tuple[list[str], str]:
+    """Map a validated lifecycle action to its (compose argv, status word). Plain Start does NOT
+    --build — it must not rebuild + bounce a healthy stack (the bug). down preserves the volume
+    (no -v). tunnel-up starts ONLY the sidecar behind the tunnel profile; tunnel-down stops only
+    it. // O(1)."""
+    if action == "up":
+        return cli._compose("up", "-d", cli.SERVICE), "starting"
+    if action == "down":
+        return cli._compose("down"), "stopping"
+    if action == "tunnel-up":
+        return cli._compose("up", "-d", "ngrok", profile=cli.TUNNEL_PROFILE), "starting"
+    return cli._compose("stop", "ngrok"), "stopping"       # tunnel-down (hive-server untouched)
+
+
 # ── the endpoint handlers (each returns a Response; body is the raw POST bytes) ──
 
 
@@ -182,18 +251,19 @@ def _h_backup(body, *, run, env) -> Response:
 
 
 def _h_lifecycle(body, *, run, env) -> Response:
+    # VALIDATE synchronously — an unknown/absent action is 400 before any claim or child (reset is
+    # absent by construction; restore is its OWN guarded route, never a lifecycle action here).
     action = _action_arg(body)
-    if action not in ("up", "down"):
-        return _json(400, {"error": "bad_request"})        # unknown/absent action → 400, no child
-    if action == "up":
-        # loopback-only: the argv carries NEITHER --tunnel NOR --profile tunnel — a browser panel
-        # must never open a public tunnel. (No health-wait: non-blocking; the status poll shows it.)
-        proc = run(cli._compose("up", "-d", "--build", cli.SERVICE), env, capture=False)
-    else:
-        proc = run(cli._compose("down"), env, capture=False)   # PRESERVES the volume (no -v)
-    if proc.returncode != 0:
-        return _json(502, {"action": action, "ok": False, "error": "upstream_failed"})
-    return _json(200, {"action": action, "ok": True})
+    if action is None:
+        return _json(400, {"error": "bad_request"})
+    argv, status = _lifecycle_plan(action)
+    # single-flight: a second concurrent lifecycle/tunnel/restore op is refused 409, no child.
+    if not _try_claim():
+        return _json(409, {"error": "operation_in_progress"})
+    # the slow docker child runs on a DETACHED worker; return 202 at once (the status poll shows the
+    # outcome). The browser never hangs on `docker compose` again.
+    _dispatch(lambda: run(argv, env, capture=False))
+    return _json(202, {"action": action, "status": status})
 
 
 def _h_logs(body, *, run, env) -> Response:

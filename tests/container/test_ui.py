@@ -29,6 +29,21 @@ def body_of(resp):
     return json.loads(resp.body.decode("utf-8"))
 
 
+@pytest.fixture(autouse=True)
+def _reset_singleflight():
+    """The lifecycle single-flight slot is process state; reset it around every test so a claimed
+    slot can never leak between tests (a stranded slot would 409 every later lifecycle test)."""
+    ui._op_in_flight = False
+    yield
+    ui._op_in_flight = False
+
+
+def _inline_spawn(monkeypatch):
+    """Make the detached worker run INLINE (same thread) so a FakeRun's calls are recorded and the
+    single-flight slot is released deterministically before the response is asserted."""
+    monkeypatch.setattr(ui, "_spawn", lambda target: target())
+
+
 # ── the router table: EXACTLY the eight pinned routes ──────────────────────────
 def test_router_covers_exactly_the_eight_routes():
     assert set(ui._ROUTES) == {
@@ -146,31 +161,57 @@ def test_backup_route_forwards_the_snapshot_path():
                       "hive.tools.backupctl") for c in fake.calls)
 
 
-def test_lifecycle_up_is_loopback_only():
+def test_lifecycle_up_is_loopback_only_and_does_not_rebuild(monkeypatch):
+    _inline_spawn(monkeypatch)                             # run the detached worker inline
     fake = FakeRun()
     resp = ui.handle_request("POST", "/api/lifecycle", HP,
                              json.dumps({"action": "up"}).encode(), run=fake, env=ENV)
-    assert resp.status == 200 and body_of(resp) == {"action": "up", "ok": True}
+    assert resp.status == 202 and body_of(resp) == {"action": "up", "status": "starting"}
     up = fake.calls[0]
     assert up[:2] == ["docker", "compose"]
-    assert "--tunnel" not in up and "tunnel" not in up and "--profile" not in up
-    assert seq_in(up, "up", "-d", "--build", "hive-server")
+    assert "--tunnel" not in up and "--profile" not in up
+    assert seq_in(up, "up", "-d", "hive-server")
+    assert "--build" not in up          # plain Start never rebuilds+bounces a healthy stack
 
 
-def test_lifecycle_down_preserves_the_volume():
+def test_lifecycle_down_preserves_the_volume(monkeypatch):
+    _inline_spawn(monkeypatch)
     fake = FakeRun()
     resp = ui.handle_request("POST", "/api/lifecycle", HP,
                              json.dumps({"action": "down"}).encode(), run=fake, env=ENV)
-    assert resp.status == 200 and body_of(resp) == {"action": "down", "ok": True}
+    assert resp.status == 202 and body_of(resp) == {"action": "down", "status": "stopping"}
     down = fake.calls[0]
     assert seq_in(down, "down") and "-v" not in down       # PRESERVES the volume
 
 
-def test_lifecycle_child_failure_is_upstream_failed():
-    fake = FakeRun(script=[(lambda a: seq_in(a, "down"), proc(rc=1))])
+def test_lifecycle_is_non_blocking_returns_before_the_docker_work():
+    # THE BUG FIX: the request returns 202 IMMEDIATELY; the slow docker child runs on a DETACHED
+    # worker, so a browser click never hangs on `docker compose`. Uses the real threaded _spawn.
+    started, release = threading.Event(), threading.Event()
+
+    def slow_run(argv, env=None, **kw):
+        started.set()
+        release.wait(2)                                    # block the worker mid-flight
+        return proc()
     resp = ui.handle_request("POST", "/api/lifecycle", HP,
-                             json.dumps({"action": "down"}).encode(), run=fake, env=ENV)
-    assert resp.status == 502 and body_of(resp)["ok"] is False
+                             json.dumps({"action": "up"}).encode(), run=slow_run, env=ENV)
+    assert resp.status == 202                              # returned WITHOUT awaiting slow_run
+    assert started.wait(2)                                 # the worker DID start (another thread)
+    release.set()                                          # let it finish → releases the slot
+
+
+def test_second_concurrent_lifecycle_is_409_operation_in_progress():
+    # single-flight: while one lifecycle/tunnel/restore op holds the slot, a second is refused 409
+    # WITHOUT spawning a child. Dropping the non-blocking claim (always proceeding) is the mutation.
+    ui._op_in_flight = True
+    try:
+        fake = FakeRun()
+        resp = ui.handle_request("POST", "/api/lifecycle", HP,
+                                 json.dumps({"action": "up"}).encode(), run=fake, env=ENV)
+        assert resp.status == 409 and body_of(resp) == {"error": "operation_in_progress"}
+        assert fake.calls == []                            # no docker child while an op is in flight
+    finally:
+        ui._op_in_flight = False
 
 
 # ── f5: reset / restore are absent BY CONSTRUCTION ──────────────────────────────
@@ -345,7 +386,8 @@ def test_live_get_status_is_200_json(live):
     assert json.loads(body)["server"] == "up"
 
 
-def test_live_all_eight_routes_answer(live):
+def test_live_all_eight_routes_answer(live, monkeypatch):
+    monkeypatch.setattr(ui, "_spawn", lambda target: target())   # deterministic: no worker leak
     port, _ = live
     assert _get(port, "/")[0] == 200
     assert _get(port, "/api/status")[0] == 200
@@ -354,7 +396,7 @@ def test_live_all_eight_routes_answer(live):
     assert _post(port, "/api/tokens", {"seat": "carol"})[0] == 200
     assert _post(port, "/api/tokens/revoke", {"seat": "carol"})[0] == 200
     assert _post(port, "/api/backup")[0] == 200
-    assert _post(port, "/api/lifecycle", {"action": "up"})[0] == 200
+    assert _post(port, "/api/lifecycle", {"action": "up"})[0] == 202   # async: 202 Accepted
 
 
 def test_live_cross_origin_post_is_403(live):
