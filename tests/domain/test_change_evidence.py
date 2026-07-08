@@ -42,8 +42,10 @@ def _receipt(lines=None, *, base_sha=BASE, head_sha=HEAD, schema_version="v0",
              statement_type="https://in-toto.io/Statement/v1",
              payload_type="application/vnd.in-toto+json",
              digest=None, keyid="key-1", provenance=...):
-    """A well-formed DSSE envelope around an in-toto receipt statement (the census
-    envelope.py shape); every knob exists so one test can break one thing."""
+    """A well-formed DSSE-shaped envelope around an in-toto receipt statement; every
+    knob exists so one test can break one thing. The signatures block is IGNORED by
+    parse_receipt (the receipt is unsigned by policy); the ``keyid`` knob exists only
+    to prove the kernel never reads it."""
     if provenance is ...:
         provenance = {"base_sha": base_sha, "head_sha": head_sha,
                       "hive_census_version": census_version}
@@ -169,18 +171,28 @@ def test_missing_provenance_shas_refuse(prov):
         parse_receipt(_receipt(provenance=prov))
 
 
-def test_valid_receipt_parses_and_surfaces_keyid():
-    statement, keyid = parse_receipt(_receipt([_exec_line("tests", "passed")]))
+def test_valid_receipt_parses_to_statement():
+    statement = parse_receipt(_receipt([_exec_line("tests", "passed")]))
     assert statement["predicateType"] == "urn:hive-census:receipt:v0"
-    assert keyid == "key-1"
+    assert statement["predicate"]["lines"][0]["class"] == "tests"
 
 
-def test_absent_signatures_surface_empty_keyid_not_a_refusal():
-    # verification stays census-side; the kernel surfaces the keyid, no crypto dep.
-    env = _receipt([_exec_line("tests", "passed")])
-    del env["signatures"]
-    _, keyid = parse_receipt(env)
-    assert keyid == ""
+def test_signatures_are_ignored_never_a_refusal():
+    # The kernel never verifies signatures — authenticity rides transport/auth, not the
+    # receipt (unsigned by policy). An envelope with NO signatures block, the exact
+    # census unsigned shape (signatures: [] + unsigned: true), and one bearing a
+    # FABRICATED keyid all parse identically; none is a refusal, and no keyid is read.
+    base = _receipt([_exec_line("tests", "passed")])
+    del base["signatures"]
+    assert parse_receipt(base)["predicateType"] == "urn:hive-census:receipt:v0"
+
+    census_shape = _receipt([_exec_line("tests", "passed")])
+    census_shape["signatures"] = []
+    census_shape["unsigned"] = True
+    assert parse_receipt(census_shape)["predicateType"] == "urn:hive-census:receipt:v0"
+
+    forged = _receipt([_exec_line("tests", "passed")], keyid="attacker-forged-DEADBEEF")
+    assert parse_receipt(forged)["predicateType"] == "urn:hive-census:receipt:v0"
 
 
 # ── verdict + tag derivation (server-derived; §3.3) ────────────────────────────
@@ -270,7 +282,7 @@ def test_carriers_are_frozen():
     with pytest.raises(dataclasses.FrozenInstanceError):
         sub.path = "b.py"
     rep = IngestReport(inserted=(), already_recorded=0, matched=0,
-                       skipped_lines=0, keyid="")
+                       skipped_lines=0)
     with pytest.raises(dataclasses.FrozenInstanceError):
         rep.matched = 9
 
@@ -413,7 +425,7 @@ def test_service_happy_path_appends_one_row_per_matched_episode():
     svc, appender = _service([(7, _ANCHOR), (8, "unrelated/other.py::Thing")])
     report = svc.ingest(_receipt(_LINES))
     assert report.matched == 1 and report.already_recorded == 0
-    assert report.skipped_lines == 0 and report.keyid == "key-1"
+    assert report.skipped_lines == 0
     assert len(report.inserted) == 1
     assert len(appender.batches) == 1 and len(appender.batches[0]) == 1
     eid, kind, actor, ts, payload = appender.batches[0][0]
@@ -778,7 +790,7 @@ def test_hurt_reason_is_contradicted():
 
 def test_report_counters_default_zero_and_are_additive():
     rep = IngestReport(inserted=(), already_recorded=0, matched=0,
-                       skipped_lines=0, keyid="")
+                       skipped_lines=0)
     assert (rep.verified_helped, rep.verified_hurt,
             rep.verify_current, rep.verify_stale) == (0, 0, 0, 0)
     assert rep.stale_suspects == 0

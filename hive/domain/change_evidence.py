@@ -1,7 +1,7 @@
 """The change-outcome evidence feed — pure domain: parse, derive, join, render, serve.
 
-A signed census receipt (a DSSE envelope over an in-toto Statement v1) reports what a
-verifier could prove about ONE change (base_sha → head_sha). This module turns it into
+A census receipt (an unsigned, DSSE-shaped envelope over an in-toto Statement v1) reports
+what a verifier could prove about ONE change (base_sha → head_sha). This module turns it into
 ids-only ledger rows: parse + validate the envelope shape (D8), derive the verdict/tag
 SERVER-SIDE (the caller can never assert them — the INV-2 analog; the post-merge canary
 rule is structurally unconstructable to violate), join the receipt's touched
@@ -22,10 +22,11 @@ episode's point row dominates and suppresses it).
 Named safe directions (Law 6): receipt-global malformation REFUSES loudly
 (``ReceiptRefused`` — no row is ever written from a receipt this module cannot vouch
 for); a malformed individual line is SKIPPED AND COUNTED (under-claim — one bad line
-never aborts the batch); an unmatchable anchor simply never matches. Signature
-verification is deliberately NOT performed here — no crypto dependency enters the
-kernel; the envelope keyid is surfaced in the report and authenticity rides the
-operator channel.
+never aborts the batch); an unmatchable anchor simply never matches. The receipt is
+unsigned by policy (census emits no signature), so there is no signature to verify and no
+crypto dependency enters the kernel; authenticity rides the transport/auth channel
+(loopback or per-seat token) while integrity rides the subject digest, which this module
+re-checks against the embedded predicate.
 
 Trust-untouched by construction (O7): this module holds NO trust handle — it sees two
 narrow ports (an anchored-episode read and an append-only evidence write) and nothing
@@ -146,7 +147,7 @@ class SubjectEvidence:
 
 @dataclass(frozen=True, slots=True)
 class IngestReport:
-    """The machine-readable result of one ingest (ids + counts + keyid, never prose).
+    """The machine-readable result of one ingest (ids + counts, never prose).
     The four verified/verify counters and ``stale_suspects`` count rows RENDERED into
     the batch (mirroring ``matched``'s join-level semantics) — a re-ingest keeps the
     counts while ``already_recorded`` absorbs the skips."""
@@ -154,7 +155,6 @@ class IngestReport:
     already_recorded: int
     matched: int
     skipped_lines: int
-    keyid: str
     verified_helped: int = 0
     verified_hurt: int = 0
     verify_current: int = 0
@@ -172,12 +172,13 @@ def _canonical_bytes(doc: dict) -> bytes:
                       ensure_ascii=False).encode("utf-8")
 
 
-def parse_receipt(envelope: object) -> tuple[dict, str]:
-    """DSSE envelope dict → (in-toto statement dict, keyid). Every receipt-global
+def parse_receipt(envelope: object) -> dict:
+    """DSSE-shaped envelope dict → in-toto statement dict. Every receipt-global
     malformation raises ``ReceiptRefused`` with the reason: non-dict, wrong
     payloadType, missing/invalid b64 payload, payload not a JSON object, wrong
     statement/predicate type, subject-digest mismatch (integrity), absent provenance
-    SHAs. The keyid is surfaced verbatim (verification stays census-side)."""
+    SHAs. The envelope's signatures are IGNORED — the receipt is unsigned by policy and
+    authenticity is not a receipt signature; integrity is the subject-digest re-check."""
     if not isinstance(envelope, dict):
         raise ReceiptRefused("envelope is not a JSON object")
     payload_type = envelope.get("payloadType")
@@ -221,12 +222,7 @@ def parse_receipt(envelope: object) -> tuple[dict, str]:
         if not isinstance(value, str) or not value.strip():
             raise ReceiptRefused(
                 f"provenance {name} absent — the outcome cannot be sha-bound")
-    keyid = ""
-    signatures = envelope.get("signatures")
-    if isinstance(signatures, list) and signatures and isinstance(signatures[0], dict):
-        raw_keyid = signatures[0].get("keyid")
-        keyid = raw_keyid if isinstance(raw_keyid, str) else ""
-    return statement, keyid
+    return statement
 
 
 def touched_subjects(lines: list) -> tuple[list[TouchedSubject], int]:
@@ -624,7 +620,7 @@ class ChangeEvidenceService:
         the receipt (a caller-passed verdict is IGNORED — never caller-asserted);
         post_merge requires the operator's verdict and derives the tag from the
         signal. Zero matches ⇒ a report only (the store is never touched)."""
-        statement, keyid = parse_receipt(envelope)
+        statement = parse_receipt(envelope)
         predicate = statement["predicate"]           # shape vouched by parse_receipt
         provenance = predicate.get("provenance") or {}
         lines = predicate.get("lines")
@@ -707,7 +703,6 @@ class ChangeEvidenceService:
         inserted, already = self._appender.append_evidence(rows) if rows else ([], 0)
         return IngestReport(inserted=tuple(inserted), already_recorded=already,
                             matched=len(matches), skipped_lines=skipped_lines,
-                            keyid=keyid,
                             verified_helped=counts[EK_OUTCOME_VERIFIED_HELPED],
                             verified_hurt=counts[EK_OUTCOME_VERIFIED_HURT],
                             verify_current=counts[EK_VERIFY_CURRENT],
