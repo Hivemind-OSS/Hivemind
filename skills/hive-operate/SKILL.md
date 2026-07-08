@@ -45,8 +45,8 @@ nothing cleans it automatically.
 
 ## Feeding change outcomes (`hive ingest`)
 
-`hive ingest <receipt.json>` feeds a signed census receipt's change outcome into the append-only
-evidence ledger. The in-container censusctl validates the DSSE receipt (shape + predicate digest;
+`hive ingest <receipt.json>` feeds an unsigned census receipt's change outcome into the append-only
+evidence ledger. The in-container censusctl validates the DSSE-shaped receipt (shape + predicate digest;
 a refused receipt writes **zero** rows, exit 65), derives the verdict server-side (pre-merge:
 decided execution lines only — a receipt with nothing decided refuses), joins the receipt's
 touched `path::Symbol` subjects against episode anchors, and appends one `change_outcome` row per
@@ -61,22 +61,23 @@ hive ingest receipt.json --post-merge --verdict fail --signal canary   # rollout
 
 `--signal randomized|canary` is what makes a post-merge outcome machine-checked (anything else
 records unverified judgment). The one-line JSON report on stdout carries
-`inserted/already_recorded/matched/skipped_lines/keyid`; check the keyid against your census
-signing key out-of-band — signature verification stays census-side.
+`inserted/already_recorded/matched/skipped_lines` and the verified/verify rider counters.
+Receipts are unsigned by policy — there is no signature to check; integrity rides the subject
+digest, which the ingest door re-checks against the predicate.
 
 ### Automated post-merge wiring (`.githooks/post-merge`)
 
 The repo ships a `post-merge` hook that closes this loop on every merge without an operator in
-the path: it builds a signed receipt for `ORIG_HEAD..HEAD` (`hive-census build --propagate
+the path: it builds an unsigned receipt for `ORIG_HEAD..HEAD` (`hive-census build --propagate
 --hive-url …`) and feeds it via `hive ingest <receipt> --post-merge --verdict pass --signal
 none` (`none` is honest for a bare local merge — no rollout telemetry checked it, so it records
 as unverified judgment; CI can re-ingest with a stronger signal). Enable once with
-`git config core.hooksPath .githooks`. The signing key lives at `~/.hive-census/signing.pem`
-(ed25519 PEM, `chmod 600`, made with `openssl genpkey -algorithm ed25519`; the derived
-`signing.pub.pem` is what third parties verify with). The hook is a fail-open side-channel:
-build + ingest run detached in the background, output lands in
-`~/.hive-census/last-postmerge.log`, and any missing piece (census venv, key, `ORIG_HEAD`,
-hive CLI) skips silently — a merge is never delayed or failed by evidence plumbing.
+`git config core.hooksPath .githooks`. No key or setup is required — receipts are unsigned by
+policy; the ingest-door trust boundary is transport/auth (loopback locally, per-seat tokens over
+a tunnel), not a receipt signature. The hook is a fail-open side-channel: build + ingest run
+detached in the background, output lands in `~/.hive-census/last-postmerge.log`, and any missing
+piece (census venv, `ORIG_HEAD`, hive CLI) skips silently — a merge is never delayed or failed by
+evidence plumbing.
 
 ## Posture (why)
 

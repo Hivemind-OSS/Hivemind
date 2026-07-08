@@ -185,7 +185,7 @@ Everything runs through the `hive` CLI (it drives Docker Compose for you):
 | `hive token <seat>` | mint a per-seat token (printed once) |
 | `hive revoke <seat>` | offboard a seat (next request → 401) |
 | `hive backup` | snapshot the store now — manual (no scheduler); keeps the `backup_keep` most-recent |
-| `hive ingest <receipt.json>` | feed a signed census receipt's change outcome into the append-only evidence ledger (idempotent; refused receipts write zero rows; `--post-merge --verdict pass\|fail --signal randomized\|canary\|none` for rollout outcomes) |
+| `hive ingest <receipt.json>` | feed an unsigned census receipt's change outcome into the append-only evidence ledger (idempotent; refused receipts write zero rows; `--post-merge --verdict pass\|fail --signal randomized\|canary\|none` for rollout outcomes) |
 | `hive down` | stop the stack, preserve the `hive-data` volume |
 | `hive reset` | snapshot the store out to the host, then destroy + recreate it empty (recoverable; typed confirm) |
 | `hive restore <snap>` | replace the live store from a snapshot (the inverse of reset; typed confirm) |

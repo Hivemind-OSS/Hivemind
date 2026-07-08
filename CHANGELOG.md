@@ -225,6 +225,17 @@ All notable changes to this project are documented here.
 - Boot order: decay sweep runs before the index rebuild.
 
 ## Removed
+- All census receipt **signing** machinery — the ed25519 sign/verify path, the key loaders,
+  `EnvelopeError`, the `HIVE_CENSUS_SIGNING_KEY` gate + `--unsigned` flag (unsigned is now
+  unconditional), and the `securesystemslib` + `cryptography` dependencies. Census emits an
+  unsigned in-toto Statement in a DSSE-shaped envelope (`signatures: []`, `unsigned: true`)
+  built with the standard library alone, and the kernel drops the vestigial `keyid` from
+  `parse_receipt`, `IngestReport`, and the `censusctl` report. Receipt authenticity was never
+  the ingest-door trust boundary — transport/auth is (loopback locally, per-seat tokens over a
+  tunnel) — so the signature bought nothing here; the earlier "keyid pinning" residual gate is
+  thereby dissolved (authenticity is out of scope by design). Integrity is unchanged: the
+  subject digest covers the canonical predicate bytes and the ingest door re-checks it, refusing
+  any tampered receipt (the Law-7 tamper guard, preserved and tested kernel-side).
 - `autonomy.solo_mode` + `autonomy.solo_min_span_days` — demand-promotion is now ONE
   identity-diversity rule for solo and team alike. A solo dev's independent agents each carry a
   distinct per-session identity, so their shared demand promotes with no flag (the elapsed-span
