@@ -122,11 +122,13 @@ typed confirm, log tail; no reset) / `hive status` / `logs` / `tokens` / `revoke
 `backup` (manual snapshot) / `ingest
 <receipt.json>` (feed an unsigned census receipt's change outcome into the evidence ledger) / `down`
 (stop, keep data) / `reset` (snapshot the store out of the volume, then destroy + recreate it
-empty — recoverable; typed confirm) / `restore` (replace the live store from a snapshot). Upgrading
-across schema generations is a single `hive reset` — it saves the prior store to the host, then
-recreates empty; no in-place migration ships.
+empty — recoverable; typed confirm) / `restore` (replace the live store from a snapshot) / `upgrade
+[--ref release]` (move the server to a vetted release ref — backup-gated, auto-rollback on failure).
+A compatible release moves with `hive upgrade`; crossing a schema generation is a single `hive reset`
+— it saves the prior store to the host, then recreates empty; no in-place migration ships.
 
-See **[HIVE-ADMIN.md](HIVE-ADMIN.md)** for the full admin & operator guide (setup, tunneling, tuning, KPIs).
+See **[HIVE-ADMIN.md](HIVE-ADMIN.md)** for the full admin & operator guide (setup, tunneling, tuning,
+KPIs, and §8 edge-tool install & upgrades).
 
 ## Embedding model & attribution
 

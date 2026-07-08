@@ -189,6 +189,7 @@ Everything runs through the `hive` CLI (it drives Docker Compose for you):
 | `hive down` | stop the stack, preserve the `hive-data` volume |
 | `hive reset` | snapshot the store out to the host, then destroy + recreate it empty (recoverable; typed confirm) |
 | `hive restore <snap>` | replace the live store from a snapshot (the inverse of reset; typed confirm) |
+| `hive upgrade [--ref release]` | move the server to a vetted release ref — snapshot → checkout → rebuild → health-gate → auto-rollback on failure (backup-gated; §8) |
 
 ## 6. KPIs to watch
 
@@ -217,3 +218,45 @@ TTLs to hoard; and spend human review on the **established tier** (`hive_write` 
 - Only the **loopback door** is host-published; remote access is **always bearer-gated** by
   construction (the tunnel door binds token-required, and ngrok forwards only to it).
 - Schema upgrades are a recoverable `hive reset`, never an in-place migration.
+
+## 8. Staying current — edge tools & server upgrades
+
+The fleet has two install targets that track one shared **`release` git ref** (the maintainer's
+vetted pin): the per-workstation **edge tools** auto-nudge toward it, while the single **server**
+moves to it deliberately and backup-gated.
+
+**Edge tools (every participant, local or remote).** After connecting (§2/§3), install the census
+bundle once — one command pulls the comb-drift + matrix + verifier engines — and wire the fail-open
+post-merge census hook:
+
+```bash
+uv tool install hive-census --from git+https://github.com/Hivemind-OSS/hive-census@release
+hive-census init --repo . --hive-url <the /mcp URL `hive connect` printed>
+```
+
+`init` writes a portable post-merge hook (resolved absolute paths — nothing hardcoded) that, after a
+merge, builds an **unsigned** change receipt and feeds its outcome to the server over the hive-url.
+It is entirely fail-open — a missing binary, no merge, or an unreachable server skips silently and a
+merge is never delayed or failed. No signing key is generated; receipts are unsigned by policy (the
+ingest-door trust boundary is transport/auth, not a signature).
+
+**Edge tools stay current.** The hook checks the published `release` tip at most once a day and, on
+drift, nudges you to run `hive-census upgrade` (which re-installs the bundle at `release` and re-wires
+the hook). Wire `hive-census init --auto-upgrade` to apply it automatically instead of nudging. Roll
+back to a known-good tag with `hive-census upgrade --ref <old-tag>`.
+
+**Server upgrade / rollback.** Move the server to a vetted ref:
+
+```bash
+hive upgrade                    # → release; aborts on a dirty tree (no magic stash)
+hive upgrade --ref <old-tag>    # roll the server back, same backup-gated path
+```
+
+`hive upgrade` mirrors `reset`'s snapshot-first discipline: it snapshots the store to the host
+**before** any checkout (the recoverable safety net), then checks out the ref → rebuilds → waits for
+health → gates on the app status. On any post-checkout failure it **auto-reverts** — restoring the
+code (`git checkout <prev>`) and the store (the just-taken snapshot), then rebuilding — and if that
+revert itself fails it prints the exact manual `git checkout` + `hive restore <snap>` recovery.
+Because the build **refuses an old-format store** rather than migrating it (§1), a release that
+changes the schema comes up unhealthy and auto-rolls-back; cross a schema change with `hive reset` (a
+clean store) or a restore from backup, not `hive upgrade`.

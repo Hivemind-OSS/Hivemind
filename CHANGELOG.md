@@ -3,6 +3,14 @@
 All notable changes to this project are documented here.
 
 ## Added
+- `hive upgrade [--ref release]` — move the server to a vetted release ref, backup-gated and
+  health-verified: aborts on a dirty tree (no magic stash), snapshots the store to the host BEFORE
+  any checkout, then checkout → rebuild → bounded health-wait → app status gate, and auto-reverts
+  (code + store) on any post-checkout failure — printing the exact manual `git checkout` + `hive
+  restore` recovery if the revert itself fails. Reuses reset/restore's snapshot + copy-into-volume
+  blocks as shared helpers. `hive connect` now prints a one-line `hive-census init` edge-tools
+  breadcrumb (transport boundary preserved — a cross-reference, not a merged verb). See
+  HIVE-ADMIN.md §8.
 - `hive ui` — a loopback-only operator dashboard verb (`hive/tools/ui.py` + `hive/tools/ui_page.py`):
   a stdlib `http.server` control plane bound to 127.0.0.1 that opens the native browser to ONE
   self-contained page (inline CSS/JS, zero build step, no external asset) plus a same-origin JSON

@@ -13,7 +13,7 @@ load only one file, read `llms-full.txt` — it is the complete guide and assume
 
 - [llms-full.txt](llms-full.txt): The complete, self-contained operating guide — idea, architecture, trust lifecycle, recall, the eight MCP tools, identity, setup (solo → remote team), KPIs, configuration, and agent working procedure.
 - [README.md](README.md): Quickstart from a clone — requirements, `hive up`, connecting local and remote agents, the two-door auth model, configuration, and repository layout.
-- [HIVE-ADMIN.md](HIVE-ADMIN.md): Admin & operator guide — first-time setup, tunneling, tuning the recall/safety knobs, KPIs, and day-2 operations (incl. `hive ingest` for census change-outcome receipts).
+- [HIVE-ADMIN.md](HIVE-ADMIN.md): Admin & operator guide — first-time setup, tunneling, tuning the recall/safety knobs, KPIs, day-2 operations (incl. `hive ingest` for census change-outcome receipts), and staying current (edge-tool install + the `hive upgrade` / `hive-census upgrade` release flow).
 
 ## Operator runbooks
 

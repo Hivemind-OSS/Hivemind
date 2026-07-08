@@ -53,6 +53,19 @@ ssh -NL 8765:localhost:8765 you@host    # forward the loopback door over SSH
 ```
 Then the teammate uses the **local** loopback line above as-is — no ngrok, no token.
 
+## Edge tools — install & stay current
+
+Every connected participant (local or remote) also installs the **census edge bundle** and wires the
+fail-open post-merge census hook — one install, then `hive-census init`:
+
+```bash
+uv tool install hive-census --from git+https://github.com/Hivemind-OSS/hive-census@release
+hive-census init --repo . --hive-url <the /mcp URL `hive connect` printed>
+```
+
+The full flow — the daily release nudge, `hive-census upgrade`, and the server's own `hive upgrade`
+— is **`HIVE-ADMIN.md` §8** (the single source; not duplicated here).
+
 ## Seat hygiene & offboarding
 
 - **One token per seat, never shared across agents.** `hive tokens` lists provisioned seat labels
