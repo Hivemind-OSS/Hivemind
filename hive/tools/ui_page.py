@@ -146,8 +146,10 @@ PAGE_HTML: str = """<!doctype html>
       <button class="btn" id="backup">Backup now</button>
       <button class="btn" id="start">Start</button>
       <button class="btn" id="stop">Stop</button>
+      <button class="btn" id="tunnel-toggle">Activate tunnel</button>
     </div>
-    <div class="hint">Start brings the stack up loopback-only — it never opens a public tunnel.
+    <div class="hint">Start brings the stack up loopback-only. Activate tunnel opens the public
+      door (token-gated by construction); Deactivate closes it, leaving the daemon running.
       Backup snapshots the store right now; the volume is always preserved.</div>
     <div class="msg" id="server-msg" role="status" aria-live="polite"></div>
   </section>
@@ -177,12 +179,25 @@ PAGE_HTML: str = """<!doctype html>
       <button class="btn" id="refresh-logs">Refresh</button>
     </div>
   </section>
+
+  <section class="card" aria-labelledby="eb-restore">
+    <div class="eyebrow" id="eb-restore">Restore</div>
+    <div class="field">
+      <select class="input" id="backup-pick" aria-label="snapshot to restore"></select>
+      <button class="btn" id="do-restore">Restore</button>
+    </div>
+    <div class="hint">Restore replaces the live store with the selected snapshot — a safety snapshot
+      is taken first, so the current store stays recoverable. You are asked to type
+      &quot;restore&quot; to confirm.</div>
+    <div class="msg" id="restore-msg" role="status" aria-live="polite"></div>
+  </section>
 </div>
 
 <script>
 (function () {
   "use strict";
   var $ = function (sel) { return document.querySelector(sel); };
+  var tunnelOn = false;                          // last-known tunnel state (from /api/status)
 
   async function api(path, opts) {
     // relative URL — same-origin only; the browser sends Origin, the server allowlists it.
@@ -203,8 +218,9 @@ PAGE_HTML: str = """<!doctype html>
     $("#beacon").classList.toggle("is-healthy", healthy);   // JS only toggles the class
     var up = !!(s && s.server === "up");
     $("#server-state").textContent = up ? (healthy ? "up · healthy" : "up · unhealthy") : "down";
-    $("#tunnel-state").textContent = (s && s.tunnel_on)
-      ? (s.tunnel_url || "on") : "off (loopback only)";
+    tunnelOn = !!(s && s.tunnel_on);
+    $("#tunnel-state").textContent = tunnelOn ? (s.tunnel_url || "on") : "off (loopback only)";
+    $("#tunnel-toggle").textContent = tunnelOn ? "Deactivate tunnel" : "Activate tunnel";
     $("#seat-count").textContent = (s && s.seats != null) ? String(s.seats) : "—";
   }
   async function pollStatus() {
@@ -270,17 +286,35 @@ PAGE_HTML: str = """<!doctype html>
     var res = await api("/api/backup", { method: "POST" });
     flash("#server-msg", (res.ok && res.body && res.body.path)
       ? ("snapshot saved: " + res.body.path) : reason(res.body, "backup did not complete"));
+    loadBackups();                                 // reflect the new snapshot in the restore picker
   }
+  var VERB = { "up": "starting", "down": "stopping",
+               "tunnel-up": "opening the tunnel", "tunnel-down": "closing the tunnel" };
   async function lifecycle(action) {
-    flash("#server-msg", action === "up" ? "starting the stack…" : "stopping the stack…");
+    // non-blocking: the server validates, dispatches the docker work on a worker, and returns at
+    // once; the /api/status poll (the beacon) reflects the outcome. The click never hangs.
+    flash("#server-msg", (VERB[action] || "working") + "… watch the beacon");
     var res = await api("/api/lifecycle", { method: "POST",
       headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action: action }) });
-    if (res.ok && res.body && res.body.ok) {
-      flash("#server-msg", action === "up" ? "stack started (loopback-only)" : "stack stopped");
+    if (res.status === 409) { flash("#server-msg", "another operation is already in progress"); return; }
+    if (res.status === 400 && res.body && res.body.missing) {
+      flash("#server-msg", "tunnel needs " + res.body.missing.join(" + ") + " set in .env first"); return;
+    }
+    if (res.ok && res.body && res.body.status) {
+      flash("#server-msg", "dispatched — " + res.body.status + "; the beacon will follow");
     } else {
       flash("#server-msg", reason(res.body, "the action did not complete"));
     }
     pollStatus();
+  }
+  function tunnelToggle() {
+    if (!tunnelOn) {
+      // activation exposes the server publicly; the /mcp door stays token-gated by construction.
+      if (!window.confirm("This opens a PUBLIC tunnel to your server. The /mcp door stays token-gated. Continue?")) { return; }
+      lifecycle("tunnel-up");
+    } else {
+      lifecycle("tunnel-down");
+    }
   }
 
   // ── logs tail ──
@@ -290,6 +324,55 @@ PAGE_HTML: str = """<!doctype html>
     $("#logs").textContent = lines.length ? lines.join("\\n") : "no recent log lines";
   }
 
+  // ── restore: list in-volume snapshots + restore behind a typed confirm ──
+  function fmtSize(n) {
+    if (n == null) { return "?"; }
+    if (n < 1024) { return n + " B"; }
+    if (n < 1048576) { return (n / 1024).toFixed(1) + " KB"; }
+    return (n / 1048576).toFixed(1) + " MB";
+  }
+  function fmtDate(mtime) {
+    if (!mtime) { return "?"; }
+    try { return new Date(mtime * 1000).toISOString().slice(0, 16).replace("T", " "); }
+    catch (e) { return "?"; }
+  }
+  async function loadBackups() {
+    var res = await api("/api/backups");
+    var backups = (res.body && res.body.backups) || [];
+    var sel = $("#backup-pick");
+    sel.innerHTML = "";
+    if (!backups.length) {
+      var o = document.createElement("option");
+      o.value = ""; o.textContent = "no snapshots yet — take a backup first";
+      sel.appendChild(o); sel.disabled = true; $("#do-restore").disabled = true;
+      return;
+    }
+    sel.disabled = false; $("#do-restore").disabled = false;
+    backups.forEach(function (b) {
+      var o = document.createElement("option");
+      o.value = b.name;
+      o.textContent = b.name + "  ·  " + fmtDate(b.mtime) + "  ·  " + fmtSize(b.size);
+      sel.appendChild(o);
+    });
+  }
+  async function doRestore() {
+    var name = $("#backup-pick").value;
+    if (!name) { flash("#restore-msg", "no snapshot selected"); return; }
+    // typed confirm, mirroring the CLI — a destructive replace must be deliberate.
+    var typed = window.prompt('Restore replaces the live store; a safety snapshot is taken first. Type "restore" to confirm:');
+    if (typed !== "restore") { flash("#restore-msg", "not confirmed — the store is unchanged"); return; }
+    flash("#restore-msg", "restoring " + name + "… a safety snapshot is taken first; watch the beacon");
+    var res = await api("/api/restore", { method: "POST",
+      headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name: name }) });
+    if (res.status === 409) { flash("#restore-msg", "another operation is already in progress"); return; }
+    if (res.ok && res.body && res.body.status) {
+      flash("#restore-msg", "restore dispatched — the server will stop, swap the store, and restart");
+    } else {
+      flash("#restore-msg", reason(res.body, "restore did not start"));
+    }
+    pollStatus();
+  }
+
   document.addEventListener("DOMContentLoaded", function () {
     $("#add-seat").addEventListener("click", addSeat);
     $("#seat-input").addEventListener("keydown", function (e) { if (e.key === "Enter") { addSeat(); } });
@@ -297,8 +380,10 @@ PAGE_HTML: str = """<!doctype html>
     $("#backup").addEventListener("click", backupNow);
     $("#start").addEventListener("click", function () { lifecycle("up"); });
     $("#stop").addEventListener("click", function () { lifecycle("down"); });
+    $("#tunnel-toggle").addEventListener("click", tunnelToggle);
     $("#refresh-logs").addEventListener("click", loadLogs);
-    pollStatus(); loadTokens(); loadLogs();
+    $("#do-restore").addEventListener("click", doRestore);
+    pollStatus(); loadTokens(); loadLogs(); loadBackups();
     setInterval(pollStatus, 3000);   // the live heartbeat cadence: 3s (bounded 2-5s)
   });
 })();

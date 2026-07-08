@@ -50,7 +50,7 @@ def test_exactly_one_marigold_primary_button_rest_are_ghost():
     # border, NO marigold fill) — a clean single-primary hierarchy.
     assert HTML.count('class="btn btn--primary"') == 1                    # a single marigold primary
     assert re.search(r'class="btn btn--primary"\s+id="add-seat"', HTML)   # and it is add-seat
-    for cid in ("backup", "start", "stop"):
+    for cid in ("backup", "start", "stop", "tunnel-toggle", "do-restore"):
         m = re.search(r'class="([^"]*)"\s+id="' + cid + '"', HTML)
         assert m is not None, f"button #{cid} not found"
         assert "btn--primary" not in m.group(1), f"#{cid} must be a secondary/ghost button"
@@ -97,10 +97,11 @@ def test_interface_voice_and_shown_once_caption():
     assert "add a seat" in LOW
 
 
-def test_no_reset_or_restore_affordance():
-    # f5: reset/restore are absent from the page BY CONSTRUCTION — no button, link, or fetch.
+def test_no_reset_affordance_reset_stays_absent():
+    # f5: RESET is absent from the page BY CONSTRUCTION — no button, link, or fetch (a graded
+    # invariant). restore IS present now (guarded, typed confirm), but the scary volume-destroy
+    # verbs stay absent — restore "replaces" the live store, it never destroys the volume.
     assert "reset" not in LOW
-    assert "restore" not in LOW
     for destructive in ("destroy", "wipe", "-v "):
         assert destructive not in LOW
 
@@ -115,5 +116,16 @@ def test_relative_fetches_no_external_asset():
 
 def test_all_api_routes_are_wired_in_the_page():
     for path in ("/api/status", "/api/tokens", "/api/tokens/revoke", "/api/backup",
-                 "/api/lifecycle", "/api/logs"):
+                 "/api/backups", "/api/restore", "/api/lifecycle", "/api/logs"):
         assert path in HTML
+
+
+def test_tunnel_and_restore_controls_present():
+    # C-features on the page: the SERVER card gains a tunnel Activate/Deactivate control, and a
+    # dedicated RESTORE section gains a snapshot picker + a Restore button behind a typed confirm.
+    assert 'id="tunnel-toggle"' in HTML                    # tunnel activate/deactivate control
+    assert 'id="eb-restore"' in HTML                       # the dedicated RESTORE card eyebrow
+    assert 'id="backup-pick"' in HTML                      # the snapshot picker (populated live)
+    assert 'id="do-restore"' in HTML                       # the restore button
+    assert "safety snapshot" in LOW                        # honest warning: a snapshot is taken first
+    assert '"restore"' in HTML                             # the typed-confirm word
