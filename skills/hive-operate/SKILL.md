@@ -9,8 +9,9 @@ Keep a running server lean and current. The store does not clean itself — **ma
 product.** Full leverage map: `OPERATIONS.md`; knob tables: `HIVE-ADMIN.md` §4 & §6.
 
 For a browser view of the live picture, `hive ui` serves a loopback-only operator dashboard (live
-status, seat mint/revoke, backup, safe start/stop, log tail; no reset/restore) — `--no-open` for a
-headless host. The KPIs below stay MCP-only; the dashboard is the docker-side status/lifecycle surface.
+status, seat mint/revoke, backup, non-blocking start/stop, tunnel activate/deactivate, restore from
+an in-volume backup behind a typed confirm, log tail; no reset) — `--no-open` for a headless host.
+The KPIs below stay MCP-only; the dashboard is the docker-side status/lifecycle surface.
 
 ## The KPIs — read-only over MCP, off the warm store
 

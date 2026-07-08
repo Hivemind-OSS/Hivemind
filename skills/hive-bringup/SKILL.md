@@ -68,5 +68,5 @@ That proves transport + embedder + store end to end.
 
 Or open the dashboard: `hive ui` serves the loopback operator console in your browser — the live
 SERVER card shows up/down + health + tunnel + seat count at a glance (`--no-open` on a headless
-host, then browse `http://127.0.0.1:4173/` over an SSH tunnel). It is loopback-only and exposes no
-reset/restore.
+host, then browse `http://127.0.0.1:4173/` over an SSH tunnel). It is loopback-only; it can activate
+the tunnel and restore from an in-volume backup (guarded, typed confirm), but exposes no reset.

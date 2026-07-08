@@ -178,7 +178,7 @@ Everything runs through the `hive` CLI (it drives Docker Compose for you):
 
 | Command | Does |
 |---|---|
-| `hive ui` | open the loopback operator dashboard in your browser — live status, seat mint/revoke, backup, safe start/stop, log tail (loopback-only, tokenless; no reset/restore) |
+| `hive ui` | open the loopback operator dashboard in your browser — live status, seat mint/revoke, backup, non-blocking start/stop, tunnel activate/deactivate, restore from an in-volume backup (guarded, typed confirm), log tail (loopback-only, tokenless; no reset) |
 | `hive status` | server health, tunnel state + URL, seat count |
 | `hive logs [svc]` | follow the daemon (or `ngrok`) logs |
 | `hive tokens` | list provisioned seat labels (never the tokens) |

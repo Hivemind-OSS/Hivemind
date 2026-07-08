@@ -117,7 +117,8 @@ Never publish `0.0.0.0:8765` — a bearer token over plain LAN HTTP is cleartext
 ## Day-2 operations
 
 `hive ui` (loopback operator dashboard in the browser — live status, seat mint/revoke, backup,
-safe start/stop, log tail; no reset/restore) / `hive status` / `logs` / `tokens` / `revoke <seat>` /
+non-blocking start/stop, tunnel activate/deactivate, restore from an in-volume backup behind a
+typed confirm, log tail; no reset) / `hive status` / `logs` / `tokens` / `revoke <seat>` /
 `backup` (manual snapshot) / `ingest
 <receipt.json>` (feed an unsigned census receipt's change outcome into the evidence ledger) / `down`
 (stop, keep data) / `reset` (snapshot the store out of the volume, then destroy + recreate it

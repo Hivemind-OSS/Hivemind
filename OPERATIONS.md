@@ -150,9 +150,14 @@ episodes whose anchors the change touched — append-only, idempotent, trust-unt
 detached); see `skills/hive-operate/SKILL.md` for the wiring.
 
 For a browser view of the live picture, `hive ui` serves a loopback-only operator dashboard: the
-same status/seats/logs read plus the safe controls (backup, loopback-only start/stop, seat
-mint/revoke), with no reset/restore surface. It reads the same `StatusSnapshot` the CLI `hive
-status` prints, so the two never disagree.
+same status/seats/logs read plus the controls (backup, seat mint/revoke, non-blocking loopback-only
+start/stop, tunnel activate/deactivate, and restore from an in-volume backup behind a typed confirm).
+The lifecycle/tunnel/restore actions validate synchronously then run detached under a single-flight
+lock (a second concurrent op returns 409), so the browser never blocks on docker; the `/api/status`
+poll shows the outcome. Restore is guarded — the snapshot name must be a bare basename that is a
+member of the current in-volume listing, and a safety snapshot is taken before any overwrite; reset
+has no surface. It reads the same `StatusSnapshot` the CLI `hive status` prints, so the two never
+disagree.
 
 ## Decisions that are yours (operator taste)
 

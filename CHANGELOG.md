@@ -8,12 +8,23 @@ All notable changes to this project are documented here.
   self-contained page (inline CSS/JS, zero build step, no external asset) plus a same-origin JSON
   API — live status (serialized from the single-owner `StatusSnapshot` a `cli._status` refactor now
   shares), seat list/mint/revoke over the in-container authctl, safe lifecycle (backup, loopback-only
-  `up`, volume-preserving `down`), and a bounded logs tail. No reset/restore exists — by construction,
+  `up`, volume-preserving `down`), and a bounded logs tail. No reset exists — by construction,
   not merely hidden. The browser door INVERTS the MCP daemon's Origin doctrine: it admits the
   same-origin browser and enforces a Host-header allowlist + a same-origin Origin check on POST + a
   declared-length 413 body cap (each a named-mutation guard, fail-closed), while auth stays a property
   of the loopback socket (tokenless). Pinned by `tests/container/test_ui.py`, `test_ui_page.py`, and
   the `_probe_status` / `_exec_backup` tests in `test_cli.py`.
+- `hive ui` dashboard controls — the lifecycle route is now NON-BLOCKING: `/api/lifecycle` validates
+  synchronously, then runs the docker child on a detached worker behind a module-level single-flight
+  lock (a second concurrent op → 409 `operation_in_progress`), and plain Start drops `--build` so it
+  no longer rebuilds and bounces a healthy stack (this fixed a browser hang). Adds tunnel
+  activate/deactivate (`tunnel-up` gates `NGROK_AUTHTOKEN` + `NGROK_DOMAIN` from the environment only
+  and fails fast; `tunnel-down` stops only the sidecar) and restore-from-backup — `GET /api/backups`
+  lists the in-volume snapshots and `POST /api/restore` replaces the live store from a chosen snapshot
+  behind a bare-basename path-traversal whitelist and an automatic pre-restore safety snapshot (a
+  failed snapshot aborts before any overwrite). The page gains a tunnel control and a restore picker
+  behind a typed-"restore" confirm. Reset stays absent by construction; each new guard is a
+  named-mutation test in `tests/container/test_ui.py`.
 - `verified_promotion` GRADUATED to default-ON (`hive/app/config.py`): the L4 verified-outcome
   rung now ships enabled, ratified by the powered gate below (+0.243 success, FSR 0.0 at power,
   CI [0.108, 0.378] clears zero). A safety-loosening rung earns default-ON only as a graduation
