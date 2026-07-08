@@ -79,7 +79,9 @@ PAGE_HTML: str = """<!doctype html>
   .row:last-of-type { border-bottom: 0; }
   .row .k { color: var(--soft); }
   .row .v { color: var(--ink); text-align: right; word-break: break-word; }
-  .seat-count { color: var(--marigold); font-weight: 700; font-variant-numeric: tabular-nums; }
+  /* the numeral is a marigold accent; compound with `.row .v` so specificity (0,3,0) wins the
+     colour over the generic `.row .v` (0,2,0) — a bare `.seat-count` (0,1,0) would lose to ink. */
+  .row .v.seat-count { color: var(--marigold); font-weight: 700; font-variant-numeric: tabular-nums; }
 
   .actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 16px; }
   .hint { font-size: 11px; color: var(--soft); margin-top: 12px; line-height: 1.55; }
@@ -141,7 +143,7 @@ PAGE_HTML: str = """<!doctype html>
     <div class="row"><span class="k">tunnel</span><span class="v" id="tunnel-state">—</span></div>
     <div class="row"><span class="k">seats</span><span class="v seat-count" id="seat-count">—</span></div>
     <div class="actions">
-      <button class="btn btn--primary" id="backup">Backup now</button>
+      <button class="btn" id="backup">Backup now</button>
       <button class="btn" id="start">Start</button>
       <button class="btn" id="stop">Stop</button>
     </div>

@@ -7,6 +7,8 @@ a reset/restore affordance, a second animation) reds a test rather than silently
 """
 from __future__ import annotations
 
+import re
+
 from hive.tools import ui_page
 
 HTML = ui_page.PAGE_HTML
@@ -31,6 +33,27 @@ def test_marigold_is_a_single_token_never_sprayed():
     assert HTML.count("#FFC400") == 1
     # applied to exactly the beacon(healthy) + primary button + seat-count numeral + focus ring.
     assert HTML.count("var(--marigold)") >= 4
+
+
+def test_seat_count_numeral_wins_marigold_over_row_v():
+    # d1: the seat-count numeral is one of the three marigold accents. `.row .v` (specificity
+    # 0,2,0) out-specifies a bare `.seat-count` (0,1,0), so the numeral would render INK; the
+    # marigold colour must ride the compound `.row .v.seat-count` (0,3,0) to actually win.
+    block = re.search(r"\.row \.v\.seat-count\s*\{([^}]*)\}", HTML)
+    assert block is not None, "seat-count colour must ride `.row .v.seat-count` (beats `.row .v`)"
+    assert "var(--marigold)" in block.group(1)
+
+
+def test_exactly_one_marigold_primary_button_rest_are_ghost():
+    # d1: marigold fills EXACTLY ONE primary button — "Add a seat". Every other action button
+    # (Backup now, Start, Stop) is the ghost/outline base `.btn` (ink on paper, ink hairline
+    # border, NO marigold fill) — a clean single-primary hierarchy.
+    assert HTML.count('class="btn btn--primary"') == 1                    # a single marigold primary
+    assert re.search(r'class="btn btn--primary"\s+id="add-seat"', HTML)   # and it is add-seat
+    for cid in ("backup", "start", "stop"):
+        m = re.search(r'class="([^"]*)"\s+id="' + cid + '"', HTML)
+        assert m is not None, f"button #{cid} not found"
+        assert "btn--primary" not in m.group(1), f"#{cid} must be a secondary/ghost button"
 
 
 def test_no_red_or_green_health_state_anywhere():
