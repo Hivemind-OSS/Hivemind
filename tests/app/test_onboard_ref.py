@@ -21,7 +21,7 @@ from hive.domain.kinds import render_taxonomy
 # Regenerate when the bundle legitimately changes (and bump CONTRACT_VERSION) — the pre-commit
 # contract-version guard does this automatically, or by hand:
 #   python -c "from hive.app.onboard_ref import bundle_digest; print(bundle_digest())"
-_GOLDEN_BUNDLE_SHA256 = "65cd1b27072ed71161801ff99e4994b942e9341b2d5e464565a55053d8429ad2"
+_GOLDEN_BUNDLE_SHA256 = "4c3214397c99957f7eb689f2e827f23ef4c499acecbaadaef727325126c64468"
 
 
 def test_server_instructions_cover_the_verbs_and_search_first_timing():

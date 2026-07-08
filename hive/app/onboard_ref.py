@@ -49,7 +49,7 @@ from hive.domain.kinds import render_taxonomy
 # The single owner of the bundle version. Bump it (and regenerate the keystone golden) on ANY
 # change to AGENT_RULES_BLOCK / CLAUDE_CODE_HOOKS / the rendered allowlist. The beacon stamps this
 # on every tool result; an agent whose installed marker differs re-onboards.
-CONTRACT_VERSION: str = "v.04"
+CONTRACT_VERSION: str = "v.05"
 
 # Marker fences make the installed block a one-regex, idempotent replace (no clobber, no duplicate).
 # The START marker carries the version so an extract reads it straight off the rules file; the
@@ -158,7 +158,7 @@ CLAUDE_CODE_HOOKS = (
     '"UserPromptSubmit": [{"matcher": "", "hooks": [{"type": "command", "command": '
     '"echo \'[hivemind] Recall first: hive_recall the topic before building or re-deriving; prefer established memories over guessing. Re-onboard if a hive_* result contract_version differs from your installed HIVEMIND-RULES marker.\'"}]}], '
     '"Stop": [{"matcher": "", "hooks": [{"type": "command", "command": '
-    '"echo \'[hivemind] Capture any durable insight from this turn (bug+fix, open bug, design choice + where, gotcha, dead-end) with hive_capture — no need to ask.\' 1>&2"}]}], '
+    '"echo \'[hivemind] Capture any durable insight from this turn (design choice + where, gotcha, dead-end) with hive_capture — no need to ask; bug lessons (landed fix, or truly open bug) -> ask your approver for a hive_write.\' 1>&2"}]}], '
     '"SubagentStop": [{"matcher": "", "hooks": [{"type": "command", "command": '
     '"echo \'[hivemind] Subagent finished — capture anything durable it learned with hive_capture before its context is gone.\' 1>&2"}]}]'
     '}}'
@@ -198,8 +198,12 @@ WRITE_VS_CAPTURE = (
     "CHOOSING capture vs write — default to hive_capture. Use hive_write ONLY when the fact is "
     "load-bearing / highest-value (a teammate acting on it wrong would break something) AND either "
     "it must be served right now or its value needs a human to confirm it — and you have an "
-    "approver. Everything else — useful, evidence-grounded, can wait for demand, needs no human "
-    "review — is hive_capture."
+    "approver. Two classes are write-path BY DEFAULT (an approver's yes still required): a clear "
+    "bug with a LANDED FIX — teammates must not re-hit or re-derive it — and a truly OPEN, "
+    "unresolved bug — teammates must not trip it unaware. When an open bug is later fixed, retire "
+    "its memory with hive_write(replaces=) carrying the fix. No approver available -> capture it "
+    "rather than dropping it. Everything else — useful, evidence-grounded, can wait for demand, "
+    "needs no human review — is hive_capture."
 )
 
 # The retire-diagnosis — STALE (replace) vs BAD (prune) — served in the instructions AND in the
@@ -236,7 +240,8 @@ CAPTURE_RECALL_FLOOR = (
     "the body text and the anchor (recall matches content only). Write path: NEVER "
     "hive_write autonomously at task end — write requires an approver; when a lesson is "
     "load-bearing and must serve teammates NOW, ask your operator to approve a hive_write "
-    "rather than silently downgrading it to capture.\n"
+    "rather than silently downgrading it to capture; bug lessons (a landed fix, or a truly "
+    "open unresolved bug) default to this ask-for-write path.\n"
     "- " + NOISE_FLOOR + "\n"
     "- ZERO-CAPTURE ESCAPE — if nothing clears that bar, capture NOTHING and finish: "
     "declining is compliance; a forced capture manufactures noise.\n"
@@ -270,9 +275,9 @@ def render_agent_rules_block() -> str:
         "honor each hit's polarity (never follow a 'dont' as a 'do'). Empty/abstained = no confident "
         "match: proceed, never invent a memory.\n"
         "- CAPTURE BY DEFAULT — hive_capture any durable, non-obvious, evidence-grounded insight "
-        "(bug+fix, gotcha, decision, dead_end, contract). It lands quarantined; independent fleet "
-        "demand promotes the useful ones, the rest decay harmlessly. Pass polarity='dont' for a "
-        "prohibition.\n"
+        "(gotcha, decision, dead_end, contract; bug lessons default to WRITE — see below). It lands "
+        "quarantined; independent fleet demand promotes the useful ones, the rest decay harmlessly. "
+        "Pass polarity='dont' for a prohibition.\n"
         "- WRITE the fast-path — hive_write(text=..., approved_by=...) only for load-bearing facts "
         "that must serve NOW, with an approver's yes (or approved_by='AGI_OVERRIDE' under AGI_MODE). "
         + WRITE_VS_CAPTURE + "\n"
