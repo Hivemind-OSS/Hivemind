@@ -22,6 +22,8 @@ from __future__ import annotations
 
 import json
 import os
+import re
+import shlex
 import sys
 import threading
 import webbrowser
@@ -138,11 +140,24 @@ def _name_arg(body: bytes) -> Optional[str]:
     return name.strip() if isinstance(name, str) and name.strip() else None
 
 
+# A restorable backup name's shell-inert charset: letters / digits / dot / underscore / hyphen with
+# a `.db` suffix (the machine backup-name shape, `hive-<stamp>.db`). It admits NO shell metacharacter
+# (`; | & $ ( ) < > * ?`, whitespace, quotes …), so a validated name cannot break out of the
+# `cp … && rm …` sh -c on the destructive restore path — the belt behind the shlex.quote suspenders.
+_SAFE_BACKUP_NAME = re.compile(r"[A-Za-z0-9._-]+\.db")
+
+
 def _is_safe_backup_name(name: str) -> bool:
-    """A restorable name must be a BARE BASENAME: no path separator, no `..`, not absolute, equal to
-    its own basename. Path traversal ("../shared.db", "/etc/x", "a/b") is refused HERE — before the
-    whitelist membership check and before any child touches the shared data volume. // O(len)."""
+    """A restorable name must be a BARE BASENAME with a shell-inert charset: no path separator, no
+    `..`, not absolute, equal to its own basename, AND matching `^[A-Za-z0-9._-]+\\.db$` so no shell
+    metacharacter survives into the destructive `cp` sh -c. Path traversal ("../shared.db", "/etc/x",
+    "a/b") and injection ("a;b.db", "a b.db", "$(x).db", "a|b.db") are refused HERE — before the
+    whitelist membership check and before any child touches the shared data volume. ← widening this
+    charset to admit a shell metacharacter is a deliberate mutation (shell injection on the restore
+    cp). // O(len)."""
     if "/" in name or "\\" in name or ".." in name or os.path.isabs(name):
+        return False
+    if not _SAFE_BACKUP_NAME.fullmatch(name):
         return False
     return name == os.path.basename(name)
 
@@ -314,12 +329,15 @@ def _restore_worker(name: str, run, env) -> None:
     """The detached restore mechanism: stop the daemon (release WAL locks), copy the chosen IN-VOLUME
     snapshot over /data/shared.db (clearing stale WAL sidecars) in a throwaway container, then restart
     WITHOUT rebuilding. Mirrors cli._restore, but the source is already inside the volume. `name` is a
-    whitelisted bare basename (validated before dispatch). A failed step leaves the daemon down for the
-    operator to see in /api/status. // O(db size) + a restart."""
+    whitelisted bare basename (validated before dispatch) AND shell-quoted into the cp below, so it
+    cannot break out of the sh -c on this destructive path even if validation is ever loosened
+    (defense-in-depth). A failed step leaves the daemon down for the operator to see in /api/status.
+    // O(db size) + a restart."""
     if run(cli._compose("down"), env, capture=False).returncode != 0:
         return                                             # stop failed → nothing overwritten
+    safe = shlex.quote(name)                               # never interpolate a raw name into the sh -c
     cp = run(["docker", "run", "--rm", "--entrypoint", "sh", "-v", "hive-data:/data", cli.IMAGE,
-              "-c", f"cp /data/backups/{name} /data/shared.db && "
+              "-c", f"cp /data/backups/{safe} /data/shared.db && "
                     "rm -f /data/shared.db-wal /data/shared.db-shm"], env)
     if cp.returncode != 0:
         return                                             # copy failed → daemon stays down
@@ -330,9 +348,9 @@ def _h_restore(body, *, run, env) -> Response:
     name = _name_arg(body)
     if name is None:
         return _json(400, {"error": "bad_request"})        # blank/missing name → 400, no child
-    # (1) PATH-TRAVERSAL GUARD — pure, BEFORE any child: a non-basename / traversal / absolute name
-    #     is refused with zero children. ← weakening this to accept a non-basename is a deliberate
-    #     mutation (directory traversal into the shared data volume).
+    # (1) PATH-TRAVERSAL + INJECTION GUARD — pure, BEFORE any child: a non-basename / traversal /
+    #     absolute / shell-metacharacter name is refused with zero children. ← weakening this to
+    #     accept such a name is a deliberate mutation (traversal / shell injection into the volume).
     if not _is_safe_backup_name(name):
         return _json(400, {"error": "unknown_backup"})
     # (2) WHITELIST — the name must be a member of the CURRENT in-volume listing; a well-formed but

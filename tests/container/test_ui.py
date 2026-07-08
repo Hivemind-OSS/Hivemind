@@ -8,6 +8,7 @@ mutation (the break->red->restore->green protocol is run in the build log).
 from __future__ import annotations
 
 import json
+import shlex
 import socket
 import threading
 import urllib.error
@@ -339,6 +340,34 @@ def test_restore_rejects_path_traversal_before_any_child():
                                  run=fake, env=ENV)
         assert resp.status == 400 and body_of(resp) == {"error": "unknown_backup"}, bad
         assert fake.calls == []                            # refused BEFORE any child (pure guard)
+
+
+def test_restore_rejects_shell_metacharacter_names_before_any_child():
+    # BELT (fix layer 1): a name carrying a shell metacharacter — which would break out of the
+    # destructive restore `cp` sh -c — is outside the shell-inert charset, so it is refused 400
+    # unknown_backup with ZERO children (before the whitelist, before the lister). The pure guard,
+    # not the whitelist, does the rejecting: `fake.calls == []` is what widening the charset reds.
+    for bad in ("a;b.db", "a b.db", "$(x).db", "a|b.db", "a&b.db", "`x`.db", "a>b.db"):
+        fake = FakeRun(script=[_lister(_ROWS)])
+        resp = ui.handle_request("POST", "/api/restore", HP, json.dumps({"name": bad}).encode(),
+                                 run=fake, env=ENV)
+        assert resp.status == 400 and body_of(resp) == {"error": "unknown_backup"}, bad
+        assert fake.calls == [], bad                       # refused BEFORE any child (pure guard)
+
+
+def test_restore_worker_shell_quotes_the_backup_name():
+    # SUSPENDERS (fix layer 2, defense-in-depth): even if _restore_worker is ever reached with a
+    # metacharacter name, it shlex.quotes the name into the cp so it can never break out of the
+    # sh -c. The QUOTED form appears in the built command; the raw unquoted form does not.
+    fake = FakeRun()                                       # down / cp / up all default rc-0
+    name = "a;b.db"
+    ui._restore_worker(name, fake, ENV)
+    cp = next(c for c in fake.calls
+              if c[:2] == ["docker", "run"] and seq_in(c, "--entrypoint", "sh"))
+    quoted = shlex.quote(name)
+    assert quoted != name                                  # this name genuinely exercises quoting
+    assert any(f"cp /data/backups/{quoted} /data/shared.db" in tok for tok in cp)   # quoted form
+    assert not any(f"cp /data/backups/{name} /data/shared.db" in tok for tok in cp)  # raw form absent
 
 
 def test_restore_rejects_a_wellformed_name_not_in_the_listing():
