@@ -8,6 +8,11 @@ mutation (the break->red->restore->green protocol is run in the build log).
 from __future__ import annotations
 
 import json
+import socket
+import threading
+import urllib.error
+import urllib.request
+from http.server import ThreadingHTTPServer
 
 import pytest
 
@@ -252,3 +257,206 @@ def test_handler_fault_never_raises_becomes_500():
             raise RuntimeError("child blew up")
     resp = ui.handle_request("GET", "/api/status", H, b"", run=Boom(), env=ENV)
     assert resp.status == 500 and body_of(resp) == {"error": "internal_error"}
+
+
+# ── f6 + c2: the loopback socket shell over a real ThreadingHTTPServer on 127.0.0.1:0 ──
+
+_LIVE_SCRIPT = [
+    (lambda a: seq_in(a, "ps", "ngrok"), proc(stdout="")),                         # tunnel off
+    (lambda a: seq_in(a, "ps", "hive-server"), proc(stdout="hive-server Up (healthy)\n")),
+    (lambda a: seq_in(a, "hive.tools.authctl", "create"), proc(stdout="hive_tok_xyz\n")),
+    (lambda a: seq_in(a, "hive.tools.authctl", "list"), proc(stdout="alice\nbob\n")),
+    (lambda a: seq_in(a, "hive.tools.backupctl"), proc(stdout="/data/backups/x.db\n")),
+    (lambda a: seq_in(a, "logs"), proc(stdout="log line a\nlog line b\n")),
+]
+
+
+@pytest.fixture()
+def live():
+    """A real loopback ThreadingHTTPServer on an ephemeral port, driven by a FakeRun (no Docker).
+    Yields (port, fake) and tears the daemon down."""
+    fake = FakeRun(script=list(_LIVE_SCRIPT))
+    httpd = ThreadingHTTPServer(("127.0.0.1", 0), ui._build_handler(fake, ENV))
+    t = threading.Thread(target=httpd.serve_forever, daemon=True)
+    t.start()
+    try:
+        yield httpd.server_address[1], fake
+    finally:
+        httpd.shutdown()
+        httpd.server_close()
+        t.join(timeout=5)
+
+
+def _get(port, path, headers=None):
+    req = urllib.request.Request(f"http://127.0.0.1:{port}{path}", method="GET")
+    for k, v in (headers or {}).items():
+        req.add_header(k, v)
+    try:
+        with urllib.request.urlopen(req, timeout=5) as r:
+            return r.status, r.headers.get("Content-Type"), r.read()
+    except urllib.error.HTTPError as e:
+        return e.code, e.headers.get("Content-Type"), e.read()
+
+
+def _post(port, path, obj=None, headers=None):
+    data = json.dumps(obj).encode() if obj is not None else b""
+    req = urllib.request.Request(f"http://127.0.0.1:{port}{path}", data=data, method="POST")
+    req.add_header("Content-Type", "application/json")
+    req.add_header("Origin", f"http://127.0.0.1:{port}")   # same-origin unless overridden below
+    for k, v in (headers or {}).items():
+        req.add_header(k, v)
+    try:
+        with urllib.request.urlopen(req, timeout=5) as r:
+            return r.status, r.read()
+    except urllib.error.HTTPError as e:
+        return e.code, e.read()
+
+
+def _raw(port, request_bytes):
+    """Send a fully hand-built request (full control of Host / declared Content-Length) and read
+    the raw response bytes."""
+    s = socket.create_connection(("127.0.0.1", port), timeout=5)
+    s.sendall(request_bytes)
+    s.shutdown(socket.SHUT_WR)
+    chunks = []
+    try:
+        while True:
+            b = s.recv(4096)
+            if not b:
+                break
+            chunks.append(b)
+    except socket.timeout:
+        pass
+    s.close()
+    return b"".join(chunks)
+
+
+def test_live_get_root_is_200_html(live):
+    port, _ = live
+    status, ctype, body = _get(port, "/")
+    assert status == 200 and ctype == "text/html; charset=utf-8"
+    assert body == ui_page.PAGE_HTML.encode("utf-8")
+
+
+def test_live_get_status_is_200_json(live):
+    port, _ = live
+    status, ctype, body = _get(port, "/api/status")
+    assert status == 200 and ctype == "application/json"
+    assert json.loads(body)["server"] == "up"
+
+
+def test_live_all_eight_routes_answer(live):
+    port, _ = live
+    assert _get(port, "/")[0] == 200
+    assert _get(port, "/api/status")[0] == 200
+    assert _get(port, "/api/tokens")[0] == 200
+    assert _get(port, "/api/logs")[0] == 200
+    assert _post(port, "/api/tokens", {"seat": "carol"})[0] == 200
+    assert _post(port, "/api/tokens/revoke", {"seat": "carol"})[0] == 200
+    assert _post(port, "/api/backup")[0] == 200
+    assert _post(port, "/api/lifecycle", {"action": "up"})[0] == 200
+
+
+def test_live_cross_origin_post_is_403(live):
+    port, _ = live
+    code, body = _post(port, "/api/backup", headers={"Origin": "http://evil.example"})
+    assert code == 403 and json.loads(body) == {"error": "forbidden_origin"}
+
+
+def test_live_forged_host_is_403(live):
+    port, _ = live
+    resp = _raw(port, (f"GET /api/status HTTP/1.1\r\nHost: evil.example\r\n"
+                       f"Connection: close\r\n\r\n").encode())
+    assert resp.split(b"\r\n", 1)[0].split()[1] == b"403"
+
+
+def test_live_oversized_declared_length_is_413(live):
+    port, _ = live
+    # forge a huge DECLARED Content-Length with an empty body — the cap rejects before any read.
+    req = (f"POST /api/backup HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\n"
+           f"Origin: http://127.0.0.1:{port}\r\nContent-Length: {ui.MAX_BODY_BYTES + 1}\r\n"
+           f"Connection: close\r\n\r\n").encode()
+    resp = _raw(port, req)
+    assert resp.split(b"\r\n", 1)[0].split()[1] == b"413"
+    assert b"connection: close" in resp.lower()
+
+
+def test_live_daemon_survives_a_bad_request(live):
+    port, _ = live
+    code, _ = _post(port, "/api/tokens")                   # empty body → malformed JSON → 400
+    assert code == 400
+    assert _get(port, "/")[0] == 200                       # the NEXT request still answers
+
+
+def test_live_transport_fault_becomes_500_and_daemon_survives(live, monkeypatch):
+    # force a fault ABOVE the router (in the transport shell) — the _dispatch never-raise turns it
+    # into a 500 and the daemon survives so the next request still answers.
+    port, _ = live
+    real = ui.handle_request
+
+    def boom(*a, **k):
+        raise RuntimeError("transport-level boom")
+    monkeypatch.setattr(ui, "handle_request", boom)
+    status, _ctype, body = _get(port, "/api/status")
+    assert status == 500 and json.loads(body) == {"error": "internal_error"}
+    monkeypatch.setattr(ui, "handle_request", real)        # restore, then prove survival
+    assert _get(port, "/")[0] == 200
+
+
+# ── serve_ui: loopback-only bind, sysexits mapping, browser side-channel ──
+
+
+class _FakeServer:
+    def __init__(self, address, handler):
+        self.server_address = (address[0], address[1] or 4173)
+        self.closed = False
+
+    def serve_forever(self):
+        raise KeyboardInterrupt                            # simulate an immediate Ctrl-C
+
+    def server_close(self):
+        self.closed = True
+
+
+def test_serve_ui_refuses_non_loopback_without_binding():
+    def boom(*a, **k):
+        raise AssertionError("serve_ui must NOT bind a routable host")
+    rc = ui.serve_ui(host="0.0.0.0", run=FakeRun(), env=ENV, open_browser=False, server_factory=boom)
+    assert rc == cli.EX_USAGE                               # fail-fast, no bind
+
+
+def test_serve_ui_bind_oserror_is_unavailable():
+    def oserr(*a, **k):
+        raise OSError("address already in use")
+    rc = ui.serve_ui(run=FakeRun(), env=ENV, open_browser=False, server_factory=oserr)
+    assert rc == cli.EX_UNAVAILABLE
+
+
+def test_serve_ui_keyboardinterrupt_is_ok_and_closes():
+    made = []
+
+    def factory(addr, handler):
+        s = _FakeServer(addr, handler)
+        made.append(s)
+        return s
+    rc = ui.serve_ui(run=FakeRun(), env=ENV, open_browser=False, server_factory=factory)
+    assert rc == cli.EX_OK
+    assert made and made[0].closed is True                 # clean shutdown closed the socket
+
+
+def test_serve_ui_opens_browser_when_requested(monkeypatch):
+    opened = []
+    monkeypatch.setattr(ui.webbrowser, "open", lambda u: opened.append(u))
+    rc = ui.serve_ui(run=FakeRun(), env=ENV, open_browser=True,
+                     server_factory=lambda addr, h: _FakeServer(addr, h))
+    assert rc == cli.EX_OK
+    assert opened and opened[0].startswith("http://127.0.0.1:")
+
+
+def test_serve_ui_no_open_does_not_touch_the_browser(monkeypatch):
+    def forbidden(_u):
+        raise AssertionError("--no-open must not launch a browser")
+    monkeypatch.setattr(ui.webbrowser, "open", forbidden)
+    rc = ui.serve_ui(run=FakeRun(), env=ENV, open_browser=False,
+                     server_factory=lambda addr, h: _FakeServer(addr, h))
+    assert rc == cli.EX_OK

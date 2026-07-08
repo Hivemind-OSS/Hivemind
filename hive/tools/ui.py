@@ -21,7 +21,11 @@ permitted here. Stdlib only — zero new dependencies.
 from __future__ import annotations
 
 import json
+import os
+import sys
+import webbrowser
 from dataclasses import dataclass
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Callable, Mapping, Optional
 
 from hive.tools import cli, ui_page
@@ -253,3 +257,102 @@ def handle_request(method: str, path: str, headers: Mapping[str, str], body: byt
         # never-raise (INV-3): a handler/parse fault becomes a 500 answer; the daemon survives.
         # ← dropping this catch is a deliberate mutation (a bad request would kill the server).
         return _json(500, {"error": "internal_error"})
+
+
+# ── the transport shell: adapt the pure router to a loopback BaseHTTPRequestHandler ──
+# Factored out exactly as hive/app/http_server.py factors _build_handler out of run_http_dual,
+# so the endpoint contract stays unit-testable against the pure function AND a real socket.
+
+_LOOPBACK_BINDS = ("127.0.0.1", "localhost", "::1")   # the only hosts serve_ui will bind
+
+
+def _build_handler(run: cli.Run, env: Mapping[str, str]) -> type:
+    """Build the `BaseHTTPRequestHandler` subclass that reads a request, delegates the WHOLE
+    decision to the pure `handle_request`, and renders the returned `Response` verbatim
+    (status + Content-Type + Content-Length always; Allow on a 405, Connection: close on a 413).
+    The body cap's declared-length check is reused here to AVOID draining an over-cap body — the
+    413 response itself is still the router's (single owner of the cap). All methods route through
+    one dispatch, so a wrong method on a known path is the router's 405, not a stdlib 501."""
+
+    class _UIHandler(BaseHTTPRequestHandler):
+        protocol_version = "HTTP/1.1"                  # keep-alive; every reply frames its length
+        server_version = "hive-ui/1.0"
+
+        def _emit(self, resp: Response) -> None:
+            self.send_response(resp.status)
+            self.send_header("Content-Type", resp.content_type)
+            self.send_header("Content-Length", str(len(resp.body)))
+            if resp.status == 405:                     # advertise the methods the path answers
+                self.send_header("Allow", ", ".join(_methods_for_path(self.path.split("?", 1)[0])))
+            if resp.status == 413:                     # the unread body makes the conn unreusable
+                self.send_header("Connection", "close")
+            self.end_headers()
+            if resp.body and self.command != "HEAD":
+                self.wfile.write(resp.body)
+
+        def _dispatch(self) -> None:
+            try:
+                path = self.path.split("?", 1)[0]      # ignore any query string
+                declared = _declared_length(self.headers)
+                # over-cap: do NOT read the flood body; the router still 413s on the declared length.
+                body = b"" if declared > MAX_BODY_BYTES else (
+                    self.rfile.read(declared) if declared > 0 else b"")
+                resp = handle_request(self.command, path, self.headers, body, run=run, env=env)
+                self._emit(resp)
+            except Exception:
+                # transport-level never-raise (INV-3): the daemon survives any transport fault.
+                # ← dropping this catch is a deliberate mutation (a bad request would kill it).
+                try:
+                    self._emit(_json(500, {"error": "internal_error"}))
+                except Exception:
+                    pass                               # client already gone — swallow
+
+        do_GET = _dispatch
+        do_POST = _dispatch
+        do_PUT = _dispatch
+        do_DELETE = _dispatch
+        do_HEAD = _dispatch
+        do_PATCH = _dispatch
+        do_OPTIONS = _dispatch
+
+        def log_message(self, *args) -> None:          # silence the access log (secret-safe, quiet)
+            return
+
+    return _UIHandler
+
+
+def serve_ui(*, host: str = "127.0.0.1", port: int = 4173, run: Optional[cli.Run] = None,
+             env: Optional[Mapping[str, str]] = None, open_browser: bool = True,
+             server_factory: Callable[..., ThreadingHTTPServer] = ThreadingHTTPServer) -> int:
+    """Bind the LOOPBACK socket and serve the operator console; return a sysexits code. A routable
+    (non-loopback) host is REFUSED fail-FAST (EX_USAGE, NO bind) — the console exposes token
+    mint/revoke, so it must never bind a routable interface (Law 6: boot fails fast). A bind
+    OSError → EX_UNAVAILABLE; opening the browser is a best-effort side-channel that fails OPEN
+    (a headless host just reads the printed URL); Ctrl-C → EX_OK (clean shutdown). // O(1) + serve."""
+    run = run or cli.default_run
+    env = cli._load_dotenv(cli._DOTENV, os.environ) if env is None else env
+    if host not in _LOOPBACK_BINDS:
+        print(f"hive ui: refusing to bind non-loopback host {host!r} — the operator console is "
+              "loopback-only (127.0.0.1). No socket was opened.", file=sys.stderr)
+        return cli.EX_USAGE                            # fail-fast: no bind on a routable host
+    try:
+        httpd = server_factory((host, port), _build_handler(run, env))
+    except OSError as error:
+        print(f"hive ui: cannot bind {host}:{port} — {error} "
+              "(is the console already running, or the port in use?)", file=sys.stderr)
+        return cli.EX_UNAVAILABLE
+    url = f"http://{host}:{httpd.server_address[1]}/"
+    print(f"hive ui: operator console at {url} (loopback-only, tokenless; Ctrl-C to stop)",
+          file=sys.stderr)
+    if open_browser:
+        try:
+            webbrowser.open(url)                       # side-channel: fail OPEN (headless is fine)
+        except Exception:
+            pass
+    try:
+        httpd.serve_forever()
+    except KeyboardInterrupt:
+        print("hive ui: stopped", file=sys.stderr)
+    finally:
+        httpd.server_close()
+    return cli.EX_OK
