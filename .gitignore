@@ -59,6 +59,9 @@ CLAUDE.md
 # Graphify files (man I luh graphify)
 graphify-out
 
+# ── Matrix engine output (transient; never tracked) ──
+matrix-out/
+
 # ── Agent tooling (local only; do not ship) ──
 .claude/
 CLAUDE.md
@@ -71,3 +74,7 @@ CONTEXT/
 
 # ── Server Admin Agent (in development)──
 /queen/
+
+# ── /looper agent-loop scratch state (local only; never shipped) ──
+.looper/
+
