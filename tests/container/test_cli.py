@@ -356,6 +356,72 @@ def test_status_down_server_short_circuits():
     assert not any(seq_in(c, "exec") for c in fake.calls)   # no exec against a down stack
 
 
+# ── _probe_status: the single-owner StatusSnapshot the text + JSON paths both consume ──
+
+
+def test_status_snapshot_is_frozen_slots_with_failsafe_defaults():
+    import dataclasses
+    # Law 2: a frozen carrier whose defaults UNDER-claim (an unreachable stack is reported as
+    # down/None/False, never optimistically up) — so /api/status and _status agree on the safe floor.
+    snap = cli.StatusSnapshot()
+    assert (snap.server, snap.healthy, snap.tunnel_on, snap.tunnel_url, snap.seats) == \
+        ("down", None, False, None, None)
+    assert dataclasses.is_dataclass(snap) and hasattr(cli.StatusSnapshot, "__slots__")
+    with pytest.raises(dataclasses.FrozenInstanceError):
+        snap.server = "up"                                  # frozen: the carrier cannot be mutated
+
+
+def test_probe_status_up_aggregates_health_tunnel_and_seats():
+    fake = FakeRun(script=[
+        (lambda a: seq_in(a, "ps", "ngrok"), proc(stdout="ngrok Up 2 hours\n")),
+        (lambda a: seq_in(a, "ps", "hive-server"), proc(stdout="hive-server Up (healthy)\n")),
+        (lambda a: seq_in(a, "list"), proc(stdout="alice\nbob\n")),
+    ])
+    snap = cli._probe_status(fake, dict(ENV, NGROK_DOMAIN="brain.ngrok.app"))
+    assert snap == cli.StatusSnapshot(server="up", healthy=True, tunnel_on=True,
+                                      tunnel_url="https://brain.ngrok.app/mcp", seats=2)
+    assert any(seq_in(c, "exec", "-T", "hive-server", "python", "-m",
+                      "hive.tools.healthcheck") for c in fake.calls)
+
+
+def test_probe_status_down_short_circuits_with_no_exec():
+    # the down read is a SUCCESSFUL read of the safe floor — and it runs ZERO in-container exec.
+    fake = FakeRun(script=[(lambda a: seq_in(a, "ps", "hive-server"), proc(rc=1))])
+    snap = cli._probe_status(fake, ENV)
+    assert snap == cli.StatusSnapshot()                     # server="down" + all fail-safe defaults
+    assert not any(seq_in(c, "exec") for c in fake.calls)   # no healthcheck/authctl exec when down
+
+
+def test_probe_status_unhealthy_tunnel_off_and_authctl_failure():
+    fake = FakeRun(script=[
+        (lambda a: seq_in(a, "ps", "hive-server"), proc(stdout="hive-server Up\n")),
+        (lambda a: seq_in(a, "hive.tools.healthcheck"), proc(rc=1)),   # unhealthy
+        (lambda a: seq_in(a, "ps", "ngrok"), proc(rc=1)),   # tunnel off
+        (lambda a: seq_in(a, "list"), proc(rc=1)),          # authctl list failed → seats unknown
+    ])
+    snap = cli._probe_status(fake, ENV)
+    assert snap == cli.StatusSnapshot(server="up", healthy=False, tunnel_on=False,
+                                      tunnel_url=None, seats=None)
+
+
+def test_probe_status_tunnel_on_without_domain_has_no_url():
+    fake = FakeRun(script=[
+        (lambda a: seq_in(a, "ps", "ngrok"), proc(stdout="ngrok Up\n")),
+        (lambda a: seq_in(a, "ps", "hive-server"), proc(stdout="hive-server Up\n")),
+    ])
+    snap = cli._probe_status(fake, ENV)                     # ENV carries no NGROK_DOMAIN
+    assert snap.tunnel_on is True and snap.tunnel_url is None
+
+
+def test_exec_backup_shells_the_in_container_backupctl():
+    path = "/data/backups/hive-20260708-000000.db\n"
+    fake = FakeRun(script=[(lambda a: seq_in(a, "hive.tools.backupctl"), proc(stdout=path))])
+    child = cli._exec_backup(fake, ENV)
+    assert child.stdout == path
+    assert seq_in(fake.calls[0], "exec", "-T", "hive-server", "python", "-m",
+                  "hive.tools.backupctl")
+
+
 # ── provisioning: token / revoke / tokens shell to the in-container authctl ─────
 
 

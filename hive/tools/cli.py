@@ -27,6 +27,7 @@ import os
 import subprocess
 import sys
 import time
+from dataclasses import dataclass
 from typing import Callable, Mapping, Optional, Sequence, TextIO
 
 SERVICE = "hive-server"           # single source of the compose service name (mirrors compose.yaml)
@@ -107,6 +108,20 @@ def _rc(proc: subprocess.CompletedProcess) -> int:
 
 HEALTH_POLL_S = 3                 # poll cadence of the bounded health-wait
 DEFAULT_HEALTH_TIMEOUT_S = 180    # override via HIVE_HEALTH_TIMEOUT
+
+
+@dataclass(frozen=True, slots=True)
+class StatusSnapshot:
+    """The single-owner shape of `hive status` (THEORY §6): server up/down, health tri-state,
+    tunnel state + URL, seat count — probed ONCE by `_probe_status`, consumed by BOTH the CLI
+    text path (`_status`) and the UI JSON path (`/api/status`). Frozen + slots; the defaults
+    UNDER-claim (Law 2): an unreachable stack floors to down / None / False, never optimistically
+    up, so neither consumer can render a healthier picture than the probe actually saw."""
+    server: str = "down"                    # "up" | "down"
+    healthy: Optional[bool] = None          # True | False when up; None when down/unknown
+    tunnel_on: bool = False
+    tunnel_url: Optional[str] = None        # the public /mcp URL when the tunnel is up + a domain is set
+    seats: Optional[int] = None             # provisioned seat count; None when the stack is down / list fails
 
 
 # ── verbs ────────────────────────────────────────────────────────────────────────
@@ -256,27 +271,44 @@ def _restore(args, *, run: Run, out: TextIO, env: Mapping[str, str], ask) -> int
     return rc
 
 
-def _status(args, *, run: Run, out: TextIO, env: Mapping[str, str], ask) -> int:
+def _probe_status(run: Run, env: Mapping[str, str]) -> StatusSnapshot:
+    """Probe the live stack ONCE into the single-owner `StatusSnapshot`. A DOWN server
+    short-circuits to the fail-safe floor (`StatusSnapshot()`) running NO in-container exec —
+    an unreachable stack is a safe, cheap, non-mutating read (Law 6: side-channels fail OPEN,
+    never spawning a child against a stack that is down). When up, it execs the in-container
+    healthcheck (health tri-state), reads the tunnel `ps` + NGROK_DOMAIN (state + public URL),
+    and lists seats via authctl. // O(1) + the child probes."""
     ps = run(_compose("ps", SERVICE), env)
     if ps.returncode != 0 or "Up" not in (ps.stdout or ""):
-        print("server: down", file=out)
-        return EX_UNAVAILABLE
+        return StatusSnapshot()                            # down: the safe floor, ZERO exec
     hc = run(_compose("exec", "-T", SERVICE, "python", "-m", "hive.tools.healthcheck"), env)
-    health = "healthy" if hc.returncode == 0 else "UNHEALTHY"
     tn = run(_compose("ps", "ngrok", profile=TUNNEL_PROFILE), env)
     tunnel_on = tn.returncode == 0 and "Up" in (tn.stdout or "")
     domain = (env.get("NGROK_DOMAIN") or "").strip()
-    if tunnel_on:
-        tunnel = f"on — https://{domain}/mcp" if domain else "on"
+    tunnel_url = f"https://{domain}/mcp" if (tunnel_on and domain) else None
+    tok = _exec_authctl(run, env, "list")
+    seats = (len([ln for ln in (tok.stdout or "").splitlines() if ln.strip()])
+             if tok.returncode == 0 else None)
+    return StatusSnapshot(server="up", healthy=hc.returncode == 0, tunnel_on=tunnel_on,
+                          tunnel_url=tunnel_url, seats=seats)
+
+
+def _status(args, *, run: Run, out: TextIO, env: Mapping[str, str], ask) -> int:
+    """Format the single-owner `StatusSnapshot` into the operator's byte-identical status text.
+    The probe logic lives ONCE in `_probe_status` (shared with the UI /api/status JSON path);
+    this is only the text projection. // O(1) + the probe."""
+    snap = _probe_status(run, env)
+    if snap.server == "down":
+        print("server: down", file=out)
+        return EX_UNAVAILABLE
+    health = "healthy" if snap.healthy else "UNHEALTHY"
+    if snap.tunnel_on:
+        tunnel = f"on — {snap.tunnel_url}" if snap.tunnel_url else "on"
     else:
         tunnel = "off (loopback only)"
-    tok = _exec_authctl(run, env, "list")
-    if tok.returncode == 0:
-        seats = str(len([ln for ln in (tok.stdout or "").splitlines() if ln.strip()]))
-    else:
-        seats = "unknown"
+    seats = str(snap.seats) if snap.seats is not None else "unknown"
     print(f"server: up ({health})\ntunnel: {tunnel}\nseats:  {seats}", file=out)
-    return EX_OK if hc.returncode == 0 else EX_UNAVAILABLE
+    return EX_OK if snap.healthy else EX_UNAVAILABLE
 
 
 def _down(args, *, run: Run, out: TextIO, env: Mapping[str, str], ask) -> int:
@@ -355,11 +387,18 @@ def _logs(args, *, run: Run, out: TextIO, env: Mapping[str, str], ask) -> int:
     return _rc(run(_compose(*argv), env, capture=False))       # streams; Ctrl-C detaches
 
 
+def _exec_backup(run: Run, env: Mapping[str, str]) -> subprocess.CompletedProcess:
+    """The one-shot in-container snapshot child (backupctl); its stdout is the snapshot dest
+    path. Single-sourced so the CLI `backup` verb and the UI `/api/backup` route shell the SAME
+    argv (never a second, drifting copy of the exec line). // O(db size)."""
+    return run(_compose("exec", "-T", SERVICE, "python", "-m", "hive.tools.backupctl"), env)
+
+
 def _backup(args, *, run: Run, out: TextIO, env: Mapping[str, str], ask) -> int:
     """One-shot snapshot of the warm store + prune to retention.backup_keep — exec the
     in-container backupctl and forward the snapshot path. Manual (no scheduler); run it on
     whatever cadence you like — it keeps the backup_keep most-recent snapshots you take."""
-    child = run(_compose("exec", "-T", SERVICE, "python", "-m", "hive.tools.backupctl"), env)
+    child = _exec_backup(run, env)
     if child.returncode != 0:
         sys.stderr.write(child.stderr or "")
         return EX_UNAVAILABLE
