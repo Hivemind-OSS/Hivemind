@@ -1,7 +1,7 @@
 """censusctl — the in-container census-receipt ingest tool (the S4 kernel feed).
 
-`python -m hive.tools.censusctl ingest <receipt.json|->` decodes a signed census DSSE
-receipt, derives the SHA-bound change outcome server-side, joins the receipt's touched
+`python -m hive.tools.censusctl ingest <receipt.json|->` decodes an unsigned census
+DSSE-shaped receipt, derives the SHA-bound change outcome server-side, joins the receipt's touched
 ``path::Symbol`` subjects against episode anchors, and appends one ``change_outcome``
 evidence row per matched episode — plus, pre-merge under a full version stamp, the
 mechanical ``outcome_verified_*`` / ``verify_*`` rider rows and the advisory
@@ -18,15 +18,16 @@ recall path. Injection seams (`connect_fn` / `stdin` / `out` / `now`) keep the w
 unit-testable without a real DB file.
 
 STDOUT carries exactly ONE machine-readable JSON report line
-(inserted/already_recorded/matched/skipped_lines/keyid + the verified_helped/
+(inserted/already_recorded/matched/skipped_lines + the verified_helped/
 verified_hurt/verify_current/verify_stale/stale_suspects rider counters); human
 notes go to STDERR.
 Exit codes are the contract (an exit code cannot lie like a log can): 0 ok — including
 an honest matched=0; 65 EX_DATAERR — the receipt is refused (unreadable/not JSON/bad
 DSSE shape/digest mismatch/no decided evidence), ZERO rows written; 70 EX_SOFTWARE —
-an internal fault (DB locked beyond busy_timeout, store fault), fail fast. Signature
-verification stays census-side: the DSSE keyid is surfaced in the report and
-authenticity rides the operator channel (the authctl trust tier).
+an internal fault (DB locked beyond busy_timeout, store fault), fail fast. The receipt is
+unsigned by policy — no signature is verified here; authenticity rides the operator
+channel (transport/auth: loopback or the authctl per-seat token tier), while integrity
+rides the subject-digest re-check inside the parse.
 """
 from __future__ import annotations
 
@@ -64,7 +65,7 @@ def main(argv: Optional[list[str]] = None, *, env: Optional[Mapping[str, str]] =
 
     parser = argparse.ArgumentParser(
         prog="hive.tools.censusctl",
-        description="Feed a signed census receipt's change outcome into the "
+        description="Feed an unsigned census receipt's change outcome into the "
                     "append-only evidence ledger.")
     parser.add_argument("--db", default=None,
                         help="SQLite store path (default: $HIVE_STORE__DB_PATH)")
@@ -127,7 +128,6 @@ def main(argv: Optional[list[str]] = None, *, env: Optional[Mapping[str, str]] =
     # the ONLY stdout line — the machine-readable report (canonical key order)
     print(json.dumps({"already_recorded": report.already_recorded,
                       "inserted": list(report.inserted),
-                      "keyid": report.keyid,
                       "matched": report.matched,
                       "skipped_lines": report.skipped_lines,
                       "stale_suspects": report.stale_suspects,
@@ -143,7 +143,7 @@ def main(argv: Optional[list[str]] = None, *, env: Optional[Mapping[str, str]] =
           f"verified_helped={report.verified_helped} "
           f"verified_hurt={report.verified_hurt} "
           f"verify_current={report.verify_current} "
-          f"verify_stale={report.verify_stale} keyid={report.keyid}",
+          f"verify_stale={report.verify_stale}",
           file=sys.stderr)
     return EX_OK
 

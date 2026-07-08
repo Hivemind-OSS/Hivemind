@@ -1,7 +1,7 @@
 """censusctl — the in-container census-receipt ingest tool (the authctl sibling).
 
 Injection seams (connect_fn / stdin / out / now / env) keep every path unit-testable
-without Docker; the REAL signed S3 receipt (tests/data/receipt.real.json) ingesting
+without Docker; the REAL unsigned S3 receipt (tests/data/receipt.real.json) ingesting
 against a seeded real :memory: store is the offline half of D7. Exit codes are the
 contract: 0 ok, 65 refused (bad receipt — zero rows), 70 internal fault."""
 from __future__ import annotations
@@ -143,7 +143,6 @@ def test_real_receipt_lands_change_outcome_and_verify_rows_with_the_receipt_shas
     # empty — the honest abstention (only a DECIDED failing run with reach backwrites).
     report = json.loads(out)
     assert report["matched"] == 1 and len(report["inserted"]) == 2
-    assert report["keyid"] == envelope["signatures"][0]["keyid"]
     assert (report["verified_helped"], report["verified_hurt"]) == (0, 0)
     assert (report["verify_current"], report["verify_stale"]) == (0, 1)
 
@@ -259,13 +258,12 @@ def test_report_golden_one_json_line_on_stdout():
     assert len(lines) == 1                           # stdout is the report, nothing else
     report = json.loads(lines[0])
     assert set(report) == {"inserted", "already_recorded", "matched",
-                           "skipped_lines", "keyid", "verified_helped",
+                           "skipped_lines", "verified_helped",
                            "verified_hurt", "verify_current", "verify_stale",
                            "stale_suspects"}
-    envelope = json.loads(REAL_RECEIPT.read_text())
     assert lines[0] == json.dumps(
         {"already_recorded": 0, "inserted": report["inserted"],
-         "keyid": envelope["signatures"][0]["keyid"], "matched": 1,
+         "matched": 1,
          "skipped_lines": 0, "stale_suspects": 0, "verified_helped": 0,
          "verified_hurt": 0, "verify_current": 0, "verify_stale": 1},
         sort_keys=True, separators=(",", ":"))

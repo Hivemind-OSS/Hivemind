@@ -89,8 +89,8 @@ def test_isolation_frac_is_cut():
 def test_autonomy_verified_promotion_defaults_on_and_env_opts_out():
     # the verified-promotion rung GRADUATED to default-ON on the L4 powered gate (+0.243
     # success, FSR 0.0 at power; the §9.9 graduation exception). The operator opts OUT via
-    # env, which coerces like every bool field; the residual receipt-authenticity boundary
-    # (keyid pinning) is tracked separately, NOT closed by this flag.
+    # env, which coerces like every bool field. Receipt authenticity is out of scope by
+    # design (receipts are unsigned; the ingest door verifies no signature).
     assert Config.load(db_path=":memory:").autonomy.verified_promotion is True
     off = Config.load(db_path=":memory:",
                       env={"HIVE_AUTONOMY__VERIFIED_PROMOTION": "false"})

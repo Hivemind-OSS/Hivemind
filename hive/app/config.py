@@ -111,8 +111,9 @@ class AutonomyConfig:
     # of quarantine — a safety-loosening rung — but GRADUATED to default-ON on the L4 powered
     # gate (+0.243 success, FSR 0.0 at power; the §9.9 graduation exception). Opt OUT with
     # HIVE_AUTONOMY__VERIFIED_PROMOTION=false ⇒ no reader handle wired, the rung unreachable,
-    # the envelope byte-identical to the strict build. Residual OPEN gate: receipt authenticity
-    # (keyid pinning) — a fabricated receipt still promotes at the ingest door; tracked, not closed.
+    # the envelope byte-identical to the strict build. Receipt authenticity is out of scope by
+    # design: receipts are unsigned and the ingest door verifies no signature — authenticity
+    # rides the transport/auth channel (loopback or the authctl per-seat token tier), not the receipt.
     verified_promotion: bool = True
 
     def __post_init__(self) -> None:

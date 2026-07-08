@@ -407,7 +407,7 @@ def _backup(args, *, run: Run, out: TextIO, env: Mapping[str, str], ask) -> int:
 
 
 def _ingest(args, *, run: Run, out: TextIO, env: Mapping[str, str], ask) -> int:
-    """Feed a signed census receipt's change outcome into the evidence ledger — exec
+    """Feed an unsigned census receipt's change outcome into the evidence ledger — exec
     the in-container censusctl with the receipt piped over stdin (the documented
     `input=` seam): a host path does not exist in-container, so the bytes travel, not
     the name. Post-merge outcomes ride flags; the tag stays server-derived. Forwards
@@ -517,7 +517,7 @@ def main(argv: Optional[list[str]] = None, *, run: Optional[Run] = None,
     p_ui.add_argument("--no-open", action="store_true",
                       help="serve without opening the native browser (headless / remote host)")
     p_ingest = sub.add_parser(
-        "ingest", help="feed a signed census receipt's outcome into the evidence ledger")
+        "ingest", help="feed an unsigned census receipt's outcome into the evidence ledger")
     p_ingest.add_argument("receipt", help="path to the receipt JSON "
                                           "(piped to the in-container censusctl)")
     p_ingest.add_argument("--post-merge", action="store_true",

@@ -1,7 +1,7 @@
 """The in-situ D7 gate for the census change-outcome feed (skip-guarded live tier).
 
 The BUGS.md green-suite-inert-real-path antidote (BUG-002/003/005/007/011/012/013 class):
-a REAL signed receipt, fed through the REAL `hive ingest` CLI (real `docker compose exec`,
+a REAL unsigned receipt, fed through the REAL `hive ingest` CLI (real `docker compose exec`,
 real stdin pipe, real censusctl) into a REAL running hive serving MCP over HTTP, lands a
 REAL `evidence_events` row in the same WAL store the daemon serves — while it serves (the
 two-process write is part of what D7 proves). Then, live: O7 (trust untouched), idempotent
@@ -12,9 +12,9 @@ daemon; skipped honestly otherwise). The stack is a THROWAWAY compose project on
 isolated volume and a non-default host port — never the operator's `hive-data` or :8765
 (the compose-named-volume isolation lesson).
 
-An optional second leg regenerates a FRESH signed receipt from the sibling hive-census
-checkout (ephemeral throwaway key) and repeats the ingest — skipped when the sibling
-checkout or its runner is absent, so the gate never depends on it.
+An optional second leg regenerates a FRESH unsigned receipt from the sibling hive-census
+checkout and repeats the ingest — skipped when the sibling checkout or its runner is
+absent, so the gate never depends on it.
 """
 from __future__ import annotations
 
@@ -34,7 +34,7 @@ _ROOT = Path(__file__).resolve().parents[2]
 _RUN = os.environ.get("HIVE_RUN_DOCKER_TESTS") == "1"
 
 RECEIPT = _ROOT / "tests" / "data" / "receipt.real.json"
-# a real subject of the real signed S3 receipt — the join target
+# a real subject of the real unsigned S3 receipt — the join target
 ANCHOR = "matrix/_extract_monolith.py::LanguageConfig"
 _CENSUS_REPO = _ROOT.parent / "hive-census"
 _MATRIX_REPO = _ROOT.parent / "matrix"
@@ -169,7 +169,6 @@ def test_d7_gate_real_receipt_real_row_o7_idempotent_byte_inert(stack):
     assert report["matched"] == 1 and len(report["inserted"]) == 2, report
     assert (report["verified_helped"], report["verified_hurt"]) == (0, 0), report
     assert (report["verify_current"], report["verify_stale"]) == (0, 1), report
-    assert report["keyid"] == envelope["signatures"][0]["keyid"]
 
     # 4. exactly the two REAL rows, in the SAME store the daemon serves, SHA-bound
     rows = _evidence_rows(env)
@@ -231,21 +230,17 @@ def _census_runnable() -> bool:
 @live
 @pytest.mark.skipif(not _census_runnable(),
                     reason="optional leg — needs the sibling hive-census checkout + uv")
-def test_d7_optional_leg_fresh_signed_receipt_ingests(stack, tmp_path):
-    """Regenerate a FRESH signed receipt (ephemeral key) for the same real change and
-    repeat ingest + idempotency. Optional: the gate never depends on the sibling repo.
-    Self-sufficient: seeds its own anchored episode (order-independent of the gate
-    test; on the shared module stack matched can therefore be > 1)."""
+def test_d7_optional_leg_fresh_unsigned_receipt_ingests(stack, tmp_path):
+    """Regenerate a FRESH unsigned receipt for the same real change and repeat ingest +
+    idempotency. Optional: the gate never depends on the sibling repo. Self-sufficient:
+    seeds its own anchored episode (order-independent of the gate test; on the shared
+    module stack matched can therefore be > 1)."""
     port, env = stack
     w = _mcp(port, "hive_write", {
         "text": "fresh-receipt leg: LanguageConfig drives the per-language "
                 "extraction registry",
         "approved_by": "d7-optional-leg", "kind": "gotcha", "anchor": ANCHOR})
     assert w["status"] == "approved", w
-    key = tmp_path / "d7-ephemeral.pem"
-    gen = subprocess.run(["openssl", "genpkey", "-algorithm", "ed25519",
-                          "-out", str(key)], capture_output=True, text=True, timeout=60)
-    assert gen.returncode == 0, gen.stderr
     fixture_prov = json.loads(base64.b64decode(
         json.loads(RECEIPT.read_text())["payload"]))["predicate"]["provenance"]
     fresh = tmp_path / "fresh-receipt.json"
@@ -253,7 +248,7 @@ def test_d7_optional_leg_fresh_signed_receipt_ingests(stack, tmp_path):
         ["uv", "run", "hive-census", "build", "--repo", str(_MATRIX_REPO),
          "--base", fixture_prov["base_sha"], "--head", fixture_prov["head_sha"],
          "--out", str(fresh)],
-        cwd=str(_CENSUS_REPO), env={**os.environ, "HIVE_CENSUS_SIGNING_KEY": str(key)},
+        cwd=str(_CENSUS_REPO), env=os.environ.copy(),
         capture_output=True, text=True, timeout=1800)
     assert build.returncode == 0, f"hive-census build failed:\n{build.stderr[-3000:]}"
 
@@ -264,7 +259,7 @@ def test_d7_optional_leg_fresh_signed_receipt_ingests(stack, tmp_path):
     print(f"D7-EVIDENCE fresh-receipt-report: {json.dumps(report, sort_keys=True)}")
     assert report["matched"] >= 1                  # the anchored episode(s) join
     # per matched episode the batch renders change_outcome + verify_stale. The fresh
-    # receipt is a DIFFERENT signed artifact (new timestamps ⇒ new digest ⇒ new
+    # receipt is a DIFFERENT artifact (new timestamps ⇒ new digest ⇒ new
     # change_outcome rows); the verify rows are digest-free change-level facts, so
     # they dedup against the gate test's rows when the rebuilt graph identity matches.
     rendered = 2 * report["matched"]
