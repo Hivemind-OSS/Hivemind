@@ -208,6 +208,11 @@ All notable changes to this project are documented here.
   config it is resolved at boot — there is no live reload (tune via `.env` then `hive up`).
 
 ## Changed
+- The operator docs (`HIVE-ADMIN.md` §8, `skills/hive-connect-team/SKILL.md`,
+  `skills/hive-operate/SKILL.md`, `llms.txt`) and the `hive connect` edge-tools breadcrumb now
+  reference the published **`hive-edge`** CLI (`git+https://github.com/Hivemind-OSS/Hive-edge`)
+  instead of the retired `hive-census`/`comb-drift` names — `hive-edge census init` /
+  `census build` / `upgrade` replace the old verbs throughout.
 - `OPERATIONS.md` moved from the gitignored `docs/` tree to the repo root so it ships with the
   release; the long-form operations & tuning-evidence reference now travels with the repo, and the
   references in `llms.txt`, `skills/`, and the README layout point at the new location.

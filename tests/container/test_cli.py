@@ -444,10 +444,10 @@ def test_upgrade_prints_manual_hint_when_rollback_itself_fails(capsys):
     assert "hive restore" in err
 
 
-def test_connect_prints_census_edge_tools_breadcrumb(capsys):
-    # connect cross-references the edge-tools install (hive-census init) without merging the verb.
+def test_connect_prints_edge_tools_breadcrumb(capsys):
+    # connect cross-references the edge-tools install (hive-edge census init) without merging the verb.
     cli.main(["connect"], run=FakeRun(), out=io.StringIO(), env=ENV)
-    assert "hive-census init" in capsys.readouterr().err
+    assert "hive-edge census init" in capsys.readouterr().err
 
 
 # ── status: aggregation (ps + in-container healthcheck + tunnel + seat count) ───

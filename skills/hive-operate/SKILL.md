@@ -68,17 +68,17 @@ digest, which the ingest door re-checks against the predicate.
 
 ### Automated post-merge wiring (`.githooks/post-merge`)
 
-The repo ships a `post-merge` hook that closes this loop on every merge without an operator in
-the path: it builds an unsigned receipt for `ORIG_HEAD..HEAD` (`hive-census build --propagate
---hive-url …`) and feeds it via `hive ingest <receipt> --post-merge --verdict pass --signal
-none` (`none` is honest for a bare local merge — no rollout telemetry checked it, so it records
-as unverified judgment; CI can re-ingest with a stronger signal). Enable once with
-`git config core.hooksPath .githooks`. No key or setup is required — receipts are unsigned by
-policy; the ingest-door trust boundary is transport/auth (loopback locally, per-seat tokens over
+`hive-edge census init` (above) writes a `post-merge` hook that closes this loop on every merge
+without an operator in the path: it builds an unsigned receipt for `ORIG_HEAD..HEAD` (`hive-edge
+census build --propagate --hive-url …`) and feeds it via `hive ingest <receipt> --post-merge
+--verdict pass --signal none` (`none` is honest for a bare local merge — no rollout telemetry
+checked it, so it records as unverified judgment; CI can re-ingest with a stronger signal). Enable
+once with `git config core.hooksPath .githooks`. No key or setup is required — receipts are unsigned
+by policy; the ingest-door trust boundary is transport/auth (loopback locally, per-seat tokens over
 a tunnel), not a receipt signature. The hook is a fail-open side-channel: build + ingest run
-detached in the background, output lands in `~/.hive-census/last-postmerge.log`, and any missing
-piece (census venv, `ORIG_HEAD`, hive CLI) skips silently — a merge is never delayed or failed by
-evidence plumbing.
+detached in the background, output lands in `~/.hive-edge/last-postmerge.log`, and any missing
+piece (`hive-edge` on PATH, `ORIG_HEAD`, hive CLI) skips silently — a merge is never delayed or
+failed by evidence plumbing.
 
 ## Posture (why)
 

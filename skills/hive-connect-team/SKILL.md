@@ -55,15 +55,15 @@ Then the teammate uses the **local** loopback line above as-is — no ngrok, no 
 
 ## Edge tools — install & stay current
 
-Every connected participant (local or remote) also installs the **census edge bundle** and wires the
-fail-open post-merge census hook — one install, then `hive-census init`:
+Every connected participant (local or remote) also installs the **`hive-edge` CLI** and wires the
+fail-open post-merge census hook — one install, then `hive-edge census init`:
 
 ```bash
-uv tool install hive-census --from git+https://github.com/Hivemind-OSS/hive-census@release
-hive-census init --repo . --hive-url <the /mcp URL `hive connect` printed>
+uv tool install hive-edge --from git+https://github.com/Hivemind-OSS/Hive-edge@release
+hive-edge census init --repo . --hive-url <the /mcp URL `hive connect` printed>
 ```
 
-The full flow — the daily release nudge, `hive-census upgrade`, and the server's own `hive upgrade`
+The full flow — the daily release nudge, `hive-edge upgrade`, and the server's own `hive upgrade`
 — is **`HIVE-ADMIN.md` §8** (the single source; not duplicated here).
 
 ## Seat hygiene & offboarding
