@@ -10,9 +10,10 @@ import re
 from hive.app import onboard_ref
 from hive.app.onboard_ref import (
     AGENT_RULES_BLOCK, AUTO_APPROVE_TOOLS, BAD_VS_STALE, CAPTURE_RECALL_FLOOR,
-    CAPTURE_TAXONOMY, CLAUDE_CODE_HOOKS, CONTRACT_VERSION, NOISE_FLOOR,
-    ONBOARDING_PROCEDURE, ONBOARDING_REFERENCE, RULES_END, RULES_START,
-    SERVER_INSTRUCTIONS, VALUE_RUBRIC, WRITE_VS_CAPTURE,
+    CAPTURE_TAXONOMY, CLAUDE_CODE_HOOKS, CONTRACT_VERSION, EDGE_CLI,
+    MIN_EDGE_VERSION, MINT_DIRECTIVE, NOISE_FLOOR, ONBOARDING_PROCEDURE,
+    ONBOARDING_REFERENCE, REMEDIATION_NOTICE, RULES_END, RULES_START,
+    SERVER_INSTRUCTIONS, VALUE_RUBRIC, VERIFY_DIRECTIVE, WRITE_VS_CAPTURE,
     bundle_digest, render_agent_rules_block, render_allowlist,
 )
 from hive.app.tool_defs import TOOL_DEFINITIONS
@@ -21,7 +22,7 @@ from hive.domain.kinds import render_taxonomy
 # Regenerate when the bundle legitimately changes (and bump CONTRACT_VERSION) — the pre-commit
 # contract-version guard does this automatically, or by hand:
 #   python -c "from hive.app.onboard_ref import bundle_digest; print(bundle_digest())"
-_GOLDEN_BUNDLE_SHA256 = "4c3214397c99957f7eb689f2e827f23ef4c499acecbaadaef727325126c64468"
+_GOLDEN_BUNDLE_SHA256 = "dde10a061ab9f4cf7487e385807c9b971868a32580c31ddc4b9b039e18f39dae"
 
 
 def test_server_instructions_cover_the_verbs_and_search_first_timing():
@@ -319,10 +320,89 @@ def test_floor_reaches_the_served_instructions():
     assert CAPTURE_RECALL_FLOOR in SERVER_INSTRUCTIONS
 
 
-def test_claude_code_hooks_is_valid_json_with_the_three_nudge_events():
+def test_claude_code_hooks_is_valid_json_with_the_six_lifecycle_events():
     h = json.loads(CLAUDE_CODE_HOOKS)                # malformed JSON would strand the operator
-    assert set(h["hooks"]) == {"UserPromptSubmit", "Stop", "SubagentStop"}
-    # recall fires on prompt submit; capture fires on agent AND subagent stop
-    assert "hive_recall" in h["hooks"]["UserPromptSubmit"][0]["hooks"][0]["command"]
-    for ev in ("Stop", "SubagentStop"):
-        assert "hive_capture" in h["hooks"][ev][0]["hooks"][0]["command"]
+    hooks = h["hooks"]
+    assert set(hooks) == {"UserPromptSubmit", "PreToolUse", "PostToolUse",
+                          "SessionStart", "Stop", "SubagentStop"}
+    # the two static echo nudges are KEPT (no CLI dependency — pure context injection)
+    assert "hive_recall" in hooks["UserPromptSubmit"][0]["hooks"][0]["command"]
+    assert "hive_capture" in hooks["SubagentStop"][0]["hooks"][0]["command"]
+
+    def cmd(ev):
+        return hooks[ev][0]["hooks"][0]["command"]
+    # the four engine events are BARE `hive-edge hook <event>` commands — one console script,
+    # no sh -c wrapper and no venv-reexec mint_fp.py path
+    assert cmd("PreToolUse") == "hive-edge hook pre-capture"
+    assert cmd("PostToolUse") == "hive-edge hook post-recall"
+    assert cmd("SessionStart") == "hive-edge hook session-start"
+    assert cmd("Stop") == "hive-edge hook stop"
+    # the capture/recall matchers are the exact MCP tool names
+    assert hooks["PreToolUse"][0]["matcher"] == "mcp__hive__hive_capture"
+    assert hooks["PostToolUse"][0]["matcher"] == "mcp__hive__hive_recall"
+    assert "mint_fp.py" not in CLAUDE_CODE_HOOKS      # the venv-reexec fallback is gone
+
+
+# ── the harness-agnostic edge-CLI contract: mint/verify/upgrade + the serving rider ──
+def test_edge_cli_names_install_version_floor_and_upgrade():
+    """EDGE_CLI teaches the tooling loop on EVERY runtime: the version check, the uv install
+    line, the MIN_EDGE_VERSION floor, and `hive-edge upgrade` with the rollback-pin caveat."""
+    e = EDGE_CLI
+    assert "hive-edge --version" in e
+    assert "uv tool install hive-edge" in e            # the install line (repo link included)
+    assert MIN_EDGE_VERSION in e                        # the capability floor
+    assert "hive-edge upgrade" in e
+    assert "pin" in e.lower()                           # the rollback-pin refusal caveat
+
+
+def test_edge_cli_and_directives_ride_both_channels():
+    """§8c both-channels: mint/verify/EDGE_CLI reach the agent on the served floor
+    (SERVER_INSTRUCTIONS) AND in the installable rules block — one source, no drift."""
+    block = render_agent_rules_block()
+    for needle in ("hive-edge mint", "hive-edge verify", "hive-edge --version",
+                   MIN_EDGE_VERSION):
+        assert needle in SERVER_INSTRUCTIONS, f"{needle!r} missing from the served floor"
+        assert needle in block, f"{needle!r} missing from the rules block"
+
+
+def test_reonboard_names_the_edge_upgrade_step():
+    """RE-ONBOARD must run `hive-edge upgrade` so the CLI matches the new contract."""
+    assert "hive-edge upgrade" in ONBOARDING_PROCEDURE
+
+
+def test_floor_mint_directive_names_fp_meta_and_the_conditional_hook():
+    """The TASK-END capture directive: mint the fp with `hive-edge mint`, pass the printed
+    combdrift/fp as meta; the where-the-hook-is-firing conditional so a hookless harness self-runs."""
+    f = CAPTURE_RECALL_FLOOR
+    assert MINT_DIRECTIVE in f                          # single-sourced into the floor
+    assert "hive-edge mint" in f and "combdrift/fp" in f and "meta" in f
+    assert "installed and firing" in f                  # the conditional hook clause
+
+
+def test_floor_verify_directive_names_stale_reference_fallback_and_reconciliation():
+    """The RECALL-BEFORE-EDIT verify directive: `hive-edge verify`, stale => REFERENCE ONLY,
+    the last_verified / include_stale_suspects fallback, and the local-verdict-wins reconciliation."""
+    f = CAPTURE_RECALL_FLOOR
+    assert VERIFY_DIRECTIVE in f
+    assert "hive-edge verify" in f
+    assert "stale" in f and "REFERENCE ONLY" in f
+    assert "last_verified" in f and "include_stale_suspects" in f   # the two-tier fallback
+    assert "point-local verdict wins" in f.lower()      # local `current` overrides a server rider
+
+
+def test_edge_directives_carry_the_conditional_on_both_triggers():
+    """Both the mint and the verify directive carry the where-installed-and-firing conditional,
+    so a hookless runtime knows to run the CLI itself (mutation 9 target)."""
+    assert "installed and firing" in MINT_DIRECTIVE
+    assert "installed and firing" in VERIFY_DIRECTIVE
+
+
+def test_remediation_notice_names_the_option_vocabulary_without_hive_flag():
+    """The server rider text carries the full single-anchor option set — outcome-now vs the
+    human-gated supersede/replaces-vs-prune per BAD_VS_STALE — and NEVER names hive_flag
+    (a memory-vs-memory tool, not a single stale anchor)."""
+    r = REMEDIATION_NOTICE
+    for token in ("hive_outcome", "hive_supersede", "hive_write(replaces=", "hive_prune",
+                  "BAD_VS_STALE", "never retire on your own judgment"):
+        assert token in r, token
+    assert "hive_flag" not in r

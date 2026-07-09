@@ -17,6 +17,7 @@ import json
 
 import numpy as np
 
+from hive.app.onboard_ref import REMEDIATION_NOTICE
 from hive.domain.evidence_kinds import EK_VERIFY_CURRENT, EK_VERIFY_STALE
 from tests.fakes._fakes import FakeProvider
 from tests.mcp._helpers import build_real_server, content, tool_call
@@ -112,3 +113,42 @@ def test_reader_fault_serves_the_envelope_without_stamps():
                             plant=plant)
     assert env["abstained"] is False                 # recall itself is unbroken
     assert all("last_verified" not in h for h in env["reference_context"])
+
+
+# ── the server-side stale remediation rider (attaches on last_verified.state == "stale") ──
+def test_stale_hit_carries_the_remediation_rider():
+    """A hit the SERVER already knows is stale carries REMEDIATION_NOTICE on EVERY harness — the
+    retire/outcome options reach an agent with zero client tooling, no hive-edge required."""
+    server, _ = build_real_server()
+
+    def plant(eid: int) -> None:
+        server.store.append_evidence([
+            (eid, EK_VERIFY_STALE, "census", 200, _verify_payload("2" * 40))])
+
+    env = _write_and_recall(server, "an anchored lesson the code has moved past", plant=plant)
+    hit = env["reference_context"][0]
+    assert hit["last_verified"]["state"] == "stale"
+    assert hit["remediation"] == REMEDIATION_NOTICE   # the options ride the stale hit verbatim
+
+
+def test_current_hit_carries_no_remediation_rider():
+    """The rider is STALE-ONLY: a current hit is not decorated with a retire-it menu (mutation 12:
+    an unconditional attach reds here)."""
+    server, _ = build_real_server()
+
+    def plant(eid: int) -> None:
+        server.store.append_evidence([
+            (eid, EK_VERIFY_CURRENT, "census", 100, _verify_payload())])
+
+    env = _write_and_recall(server, "an anchored lesson still current", plant=plant)
+    hit = env["reference_context"][0]
+    assert hit["last_verified"]["state"] == "current"
+    assert "remediation" not in hit                   # byte-inert on a healthy hit
+
+
+def test_never_verified_hit_carries_no_remediation_rider():
+    """No stamp ⇒ no state ⇒ no rider (mutation 12: a never-attach reds the stale test above)."""
+    server, _ = build_real_server()
+    env = _write_and_recall(server, "a plain lesson nobody ever verified")
+    hit = env["reference_context"][0]
+    assert "remediation" not in hit

@@ -49,7 +49,31 @@ from hive.domain.kinds import render_taxonomy
 # The single owner of the bundle version. Bump it (and regenerate the keystone golden) on ANY
 # change to AGENT_RULES_BLOCK / CLAUDE_CODE_HOOKS / the rendered allowlist. The beacon stamps this
 # on every tool result; an agent whose installed marker differs re-onboards.
-CONTRACT_VERSION: str = "v.05"
+CONTRACT_VERSION: str = "v.06"
+
+# The minimum hive-edge CLI version this contract requires (mint / verify / census / hook
+# capability). Rendered into the EDGE_CLI floor text below. When the CLI's capability moves, bump
+# this in the SAME release as the hive-edge change (Hive-edge's version-coupling rule) so the
+# pre-commit guard bumps CONTRACT_VERSION and the new floor propagates to every connected edge. A
+# contract-only edit that does not change CLI capability leaves this untouched.
+MIN_EDGE_VERSION: str = "0.1.0"
+
+# The edge-CLI tooling loop, served on EVERY runtime (the floor + the installable block): mint /
+# verify / census computation rides ONE console script so every harness runs identical code — the
+# hooks only AUTOMATE these calls, they never own the computation. Names the version check, the uv
+# install line, the MIN_EDGE_VERSION floor, and `hive-edge upgrade`, with the rollback-pin caveat so
+# the routine below-floor nudge can never silently re-apply a regression a human deliberately rolled
+# back.
+EDGE_CLI: str = (
+    "EDGE CLI (all runtimes): mint / verify / census computation rides the `hive-edge` console "
+    "script, so every harness runs identical code. Check `hive-edge --version`; if it is absent, "
+    "install it: `uv tool install hive-edge --from "
+    "git+https://github.com/Hivemind-OSS/Hive-edge@release`. If it is below MIN_EDGE_VERSION ("
+    + MIN_EDGE_VERSION + ") or your contract version is outdated, run `hive-edge upgrade` — UNLESS a "
+    "rollback pin is active, in which case `hive-edge upgrade` reports the pin and refuses to "
+    "auto-override it, so defer to your human instead. No `hive-edge` on PATH is not an error: mint "
+    "and verify simply no-op and capture / recall are unaffected until you install it."
+)
 
 # Marker fences make the installed block a one-regex, idempotent replace (no clobber, no duplicate).
 # The START marker carries the version so an extract reads it straight off the rules file; the
@@ -110,11 +134,14 @@ ONBOARDING_PROCEDURE: str = (
     + render_allowlist() + "\n"
     "   The write / supersede / prune verbs are deliberately omitted — their approval prompt is the "
     "human checkpoint that matches their approved_by vouch.\n"
-    "3) The version stamp IS the START marker (contract-version=" + CONTRACT_VERSION + "). You MUST "
+    "3) [ALL runtimes] Install the edge CLI so mint / verify / census run identically on every "
+    "harness: " + EDGE_CLI + "\n"
+    "4) The version stamp IS the START marker (contract-version=" + CONTRACT_VERSION + "). You MUST "
     "RE-ONBOARD when a hive_* tool result's contract_version differs from your installed marker (or no "
     "block is installed): repeat steps 0-2 to reinstall the FULL contract — the HIVEMIND-RULES block, "
     "plus on Claude Code the lifecycle hooks AND the auto-approve allowlist — from the freshly served "
-    "copies."
+    "copies, and run `hive-edge upgrade` so the edge CLI meets the new MIN_EDGE_VERSION (unless a "
+    "rollback pin is active — see EDGE CLI)."
 )
 
 # What is WORTH storing — the value bar, prepended into the served taxonomy so an agent learns the
@@ -147,18 +174,27 @@ NOISE_FLOOR = (
 CAPTURE_TAXONOMY = VALUE_RUBRIC + "\n\n" + render_taxonomy() + "\n\n" + NOISE_FLOOR
 
 # claude-code ONLY — OPTIONAL lifecycle hooks that give the nudges teeth. Merge into the PROJECT
-# .claude/settings.json (never ~/.claude) WITHOUT clobbering existing keys. UserPromptSubmit prints
-# to STDOUT, which claude-code injects as context => an actual recall nudge each turn PLUS the
-# contract_version drift reminder (a static echo cannot read the beacon, so it prompts the agent to
-# compare the live contract_version against its installed marker — model-driven self-heal, D5);
-# Stop / SubagentStop print to STDERR => a visible turn-end / subagent-end capture reminder. (Swap an
-# `echo ... 1>&2; exit 2` in to make a nudge BLOCKING if you want harder enforcement; default gentle.)
+# .claude/settings.json (never ~/.claude) WITHOUT clobbering existing keys. Two static echo nudges
+# carry NO CLI dependency: UserPromptSubmit prints to STDOUT (claude-code injects it as context => a
+# recall nudge + the contract_version drift reminder — a static echo cannot read the beacon, so it
+# prompts the agent to compare live vs installed, model-driven self-heal, D5); SubagentStop prints a
+# subagent-end capture reminder to STDERR. The four ENGINE events shell the one `hive-edge` console
+# script (bare commands — no sh -c wrapper, no venv-reexec): PreToolUse mints the fp into a capture,
+# PostToolUse verifies recalled hits, SessionStart records the work baseline, and Stop is the
+# work-delta capture gate (BUG-017 three-valued). Correctness never depends on these — a hookless
+# runtime runs the identical `hive-edge` calls itself from the floor text.
 CLAUDE_CODE_HOOKS = (
     '{"hooks": {'
     '"UserPromptSubmit": [{"matcher": "", "hooks": [{"type": "command", "command": '
     '"echo \'[hivemind] Recall first: hive_recall the topic before building or re-deriving; prefer established memories over guessing. Re-onboard if a hive_* result contract_version differs from your installed HIVEMIND-RULES marker.\'"}]}], '
+    '"PreToolUse": [{"matcher": "mcp__hive__hive_capture", "hooks": [{"type": "command", "command": '
+    '"hive-edge hook pre-capture"}]}], '
+    '"PostToolUse": [{"matcher": "mcp__hive__hive_recall", "hooks": [{"type": "command", "command": '
+    '"hive-edge hook post-recall"}]}], '
+    '"SessionStart": [{"matcher": "", "hooks": [{"type": "command", "command": '
+    '"hive-edge hook session-start"}]}], '
     '"Stop": [{"matcher": "", "hooks": [{"type": "command", "command": '
-    '"echo \'[hivemind] Capture any durable insight from this turn (design choice + where, gotcha, dead-end) with hive_capture — no need to ask; bug lessons (landed fix, or truly open bug) -> ask your approver for a hive_write.\' 1>&2"}]}], '
+    '"hive-edge hook stop"}]}], '
     '"SubagentStop": [{"matcher": "", "hooks": [{"type": "command", "command": '
     '"echo \'[hivemind] Subagent finished — capture anything durable it learned with hive_capture before its context is gone.\' 1>&2"}]}]'
     '}}'
@@ -219,18 +255,69 @@ BAD_VS_STALE = (
 )
 
 
+# The capture-time mint directive, woven into the TASK-END CAPTURE floor bullet (and thus the served
+# floor, since SERVER_INSTRUCTIONS embeds the block verbatim). The Claude-Code pre-capture hook
+# AUTOMATES this exact call; a hookless harness runs it by hand — the hook adds TRIGGERING, never
+# knowledge. `--repo` is resolved via `git rev-parse --show-toplevel`, never the raw cwd, so an
+# anchor looked up from a subdirectory is not mis-rooted.
+MINT_DIRECTIVE = (
+    "When the anchor names a resolvable callable in your tree, MINT its interface fingerprint — "
+    "`hive-edge mint --repo <repo-root> --anchor <file:symbol>` (resolve <repo-root> with `git "
+    "rev-parse --show-toplevel`, never your raw cwd) — and pass the printed {\"combdrift/fp\": token} "
+    "map as hive_capture's meta. Mint synchronously against the tree you just saw (0-false-stale). "
+    "Where the served Claude-Code pre-capture hook is installed and firing it mints for you; run it "
+    "yourself on every other harness, or if the hook is disabled or failed. No `hive-edge` on PATH -> "
+    "install per EDGE CLI; still absent -> omit meta (capture is unaffected)."
+)
+
+# The recall-time verify directive, woven into the RECALL BEFORE EDIT floor bullet. A `stale` verdict
+# is REFERENCE-ONLY and CARRIES its own remediation options; a local point verdict WINS over a server
+# `remediation` rider (the server tier is only the fallback for anchors you could not verify yourself).
+VERIFY_DIRECTIVE = (
+    "Before ACTING on a recalled hit whose anchor names a file/symbol in your tree, verify it — "
+    "`hive-edge verify --repo <repo-root> --anchor <file:symbol> [--fp <the hit's meta combdrift/fp>]"
+    "`. `stale` = the code moved past this memory: treat it as REFERENCE ONLY, do NOT follow it, and "
+    "take the remediation options the stale verdict CARRIES (act now without approval: "
+    "hive_outcome(hurt=[episode_id]); or escalate the human-gated retirement per BAD_VS_STALE — "
+    "supersede/replaces for STALE, prune for BAD — never retire on your own judgment). "
+    "`unverifiable`, or no `hive-edge`, -> fall back to the hit's last_verified stamp and the "
+    "hive_health(include_stale_suspects) worklist. If the hit ALSO carries a server \"remediation\" "
+    "rider and your own verify disagrees, YOUR point-local verdict wins — a local `current` overrides "
+    "the server rider; treat the server tier strictly as the fallback for anchors you could not "
+    "verify yourself, never a second vote on ones you could. Where the served post-recall hook is "
+    "installed and firing the verify notice arrives annotated; verify manually on every other harness."
+)
+
+# The per-hit remediation rider the SERVER attaches to a recall hit it already knows is stale
+# (last_verified.state == "stale"), so a stale memory carries its options on EVERY harness with ZERO
+# client tooling. Mirrors hive-edge's verify remediation vocabulary (each side asserts its OWN copy;
+# the two are never diffed). hive_flag is deliberately ABSENT — it is a memory-vs-memory conflict tool
+# (two episode ids), not an option for a single stale anchor. This rider is serving-side text, NOT
+# part of the version-pinned bundle: a wording edit trips no version bump — an accepted, named drift
+# risk, since the vocabulary (not the exact bytes) is what the parity tests hold on each side.
+REMEDIATION_NOTICE = (
+    "This memory's anchor no longer matches the code (stale) — treat it as REFERENCE ONLY, do not "
+    "follow it. Options, by what you may do alone vs what needs a human: (1) act now, no approval — "
+    "hive_outcome(hurt=[<episode_id>]) for this stale anchor. (2) Escalate a human-gated retirement, "
+    "diagnosing per BAD_VS_STALE: if the memory has a SUCCESSOR (STALE), hive_supersede(loser, winner) "
+    "or hive_write(replaces=...) carrying the corrected fact; if it was wrong even when written (BAD), "
+    "hive_prune. ALERT your human — never retire on your own judgment."
+)
+
+
 # The cross-platform capture/recall discipline floor (the universal floor): the task-end
 # capture shape and recall-before-edit-by-anchor, as plain rules-file markdown valid VERBATIM
 # in any runtime's project rules file (CLAUDE.md / AGENTS.md / .cursorrules / .windsurfrules).
 # It rides the installable block — and through it the served initialize instructions — so
 # every MCP client on every platform receives the same discipline; the tiering is stated in
 # the text itself (advisory by nature everywhere, deterministic where a platform has
-# lifecycle hooks to give it teeth).
+# lifecycle hooks to give it teeth). The mint/verify directives ride the CAPTURE and RECALL
+# bullets so the edge-CLI calls travel with the discipline that triggers them.
 CAPTURE_RECALL_FLOOR = (
     "CAPTURE/RECALL DISCIPLINE (the universal floor — applies on EVERY platform):\n"
     "- RECALL BEFORE EDIT — before modifying a file or symbol, hive_recall its anchor "
     "(query \"<path> <symbol>\") so a known gotcha or contract on that exact spot surfaces "
-    "BEFORE the change, not after it breaks.\n"
+    "BEFORE the change, not after it breaks. " + VERIFY_DIRECTIVE + "\n"
     "- TASK-END CAPTURE — when your task changed code, sweep the session and capture EACH "
     "durable lesson that clears the bar as its OWN single-pointed hive_capture (one intent "
     "per entry, never bundled — a bundled entry dilutes toward the centroid and the recall "
@@ -241,13 +328,16 @@ CAPTURE_RECALL_FLOOR = (
     "hive_write autonomously at task end — write requires an approver; when a lesson is "
     "load-bearing and must serve teammates NOW, ask your operator to approve a hive_write "
     "rather than silently downgrading it to capture; bug lessons (a landed fix, or a truly "
-    "open unresolved bug) default to this ask-for-write path.\n"
+    "open unresolved bug) default to this ask-for-write path. " + MINT_DIRECTIVE + "\n"
     "- " + NOISE_FLOOR + "\n"
     "- ZERO-CAPTURE ESCAPE — if nothing clears that bar, capture NOTHING and finish: "
     "declining is compliance; a forced capture manufactures noise.\n"
     "TIERING: this floor is ADVISORY rules-file text on every platform; where your platform "
     "has lifecycle hooks (e.g. claude-code's Stop/UserPromptSubmit) the served hooks make "
-    "the same discipline DETERMINISTIC — same rules, harder trigger."
+    "the same discipline DETERMINISTIC — same rules, harder trigger. The mint/verify CALLS are "
+    "identical on both tiers — you shell the `hive-edge` CLI; the Claude-Code hook automates the "
+    "SAME call. Hooks add TRIGGERING, never knowledge, so a hookless runtime loses only the "
+    "automation, never the capability."
 )
 
 
@@ -288,6 +378,8 @@ def render_agent_rules_block() -> str:
         "hive_outcome(helped=/hurt=) records evidence only (it retires nothing).\n"
         "\n"
         + CAPTURE_RECALL_FLOOR + "\n"
+        "\n"
+        + EDGE_CLI + "\n"
         "\n"
         "PROJECT-SCOPED: this block lives in THIS repo's rules file (never a home/global file). On "
         "Claude Code, auto-approve the read verbs (hive_recall, hive_capture, hive_health, "

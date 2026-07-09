@@ -38,7 +38,7 @@ from dataclasses import dataclass
 from typing import Any, Callable, Mapping, Optional
 
 from hive.app.gaps import cluster_misses
-from hive.app.onboard_ref import CONTRACT_VERSION, SERVER_INSTRUCTIONS
+from hive.app.onboard_ref import CONTRACT_VERSION, REMEDIATION_NOTICE, SERVER_INSTRUCTIONS
 from hive.app.trends import compute_trends
 from hive.app.tool_defs import TOOL_DEFINITIONS
 from hive.domain.agi import is_agi_override
@@ -460,6 +460,12 @@ class HiveMCPServer:
                         verified_ts, sha, state = stamp
                         hit["last_verified"] = {"ts": verified_ts, "sha": sha,
                                                 "state": state}
+                        # server-side rider: a hit the ledger already knows is stale carries its
+                        # remediation options on EVERY harness (advisory text, O7-safe — detection +
+                        # guidance, never an autonomous retirement). STALE-ONLY: a current hit stays
+                        # byte-inert. The edge's own point-verify verdict, when present, wins over it.
+                        if state == "stale":
+                            hit["remediation"] = REMEDIATION_NOTICE
             except Exception:                        # noqa: BLE001 — side-channel only
                 _log.warning("mcp.recall_last_verified_failed", extra={
                     "event": "mcp.recall_last_verified_failed",
