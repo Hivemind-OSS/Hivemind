@@ -75,11 +75,11 @@ claude mcp add --transport http hive https://<your-domain>/mcp \
   --header "Authorization: Bearer ${HIVE_TOKEN}"
 ```
 
-From there onboarding is automatic and server-side: at connect the server delivers its full usage
+From there onboarding is automatic and server-side: at connect the server delivers its usage
 contract through the MCP `initialize` instructions (every client surfaces them) — recall-first,
-capture-by-default, the capture taxonomy, and the per-agent-session identity model. **Nothing is
-written into a rules file.** On **Claude Code only**, the `hive_health` tool description additionally
-lists optional lifecycle-hook nudges you can merge into `.claude/settings.json`.
+capture-by-default, and the per-agent-session identity model. **Nothing is
+written into a rules file.** On **Claude Code only**, `hive_health(include_onboarding=true)` additionally
+serves optional lifecycle-hook nudges you can merge into `.claude/settings.json`.
 
 ## Agents
 Read **[`llms-full.txt`](llms-full.txt)** for the complete, self-contained explanation of how

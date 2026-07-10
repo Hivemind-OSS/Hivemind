@@ -84,3 +84,15 @@ def test_health_has_no_contested():
     assert "gaps" in snap                                     # the surviving demand-gap channel
     assert "contested" not in snap and "contested_note" not in snap
     assert not hasattr(server, "_contested_report")
+
+
+def test_health_onboarding_absent_by_default_present_on_flag():
+    # BUG-023's uncapped escape channel: byte-inert by default (dropping the flag ⇒ the
+    # always-emits mutation this guards against), a complete install payload when requested.
+    server, _ = build_real_server()
+    assert "onboarding" not in content(tool_call(server, "hive_health", {}))
+    snap = content(tool_call(server, "hive_health", {"include_onboarding": True}))
+    payload = snap["onboarding"]
+    for key in ("contract_version", "rules_block", "procedure", "hooks", "allowlist",
+                "edge_cli", "identity", "kind_taxonomy"):
+        assert key in payload, f"missing onboarding payload key: {key!r}"

@@ -489,8 +489,8 @@ def _connect(args, *, run: Run, out: TextIO, env: Mapping[str, str], ask) -> int
               "on VS Code, or env_http_headers on Codex.", file=sys.stderr)
     # edge-tools breadcrumb (transport-only boundary preserved — this is a cross-reference, not a
     # merged verb): the teammate also installs the census bundle + wires the post-merge hook.
-    print("hive: edge tools — run `hive-census init` to install the census bundle and wire the "
-          "post-merge census hook (see HIVE-ADMIN.md).", file=sys.stderr)
+    print("hive: edge tools — install `hive-edge` (see HIVE-ADMIN.md §8), then run `hive-edge "
+          "census init` to wire the post-merge census hook.", file=sys.stderr)
     return EX_OK
 
 

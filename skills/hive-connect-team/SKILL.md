@@ -55,15 +55,15 @@ Then the teammate uses the **local** loopback line above as-is — no ngrok, no 
 
 ## Edge tools — install & stay current
 
-Every connected participant (local or remote) also installs the **census edge bundle** and wires the
-fail-open post-merge census hook — one install, then `hive-census init`:
+Every connected participant (local or remote) also installs the **`hive-edge` CLI** and wires the
+fail-open post-merge census hook — one install, then `hive-edge census init`:
 
 ```bash
-uv tool install hive-census --from git+https://github.com/Hivemind-OSS/hive-census@release
-hive-census init --repo . --hive-url <the /mcp URL `hive connect` printed>
+uv tool install hive-edge --from git+https://github.com/Hivemind-OSS/Hive-edge@release
+hive-edge census init --repo . --hive-url <the /mcp URL `hive connect` printed>
 ```
 
-The full flow — the daily release nudge, `hive-census upgrade`, and the server's own `hive upgrade`
+The full flow — the daily release nudge, `hive-edge upgrade`, and the server's own `hive upgrade`
 — is **`HIVE-ADMIN.md` §8** (the single source; not duplicated here).
 
 ## Seat hygiene & offboarding
@@ -82,13 +82,15 @@ The full flow — the daily release nudge, `hive-census upgrade`, and the server
   is tokenless; the tunnel door (compose-internal `8766`) is token-required and is the only
   remote-reachable one. **Never publish `0.0.0.0:8765`** — a bearer token over plain LAN HTTP is
   cleartext.
-- **Onboarding's floor is served — the operator installs nothing.** The full usage contract
-  (recall-first, capture-by-default, the capture taxonomy, the identity model) reaches every agent
-  over MCP at connect via the `initialize` instructions; the only client-side step is the MCP
-  registration above, and there is no handshake call. On top of that floor an agent MAY optionally
-  persist the contract as a **version-stamped rules block** in its own project rules file — the
-  server beacons a `contract_version` on every result so a stale block re-onboards, and a missing
-  block degrades to the served floor — but that is the agent's own act, never an operator step.
-  (Claude Code only: optional lifecycle-hook nudges + the read-verb auto-approve allowlist are
-  listed in the `hive_health` tool description — merge into the project `.claude/settings.json` for
-  active recall / capture reminders.)
+- **Onboarding's floor is served — the operator installs nothing.** A terse behavioral floor
+  (recall-first, capture-by-default, the value bar, an identity pointer) reaches every agent over
+  MCP at connect via the `initialize` instructions; the only client-side step is the MCP
+  registration above, and there is no handshake call. The full contract — the install procedure,
+  the capture taxonomy, the identity/auth reference, the hooks, and the allowlist — is fetched on
+  demand over `hive_health(include_onboarding=true)`. On top of the served floor an agent MAY
+  optionally persist the contract as a **version-stamped rules block** in its own project rules
+  file — the server beacons a `contract_version` on every result so a stale block re-onboards, and
+  a missing block degrades to the served floor — but that is the agent's own act, never an operator
+  step. (Claude Code only: the fetched payload also carries optional lifecycle-hook nudges + the
+  read-verb auto-approve allowlist — merge into the project `.claude/settings.json` for active
+  recall / capture reminders.)

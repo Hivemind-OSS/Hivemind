@@ -10,10 +10,11 @@ import re
 from hive.app import onboard_ref
 from hive.app.onboard_ref import (
     AGENT_RULES_BLOCK, AUTO_APPROVE_TOOLS, BAD_VS_STALE, CAPTURE_RECALL_FLOOR,
-    CAPTURE_TAXONOMY, CLAUDE_CODE_HOOKS, CONTRACT_VERSION, NOISE_FLOOR,
-    ONBOARDING_PROCEDURE, ONBOARDING_REFERENCE, RULES_END, RULES_START,
-    SERVER_INSTRUCTIONS, VALUE_RUBRIC, WRITE_VS_CAPTURE,
-    bundle_digest, render_agent_rules_block, render_allowlist,
+    CAPTURE_TAXONOMY, CLAUDE_CODE_HOOKS, CONTRACT_VERSION, EDGE_CLI,
+    MIN_EDGE_VERSION, MINT_DIRECTIVE, NOISE_FLOOR, ONBOARDING_PROCEDURE,
+    ONBOARDING_REFERENCE, REMEDIATION_NOTICE, RULES_END, RULES_START,
+    SERVER_INSTRUCTIONS, VALUE_RUBRIC, VERIFY_DIRECTIVE, WRITE_VS_CAPTURE,
+    bundle_digest, render_agent_rules_block, render_allowlist, render_onboarding_payload,
 )
 from hive.app.tool_defs import TOOL_DEFINITIONS
 from hive.domain.kinds import render_taxonomy
@@ -21,7 +22,7 @@ from hive.domain.kinds import render_taxonomy
 # Regenerate when the bundle legitimately changes (and bump CONTRACT_VERSION) — the pre-commit
 # contract-version guard does this automatically, or by hand:
 #   python -c "from hive.app.onboard_ref import bundle_digest; print(bundle_digest())"
-_GOLDEN_BUNDLE_SHA256 = "4c3214397c99957f7eb689f2e827f23ef4c499acecbaadaef727325126c64468"
+_GOLDEN_BUNDLE_SHA256 = "944a41629bb208f6749c79f506dd93aeadf3a7dbdbe8ac9530d04e3750fb3d86"
 
 
 def test_server_instructions_cover_the_verbs_and_search_first_timing():
@@ -32,26 +33,29 @@ def test_server_instructions_cover_the_verbs_and_search_first_timing():
 
 
 def test_instructions_cover_the_conflict_surface():
-    """Agents must learn the resolution loop: recall surfaces a conflicts channel, the health
-    worklist lists candidates, hive_supersede retires (human-vouched), hive_flag records an
-    advisory note (never retires). Without this the surfaced conflicts have no served verb."""
+    """Agents must learn the resolution loop: hive_supersede retires (human-vouched), hive_flag
+    records an advisory note (never retires) — both named on the floor. The health worklist
+    entry point (include_conflicts) is call-adjacent detail; it rides hive_supersede's own
+    (unchanged) description rather than the capped floor — checked there instead."""
     s = SERVER_INSTRUCTIONS
     assert "hive_supersede" in s and "hive_flag" in s
-    assert "include_conflicts" in s              # the worklist entry point
-    low = s.lower()
-    assert "conflict" in low and "advisory" in low   # the two classes are named
+    assert "advisory" in s.lower()               # the two classes are named
+    supersede = next(t["description"] for t in TOOL_DEFINITIONS if t["name"] == "hive_supersede")
+    assert "include_conflicts" in supersede      # the worklist entry point, call-adjacent
 
 
 def test_instructions_require_recall_before_write():
     """A write serves IMMEDIATELY at established trust, so the writer must recall the topic
-    first and act on what already exists — skip a duplicate, correct in place with replaces=,
-    or resolve a contradiction — instead of adding a rival memory to the store."""
+    first and act on what already exists — skip a duplicate, or correct in place with
+    replaces=, instead of adding a rival memory to the store. The "don't duplicate" directive
+    and replaces= mechanism are floor-required; the fuller rival/contradiction framing is
+    call-adjacent detail that rides hive_write's own (unchanged) description."""
     s = SERVER_INSTRUCTIONS
     low = s.lower()
-    assert "before you write" in low     # recall-before-write is mandatory, not optional
     assert "don't duplicate" in low      # discovery 1: an already-captured fact
     assert "replaces" in s               # discovery 2: correct in place (a required supersession)
-    assert "rival" in low                # discovery 3: don't add a rival to a conflicting memory
+    write_desc = next(t["description"] for t in TOOL_DEFINITIONS if t["name"] == "hive_write").lower()
+    assert "rival" in write_desc         # discovery 3: don't add a rival to a conflicting memory
 
 
 def test_instructions_make_conflict_escalation_explicit():
@@ -81,12 +85,12 @@ def test_instructions_cover_bare_retirement_and_hurt_evidence():
 def test_instructions_convey_capture_default_vs_approved_fastpath_strategy():
     """Agents must learn the STRATEGY, not just the mechanism: capture is the cheap default
     (let demand/recall-counts promote), and the approved write is the immediate-serve fast-path
-    reserved for crucial memories — with the approver generalized beyond a human to an
-    orchestrated fleet."""
+    reserved for crucial memories. The approver-generalized-beyond-a-human nuance is
+    call-adjacent detail checked at hive_write's own description
+    (test_write_description_generalizes_the_approver)."""
     s = SERVER_INSTRUCTIONS.lower()
     assert "default" in s                            # capture framed as the default
     assert "immediately" in s                        # write = the must-serve-now fast-path
-    assert "orchestrator" in s                       # approver isn't only a human
 
 
 def test_capture_taxonomy_names_the_kind_vocabulary_and_noise_floor():
@@ -103,23 +107,25 @@ def test_capture_taxonomy_names_the_kind_vocabulary_and_noise_floor():
 
 def test_taxonomy_is_rendered_from_the_registry_and_served():
     # the kind vocabulary has ONE source (hive.domain.kinds.render_taxonomy); the taxonomy embeds
-    # it verbatim and is itself embedded in the always-delivered instructions, so the advertised /
-    # served / enforced copies cannot drift.
+    # it verbatim, so the advertised / served / enforced copies cannot drift. The per-kind body
+    # templates are un-compressible verbatim reference (don't fit the capped floor alongside
+    # everything else) — they ride the uncapped onboarding payload's kind_taxonomy key instead;
+    # the short kind GLOSS still rides the hive_write/hive_capture descriptions unchanged.
     assert render_taxonomy() in CAPTURE_TAXONOMY
-    assert CAPTURE_TAXONOMY in SERVER_INSTRUCTIONS
+    assert render_taxonomy() in render_onboarding_payload()["kind_taxonomy"]
 
 
 def test_onboarding_offers_optional_versioned_block_over_the_served_floor():
-    # the §5 evolution: the served initialize instructions remain the always-on floor, AND an
-    # OPTIONAL, versioned agent-contract block MAY now be installed as an enhancement layer. The
-    # old pre-minimization self-install symbol stays gone; the new block is its own named, version-
-    # stamped constant. The reference still carries the identity/auth notes + the optional hooks,
-    # and now advertises the bundle version so a fresh agent knows what it would install.
+    # the served initialize instructions remain the always-on floor, AND an OPTIONAL, versioned
+    # agent-contract block MAY now be installed as an enhancement layer. ONBOARDING_REFERENCE is
+    # now a SHORT pointer (identity note + where to fetch) — the hooks JSON itself is
+    # un-compressible verbatim detail that rides the uncapped onboarding payload, not this
+    # capped description field.
     assert not hasattr(onboard_ref, "ONBOARDING_RULES_BLOCK")      # the old symbol stays gone
     assert hasattr(onboard_ref, "AGENT_RULES_BLOCK")               # the optional block now exists
     assert "hive-init" not in ONBOARDING_REFERENCE                 # no hive_init handshake marker
     assert "Mcp-Session-Id" in ONBOARDING_REFERENCE               # identity/auth reference kept
-    assert CLAUDE_CODE_HOOKS in ONBOARDING_REFERENCE              # optional hooks kept
+    assert CLAUDE_CODE_HOOKS == render_onboarding_payload()["hooks"]   # hooks served, not embedded
     assert CONTRACT_VERSION in ONBOARDING_REFERENCE               # the bundle version advertised
 
 
@@ -205,19 +211,22 @@ def test_auto_approve_tools_match_schema_partition():
 
 
 def test_server_instructions_carry_version_and_reonboard_trigger():
-    """The floor advertises the bundle version + the self-heal trigger: every tool result echoes
-    contract_version, and a mismatch against the installed marker (or no block) is the re-onboard
-    signal. The install is DIRECTED (MAY -> MUST), not merely offered, while the contract still
-    honestly degrades to the floor (Law 6 — a lying contract is worse than none). Without this an
-    agent can't know its installed block went stale."""
+    """The floor advertises the self-heal trigger: every tool result echoes contract_version, and
+    a mismatch against the installed marker (or no block) is the re-onboard signal. The install
+    is DIRECTED (MAY -> MUST), not merely offered, while the contract still honestly degrades to
+    the floor (Law 6 — a lying contract is worse than none). Without this an agent can't know
+    its installed block went stale. The verbatim block itself no longer rides this capped field
+    (that duplication was BUG-023's root cause) — it's fetched via the pointer below, and the
+    live version is authoritatively advertised by the beacon on every tool result, not
+    hardcoded into this text."""
     s = SERVER_INSTRUCTIONS
-    assert CONTRACT_VERSION in s                          # the live version is advertised at connect
     assert "contract_version" in s                        # the beacon field is named
+    assert "include_onboarding" in s                       # where to fetch the verbatim block
     low = s.lower()
     assert "re-onboard" in low or "re-install" in low or "reinstall" in low  # the self-heal trigger
-    assert RULES_START in s                               # the verbatim block is served on the floor
     assert "must install" in low                          # MAY -> MUST: the install is directed
     assert "degrades safely" in low                       # ... but still honest about the floor (Law 6)
+    assert render_onboarding_payload()["contract_version"] == CONTRACT_VERSION
 
 
 def test_store_philosophy_is_stigmergic_lean_and_maintainer_framed():
@@ -319,10 +328,108 @@ def test_floor_reaches_the_served_instructions():
     assert CAPTURE_RECALL_FLOOR in SERVER_INSTRUCTIONS
 
 
-def test_claude_code_hooks_is_valid_json_with_the_three_nudge_events():
+def test_claude_code_hooks_is_valid_json_with_the_six_lifecycle_events():
     h = json.loads(CLAUDE_CODE_HOOKS)                # malformed JSON would strand the operator
-    assert set(h["hooks"]) == {"UserPromptSubmit", "Stop", "SubagentStop"}
-    # recall fires on prompt submit; capture fires on agent AND subagent stop
-    assert "hive_recall" in h["hooks"]["UserPromptSubmit"][0]["hooks"][0]["command"]
-    for ev in ("Stop", "SubagentStop"):
-        assert "hive_capture" in h["hooks"][ev][0]["hooks"][0]["command"]
+    hooks = h["hooks"]
+    assert set(hooks) == {"UserPromptSubmit", "PreToolUse", "PostToolUse",
+                          "SessionStart", "Stop", "SubagentStop"}
+    # the two static echo nudges are KEPT (no CLI dependency — pure context injection)
+    assert "hive_recall" in hooks["UserPromptSubmit"][0]["hooks"][0]["command"]
+    assert "hive_capture" in hooks["SubagentStop"][0]["hooks"][0]["command"]
+
+    def cmd(ev):
+        return hooks[ev][0]["hooks"][0]["command"]
+    # the four engine events are BARE `hive-edge hook <event>` commands — one console script,
+    # no sh -c wrapper and no venv-reexec mint_fp.py path
+    assert cmd("PreToolUse") == "hive-edge hook pre-capture"
+    assert cmd("PostToolUse") == "hive-edge hook post-recall"
+    assert cmd("SessionStart") == "hive-edge hook session-start"
+    assert cmd("Stop") == "hive-edge hook stop"
+    # the capture/recall matchers are the exact MCP tool names
+    assert hooks["PreToolUse"][0]["matcher"] == "mcp__hive__hive_capture"
+    assert hooks["PostToolUse"][0]["matcher"] == "mcp__hive__hive_recall"
+    assert "mint_fp.py" not in CLAUDE_CODE_HOOKS      # the venv-reexec fallback is gone
+
+
+# ── the harness-agnostic edge-CLI contract: mint/verify/upgrade + the serving rider ──
+def test_edge_cli_names_install_version_floor_and_upgrade():
+    """EDGE_CLI teaches the tooling loop on EVERY runtime: the version check, the uv install
+    line, the MIN_EDGE_VERSION floor, and `hive-edge upgrade` with the rollback-pin caveat."""
+    e = EDGE_CLI
+    assert "hive-edge --version" in e
+    assert "uv tool install hive-edge" in e            # the install line (repo link included)
+    assert MIN_EDGE_VERSION in e                        # the capability floor
+    assert "hive-edge upgrade" in e
+    assert "pin" in e.lower()                           # the rollback-pin refusal caveat
+
+
+def test_edge_cli_and_directives_ride_both_channels():
+    """The mint/verify ONE-LINERS (ongoing behavioral discipline, not install mechanics) reach
+    the agent on the served floor (SERVER_INSTRUCTIONS) AND in the installable rules block — one
+    source, no drift. EDGE_CLI's own install/upgrade detail (the exact version-check and upgrade
+    commands) is un-compressible verbatim install-mechanics — it's the release valve moved to
+    the uncapped onboarding payload instead, checked there."""
+    block = render_agent_rules_block()
+    for needle in ("hive-edge mint", "hive-edge verify"):
+        assert needle in SERVER_INSTRUCTIONS, f"{needle!r} missing from the served floor"
+        assert needle in block, f"{needle!r} missing from the rules block"
+    payload_edge_cli = render_onboarding_payload()["edge_cli"]
+    assert "hive-edge --version" in payload_edge_cli
+    assert MIN_EDGE_VERSION in payload_edge_cli
+
+
+def test_reonboard_names_the_edge_upgrade_step():
+    """RE-ONBOARD must run `hive-edge upgrade` so the CLI matches the new contract."""
+    assert "hive-edge upgrade" in ONBOARDING_PROCEDURE
+
+
+def test_floor_mint_directive_names_fp_meta_and_the_conditional_hook():
+    """The TASK-END capture directive: the floor names the one-liner (`hive-edge mint`); the
+    full mechanics (the combdrift/fp meta shape, the where-the-hook-is-firing conditional) are
+    un-compressible verbatim detail that rides the uncapped onboarding payload's procedure
+    text instead — the release valve for exact call mechanics."""
+    f = CAPTURE_RECALL_FLOOR
+    assert "hive-edge mint" in f
+    procedure = render_onboarding_payload()["procedure"]
+    assert MINT_DIRECTIVE in procedure                  # single-sourced into the payload
+    assert "combdrift/fp" in procedure and "meta" in procedure
+    assert "installed and firing" in procedure          # the conditional hook clause
+
+
+def test_floor_verify_directive_names_stale_reference_fallback_and_reconciliation():
+    """The RECALL-BEFORE-EDIT directive: the floor names the one-liner (`hive-edge verify`); the
+    full mechanics (stale => REFERENCE ONLY, the last_verified / include_stale_suspects
+    fallback, the local-verdict-wins reconciliation) ride the uncapped onboarding payload's
+    procedure text instead."""
+    f = CAPTURE_RECALL_FLOOR
+    assert "hive-edge verify" in f
+    procedure = render_onboarding_payload()["procedure"]
+    assert VERIFY_DIRECTIVE in procedure
+    assert "stale" in procedure and "REFERENCE ONLY" in procedure
+    assert "last_verified" in procedure and "include_stale_suspects" in procedure
+    assert "point-local verdict wins" in procedure.lower()
+
+
+def test_edge_directives_carry_the_conditional_on_both_triggers():
+    """Both the mint and the verify directive carry the where-installed-and-firing conditional,
+    so a hookless runtime knows to run the CLI itself (mutation 9 target)."""
+    assert "installed and firing" in MINT_DIRECTIVE
+    assert "installed and firing" in VERIFY_DIRECTIVE
+
+
+def test_remediation_notice_names_the_option_vocabulary_without_hive_flag():
+    """The server rider text carries the full single-anchor option set — outcome-now vs the
+    human-gated supersede/replaces-vs-prune per BAD_VS_STALE — and NEVER names hive_flag
+    (a memory-vs-memory tool, not a single stale anchor)."""
+    r = REMEDIATION_NOTICE
+    for token in ("hive_outcome", "hive_supersede", "hive_write(replaces=", "hive_prune",
+                  "BAD_VS_STALE", "never retire on your own judgment"):
+        assert token in r, token
+    assert "hive_flag" not in r
+
+
+# ── single-source: WRITE_VS_CAPTURE / BAD_VS_STALE must appear exactly once in the served
+# floor — a second copy is the exact duplication this module's rewrite eliminates ──
+def test_write_vs_capture_and_bad_vs_stale_single_instance():
+    assert SERVER_INSTRUCTIONS.count(WRITE_VS_CAPTURE) == 1
+    assert SERVER_INSTRUCTIONS.count(BAD_VS_STALE) == 1

@@ -50,7 +50,7 @@ server-minted `Mcp-Session-Id` a conforming client echoes, or an explicit `X-Hiv
 for readable provenance). That per-session diversity is what promotes captures, so a **solo dev's**
 independent agents earn each other's memories with no flag and no per-agent token.
 
-Onboarding's **floor is served**: at connect the server delivers the full usage contract over MCP
+Onboarding's **floor is served**: at connect the server delivers the usage contract over MCP
 (the `initialize` instructions), so each agent learns the recall-first / capture-by-default
 discipline with nothing required to be written into its rules file. Optionally, an agent may persist
 that contract as a version-stamped rules block in its own project file — the server beacons a
@@ -225,25 +225,25 @@ The fleet has two install targets that track one shared **`release` git ref** (t
 vetted pin): the per-workstation **edge tools** auto-nudge toward it, while the single **server**
 moves to it deliberately and backup-gated.
 
-**Edge tools (every participant, local or remote).** After connecting (§2/§3), install the census
-bundle once — one command pulls the comb-drift + matrix + verifier engines — and wire the fail-open
-post-merge census hook:
+**Edge tools (every participant, local or remote).** After connecting (§2/§3), install the
+`hive-edge` CLI once — one command pulls the comb-drift + matrix + census + verifier engines behind
+a single console script — and wire the fail-open post-merge census hook:
 
 ```bash
-uv tool install hive-census --from git+https://github.com/Hivemind-OSS/hive-census@release
-hive-census init --repo . --hive-url <the /mcp URL `hive connect` printed>
+uv tool install hive-edge --from git+https://github.com/Hivemind-OSS/Hive-edge@release
+hive-edge census init --repo . --hive-url <the /mcp URL `hive connect` printed>
 ```
 
-`init` writes a portable post-merge hook (resolved absolute paths — nothing hardcoded) that, after a
-merge, builds an **unsigned** change receipt and feeds its outcome to the server over the hive-url.
-It is entirely fail-open — a missing binary, no merge, or an unreachable server skips silently and a
-merge is never delayed or failed. No signing key is generated; receipts are unsigned by policy (the
-ingest-door trust boundary is transport/auth, not a signature).
+`hive-edge census init` writes a portable post-merge hook (resolved absolute paths — nothing
+hardcoded) that, after a merge, builds an **unsigned** change receipt and feeds its outcome to the
+server over the hive-url. It is entirely fail-open — a missing binary, no merge, or an unreachable
+server skips silently and a merge is never delayed or failed. No signing key is generated; receipts
+are unsigned by policy (the ingest-door trust boundary is transport/auth, not a signature).
 
 **Edge tools stay current.** The hook checks the published `release` tip at most once a day and, on
-drift, nudges you to run `hive-census upgrade` (which re-installs the bundle at `release` and re-wires
-the hook). Wire `hive-census init --auto-upgrade` to apply it automatically instead of nudging. Roll
-back to a known-good tag with `hive-census upgrade --ref <old-tag>`.
+drift, nudges you to run `hive-edge upgrade` (which re-installs the bundle at `release` and re-wires
+the hook). Wire `hive-edge census init --auto-upgrade` to apply it automatically instead of nudging.
+Roll back to a known-good tag with `hive-edge upgrade --ref <old-tag>`.
 
 **Server upgrade / rollback.** Move the server to a vetted ref:
 

@@ -43,7 +43,7 @@ the gate and the promotion bar are what protect the fleet.
 Ranked by how much the model says each moves the outcome.
 
 ### 1. Quarantine by default; promote only on *independent* demand
-Captures land `quarantined` and are never served until distinct fleet demand promotes
+Captures land `quarantined` and are never served until distinct fleet demand — or a SHA-bound verified outcome — promotes
 them. The anti-gaming clause is load-bearing: with a single demand identity, **coverage
 collapses to 0** in the model — a lone agent cannot vote up its own captures, so nothing
 unvetted is served. The cost of safety here is paid in latency, not in poison.
@@ -145,7 +145,7 @@ read it on a fixed cadence (weekly is enough for a small team). Convert gaps int
 The evidence ledger also takes one operator-fed input: `hive ingest <receipt.json>` appends an
 unsigned census receipt's SHA-bound change outcome as `change_outcome` evidence rows on the
 episodes whose anchors the change touched — append-only, idempotent, trust-untouched
-(detect/surface only: it changes nothing about what is served). The repo's tracked
+(detect/surface only for the plain change_outcome row -- a pre-merge receipt with a full version stamp can also emit an outcome_verified_helped row, which the verified-promotion rung, HIVE_AUTONOMY__VERIFIED_PROMOTION, default on, may use to promote a quarantined memory). The repo's
 `.githooks/post-merge` hook automates the feed (build + ingest on every merge, fail-open,
 detached); see `skills/hive-operate/SKILL.md` for the wiring.
 
