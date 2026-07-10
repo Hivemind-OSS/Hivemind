@@ -79,7 +79,9 @@ INVENTORY: list[dict] = [
     {'id': 38, 'unit': 'degrades_safely_to_floor', 'classification': 'NECESSARY', 'source_sections': ('SERVER_INSTRUCTIONS', 'ONBOARDING_REFERENCE'), 'probes': ('degrades safely',)},
     {'id': 39, 'unit': 'edge_cli_install_check', 'classification': 'NECESSARY', 'source_sections': ('SERVER_INSTRUCTIONS', 'ONBOARDING_REFERENCE'), 'probes': ('hive-edge --version',)},
     {'id': 40, 'unit': 'edge_cli_literal_install_command', 'classification': 'NECESSARY', 'source_sections': ('SERVER_INSTRUCTIONS', 'ONBOARDING_REFERENCE'), 'probes': ('uv tool install hive-edge --from',)},
-    {'id': 41, 'unit': 'edge_cli_min_version_floor', 'classification': 'NECESSARY', 'source_sections': ('SERVER_INSTRUCTIONS', 'ONBOARDING_REFERENCE'), 'probes': ('MIN_EDGE_VERSION (0.1.0)',)},
+    # Version-agnostic probe: the unit is "the min-version floor is NAMED", not its literal value
+    # (which legitimately moves with edge releases; it was 0.1.0 in the frozen corpus).
+    {'id': 41, 'unit': 'edge_cli_min_version_floor', 'classification': 'NECESSARY', 'source_sections': ('SERVER_INSTRUCTIONS', 'ONBOARDING_REFERENCE'), 'probes': ('MIN_EDGE_VERSION (',)},
     {'id': 42, 'unit': 'edge_cli_upgrade_and_rollback_pin', 'classification': 'NECESSARY', 'source_sections': ('SERVER_INSTRUCTIONS', 'ONBOARDING_REFERENCE'), 'probes': ('hive-edge upgrade',)},
     {'id': 43, 'unit': 'edge_cli_optional_noop_if_absent', 'classification': 'NECESSARY', 'source_sections': ('SERVER_INSTRUCTIONS', 'ONBOARDING_REFERENCE'), 'probes': ('simply no-op',)},
     {'id': 44, 'unit': 'mint_directive', 'classification': 'NECESSARY', 'source_sections': ('SERVER_INSTRUCTIONS', 'ONBOARDING_REFERENCE'), 'probes': ('hive-edge mint',)},

@@ -60,14 +60,14 @@ METADATA_FIELD_LIMIT: int = 2048
 # The single owner of the bundle version. Bump it (and regenerate the keystone golden) on ANY
 # change to AGENT_RULES_BLOCK / CLAUDE_CODE_HOOKS / the rendered allowlist. The beacon stamps this
 # on every tool result; an agent whose installed marker differs re-onboards.
-CONTRACT_VERSION: str = "v.07"
+CONTRACT_VERSION: str = "v.08"
 
 # The minimum hive-edge CLI version this contract requires (mint / verify / census / hook
 # capability). Rendered into the EDGE_CLI floor text below. When the CLI's capability moves, bump
 # this in the SAME release as the hive-edge change (Hive-edge's version-coupling rule) so the
 # pre-commit guard bumps CONTRACT_VERSION and the new floor propagates to every connected edge. A
 # contract-only edit that does not change CLI capability leaves this untouched.
-MIN_EDGE_VERSION: str = "0.1.0"
+MIN_EDGE_VERSION: str = "0.2.0"
 
 # The edge-CLI tooling loop, served in the install payload: mint / verify / census computation
 # rides ONE console script so every harness runs identical code — the hooks only AUTOMATE these
@@ -147,7 +147,11 @@ ONBOARDING_PROCEDURE: str = (
     "human checkpoint that matches their approved_by vouch.\n"
     "3) [ALL runtimes] Install the edge CLI so mint / verify / census run identically on every "
     "harness: " + EDGE_CLI + "\n"
-    "4) The version stamp IS the START marker (contract-version=" + CONTRACT_VERSION + "). You MUST "
+    "4) [ALL runtimes, once per repo per device] Wire the post-merge census evidence feed: "
+    "`hive-edge census init --repo <repo-root> --hive-url <the URL you registered this server "
+    "at>` (idempotent; succeeds even where the `hive` server CLI is absent — the hook stays "
+    "inert there, fail-open). This is what activates `change_outcome` evidence for this repo.\n"
+    "5) The version stamp IS the START marker (contract-version=" + CONTRACT_VERSION + "). You MUST "
     "RE-ONBOARD when a hive_* tool result's contract_version differs from your installed marker (or no "
     "block is installed): repeat steps 0-2 to reinstall the FULL contract — the HIVEMIND-RULES block, "
     "plus on Claude Code the lifecycle hooks AND the auto-approve allowlist — from the freshly served "
@@ -169,6 +173,22 @@ MINT_DIRECTIVE: str = (
     "Where the served Claude-Code pre-capture hook is installed and firing it mints for you; run it "
     "yourself on every other harness, or if the hook is disabled or failed. No `hive-edge` on PATH -> "
     "install per EDGE CLI; still absent -> omit meta (capture is unaffected)."
+)
+
+# The repo-level census wiring directive — the ONE command that writes the post-merge hook and
+# activates the change_outcome evidence feed (BUG-030: it existed only in the human ops doc,
+# never in the served contract, so a repo onboarded purely over MCP left the corroborate/
+# contradict loop silently dark). Same release-valve split as MINT/VERIFY: the full call shape
+# and semantics ride the install payload; ONBOARDING_PROCEDURE carries the numbered step.
+CENSUS_DIRECTIVE: str = (
+    "Wire the census evidence feed ONCE PER REPO PER DEVICE: `hive-edge census init --repo "
+    "<repo-root> --hive-url <the exact URL you registered this hive MCP server at>`. This writes "
+    "the repo's post-merge hook — the feed that turns merges into `change_outcome` evidence "
+    "(corroborate/contradict) for served memories; without it that loop stays dark for the repo. "
+    "Idempotent — a re-run rewrites the identical wiring. The hook resolves binaries and config "
+    "at RUN time, so on a device without the `hive` server CLI the wiring still succeeds and the "
+    "hook simply stays inert (fail-open) — normal for a non-server device: a wired operator "
+    "clone that pulls the shared repo receipts everyone's merges."
 )
 
 # The recall-time verify directive — the full mechanics, served in the install payload (same
@@ -382,7 +402,8 @@ def render_onboarding_payload() -> dict:
     return {
         "contract_version": CONTRACT_VERSION,
         "rules_block": AGENT_RULES_BLOCK,
-        "procedure": ONBOARDING_PROCEDURE + "\n\n" + MINT_DIRECTIVE + "\n\n" + VERIFY_DIRECTIVE,
+        "procedure": (ONBOARDING_PROCEDURE + "\n\n" + MINT_DIRECTIVE + "\n\n" + VERIFY_DIRECTIVE
+                      + "\n\n" + CENSUS_DIRECTIVE),
         "hooks": CLAUDE_CODE_HOOKS,
         "allowlist": render_allowlist(),
         "edge_cli": EDGE_CLI,

@@ -10,7 +10,7 @@ import re
 from hive.app import onboard_ref
 from hive.app.onboard_ref import (
     AGENT_RULES_BLOCK, AUTO_APPROVE_TOOLS, BAD_VS_STALE, CAPTURE_RECALL_FLOOR,
-    CAPTURE_TAXONOMY, CLAUDE_CODE_HOOKS, CONTRACT_VERSION, EDGE_CLI,
+    CAPTURE_TAXONOMY, CENSUS_DIRECTIVE, CLAUDE_CODE_HOOKS, CONTRACT_VERSION, EDGE_CLI,
     MIN_EDGE_VERSION, MINT_DIRECTIVE, NOISE_FLOOR, ONBOARDING_PROCEDURE,
     ONBOARDING_REFERENCE, REMEDIATION_NOTICE, RULES_END, RULES_START,
     SERVER_INSTRUCTIONS, VALUE_RUBRIC, VERIFY_DIRECTIVE, WRITE_VS_CAPTURE,
@@ -22,7 +22,7 @@ from hive.domain.kinds import render_taxonomy
 # Regenerate when the bundle legitimately changes (and bump CONTRACT_VERSION) — the pre-commit
 # contract-version guard does this automatically, or by hand:
 #   python -c "from hive.app.onboard_ref import bundle_digest; print(bundle_digest())"
-_GOLDEN_BUNDLE_SHA256 = "944a41629bb208f6749c79f506dd93aeadf3a7dbdbe8ac9530d04e3750fb3d86"
+_GOLDEN_BUNDLE_SHA256 = "d821cea2311134d68920ec8f724bef79c8441a97c4aba2fb67fef3834ddf9b4f"
 
 
 def test_server_instructions_cover_the_verbs_and_search_first_timing():
@@ -415,6 +415,25 @@ def test_edge_directives_carry_the_conditional_on_both_triggers():
     so a hookless runtime knows to run the CLI itself (mutation 9 target)."""
     assert "installed and firing" in MINT_DIRECTIVE
     assert "installed and firing" in VERIFY_DIRECTIVE
+
+
+def test_procedure_wires_the_census_evidence_feed():
+    """BUG-030: the served contract must instruct the repo-level census wiring — the ONE command
+    that writes the post-merge hook and activates the change_outcome evidence feed. It existed
+    only in the human ops doc; a repo onboarded purely over MCP left the corroborate/contradict
+    loop silently dark. Repo-level install mechanics ride the uncapped payload procedure (the
+    same release-valve split as the mint/verify directives), with a numbered step in the
+    install flow before the re-onboard step."""
+    procedure = render_onboarding_payload()["procedure"]
+    assert CENSUS_DIRECTIVE in procedure                # single-sourced into the payload
+    assert "hive-edge census init" in procedure
+    assert "--hive-url" in procedure
+    assert "once per repo" in procedure.lower()         # per-repo per-device idempotent wiring
+    assert "change_outcome" in procedure                # names WHAT the feed activates
+    assert "inert" in procedure and "fail-open" in procedure   # non-server devices still succeed
+    assert "hive-edge census init" in ONBOARDING_PROCEDURE     # the numbered install step
+    # the wiring step precedes the re-onboard step (the flow ends on the version stamp)
+    assert ONBOARDING_PROCEDURE.index("census init") < ONBOARDING_PROCEDURE.index("version stamp")
 
 
 def test_remediation_notice_names_the_option_vocabulary_without_hive_flag():
