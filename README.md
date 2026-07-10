@@ -146,7 +146,9 @@ installs or upgrades it automatically. To install it manually instead:
 uv tool install hive-edge --from git+https://github.com/Hivemind-OSS/Hive-edge@release
 ```
 
-See **[HIVE-ADMIN.md §8](HIVE-ADMIN.md)** for the full install/upgrade/rollback flow and the
+Per-device edge state (config, release cache, logs) lives under `~/.hive-edge/`
+(`HIVE_EDGE_HOME` overrides); it is safe to delete and regenerates. See
+**[HIVE-ADMIN.md §8](HIVE-ADMIN.md)** for the full install/upgrade/rollback flow and the
 post-merge census hook it wires.
 
 ## Embedding model & attribution

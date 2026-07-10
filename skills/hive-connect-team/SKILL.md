@@ -63,8 +63,13 @@ uv tool install hive-edge --from git+https://github.com/Hivemind-OSS/Hive-edge@r
 hive-edge census init --repo . --hive-url <the /mcp URL `hive connect` printed>
 ```
 
-The full flow — the daily release nudge, `hive-edge upgrade`, and the server's own `hive upgrade`
-— is **`HIVE-ADMIN.md` §8** (the single source; not duplicated here).
+The wiring is per-device and succeeds even where the `hive` server CLI is absent — the hook's
+bytes are constant and it resolves binaries + config at run time on each device, staying inert
+(fail-open) until they exist.
+
+The full flow — the daily release nudge, `hive-edge upgrade`, the per-device state directory
+(`~/.hive-edge/`), and the server's own `hive upgrade` — is **`HIVE-ADMIN.md` §8** (the single
+source; not duplicated here).
 
 ## Seat hygiene & offboarding
 

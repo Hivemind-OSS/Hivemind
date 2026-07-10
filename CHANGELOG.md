@@ -3,6 +3,16 @@
 All notable changes to this project are documented here.
 
 ## Added
+- The served onboarding contract now wires the census evidence feed (BUG-030, contract v.08): a new
+  `CENSUS_DIRECTIVE` in `hive/app/onboard_ref.py` rides `render_onboarding_payload()`'s `procedure`
+  (the uncapped channel) and `ONBOARDING_PROCEDURE` gains step 4 — `hive-edge census init --repo
+  <repo-root> --hive-url <registered URL>`, once per repo per device, idempotent, inert/fail-open on
+  a device without the `hive` server CLI. Previously the one command that activates the post-merge
+  `change_outcome` loop existed only in `HIVE-ADMIN.md` §8, so a repo onboarded purely over MCP left
+  the corroborate/contradict loop silently dark. `MIN_EDGE_VERSION` 0.1.0 → 0.2.0 alongside the
+  hive-edge 0.2.0 release (device-portable constant-bytes hook: run-time binary/config resolution,
+  PATH-independent `census init`, `HIVE_EDGE_HOME` override, `census`/`hook` CLI discoverability,
+  and matrix 0.2.0's import-closed incremental `update()`).
 - `README.md` documents the companion `hive-edge` CLI (anchor mint/verify + the census post-merge
   evidence hook) in a new "Edge tooling" section: not required for the core recall/capture/write
   loop, installed automatically by a connecting agent during onboarding, or manually via
@@ -279,6 +289,12 @@ All notable changes to this project are documented here.
   old-format `episodes` table is refused at store construction.
 
 ## Fixed
+- `HIVE-ADMIN.md` §8 no longer claims the post-merge hook bakes "resolved absolute paths": the
+  hook's bytes are constant and it resolves binaries + device config at run time, so wiring succeeds
+  on any device (inert without the `hive` CLI) — the docs now state the per-device semantics, and a
+  new "State directory" paragraph documents `~/.hive-edge/` (`HIVE_EDGE_HOME` override, contents,
+  safe-to-delete), previously undocumented (BUG-028). `skills/hive-connect-team` /
+  `skills/hive-operate` and `README.md`'s edge section carry matching one-liners.
 - Bench `claude -p` calls loaded the operator's Claude Code hooks: a user- or
   project-level Stop hook appends its own prompt turn after the answer, and the json
   `result` (the last assistant text) became the hook-turn reply instead of the

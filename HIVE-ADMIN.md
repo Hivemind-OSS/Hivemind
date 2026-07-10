@@ -234,16 +234,28 @@ uv tool install hive-edge --from git+https://github.com/Hivemind-OSS/Hive-edge@r
 hive-edge census init --repo . --hive-url <the /mcp URL `hive connect` printed>
 ```
 
-`hive-edge census init` writes a portable post-merge hook (resolved absolute paths — nothing
-hardcoded) that, after a merge, builds an **unsigned** change receipt and feeds its outcome to the
-server over the hive-url. It is entirely fail-open — a missing binary, no merge, or an unreachable
-server skips silently and a merge is never delayed or failed. No signing key is generated; receipts
-are unsigned by policy (the ingest-door trust boundary is transport/auth, not a signature).
+`hive-edge census init` writes a portable post-merge hook whose bytes are **constant** — binaries
+resolve at run time (`command -v` plus well-known fallbacks) and the hive-url / auto-upgrade
+posture are read from the device's own config, so the same hook file works from any clone on any
+device and never bakes in another machine's paths. Wiring succeeds even on a device without the
+`hive` server CLI: the hook simply stays inert there (fail-open) — normal for a teammate device,
+since ingest runs on the operator host and a wired operator clone that pulls the shared repo
+receipts everyone's merges. After a merge the hook builds an **unsigned** change receipt and feeds
+its outcome to the server over the hive-url. It is entirely fail-open — a missing binary, no
+merge, or an unreachable server skips silently and a merge is never delayed or failed. No signing
+key is generated; receipts are unsigned by policy (the ingest-door trust boundary is
+transport/auth, not a signature).
 
 **Edge tools stay current.** The hook checks the published `release` tip at most once a day and, on
 drift, nudges you to run `hive-edge upgrade` (which re-installs the bundle at `release` and re-wires
 the hook). Wire `hive-edge census init --auto-upgrade` to apply it automatically instead of nudging.
 Roll back to a known-good tag with `hive-edge upgrade --ref <old-tag>`.
+
+**State directory.** All per-device edge state lives under `~/.hive-edge/` (`HIVE_EDGE_HOME`
+overrides; the hook honors the same variable): `config` (hive_url, wired repos, auto-upgrade
+posture, rollback pin), `release.sha` (the cached release tip the nudge compares against),
+`last-nudge`, `last-error.log`, `last-postmerge.log`, and `state/` (worktree-delta baselines).
+Safe to delete — everything regenerates; re-run `hive-edge census init` to restore the config.
 
 **Server upgrade / rollback.** Move the server to a vetted ref:
 
