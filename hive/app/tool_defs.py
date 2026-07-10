@@ -2,11 +2,13 @@
 EXACTLY 8 tools: hive_write / hive_capture / hive_recall / hive_supersede / hive_prune /
 hive_flag / hive_outcome / hive_health. The onboarding
 handshake (``hive_init``) is gone — the contract reaches every agent via the always-on
-``initialize`` instructions (the served FLOOR), with a secondary reference carried in the
-``hive_health`` description. On top of that floor an OPTIONAL, versioned rules block MAY be
-installed as an enhancement layer (``onboard_ref.AGENT_RULES_BLOCK`` — version-stamped by
-``CONTRACT_VERSION``, beaconed on every tool result, self-healing on drift); the floor itself still
-installs nothing, and a missing/stale block degrades safely to it. ``hive_evidence`` deliberately does NOT exist (no
+``initialize`` instructions (the served FLOOR), with a short pointer carried in the
+``hive_health`` description. The full install payload (the versioned rules block, the install
+procedure, the claude-code hooks, the allowlist, the edge-CLI reference, and the kind taxonomy)
+is fetched on demand over the UNCAPPED ``hive_health(include_onboarding=true)`` result channel
+(``onboard_ref.render_onboarding_payload()`` — version-stamped by ``CONTRACT_VERSION``, beaconed
+on every tool result, self-healing on drift); the floor itself still installs nothing, and a
+missing/stale block degrades safely to it. ``hive_evidence`` deliberately does NOT exist (no
 client-fed evidence in this build); the server-side approval QUEUE (hive_pending /
 hive_approve / hive_reject) was removed with the move to client-gated capture; and the
 AgentCortex-era consolidate / schemas / recall_cold / restore_cold / reconsolidate / audit
@@ -171,14 +173,18 @@ TOOL_DEFINITIONS: list[dict] = [
                     "against the code, then retire via hive_supersede/hive_prune if truly "
                     "stale. "
                     "embedder_loaded reports whether this process's embedder is resident "
-                    "(the container HEALTHCHECK is a separate process reading boot markers)."
+                    "(the container HEALTHCHECK is a separate process reading boot markers). "
+                    "include_onboarding=true adds the full install payload (rules block, "
+                    "procedure, hooks, allowlist, edge-CLI reference, identity, kind taxonomy) "
+                    "on this uncapped result channel."
                     "\n\n" + ONBOARDING_REFERENCE,
      "inputSchema": {"type": "object", "required": [],
                      "properties": {"include_gaps": {"type": "boolean"},
                                     "include_trends": {"type": "boolean"},
                                     "include_conflicts": {"type": "boolean"},
                                     "include_suspect_consensus": {"type": "boolean"},
-                                    "include_stale_suspects": {"type": "boolean"}}}},
+                                    "include_stale_suspects": {"type": "boolean"},
+                                    "include_onboarding": {"type": "boolean"}}}},
 ]
 
 # The canonical tool name set — the dropped-verb guard reads this.

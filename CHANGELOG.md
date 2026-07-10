@@ -285,3 +285,12 @@ All notable changes to this project are documented here.
   Because the `hive` CLI execs `authctl` with no `--db`, the token verbs exited `EX_CONFIG` and
   `hive status` reported `seats: unknown`. `authctl` now defaults the store path the same way;
   an explicit `--db` or `$HIVE_STORE__DB_PATH` still overrides it.
+- The served agent contract (`initialize.instructions` + tool `description` fields) silently
+  overflowed the MCP client's 2048-char per-field truncation cap — a first-connect agent never
+  received the install procedure, rules block, or hooks (`SERVER_INSTRUCTIONS` alone had grown to
+  22KB). `hive/app/onboard_ref.py` now single-sources one canonical `CONTRACT_FLOOR` string into
+  both capped delivery channels, fitting the new `METADATA_FIELD_LIMIT = 2048` invariant by
+  construction with real margin, and relocates every un-compressible install detail — the full
+  procedure, the claude-code hooks JSON, the auto-approve allowlist, the edge-CLI reference, the
+  identity reference, and the per-kind capture taxonomy — to a new proven-uncapped channel:
+  `hive_health(include_onboarding=true)`. `CONTRACT_VERSION` v.06 → v.07.

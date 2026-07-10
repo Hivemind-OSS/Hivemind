@@ -34,7 +34,8 @@ self-demanded one.
 
 ## TODO 8 — Non-Claude-Code permission auto-approve recipes (per-IDE allowlist)
 
-**File:** `hive/app/onboard_ref.py` (`ONBOARDING_REFERENCE`), `tests/app/test_onboard_ref.py`
+**File:** `hive/app/onboard_ref.py` (`ONBOARDING_PROCEDURE`, `render_onboarding_payload`),
+`tests/app/test_onboard_ref.py`, `tests/app/test_contract_fit.py`
 
 Deferred from the contract-versioning work (resolved Claude-Code-first). The
 contract-versioning feature serves an auto-approve step so the non-human-in-the-loop verbs
@@ -43,10 +44,10 @@ contract-versioning feature serves an auto-approve step so the non-human-in-the-
 Code's form (`.claude/settings.json` `permissions.allow`, `mcp__hive__*`). Other runtimes have
 different (or no) permission-allowlist formats.
 
-Extend the served `ONBOARDING_REFERENCE` with a per-runtime permission recipe **alongside** the
-existing per-runtime rules-file table (Cursor / Windsurf / Cline / generic), each writing to the
-**project** scope (never global) and each keeping the human-gated 3 (`write`/`supersede`/`prune`)
-prompted.
+Extend `ONBOARDING_PROCEDURE` (served via `render_onboarding_payload()`'s `procedure` key) with a
+per-runtime permission recipe **alongside** the existing per-runtime rules-file table (Cursor /
+Windsurf / Cline / generic), each writing to the **project** scope (never global) and each keeping
+the human-gated 3 (`write`/`supersede`/`prune`) prompted.
 
 **Mutations / verification:** each IDE's permission schema is real-runtime-only (the BUG-007/011/012
 class — an offline suite can't see whether the written allowlist actually suppresses that IDE's
@@ -118,3 +119,32 @@ onto any runner if the project ever moves off GitHub Actions.
 
 **Verification:** open a trivial PR and confirm the check runs; then push a deliberately failing
 test and confirm the PR check goes red — CI is only real once a red is proven to block.
+
+---
+
+## TODO 11 — Deterministic auto-re-onboard on contract_version skew (hook-enforced)
+
+**File:** a new claude-code `SessionStart` hook under `.claude/hooks/`, `hive/app/mcp_server.py` (the
+`_tool_result` beacon that stamps `contract_version`), `hive/app/onboard_ref.py` (`ONBOARDING_REFERENCE`),
+`tests/app/test_onboard_ref.py`
+
+The contract is **served, not shipped-frozen in the client**: the server is the single source of truth,
+and each client holds only a version-keyed cache (the rules block + `.claude/` hooks + allowlist) that is
+a *projection of server state*, not independently shipped software. So a contract update propagates by the
+operator updating **one** artifact — the server image (`pull` + `hive up`) — and every client re-deriving
+its cache on next connect. Nobody edits a client by hand.
+
+The last mile is not yet deterministic. Today re-onboard is an **instruction to the agent** (the
+HIVEMIND-RULES block says "RE-ONBOARD when a hive_* result's `contract_version` differs"), so it fires only
+if the agent notices the skew and complies. Close it: a served `SessionStart` hook reads the beacon's
+`contract_version`, compares it to the installed marker, and on drift **silently re-fetches and reinstalls**
+the block + hooks + allowlist — the same hook-enforced pattern the Stop/capture and UserPromptSubmit/recall
+hooks already use to make the discipline deterministic instead of advisory. That flips propagation from
+"self-heals if the agent cooperates" to "self-heals, period." Shares the beacon/marker substrate with
+TODO 9's AGI-posture axis (the marker becomes the `(version, posture)` pair).
+
+**Mutations to verify:** with the installed marker behind the server's `contract_version`, the hook
+re-onboards exactly once and restamps the marker (a second session is a no-op — no reinstall loop); with
+the marker current, the hook is byte-inert (no rewrite); a server the hook cannot reach degrades safe
+(keeps the last-good cache, never wipes it). The server must NEVER write a client file directly — the
+actuator is always local (the no-server→client-reach law carried from TODO 9).

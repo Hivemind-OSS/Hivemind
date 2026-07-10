@@ -50,7 +50,7 @@ server-minted `Mcp-Session-Id` a conforming client echoes, or an explicit `X-Hiv
 for readable provenance). That per-session diversity is what promotes captures, so a **solo dev's**
 independent agents earn each other's memories with no flag and no per-agent token.
 
-Onboarding's **floor is served**: at connect the server delivers the full usage contract over MCP
+Onboarding's **floor is served**: at connect the server delivers the usage contract over MCP
 (the `initialize` instructions), so each agent learns the recall-first / capture-by-default
 discipline with nothing required to be written into its rules file. Optionally, an agent may persist
 that contract as a version-stamped rules block in its own project file — the server beacons a

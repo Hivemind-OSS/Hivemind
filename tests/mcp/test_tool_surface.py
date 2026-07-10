@@ -91,15 +91,17 @@ def test_retirement_descriptions_diagnose_bad_vs_stale():
 
 def test_health_description_carries_served_reference_and_optional_versioned_block():
     """The §5 enhancement layer: the hive_health DESCRIPTION carries the identity/auth reference
-    AND now the OPTIONAL, version-stamped rules block (the secondary onboarding channel). The old
-    hive_init handshake marker stays gone; the always-on floor is the initialize instructions."""
+    AND a pointer to the OPTIONAL, version-stamped rules block (the secondary onboarding
+    channel) — not the verbatim block itself, which is un-compressible install detail served on
+    the uncapped include_onboarding=true result instead (BUG-023's fix). The old hive_init
+    handshake marker stays gone; the always-on floor is the initialize instructions."""
     server, _ = build_real_server()
     resp = server.handle(MCPRequest(1, "tools/list", {}))
     health = next(t for t in resp.result["tools"] if t["name"] == "hive_health")
     desc = health["description"]
     assert "<!-- hive-init:start -->" not in desc          # the old self-install handshake stays gone
     assert "Mcp-Session-Id" in desc                         # the served identity/auth reference
-    assert "HIVEMIND-RULES:START" in desc                   # the optional versioned block is offered
+    assert "include_onboarding" in desc                     # the pointer to the versioned block
     assert CONTRACT_VERSION in desc                         # stamped with the live bundle version
     server, _ = build_real_server()
     init = server.handle(MCPRequest(1, "initialize", {}))
