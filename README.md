@@ -78,7 +78,8 @@ claude mcp add --transport http hive https://<your-domain>/mcp \
 From there onboarding is automatic and server-side: at connect the server delivers its usage
 contract through the MCP `initialize` instructions (every client surfaces them) — recall-first,
 capture-by-default, and the per-agent-session identity model. **Nothing is
-written into a rules file.** On **Claude Code only**, `hive_health(include_onboarding=true)` additionally
+automatically written into a rules file at connect** — installing the optional persistence block
+into your project's rules file is an agent-driven step via `hive_health(include_onboarding=true)`. On **Claude Code only**, `hive_health(include_onboarding=true)` additionally
 serves optional lifecycle-hook nudges you can merge into `.claude/settings.json`.
 
 ## Agents
@@ -128,7 +129,25 @@ A compatible release moves with `hive upgrade`; crossing a schema generation is 
 — it saves the prior store to the host, then recreates empty; no in-place migration ships.
 
 See **[HIVE-ADMIN.md](HIVE-ADMIN.md)** for the full admin & operator guide (setup, tunneling, tuning,
-KPIs, and §8 edge-tool install & upgrades).
+KPIs).
+
+## Edge tooling
+
+Anchor mint/verify (recall freshness) and the census post-merge evidence hook ride a companion,
+per-workstation CLI, **[`hive-edge`](https://github.com/Hivemind-OSS/Hive-edge)** — it is not baked
+into the server image. It is not required for the core recall/capture/write loop (absent, mint and
+verify simply no-op; nothing else is affected), but the trust-lifecycle verify step and the census
+evidence flow depend on it.
+
+You don't need to install it yourself: a connected agent checks for it during onboarding and
+installs or upgrades it automatically. To install it manually instead:
+
+```bash
+uv tool install hive-edge --from git+https://github.com/Hivemind-OSS/Hive-edge@release
+```
+
+See **[HIVE-ADMIN.md §8](HIVE-ADMIN.md)** for the full install/upgrade/rollback flow and the
+post-merge census hook it wires.
 
 ## Embedding model & attribution
 

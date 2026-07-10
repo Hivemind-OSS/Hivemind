@@ -3,6 +3,10 @@
 All notable changes to this project are documented here.
 
 ## Added
+- `README.md` documents the companion `hive-edge` CLI (anchor mint/verify + the census post-merge
+  evidence hook) in a new "Edge tooling" section: not required for the core recall/capture/write
+  loop, installed automatically by a connecting agent during onboarding, or manually via
+  `uv tool install hive-edge --from git+https://github.com/Hivemind-OSS/Hive-edge@release`.
 - `hive upgrade [--ref release]` — move the server to a vetted release ref, backup-gated and
   health-verified: aborts on a dirty tree (no magic stash), snapshots the store to the host BEFORE
   any checkout, then checkout → rebuild → bounded health-wait → app status gate, and auto-reverts
@@ -208,6 +212,10 @@ All notable changes to this project are documented here.
   config it is resolved at boot — there is no live reload (tune via `.env` then `hive up`).
 
 ## Changed
+- `AgiConfig`'s docstring (`hive/app/config.py`) adds a scope note: `HIVE_AGI__MODE` today only
+  gates the `AGI_OVERRIDE` sentinel check on `hive_write`/`hive_supersede`/`hive_prune` — it is not
+  yet a fully autonomous mode. `HIVE-ADMIN.md` and `OPERATIONS.md` already documented this narrow
+  scope; the code now says so explicitly.
 - The operator docs (`HIVE-ADMIN.md` §8, `skills/hive-connect-team/SKILL.md`,
   `skills/hive-operate/SKILL.md`, `llms.txt`) and the `hive connect` edge-tools breadcrumb now
   reference the published **`hive-edge`** CLI (`git+https://github.com/Hivemind-OSS/Hive-edge`)
@@ -294,3 +302,8 @@ All notable changes to this project are documented here.
   procedure, the claude-code hooks JSON, the auto-approve allowlist, the edge-CLI reference, the
   identity reference, and the per-kind capture taxonomy — to a new proven-uncapped channel:
   `hive_health(include_onboarding=true)`. `CONTRACT_VERSION` v.06 → v.07.
+- `README.md`'s onboarding paragraph claimed "Nothing is written into a rules file" — false: the
+  served floor directs `hive_health(include_onboarding=true)`'s optional persistence block to be
+  written verbatim into the agent's project rules file, and this repo's own `CLAUDE.md` carries
+  exactly that block. Reworded to say nothing is written automatically at connect, and that
+  installing the block is an agent-driven step.

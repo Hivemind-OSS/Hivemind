@@ -205,7 +205,11 @@ class AgiConfig:
     LOOSENS a safety gate, so default-OFF is strict and non-negotiable (THEORY §9.9): unlike
     the two sanctioned default-ON exceptions, an operator must explicitly opt in. The flag is a
     transport concern — the pure domain reacts to the sentinel VALUE only (Law 4); this group
-    carries the one bool the boundary reads."""
+    carries the one bool the boundary reads.
+
+    Scope note: today this switch is mostly decorative — it gates one narrow check (whether the
+    AGI_OVERRIDE sentinel is honored on write/supersede/prune) and does not actually enforce a
+    fully autonomous mode. It will be made rigorous in later updates."""
     mode: bool = False
 
 
