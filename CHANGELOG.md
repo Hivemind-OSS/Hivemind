@@ -3,6 +3,13 @@
 All notable changes to this project are documented here.
 
 ## Added
+- `hive_health(include_census_health=true)` — a passive census dark-feed signal. Since the
+  post-merge census hook is fail-open, a feed that has gone dark (building zero receipts) is
+  otherwise invisible without per-repo CI. The new `hive/app/census_health.py` serves
+  `days_since_last_change_outcome` (the days since the last SHA-bound `change_outcome` evidence row,
+  `null` on an empty feed) behind the sole-request-flag gate, byte-inert when omitted. It serves the
+  raw day-count with no invented staleness threshold; the flag joins its six `include_*` siblings in
+  the tool schema and description.
 - The served onboarding contract now wires the census evidence feed (BUG-030, contract v.08): a new
   `CENSUS_DIRECTIVE` in `hive/app/onboard_ref.py` rides `render_onboarding_payload()`'s `procedure`
   (the uncapped channel) and `ONBOARDING_PROCEDURE` gains step 4 — `hive-edge census init --repo
@@ -289,6 +296,20 @@ All notable changes to this project are documented here.
   old-format `episodes` table is refused at store construction.
 
 ## Fixed
+- Post-merge census hook built zero receipts on every real merge (BUG-034). git populates a hook
+  subprocess's environment with `GIT_DIR`/`GIT_WORK_TREE` pointing at the invoking repo; an absolute
+  `GIT_DIR` silently overrides `git -C <path>` targeting, so the census pipeline read the base/head
+  worktrees against the WRONG repository and `build_graphs`' own base==named-SHA check tripped with
+  an `EngineError`. The hook is fail-open by design, so this produced no error anywhere — a silent
+  dark feed. Fixed in `hive-edge` 0.3.0: the environment is scrubbed of git's seven repo-discovery
+  vars before every `git -C` subprocess (a `clean_git_env()` in hive-census, an independent
+  byte-identical copy in matrix, both pinned by a cross-copy test), both post-merge hook templates
+  `unset` those vars at the top (so the hook's own `GIT_DIR` reassignment cannot re-export into the
+  build child), and `hive-edge census init` now self-tests the wiring under the hook's own
+  `GIT_DIR`/`GIT_WORK_TREE` environment and reports `self-test PASSED`/`FAILED` at wiring time.
+  `MIN_EDGE_VERSION` 0.2.0 → 0.3.0 force-propagates the fix (the pre-commit guard bumped the contract
+  v.08 → v.09 and regenerated the keystone golden). The regression is reproduced first by unit tests
+  that build under a forced hostile `GIT_DIR` and assert the stamp still names the targeted repo.
 - `hive` CLI cross-platform portability (BUG-031/033). `_snapshot_to_host` now guards the operator
   chown-back behind `if hasattr(os, "getuid")`, so `hive reset`/`hive upgrade` no longer crash with
   `AttributeError` on native Windows (no POSIX uid/gid, and the Docker Desktop bind is already
