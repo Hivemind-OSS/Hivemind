@@ -37,6 +37,7 @@ import sys
 from dataclasses import dataclass
 from typing import Any, Callable, Mapping, Optional
 
+from hive.app.census_health import census_health_report
 from hive.app.gaps import cluster_misses
 from hive.app.onboard_ref import (
     CONTRACT_VERSION, REMEDIATION_NOTICE, SERVER_INSTRUCTIONS, render_onboarding_payload,
@@ -642,6 +643,11 @@ class HiveMCPServer:
             # config knob; dropping the request flag ⇒ always-emits mutation.
             if args.get("include_stale_suspects"):
                 snap["stale_suspects"] = self._stale_suspects_report()
+            # the passive census-feed staleness signal: same sole-request-flag gate, no config
+            # knob; census_health_report self-wraps fail-open, so it is called directly (no
+            # wrapper method); dropping the request flag ⇒ always-emits mutation.
+            if args.get("include_census_health"):
+                snap["census_health"] = census_health_report(self.store.conn)
             # the full install payload — the uncapped-channel answer to BUG-023: same
             # sole-request-flag gate (byte-inert when off ⇒ dropping the flag ⇒
             # always-emits mutation), no config knob.
