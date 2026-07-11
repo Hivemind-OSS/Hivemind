@@ -146,8 +146,9 @@ The evidence ledger also takes one operator-fed input: `hive ingest <receipt.jso
 unsigned census receipt's SHA-bound change outcome as `change_outcome` evidence rows on the
 episodes whose anchors the change touched — append-only, idempotent, trust-untouched
 (detect/surface only for the plain change_outcome row -- a pre-merge receipt with a full version stamp can also emit an outcome_verified_helped row, which the verified-promotion rung, HIVE_AUTONOMY__VERIFIED_PROMOTION, default on, may use to promote a quarantined memory). The repo's
-`.githooks/post-merge` hook automates the feed (build + ingest on every merge, fail-open,
-detached); see `skills/hive-operate/SKILL.md` for the wiring.
+`.githooks/post-merge` + `.githooks/post-commit` hooks automate the feed (build + ingest on every
+merge AND direct commit, fail-open, detached; each refreshes the persistent per-repo code graph
+first); see `skills/hive-operate/SKILL.md` for the wiring.
 
 For a browser view of the live picture, `hive ui` serves a loopback-only operator dashboard: the
 same status/seats/logs read plus the controls (backup, seat mint/revoke, non-blocking loopback-only
