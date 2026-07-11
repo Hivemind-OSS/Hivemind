@@ -181,9 +181,8 @@ hive token alice-laptop       # mint a per-seat token (printed ONCE — hand ove
 Each teammate registers the public URL with their seat token:
 
 ```bash
-export HIVE_TOKEN=hive_…
 claude mcp add --transport http hive https://<your-domain>/mcp \
-  --header "Authorization: Bearer ${HIVE_TOKEN}"
+  --header "Authorization: Bearer <seat-token>"   # replace <seat-token> with the seat's token
 ```
 
 TLS terminates at the ngrok edge, so the token is encrypted in transit. `hive up --tunnel`

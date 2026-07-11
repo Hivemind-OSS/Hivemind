@@ -70,9 +70,8 @@ For a **remote** teammate, mint a seat token (the tunnel door authenticates with
 
 ```bash
 hive token alice-laptop   # prints the token ONCE — hand it over via a secret manager
-export HIVE_TOKEN=hive_…
 claude mcp add --transport http hive https://<your-domain>/mcp \
-  --header "Authorization: Bearer ${HIVE_TOKEN}"
+  --header "Authorization: Bearer <seat-token>"   # replace <seat-token> with the seat's token
 ```
 
 From there onboarding is automatic and server-side: at connect the server delivers its usage

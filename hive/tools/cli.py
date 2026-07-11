@@ -221,8 +221,11 @@ def _snapshot_to_host(run: Run, env: Mapping[str, str],
     host_dest = os.path.join(abs_out, snap_name) if snap_name else abs_out
     # hand the root-written snapshot back to the operator (best-effort — it is already safe and
     # world-readable, so restore works regardless; this just makes it the operator's to manage).
-    run(["docker", "run", "--rm", "--user", "0:0", "--entrypoint", "chown",
-         "-v", f"{abs_out}:/out", IMAGE, "-R", f"{os.getuid()}:{os.getgid()}", "/out"], env)
+    # POSIX-ownership only: native Windows has no os.getuid/getgid and Docker Desktop bind mounts
+    # are already host-owned, so the chown-back is both impossible and unnecessary there — skip it.
+    if hasattr(os, "getuid"):
+        run(["docker", "run", "--rm", "--user", "0:0", "--entrypoint", "chown",
+             "-v", f"{abs_out}:/out", IMAGE, "-R", f"{os.getuid()}:{os.getgid()}", "/out"], env)
     return snap, host_dest
 
 
@@ -471,9 +474,12 @@ def _connect(args, *, run: Run, out: TextIO, env: Mapping[str, str], ask) -> int
     if domain:
         # remote: the token-required tunnel door. The Bearer AUTHENTICATES; identity is still
         # the agent's per-session Mcp-Session-Id (or an explicit X-Hive-Agent-Id), same as local.
+        # This line is copy-pasted by a teammate on an unknown OS/shell and `claude mcp add` bakes
+        # the header at add-time, so print a literal placeholder — never shell-expansion syntax
+        # (bash ${VAR} / PowerShell $env:VAR / cmd %VAR% would each be wrong on the other two).
         print(f'claude mcp add --transport http hive https://{domain}/mcp '
-              '--header "Authorization: Bearer ${HIVE_TOKEN}"', file=out)
-        print(f"hive: the teammate exports HIVE_TOKEN first; {_SEAT_HINT}", file=sys.stderr)
+              '--header "Authorization: Bearer <seat-token>"', file=out)
+        print(f"hive: replace <seat-token> with the seat's token; {_SEAT_HINT}", file=sys.stderr)
     else:
         # local: the tokenless loopback door. No Bearer, no baked id — per-session identity is
         # automatic via the server-minted Mcp-Session-Id a conforming client echoes.

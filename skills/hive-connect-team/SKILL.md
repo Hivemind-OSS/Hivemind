@@ -40,9 +40,8 @@ claude mcp add --transport http hive http://localhost:8765/mcp
    ```
 3. The teammate registers (the exact line `hive connect` prints once `NGROK_DOMAIN` is set):
    ```bash
-   export HIVE_TOKEN=hive_…
    claude mcp add --transport http hive https://<your-domain>/mcp \
-     --header "Authorization: Bearer ${HIVE_TOKEN}"
+     --header "Authorization: Bearer <seat-token>"   # replace <seat-token> with the seat's token
    ```
    TLS terminates at the ngrok edge, so the token is encrypted in transit.
 

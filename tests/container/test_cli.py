@@ -242,6 +242,19 @@ def test_reset_chowns_snapshot_back_to_operator():
     assert seq_in(chown, "-R", f"{os.getuid()}:{os.getgid()}", "/out")
 
 
+def test_reset_skips_chown_back_on_non_posix(monkeypatch):
+    # native Windows Python has no os.getuid/getgid (no POSIX ownership model) and Docker Desktop
+    # bind mounts are already host-owned, so the chown-back is both impossible and unnecessary —
+    # it must be SKIPPED, not attempted (an unconditional call raises AttributeError there). Simulate
+    # that os surface on POSIX CI by deleting the attributes; the snapshot must still succeed.
+    monkeypatch.delattr(cli.os, "getuid", raising=False)
+    monkeypatch.delattr(cli.os, "getgid", raising=False)
+    fake = FakeRun(script=list(_HEALTHY))
+    rc = cli.main(["reset", "--yes"], run=fake, out=io.StringIO(), env=ENV)
+    assert rc == cli.EX_OK
+    assert not any(seq_in(c, "--entrypoint", "chown") for c in fake.calls)
+
+
 def test_reset_yes_skips_confirmation():
     def _no_ask(_p):
         raise AssertionError("--yes must not prompt")
@@ -603,11 +616,18 @@ def test_connect_renders_mcp_add_line(capsys):
     assert rc == cli.EX_OK
     assert fake.calls == []                            # purely local — nothing is run
     text = out.getvalue()
+    # shell-neutral: a literal placeholder the teammate replaces with the real seat token — the line
+    # is copy-pasted on an unknown OS/shell, so ANY expansion syntax (bash ${VAR}, PowerShell
+    # $env:VAR, cmd %VAR%) would be wrong on the other two shells.
     assert ('claude mcp add --transport http hive https://brain.ngrok.app/mcp '
-            '--header "Authorization: Bearer ${HIVE_TOKEN}"') in text
+            '--header "Authorization: Bearer <seat-token>"') in text
     err = capsys.readouterr().err
+    both = text + err
+    assert "${HIVE_TOKEN}" not in both                 # not bash ${VAR}
+    assert "$env:" not in both                         # not PowerShell $env:VAR
+    assert "%HIVE_TOKEN%" not in both                  # not cmd %VAR%
     assert "hive token <seat>" in err                  # AC7: the inline seat hint
-    assert "hive_init" not in text + err               # M11/M12: no handshake here
+    assert "hive_init" not in both                     # M11/M12: no handshake here
 
 
 def test_connect_without_domain_prints_tokenless_loopback_line(capsys):

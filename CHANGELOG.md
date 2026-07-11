@@ -289,6 +289,18 @@ All notable changes to this project are documented here.
   old-format `episodes` table is refused at store construction.
 
 ## Fixed
+- `hive` CLI cross-platform portability (BUG-031/033). `_snapshot_to_host` now guards the operator
+  chown-back behind `if hasattr(os, "getuid")`, so `hive reset`/`hive upgrade` no longer crash with
+  `AttributeError` on native Windows (no POSIX uid/gid, and the Docker Desktop bind is already
+  host-owned — the step was both impossible and unnecessary there); Linux and macOS are unchanged.
+  `hive connect`'s remote breadcrumb prints a shell-neutral literal `Authorization: Bearer
+  <seat-token>` instead of bash `${HIVE_TOKEN}` — `claude mcp add` bakes the header at add-time and
+  the line is copy-pasted on an unknown OS/shell, so any expansion syntax (`${VAR}` / `$env:VAR` /
+  `%VAR%`) was wrong on two of three shells; the teammate now substitutes the real token by hand.
+  Pinned by `test_reset_skips_chown_back_on_non_posix` and the updated `test_connect_renders_mcp_add_line`.
+  (The companion GNU-only `mktemp --suffix=` fix that silently killed the macOS post-merge receipt —
+  BUG-032 — landed in the `hive-edge` hook renderer; the regenerated `.githooks/post-merge` picks it
+  up on the next `hive-edge census init`.)
 - `HIVE-ADMIN.md` §8 no longer claims the post-merge hook bakes "resolved absolute paths": the
   hook's bytes are constant and it resolves binaries + device config at run time, so wiring succeeds
   on any device (inert without the `hive` CLI) — the docs now state the per-device semantics, and a
