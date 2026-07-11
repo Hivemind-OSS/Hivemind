@@ -11,10 +11,6 @@ Gated exactly like test_container_live.py (`HIVE_RUN_DOCKER_TESTS=1` + a reachab
 daemon; skipped honestly otherwise). The stack is a THROWAWAY compose project on an
 isolated volume and a non-default host port — never the operator's `hive-data` or :8765
 (the compose-named-volume isolation lesson).
-
-An optional second leg regenerates a FRESH unsigned receipt from the sibling hive-census
-checkout and repeats the ingest — skipped when the sibling checkout or its runner is
-absent, so the gate never depends on it.
 """
 from __future__ import annotations
 
@@ -36,8 +32,6 @@ _RUN = os.environ.get("HIVE_RUN_DOCKER_TESTS") == "1"
 RECEIPT = _ROOT / "tests" / "data" / "receipt.real.json"
 # a real subject of the real unsigned S3 receipt — the join target
 ANCHOR = "matrix/_extract_monolith.py::LanguageConfig"
-_CENSUS_REPO = _ROOT.parent / "hive-census"
-_MATRIX_REPO = _ROOT.parent / "matrix"
 
 
 def _have_docker() -> bool:
@@ -220,52 +214,3 @@ def test_d7_gate_real_receipt_real_row_o7_idempotent_byte_inert(stack):
     assert r_bad.returncode == 65, r_bad.stderr[-1000:]
     assert "refused" in r_bad.stderr.lower()
     assert len(_evidence_rows(env)) == 1           # still just the one row
-
-
-def _census_runnable() -> bool:
-    return (_CENSUS_REPO / "pyproject.toml").exists() and shutil.which("uv") is not None \
-        and (_MATRIX_REPO / ".git").exists()
-
-
-@live
-@pytest.mark.skipif(not _census_runnable(),
-                    reason="optional leg — needs the sibling hive-census checkout + uv")
-def test_d7_optional_leg_fresh_unsigned_receipt_ingests(stack, tmp_path):
-    """Regenerate a FRESH unsigned receipt for the same real change and repeat ingest +
-    idempotency. Optional: the gate never depends on the sibling repo. Self-sufficient:
-    seeds its own anchored episode (order-independent of the gate test; on the shared
-    module stack matched can therefore be > 1)."""
-    port, env = stack
-    w = _mcp(port, "hive_write", {
-        "text": "fresh-receipt leg: LanguageConfig drives the per-language "
-                "extraction registry",
-        "approved_by": "d7-optional-leg", "kind": "gotcha", "anchor": ANCHOR})
-    assert w["status"] == "approved", w
-    fixture_prov = json.loads(base64.b64decode(
-        json.loads(RECEIPT.read_text())["payload"]))["predicate"]["provenance"]
-    fresh = tmp_path / "fresh-receipt.json"
-    build = subprocess.run(
-        ["uv", "run", "hive-census", "build", "--repo", str(_MATRIX_REPO),
-         "--base", fixture_prov["base_sha"], "--head", fixture_prov["head_sha"],
-         "--out", str(fresh)],
-        cwd=str(_CENSUS_REPO), env=os.environ.copy(),
-        capture_output=True, text=True, timeout=1800)
-    assert build.returncode == 0, f"hive-census build failed:\n{build.stderr[-3000:]}"
-
-    rows_before = len(_evidence_rows(env))
-    ing = _cli(env, "ingest", str(fresh), timeout=300)
-    assert ing.returncode == 0, ing.stderr[-2000:]
-    report = json.loads(ing.stdout.strip().splitlines()[-1])
-    print(f"D7-EVIDENCE fresh-receipt-report: {json.dumps(report, sort_keys=True)}")
-    assert report["matched"] >= 1                  # the anchored episode(s) join
-    # per matched episode the batch renders change_outcome + verify_stale. The fresh
-    # receipt is a DIFFERENT artifact (new timestamps ⇒ new digest ⇒ new
-    # change_outcome rows); the verify rows are digest-free change-level facts, so
-    # they dedup against the gate test's rows when the rebuilt graph identity matches.
-    rendered = 2 * report["matched"]
-    assert len(report["inserted"]) + report["already_recorded"] == rendered
-    assert len(report["inserted"]) >= report["matched"]
-    assert len(_evidence_rows(env)) == rows_before + len(report["inserted"])
-    ing2 = _cli(env, "ingest", str(fresh), timeout=300)
-    report2 = json.loads(ing2.stdout.strip().splitlines()[-1])
-    assert report2["already_recorded"] == rendered and report2["inserted"] == []

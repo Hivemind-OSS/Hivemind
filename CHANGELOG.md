@@ -274,6 +274,14 @@ All notable changes to this project are documented here.
 - Boot order: decay sweep runs before the index rebuild.
 
 ## Removed
+- The standalone `../matrix` and `../hive-census` engine mirrors — stale, un-remoted duplicates of
+  hive-edge's canonical `packages/matrix` / `packages/hive-census`, long drifted from them (an older
+  monolith layout carrying its own git history). `tests/container/test_ingest_live.py` drops the
+  optional census-regeneration leg that was the mirrors' only consumer — it was pinned to two commits
+  living solely in `../matrix`'s history, so it could not follow the engines into hive-edge. The
+  load-bearing D7 gate (a real unsigned receipt through the real `hive ingest` into a real running
+  server, Docker-skip-guarded) is untouched; real census-build coverage now rides the `hive-edge
+  census init` self-test and the live promotion path instead of a sibling checkout.
 - All census receipt **signing** machinery — the ed25519 sign/verify path, the key loaders,
   `EnvelopeError`, the `HIVE_CENSUS_SIGNING_KEY` gate + `--unsigned` flag (unsigned is now
   unconditional), and the `securesystemslib` + `cryptography` dependencies. Census emits an
