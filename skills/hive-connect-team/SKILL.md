@@ -55,19 +55,21 @@ Then the teammate uses the **local** loopback line above as-is — no ngrok, no 
 ## Edge tools — install & stay current
 
 Every connected participant (local or remote) also installs the **`hive-edge` CLI** and wires the
-fail-open post-merge census hook — one install, then `hive-edge census init`:
+fail-open census hooks (post-merge + post-commit) — one install, then `hive-edge census init`:
 
 ```bash
 uv tool install hive-edge --from git+https://github.com/Hivemind-OSS/Hive-edge@release
 hive-edge census init --repo . --hive-url <the /mcp URL `hive connect` printed>
 ```
 
-The wiring is per-device and succeeds even where the `hive` server CLI is absent — the hook's
-bytes are constant and it resolves binaries + config at run time on each device, staying inert
-(fail-open) until they exist. When both `hive-edge` and `hive` resolve, `census init` self-tests the
-wiring immediately — a zero-diff receipt build in the hook's own `GIT_DIR`/`GIT_WORK_TREE`
+The wiring is per-device and succeeds even where the `hive` server CLI is absent — the hooks'
+bytes are constant and they resolve binaries + config at run time on each device, staying inert
+(fail-open) until they exist. Together the pair receipts every landing exactly once (post-merge:
+clean merges; post-commit: direct commits + conflict-resolved merges) and keeps the persistent
+per-repo code graph current. When both `hive-edge` and `hive` resolve, `census init` self-tests the
+wiring immediately — a zero-diff receipt build in the hooks' own `GIT_DIR`/`GIT_WORK_TREE`
 environment — and prints `self-test PASSED`/`FAILED`, so breakage is caught at wiring time rather
-than only later in `~/.hive-edge/last-postmerge.log`.
+than only later in the hook logs (`~/.hive-edge/last-postmerge.log` / `last-postcommit.log`).
 
 The full flow — the daily release nudge, `hive-edge upgrade`, the per-device state directory
 (`~/.hive-edge/`), and the server's own `hive upgrade` — is **`HIVE-ADMIN.md` §8** (the single

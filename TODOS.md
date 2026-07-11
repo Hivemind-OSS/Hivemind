@@ -151,38 +151,6 @@ actuator is always local (the no-server→client-reach law carried from TODO 9).
 
 ---
 
-## TODO 12 — Polish `docs/PLANS/MATRIX-SUBGRAPH-FINGERPRINT-PLAN.md` before implementation
-
-**File:** `docs/PLANS/MATRIX-SUBGRAPH-FINGERPRINT-PLAN.md`; eventually
-`../hive-edge/hive_edge/cli.py`, `../hive-edge/hive_edge/hooks.py`, `hive/app/onboard_ref.py`
-
-The plan (shape-only v1 blast-radius fingerprint: `matrix.blast_radius` member set + `combdrift`'s
-existing per-symbol shape token, flat `sha256(sorted(tokens))`, landing as a fourth shared core in
-`hive_edge/cli.py` beside `_mint_core`/`_verify_core`/`_wd_state`) is design-reviewed and drafted but
-carries open items that should be resolved with evidence before chunk 1 starts, not discovered
-mid-implementation:
-
-1. **Depth-bound constant** (`_UNBOUNDED_DEPTH = 10_000`) is an unmeasured placeholder. Needs a real
-   read against actual repo fan-out / blast-radius-walk performance before locking in — or an
-   explicit decision to make it configurable instead of a hardcoded constant.
-2. **Chunk 3's cross-repo `CONTRACT_VERSION` bump** is named but not spec'd to the level BUG-023
-   used (exact byte diff of the served text, keystone-regen mechanics, which fit/conservation tests
-   need updating). Write that level of detail into the plan before chunk 3 is picked up.
-3. **combdrift's actual per-language coverage** (which of matrix's 10 languages
-   `combdrift.fingerprint_anchor` can resolve) was never empirically confirmed against combdrift's
-   source — the identity-fallback path in `_member_token` was designed to be safe either way, but the
-   true coverage should be read and recorded in the plan, not assumed.
-4. **The three deliberately-out-of-scope follow-ons** (wiring the composite fp into `_verify_core`'s
-   verdict; replacing census's fuzzy `match_anchors` with an exact fp compare; body-content-hash v2)
-   are named but not designed — each deserves its own `/software-design-review` pass before becoming
-   its own plan.
-
-**Verification:** the plan is polished when each item above is either resolved with cited evidence
-(a file:line reading, a measurement, or a completed sub-review) and folded into the plan document,
-or explicitly re-deferred with a named reason — not when it merely reads as finished.
-
----
-
 ## TODO 13 — Formally fix BUG-018, not the workaround
 
 **File:** `hive/domain/secret_scan.py`, `tests/domain/test_secret_scan.py`

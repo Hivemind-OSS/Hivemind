@@ -3,6 +3,20 @@
 All notable changes to this project are documented here.
 
 ## Added
+- The served contract teaches the dependency-neighborhood fingerprint and the commit-lined-up
+  census feed (contract v.10): `MINT_DIRECTIVE`'s printed map now names both fingerprint keys
+  (`combdrift/fp` + `matrix/subgraph_fp` — passing the printed map verbatim as capture meta is
+  unchanged); `VERIFY_DIRECTIVE` adds `--subgraph-fp <the hit's meta matrix/subgraph_fp>` beside
+  `--fp` and teaches the advisory `radius` field (`changed` = re-verify against the current code
+  before relying on the memory; never a retirement trigger by itself — the anchor verdict is
+  untouched); `CENSUS_DIRECTIVE` + onboarding step 4 wire the post-merge + post-commit hook pair,
+  so merges AND direct commits land as `change_outcome` evidence and keep the per-repo code graph
+  current. `MIN_EDGE_VERSION` 0.3.0 → 0.4.0 alongside the hive-edge 0.4.0 release (matrix 0.3.0
+  `out_dir` param; the `hive-edge graph update|radius|fp` verb group over a persistent per-checkout
+  graph cache under `$HIVE_EDGE_HOME/state/matrix/`; `mint` printing the two-key union map;
+  `verify --subgraph-fp`; both census hooks wired by `census init` and re-wired by `upgrade`).
+  Operator docs (`HIVE-ADMIN.md` §8, `README.md` edge section, `OPERATIONS.md`, the connect-team +
+  operate runbooks) reconciled with the two-hook + persistent-graph reality.
 - `hive_health(include_census_health=true)` — a passive census dark-feed signal. Since the
   post-merge census hook is fail-open, a feed that has gone dark (building zero receipts) is
   otherwise invisible without per-repo CI. The new `hive/app/census_health.py` serves

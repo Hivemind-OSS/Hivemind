@@ -226,38 +226,48 @@ moves to it deliberately and backup-gated.
 
 **Edge tools (every participant, local or remote).** After connecting (§2/§3), install the
 `hive-edge` CLI once — one command pulls the comb-drift + matrix + census + verifier engines behind
-a single console script — and wire the fail-open post-merge census hook:
+a single console script — and wire the fail-open census hooks:
 
 ```bash
 uv tool install hive-edge --from git+https://github.com/Hivemind-OSS/Hive-edge@release
 hive-edge census init --repo . --hive-url <the /mcp URL `hive connect` printed>
 ```
 
-`hive-edge census init` writes a portable post-merge hook whose bytes are **constant** — binaries
-resolve at run time (`command -v` plus well-known fallbacks) and the hive-url / auto-upgrade
-posture are read from the device's own config, so the same hook file works from any clone on any
-device and never bakes in another machine's paths. Wiring succeeds even on a device without the
-`hive` server CLI: the hook simply stays inert there (fail-open) — normal for a teammate device,
-since ingest runs on the operator host and a wired operator clone that pulls the shared repo
-receipts everyone's merges. After a merge the hook builds an **unsigned** change receipt and feeds
-its outcome to the server over the hive-url. It is entirely fail-open — a missing binary, no
-merge, or an unreachable server skips silently and a merge is never delayed or failed. No signing
+`hive-edge census init` writes a portable **post-merge + post-commit** hook pair whose bytes are
+**constant** — binaries resolve at run time (`command -v` plus well-known fallbacks) and the
+hive-url / auto-upgrade posture are read from the device's own config, so the same hook files work
+from any clone on any device and never bake in another machine's paths. The two hooks split git's
+disjoint landing paths: post-merge fires after a clean in-process merge, post-commit after a direct
+commit or a conflict-resolved merge completed via `git commit` (it skips only the parentless
+initial commit) — so every landing is receipted exactly once and nothing double-fires. Wiring
+succeeds even on a device without the `hive` server CLI: the census feed simply stays inert there
+(fail-open) — normal for a teammate device, since ingest runs on the operator host and a wired
+operator clone that pulls the shared repo receipts everyone's merges. After a merge or commit each
+hook first refreshes the persistent per-repo code graph (`hive-edge graph update` — this runs even
+where `hive` is absent), then builds an **unsigned** change receipt and feeds its outcome to the
+server over the hive-url. Everything is entirely fail-open — a missing binary, nothing landed, or
+an unreachable server skips silently and a merge or commit is never delayed or failed. No signing
 key is generated; receipts are unsigned by policy (the ingest-door trust boundary is
 transport/auth, not a signature). When both `hive-edge` and `hive` resolve on PATH, `census init`
 runs a wiring self-test — a zero-diff receipt build under the same `GIT_DIR`/`GIT_WORK_TREE`
-environment git hands the hook — and prints `self-test PASSED`/`FAILED` immediately, so a broken
-build environment surfaces at wiring time instead of only in `~/.hive-edge/last-postmerge.log`
-after the first real merge (the self-test never changes `census init`'s own exit code).
+environment git hands the hooks — and prints `self-test PASSED`/`FAILED` immediately, so a broken
+build environment surfaces at wiring time instead of only in `~/.hive-edge/last-postmerge.log` /
+`last-postcommit.log` after the first real merge or commit (the self-test never changes
+`census init`'s own exit code).
 
-**Edge tools stay current.** The hook checks the published `release` tip at most once a day and, on
-drift, nudges you to run `hive-edge upgrade` (which re-installs the bundle at `release` and re-wires
-the hook). Wire `hive-edge census init --auto-upgrade` to apply it automatically instead of nudging.
-Roll back to a known-good tag with `hive-edge upgrade --ref <old-tag>`.
+**Edge tools stay current.** The post-merge hook checks the published `release` tip at most once a
+day and, on drift, nudges you to run `hive-edge upgrade` (which re-installs the bundle at `release`
+and re-wires both hooks in every recorded repo). Wire `hive-edge census init --auto-upgrade` to
+apply it automatically instead of nudging. Roll back to a known-good tag with
+`hive-edge upgrade --ref <old-tag>`.
 
 **State directory.** All per-device edge state lives under `~/.hive-edge/` (`HIVE_EDGE_HOME`
-overrides; the hook honors the same variable): `config` (hive_url, wired repos, auto-upgrade
+overrides; the hooks honor the same variable): `config` (hive_url, wired repos, auto-upgrade
 posture, rollback pin), `release.sha` (the cached release tip the nudge compares against),
-`last-nudge`, `last-error.log`, `last-postmerge.log`, and `state/` (worktree-delta baselines).
+`last-nudge`, `last-error.log`, `last-postmerge.log`, `last-postcommit.log`, and `state/` —
+worktree-delta baselines plus `state/matrix/<digest>/`, the persistent per-checkout code-graph
+cache the hooks and `hive-edge graph update` refresh (the digest keys the checkout's real path, so
+two checkouts of one project never share a cache; the cache never lives inside the repo).
 Safe to delete — everything regenerates; re-run `hive-edge census init` to restore the config.
 
 **Server upgrade / rollback.** Move the server to a vetted ref:

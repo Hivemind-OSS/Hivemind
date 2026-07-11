@@ -132,8 +132,10 @@ KPIs).
 
 ## Edge tooling
 
-Anchor mint/verify (recall freshness) and the census post-merge evidence hook ride a companion,
-per-workstation CLI, **[`hive-edge`](https://github.com/Hivemind-OSS/Hive-edge)** — it is not baked
+Anchor mint/verify (recall freshness, including the dependency-neighborhood `radius` advisory), a
+persistent per-repo code graph (`hive-edge graph`), and the census evidence hooks (post-merge +
+post-commit) ride a companion, per-workstation CLI,
+**[`hive-edge`](https://github.com/Hivemind-OSS/Hive-edge)** — it is not baked
 into the server image. It is not required for the core recall/capture/write loop (absent, mint and
 verify simply no-op; nothing else is affected), but the trust-lifecycle verify step and the census
 evidence flow depend on it.
@@ -145,10 +147,10 @@ installs or upgrades it automatically. To install it manually instead:
 uv tool install hive-edge --from git+https://github.com/Hivemind-OSS/Hive-edge@release
 ```
 
-Per-device edge state (config, release cache, logs) lives under `~/.hive-edge/`
-(`HIVE_EDGE_HOME` overrides); it is safe to delete and regenerates. See
+Per-device edge state (config, release cache, logs, the per-checkout code-graph cache) lives under
+`~/.hive-edge/` (`HIVE_EDGE_HOME` overrides); it is safe to delete and regenerates. See
 **[HIVE-ADMIN.md §8](HIVE-ADMIN.md)** for the full install/upgrade/rollback flow and the
-post-merge census hook it wires.
+census hooks (post-merge + post-commit) it wires.
 
 ## Embedding model & attribution
 
