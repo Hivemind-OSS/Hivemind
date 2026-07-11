@@ -64,7 +64,10 @@ hive-edge census init --repo . --hive-url <the /mcp URL `hive connect` printed>
 
 The wiring is per-device and succeeds even where the `hive` server CLI is absent — the hook's
 bytes are constant and it resolves binaries + config at run time on each device, staying inert
-(fail-open) until they exist.
+(fail-open) until they exist. When both `hive-edge` and `hive` resolve, `census init` self-tests the
+wiring immediately — a zero-diff receipt build in the hook's own `GIT_DIR`/`GIT_WORK_TREE`
+environment — and prints `self-test PASSED`/`FAILED`, so breakage is caught at wiring time rather
+than only later in `~/.hive-edge/last-postmerge.log`.
 
 The full flow — the daily release nudge, `hive-edge upgrade`, the per-device state directory
 (`~/.hive-edge/`), and the server's own `hive upgrade` — is **`HIVE-ADMIN.md` §8** (the single

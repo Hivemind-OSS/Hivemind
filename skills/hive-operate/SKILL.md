@@ -80,7 +80,10 @@ detached in the background, output lands in `~/.hive-edge/last-postmerge.log`, a
 piece (`hive-edge` on PATH, `ORIG_HEAD`, hive CLI) skips silently — a merge is never delayed or
 failed by evidence plumbing. The hook's bytes are constant across devices (binaries and config
 resolve at run time), so on a clone without the `hive` CLI it is simply inert — the operator
-clone's pulls receipt the shared repo's merges (per-device details: `HIVE-ADMIN.md` §8).
+clone's pulls receipt the shared repo's merges (per-device details: `HIVE-ADMIN.md` §8). When both
+binaries resolve at wiring time, `hive-edge census init` self-tests by building a zero-diff receipt
+in the hook's own `GIT_DIR`/`GIT_WORK_TREE` environment and prints `self-test PASSED`/`FAILED`, so a
+broken build environment is caught immediately rather than only surfacing in `last-postmerge.log`.
 
 ## Posture (why)
 

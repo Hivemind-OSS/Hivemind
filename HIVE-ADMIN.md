@@ -243,7 +243,11 @@ receipts everyone's merges. After a merge the hook builds an **unsigned** change
 its outcome to the server over the hive-url. It is entirely fail-open — a missing binary, no
 merge, or an unreachable server skips silently and a merge is never delayed or failed. No signing
 key is generated; receipts are unsigned by policy (the ingest-door trust boundary is
-transport/auth, not a signature).
+transport/auth, not a signature). When both `hive-edge` and `hive` resolve on PATH, `census init`
+runs a wiring self-test — a zero-diff receipt build under the same `GIT_DIR`/`GIT_WORK_TREE`
+environment git hands the hook — and prints `self-test PASSED`/`FAILED` immediately, so a broken
+build environment surfaces at wiring time instead of only in `~/.hive-edge/last-postmerge.log`
+after the first real merge (the self-test never changes `census init`'s own exit code).
 
 **Edge tools stay current.** The hook checks the published `release` tip at most once a day and, on
 drift, nudges you to run `hive-edge upgrade` (which re-installs the bundle at `release` and re-wires
