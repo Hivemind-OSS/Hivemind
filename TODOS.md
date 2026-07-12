@@ -193,6 +193,17 @@ documented workaround (don't name the path as one contiguous token). That shifts
 every writer and will keep firing on any sufficiently distinct name. A formal fix to the scan
 itself is owed — not specified here, not another workaround.
 
+**2026-07-12 evidence — the workaround is insufficient:** a legitimate `hive_capture` of the
+combdrift `langs/` extension convention was refused twice by the entropy arm. It kept firing *after*
+the contiguous path token was removed — an ordinary camelCase type name (`LangSpec`) and a
+comma-separated run of short method names (`find_symbols`, `extract_interface`, `indirect_detail`)
+each still tripped it; only fully plain prose with no code identifiers passed. So the false-positive
+surface is wider than "one contiguous path token": it includes ordinary camelCase type names and
+short identifier lists, and the documented "reword it" workaround does not reliably avoid the refusal
+— every agent capturing a code-anchored lesson pays this tax. A principled fix (e.g. an
+identifier-shape allowlist, or named-prefix detection augmenting the raw entropy catch-all so a
+real prefixed secret still refuses while identifier-shaped tokens pass — never lowering the floor) is owed.
+
 **Verification:** closed only when both of BUG-018's own named examples pass through `scan()`
-unmodified in body text (no rewording needed) AND the entropy arm's true positives (real
-prefix-less high-entropy secrets) still refuse.
+unmodified in body text (no rewording needed) AND the `LangSpec` / method-name-list body above passes
+unmodified AND the entropy arm's true positives (real prefix-less high-entropy secrets) still refuse.
