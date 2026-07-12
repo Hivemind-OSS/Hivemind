@@ -207,3 +207,46 @@ real prefixed secret still refuses while identifier-shaped tokens pass — never
 **Verification:** closed only when both of BUG-018's own named examples pass through `scan()`
 unmodified in body text (no rewording needed) AND the `LangSpec` / method-name-list body above passes
 unmodified AND the entropy arm's true positives (real prefix-less high-entropy secrets) still refuse.
+
+---
+
+## TODO 14 — Ruby and Bash language support removed; re-add recipe if demand returns
+
+**File:** `../hive-edge/packages/comb-drift/combdrift/langs/`, `../hive-edge/packages/matrix/matrix/extract/`,
+`../hive-edge/packages/hive-verifier/hive_verifier/registry.py`, and the doc-count claims across all three READMEs.
+
+Ruby and Bash were removed entirely from all three hive-edge language subsystems (matrix AST cone,
+combdrift verdict, hive-verifier execution evidence) so nothing claims a capability the fleet does not
+provide — the kept set is the six families / eight grammars (python, javascript, typescript, sql, go,
+rust, c, cpp). This is a record, not open work: re-add only if real demand returns, via the now-uniform
+seams — a combdrift `langs/<lang>.py` LangSpec + grammar dep, a matrix extractor + golden + fixture, a
+hive-verifier `LangRecipe` row (+ `REGISTRY_VERSION` bump + `LOCKED_LANGUAGES`), and reverse the doc counts.
+
+**Verification:** a re-add is complete when that language's row is green across the §6 functionality matrix
+(combdrift found/missing/breaking/additive/parse_error + false-stale pin, matrix cone + `update()==build_graph()`,
+hive-verifier conformance, edge E2E) and no "eight"/"six-language" count claim contradicts it.
+
+## TODO 15 — C++ combdrift interface fidelity: full overload / template signature modeling
+
+**File:** `../hive-edge/packages/comb-drift/combdrift/langs/cpp.py`
+
+combdrift C++ ships the plan's §8 CONSERVATIVE fidelity: existence (found/missing/indirect) always, but the
+shape fingerprint only for an unambiguous single declaration — an overload set resolves to `ambiguous` →
+`interface=None` (unverifiable), so an overload is never a wrong "breaking" verdict. Full overload-set and
+template signature modeling is deferred: net-new combdrift work, Law-1-orthogonal (conservative fidelity is
+already false-stale-safe; this only ADDS breaking-detection power it currently withholds).
+
+**Verification:** with the deeper model, a C++ overload whose one member's signature changes reads
+`breaking → stale` (today: `ambiguous`/unverifiable), while every existing false-stale pin stays green.
+
+## TODO 16 — SQL Layer-B column-type fingerprint (combdrift)
+
+**File:** `../hive-edge/packages/comb-drift/combdrift/` (a SQL Layer-B extractor) and the `tests/edge` SQL E2E.
+
+SQL combdrift staleness already works via EXISTENCE at table+column granularity (a dropped column →
+`missing` → stale); SQL schema members render the `identity` shape because they carry no Layer-B interface.
+A dedicated column-TYPE fingerprint (a type change → `breaking`, the SQL analog of a signature change) is
+deferred — net-new combdrift work, Law-1-orthogonal (existence already covers the load-bearing case).
+
+**Verification:** with SQL Layer-B, a column whose TYPE changes under an unchanged name reads
+`breaking → stale` (today: `found`, unchanged), and the existing SQL existence + cone tests stay green.

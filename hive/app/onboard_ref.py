@@ -60,14 +60,14 @@ METADATA_FIELD_LIMIT: int = 2048
 # The single owner of the bundle version. Bump it (and regenerate the keystone golden) on ANY
 # change to AGENT_RULES_BLOCK / CLAUDE_CODE_HOOKS / the rendered allowlist. The beacon stamps this
 # on every tool result; an agent whose installed marker differs re-onboards.
-CONTRACT_VERSION: str = "v.09"
+CONTRACT_VERSION: str = "v.10"
 
 # The minimum hive-edge CLI version this contract requires (mint / verify / census / hook
 # capability). Rendered into the EDGE_CLI floor text below. When the CLI's capability moves, bump
 # this in the SAME release as the hive-edge change (Hive-edge's version-coupling rule) so the
 # pre-commit guard bumps CONTRACT_VERSION and the new floor propagates to every connected edge. A
 # contract-only edit that does not change CLI capability leaves this untouched.
-MIN_EDGE_VERSION: str = "0.3.0"
+MIN_EDGE_VERSION: str = "0.5.0"
 
 # The edge-CLI tooling loop, served in the install payload: mint / verify / census computation
 # rides ONE console script so every harness runs identical code — the hooks only AUTOMATE these
