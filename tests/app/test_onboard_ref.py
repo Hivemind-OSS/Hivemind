@@ -22,7 +22,7 @@ from hive.domain.kinds import render_taxonomy
 # Regenerate when the bundle legitimately changes (and bump CONTRACT_VERSION) — the pre-commit
 # contract-version guard does this automatically, or by hand:
 #   python -c "from hive.app.onboard_ref import bundle_digest; print(bundle_digest())"
-_GOLDEN_BUNDLE_SHA256 = "3109b498f05aa7329259caf7e2c52fbdba650c4848e2d160b834f7ed0be0cd4b"
+_GOLDEN_BUNDLE_SHA256 = "3124fdc384f5ff1b0ada1d56b98e404ea7078e1902f89f3156bacf02cfc7dc97"
 
 
 def test_server_instructions_cover_the_verbs_and_search_first_timing():
@@ -385,7 +385,7 @@ def test_reonboard_names_the_edge_upgrade_step():
 
 def test_floor_mint_directive_names_fp_meta_and_the_conditional_hook():
     """The TASK-END capture directive: the floor names the one-liner (`hive-edge mint`); the
-    full mechanics (the combdrift/fp meta shape, the where-the-hook-is-firing conditional) are
+    full mechanics (the printed fp-map meta shape, the where-the-hook-is-firing conditional) are
     un-compressible verbatim detail that rides the uncapped onboarding payload's procedure
     text instead — the release valve for exact call mechanics."""
     f = CAPTURE_RECALL_FLOOR
@@ -394,6 +394,11 @@ def test_floor_mint_directive_names_fp_meta_and_the_conditional_hook():
     assert MINT_DIRECTIVE in procedure                  # single-sourced into the payload
     assert "combdrift/fp" in procedure and "meta" in procedure
     assert "installed and firing" in procedure          # the conditional hook clause
+    # the printed map example names BOTH fingerprint keys — the interface fp and the
+    # dependency-neighborhood fp; "pass the printed map as meta" itself is unchanged, so an
+    # agent still passes whatever mint prints verbatim rather than reconstructing keys
+    assert "combdrift/fp" in MINT_DIRECTIVE and "matrix/subgraph_fp" in MINT_DIRECTIVE
+    assert "printed" in MINT_DIRECTIVE
 
 
 def test_floor_verify_directive_names_stale_reference_fallback_and_reconciliation():
@@ -410,6 +415,22 @@ def test_floor_verify_directive_names_stale_reference_fallback_and_reconciliatio
     assert "point-local verdict wins" in procedure.lower()
 
 
+def test_verify_directive_passes_the_subgraph_fp_and_reads_radius_as_advisory():
+    """The recall-time verify hands over the hit's stored dependency-neighborhood fingerprint
+    (`--subgraph-fp`, from meta matrix/subgraph_fp) beside `--fp`, and the directive teaches
+    the advisory `radius` field: `changed` = code in the memory's dependency neighborhood
+    moved since it was stored — re-verify against the current code before relying on it —
+    and NEVER a retirement trigger by itself (it does not touch the anchor verdict)."""
+    v = VERIFY_DIRECTIVE
+    assert "--subgraph-fp" in v
+    assert "matrix/subgraph_fp" in v                    # names the meta key the token comes from
+    assert "radius" in v
+    low = v.lower()
+    assert "advisory" in low                            # a separate channel, not the verdict
+    assert "re-verify" in low                           # changed => re-check before relying
+    assert "never a retirement trigger" in low          # radius alone retires nothing
+
+
 def test_edge_directives_carry_the_conditional_on_both_triggers():
     """Both the mint and the verify directive carry the where-installed-and-firing conditional,
     so a hookless runtime knows to run the CLI itself (mutation 9 target)."""
@@ -419,11 +440,11 @@ def test_edge_directives_carry_the_conditional_on_both_triggers():
 
 def test_procedure_wires_the_census_evidence_feed():
     """BUG-030: the served contract must instruct the repo-level census wiring — the ONE command
-    that writes the post-merge hook and activates the change_outcome evidence feed. It existed
-    only in the human ops doc; a repo onboarded purely over MCP left the corroborate/contradict
-    loop silently dark. Repo-level install mechanics ride the uncapped payload procedure (the
-    same release-valve split as the mint/verify directives), with a numbered step in the
-    install flow before the re-onboard step."""
+    that writes the post-merge + post-commit hooks and activates the change_outcome evidence
+    feed. It existed only in the human ops doc; a repo onboarded purely over MCP left the
+    corroborate/contradict loop silently dark. Repo-level install mechanics ride the uncapped
+    payload procedure (the same release-valve split as the mint/verify directives), with a
+    numbered step in the install flow before the re-onboard step."""
     procedure = render_onboarding_payload()["procedure"]
     assert CENSUS_DIRECTIVE in procedure                # single-sourced into the payload
     assert "hive-edge census init" in procedure
@@ -431,7 +452,13 @@ def test_procedure_wires_the_census_evidence_feed():
     assert "once per repo" in procedure.lower()         # per-repo per-device idempotent wiring
     assert "change_outcome" in procedure                # names WHAT the feed activates
     assert "inert" in procedure and "fail-open" in procedure   # non-server devices still succeed
+    # census init wires BOTH hooks: merges AND direct commits land as change_outcome evidence,
+    # and the hooks keep the per-repo code graph current
+    assert "post-merge" in CENSUS_DIRECTIVE and "post-commit" in CENSUS_DIRECTIVE
+    assert "direct commits" in procedure
+    assert "code graph" in procedure
     assert "hive-edge census init" in ONBOARDING_PROCEDURE     # the numbered install step
+    assert "post-commit" in ONBOARDING_PROCEDURE        # the numbered step names both hooks
     # the wiring step precedes the re-onboard step (the flow ends on the version stamp)
     assert ONBOARDING_PROCEDURE.index("census init") < ONBOARDING_PROCEDURE.index("version stamp")
 

@@ -60,7 +60,7 @@ METADATA_FIELD_LIMIT: int = 2048
 # The single owner of the bundle version. Bump it (and regenerate the keystone golden) on ANY
 # change to AGENT_RULES_BLOCK / CLAUDE_CODE_HOOKS / the rendered allowlist. The beacon stamps this
 # on every tool result; an agent whose installed marker differs re-onboards.
-CONTRACT_VERSION: str = "v.10"
+CONTRACT_VERSION: str = "v.11"
 
 # The minimum hive-edge CLI version this contract requires (mint / verify / census / hook
 # capability). Rendered into the EDGE_CLI floor text below. When the CLI's capability moves, bump
@@ -147,10 +147,12 @@ ONBOARDING_PROCEDURE: str = (
     "human checkpoint that matches their approved_by vouch.\n"
     "3) [ALL runtimes] Install the edge CLI so mint / verify / census run identically on every "
     "harness: " + EDGE_CLI + "\n"
-    "4) [ALL runtimes, once per repo per device] Wire the post-merge census evidence feed: "
-    "`hive-edge census init --repo <repo-root> --hive-url <the URL you registered this server "
-    "at>` (idempotent; succeeds even where the `hive` server CLI is absent — the hook stays "
-    "inert there, fail-open). This is what activates `change_outcome` evidence for this repo.\n"
+    "4) [ALL runtimes, once per repo per device] Wire the census evidence feed — post-merge + "
+    "post-commit hooks: `hive-edge census init --repo <repo-root> --hive-url <the URL you "
+    "registered this server at>` (idempotent; succeeds even where the `hive` server CLI is "
+    "absent — the census ingest stays inert there, fail-open). This turns merges AND direct "
+    "commits into `change_outcome` evidence for this repo and keeps the per-repo code graph "
+    "current.\n"
     "5) The version stamp IS the START marker (contract-version=" + CONTRACT_VERSION + "). You MUST "
     "RE-ONBOARD when a hive_* tool result's contract_version differs from your installed marker (or no "
     "block is installed): repeat steps 0-2 to reinstall the FULL contract — the HIVEMIND-RULES block, "
@@ -166,42 +168,51 @@ ONBOARDING_PROCEDURE: str = (
 # `--repo` is resolved via `git rev-parse --show-toplevel`, never the raw cwd, so an anchor looked
 # up from a subdirectory is not mis-rooted.
 MINT_DIRECTIVE: str = (
-    "When the anchor names a resolvable callable in your tree, MINT its interface fingerprint — "
+    "When the anchor names a resolvable callable in your tree, MINT its fingerprints — "
     "`hive-edge mint --repo <repo-root> --anchor <file:symbol>` (resolve <repo-root> with `git "
-    "rev-parse --show-toplevel`, never your raw cwd) — and pass the printed {\"combdrift/fp\": token} "
-    "map as hive_capture's meta. Mint synchronously against the tree you just saw (0-false-stale). "
+    "rev-parse --show-toplevel`, never your raw cwd) — and pass the printed "
+    "{\"combdrift/fp\": ..., \"matrix/subgraph_fp\": ...} map as hive_capture's meta (the interface "
+    "fp and the dependency-neighborhood fp). Mint synchronously against the tree you just saw "
+    "(0-false-stale). "
     "Where the served Claude-Code pre-capture hook is installed and firing it mints for you; run it "
     "yourself on every other harness, or if the hook is disabled or failed. No `hive-edge` on PATH -> "
     "install per EDGE CLI; still absent -> omit meta (capture is unaffected)."
 )
 
-# The repo-level census wiring directive — the ONE command that writes the post-merge hook and
-# activates the change_outcome evidence feed (BUG-030: it existed only in the human ops doc,
-# never in the served contract, so a repo onboarded purely over MCP left the corroborate/
-# contradict loop silently dark). Same release-valve split as MINT/VERIFY: the full call shape
-# and semantics ride the install payload; ONBOARDING_PROCEDURE carries the numbered step.
+# The repo-level census wiring directive — the ONE command that writes the post-merge +
+# post-commit hooks and activates the change_outcome evidence feed (BUG-030: it existed only in
+# the human ops doc, never in the served contract, so a repo onboarded purely over MCP left the
+# corroborate/contradict loop silently dark). Same release-valve split as MINT/VERIFY: the full
+# call shape and semantics ride the install payload; ONBOARDING_PROCEDURE carries the numbered step.
 CENSUS_DIRECTIVE: str = (
     "Wire the census evidence feed ONCE PER REPO PER DEVICE: `hive-edge census init --repo "
     "<repo-root> --hive-url <the exact URL you registered this hive MCP server at>`. This writes "
-    "the repo's post-merge hook — the feed that turns merges into `change_outcome` evidence "
-    "(corroborate/contradict) for served memories; without it that loop stays dark for the repo. "
-    "Idempotent — a re-run rewrites the identical wiring. The hook resolves binaries and config "
-    "at RUN time, so on a device without the `hive` server CLI the wiring still succeeds and the "
-    "hook simply stays inert (fail-open) — normal for a non-server device: a wired operator "
-    "clone that pulls the shared repo receipts everyone's merges."
+    "the repo's post-merge + post-commit hooks — the feed that turns merges AND direct commits "
+    "into `change_outcome` evidence (corroborate/contradict) for served memories and keeps the "
+    "per-repo code graph current; without it that loop stays dark for the repo. Idempotent — a "
+    "re-run rewrites the identical wiring. The hooks resolve binaries and config at RUN time, so "
+    "on a device without the `hive` server CLI the wiring still succeeds and the census ingest "
+    "simply stays inert (fail-open; the graph still refreshes) — normal for a non-server device: "
+    "a wired operator clone that pulls the shared repo receipts everyone's merges."
 )
 
 # The recall-time verify directive — the full mechanics, served in the install payload (same
 # release-valve split as MINT_DIRECTIVE). A `stale` verdict is REFERENCE-ONLY and CARRIES its own
 # remediation options; a local point verdict WINS over a server `remediation` rider (the server
-# tier is only the fallback for anchors you could not verify yourself).
+# tier is only the fallback for anchors you could not verify yourself). The advisory `radius`
+# field is a SEPARATE channel: it warns that the anchor's dependency neighborhood moved and never
+# touches the anchor verdict.
 VERIFY_DIRECTIVE: str = (
     "Before ACTING on a recalled hit whose anchor names a file/symbol in your tree, verify it — "
-    "`hive-edge verify --repo <repo-root> --anchor <file:symbol> [--fp <the hit's meta combdrift/fp>]"
-    "`. `stale` = the code moved past this memory: treat it as REFERENCE ONLY, do NOT follow it, and "
-    "take the remediation options the stale verdict CARRIES (act now without approval: "
-    "hive_outcome(hurt=[episode_id]); or escalate the human-gated retirement per BAD_VS_STALE — "
-    "supersede/replaces for STALE, prune for BAD — never retire on your own judgment). "
+    "`hive-edge verify --repo <repo-root> --anchor <file:symbol> [--fp <the hit's meta combdrift/fp>] "
+    "[--subgraph-fp <the hit's meta matrix/subgraph_fp>]`. `stale` = the code moved past this "
+    "memory: treat it as REFERENCE ONLY, do NOT follow it, and take the remediation options the "
+    "stale verdict CARRIES (act now without approval: hive_outcome(hurt=[episode_id]); or escalate "
+    "the human-gated retirement per BAD_VS_STALE — supersede/replaces for STALE, prune for BAD — "
+    "never retire on your own judgment). The result may also carry an advisory `radius` field: "
+    "`changed` = code in this memory's dependency neighborhood moved since it was stored — "
+    "re-verify against the current code before relying on it — never a retirement trigger by "
+    "itself (the memory may still be correct). "
     "`unverifiable`, or no `hive-edge`, -> fall back to the hit's last_verified stamp and the "
     "hive_health(include_stale_suspects) worklist. If the hit ALSO carries a server \"remediation\" "
     "rider and your own verify disagrees, YOUR point-local verdict wins — a local `current` overrides "

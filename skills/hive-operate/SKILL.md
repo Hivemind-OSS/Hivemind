@@ -66,24 +66,31 @@ records unverified judgment). The one-line JSON report on stdout carries
 Receipts are unsigned by policy — there is no signature to check; integrity rides the subject
 digest, which the ingest door re-checks against the predicate.
 
-### Automated post-merge wiring (`.githooks/post-merge`)
+### Automated wiring (`.githooks/post-merge` + `.githooks/post-commit`)
 
-`hive-edge census init` (above) writes a `post-merge` hook that closes this loop on every merge
-without an operator in the path: it builds an unsigned receipt for `ORIG_HEAD..HEAD` (`hive-edge
-census build --propagate --hive-url …`) and feeds it via `hive ingest <receipt> --post-merge
---verdict pass --signal none` (`none` is honest for a bare local merge — no rollout telemetry
-checked it, so it records as unverified judgment; CI can re-ingest with a stronger signal). Enable
-once with `git config core.hooksPath .githooks`. No key or setup is required — receipts are unsigned
-by policy; the ingest-door trust boundary is transport/auth (loopback locally, per-seat tokens over
-a tunnel), not a receipt signature. The hook is a fail-open side-channel: build + ingest run
-detached in the background, output lands in `~/.hive-edge/last-postmerge.log`, and any missing
-piece (`hive-edge` on PATH, `ORIG_HEAD`, hive CLI) skips silently — a merge is never delayed or
-failed by evidence plumbing. The hook's bytes are constant across devices (binaries and config
-resolve at run time), so on a clone without the `hive` CLI it is simply inert — the operator
-clone's pulls receipt the shared repo's merges (per-device details: `HIVE-ADMIN.md` §8). When both
-binaries resolve at wiring time, `hive-edge census init` self-tests by building a zero-diff receipt
-in the hook's own `GIT_DIR`/`GIT_WORK_TREE` environment and prints `self-test PASSED`/`FAILED`, so a
-broken build environment is caught immediately rather than only surfacing in `last-postmerge.log`.
+`hive-edge census init` (above) writes a hook pair that closes this loop on every landing without
+an operator in the path: `post-merge` builds an unsigned receipt for `ORIG_HEAD..HEAD` after a
+clean in-process merge, and `post-commit` builds one for `HEAD^..HEAD` after a direct commit or a
+conflict-resolved merge completed via `git commit` (skipping only the parentless initial commit) —
+git's two hook paths are disjoint, so every landing is receipted exactly once. Each hook first
+refreshes the persistent per-repo code graph (`hive-edge graph update` — this runs even where the
+`hive` CLI is absent), then builds the receipt (`hive-edge census build --propagate --hive-url …`)
+and feeds it via `hive ingest <receipt> --post-merge --verdict pass --signal none` (`--post-merge`
+means LANDED — a direct commit is landed; `none` is honest for a bare local landing — no rollout
+telemetry checked it, so it records as unverified judgment; CI can re-ingest with a stronger
+signal). Enable once with `git config core.hooksPath .githooks`. No key or setup is required —
+receipts are unsigned by policy; the ingest-door trust boundary is transport/auth (loopback
+locally, per-seat tokens over a tunnel), not a receipt signature. The hooks are a fail-open
+side-channel: everything runs detached in the background, output lands in
+`~/.hive-edge/last-postmerge.log` / `last-postcommit.log`, and any missing piece (`hive-edge` on
+PATH, a merge/commit base, the hive CLI) skips silently — a merge or commit is never delayed or
+failed by evidence plumbing. The hooks' bytes are constant across devices (binaries and config
+resolve at run time), so a clone without the `hive` CLI still refreshes the graph but stays
+census-inert — the operator clone's pulls receipt the shared repo's merges (per-device details:
+`HIVE-ADMIN.md` §8). When both binaries resolve at wiring time, `hive-edge census init` self-tests
+by building a zero-diff receipt in the hooks' own `GIT_DIR`/`GIT_WORK_TREE` environment and prints
+`self-test PASSED`/`FAILED`, so a broken build environment is caught immediately rather than only
+surfacing in the hook logs.
 
 ## Posture (why)
 
