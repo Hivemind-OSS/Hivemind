@@ -17,7 +17,7 @@ import pytest
 from hive.domain.models import ABSTAIN, CONFIDENT, EMPTY_NO_DATA
 from hive.domain.recall import AbsoluteRelevanceGate, RecallPipeline
 from tests.fakes._fakes import (
-    FakeEpisodeReader, FakeIndex, FakeLedger, FakeScanner,
+    FakeClock, FakeEpisodeReader, FakeIndex, FakeLedger, FakeScanner,
 )
 
 D = 16
@@ -442,6 +442,36 @@ def test_selected_out_row_is_not_exposed_belt_ordering():
     _pair_pipe(ledger=led).recall("q", agent_id="A")
     exposed = {e for ex in led.exposures for e, _m in ex["items"]}
     assert exposed == {1}                     # only the surviving gold, never the poison
+
+
+def test_lapsed_provisional_warm_in_index_dropped_and_not_exposed():
+    # R9: a provisional row that has lapsed its TTL is STILL warm in the index (the index was not
+    # rebuilt), so dense search returns it — but the resolve belt re-checks is_servable and DROPS
+    # it BEFORE surface OR exposure. Exposure refreshes liveness, so surfacing/exposing a lapsed
+    # row would resurrect it; the belt is what prevents that. (Unlike the other pipeline tests,
+    # provisional_ttl_s is a REAL short value and the clock is advanced past it.)
+    TTL = 10
+    clock = FakeClock(0)
+    index, reader = FakeIndex(), FakeEpisodeReader()
+    index.add(1, _e(0))                                 # warm the index while the row is fresh
+    reader.add(1, "the lapsing provisional fact", trust="provisional",
+               last_active_ts=0, value=_e(0))
+    led = FakeLedger()
+    pipe = RecallPipeline(
+        embedder=_StubProvider(_e(0)), index=index,
+        gate=AbsoluteRelevanceGate(0.70, 1), reader=reader,
+        recall_top_n=10, ledger=led, clock_now=clock.now, scanner=FakeScanner(),
+        provisional_ttl_s=TTL)
+    clock.advance(TTL + 1)                               # lapse the TTL WITHOUT rebuilding the index
+    r = pipe.recall("q", agent_id="A")
+    # the lapsed row clears the gate (cos 1.0) but is dropped at resolve: absent from the served
+    # context, and nothing else is servable ⇒ fail-closed EMPTY.
+    assert 1 not in {h.episode_id for h in r.hits}
+    assert r.state == EMPTY_NO_DATA
+    # …and it was NEVER exposed (no liveness refresh that would resurrect the lapsed row).
+    exposed = {e for ex in led.exposures for e, _m in ex["items"]}
+    assert 1 not in exposed
+    assert led.exposures == []                           # no exposure row written at all
 
 
 def test_detect_conflicts_fault_fails_the_read_closed(monkeypatch):

@@ -151,6 +151,16 @@ def test_get_is_405(live):
     assert "POST" in (hdrs.get("Allow") or "")
 
 
+def test_delete_is_405(live):
+    # X8: no sessions to tear down → DELETE is 405 with Allow: POST, decided at method
+    # routing BEFORE verify/handle, so the recall/write path is never reached.
+    url, spy = live
+    status, _, hdrs = _request(url, method="DELETE")
+    assert status == 405
+    assert "POST" in (hdrs.get("Allow") or "")
+    assert spy.calls == []                                   # rejected before handle
+
+
 def test_request_with_origin_header_is_403(live):
     url, spy = live
     status, body, _ = _request(url, body=_RPC, token="good-tok",
@@ -165,6 +175,17 @@ def test_malformed_json_body_is_jsonrpc_parse_error_in_200(live):
     status, body, _ = _request(url, body="{not json", token="good-tok")
     assert status == 200                                     # channel separation: protocol error in a 200
     assert json.loads(body)["error"]["code"] == -32700
+
+
+def test_nonobject_body_is_jsonrpc_invalid_request(live):
+    # X6a: a well-formed but non-OBJECT JSON-RPC body (a bare scalar or a batch array) is an
+    # Invalid Request → -32600 INSIDE a 200 (channel separation), and handle() never runs.
+    url, spy = live
+    for body in ("5", "[1, 2, 3]"):
+        status, resp, _ = _request(url, body=body, token="good-tok")
+        assert status == 200                                 # protocol error rides a 200
+        assert json.loads(resp)["error"]["code"] == -32600
+    assert spy.calls == []                                   # never dispatched to handle
 
 
 def test_handler_exception_is_jsonrpc_error_and_daemon_keeps_serving():

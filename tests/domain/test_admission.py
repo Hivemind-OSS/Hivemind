@@ -17,6 +17,7 @@ from hive.adapters.sqlite_db import connect
 from hive.adapters.store_sqlite import SqliteEpisodeStore
 from hive.domain.admission import AdmissionService, WriteResult
 from hive.domain.errors import SecretRefused
+from hive.domain.lifecycle import DemandRule, LifecycleService
 from hive.domain.models import content_hash
 from tests.fakes import FakeProvider
 
@@ -254,6 +255,49 @@ def test_capture_triggers_promotion_check_and_sweep():
     assert life.sweeps == 1                           # …and the sweep piggybacked once
     svc.capture("a second distinct insight", proposed_by="agent-1")
     assert life.sweeps == 2                           # once per capture
+
+
+class _RaisingRule(DemandRule):
+    """A REAL DemandRule whose decide() raises — the fault injected BELOW LifecycleService,
+    inside on_capture's own try/except (not a swapped-out lifecycle object)."""
+    def __init__(self) -> None:
+        super().__init__(demand_m=1, demand_tau=0.5, competitor_tau=0.9)
+        self.called = False
+
+    def decide(self, **kw):
+        self.called = True
+        raise RuntimeError("demand rule boom")
+
+
+def test_capture_is_fail_open_when_lifecycle_internals_raise(monkeypatch):
+    # P1: admission.capture does NOT wrap its lifecycle triggers — the fail-open lives one layer
+    # DOWN, inside LifecycleService.on_capture and .sweep. Wire a REAL LifecycleService whose
+    # promotion rule raises (faults on_capture's _evaluate) AND whose store.sweep_decayed raises
+    # (faults the sweep piggyback); a capture must still LAND quarantined despite BOTH raises.
+    conn = connect(":memory:")
+    store = SqliteEpisodeStore(conn, index=ExhaustiveCosineIndex(DIM))
+    rule = _RaisingRule()
+    lifecycle = LifecycleService(
+        store=store, index=store.index, rule=rule, now=lambda: 1_000,
+        demand_window_s=10**6, quarantine_ttl_s=10**9, provisional_ttl_s=10**9,
+        enabled=True)
+    sweeps = {"n": 0}
+
+    def _boom_sweep(**kw):
+        sweeps["n"] += 1
+        raise RuntimeError("sweep boom")
+    monkeypatch.setattr(store, "sweep_decayed", _boom_sweep)
+    svc = AdmissionService(store, DefaultSecretScanner(redact_mode="refuse"),
+                           FakeProvider(d=DIM), now=lambda: 1_000, lifecycle=lifecycle)
+
+    r = svc.capture("a durable insight needing a promotion check", proposed_by="agent-1")
+
+    assert rule.called is True             # on_capture REACHED the raising promotion rule…
+    assert sweeps["n"] == 1                 # …and the sweep piggyback raised too
+    assert r.status == "quarantined"        # capture ABSORBED both faults (fail-open)
+    ep = store.get_episode(r.episode_id)
+    assert ep is not None                    # the row PERSISTS despite the raises
+    assert ep.status == "approved" and ep.trust == "quarantined"
 
 
 def test_capture_dedup_never_touches_existing_trust():

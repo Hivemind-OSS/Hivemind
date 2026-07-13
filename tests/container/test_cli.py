@@ -224,6 +224,18 @@ def test_reset_snapshots_before_destroying():
     assert any(seq_in(c, "up", "-d", "--build", "hive-server") for c in fake.calls)
 
 
+def test_reset_prints_rollback_line(capsys):
+    # O8: a successful reset tells the operator, on STDERR, exactly how to recover — the
+    # `hive restore <snapshot dest>` line — so the destructive clean-start is copy-paste
+    # reversible. The dest is the host snapshot dir (default ./hive-backups, abspath'd).
+    fake = FakeRun(script=list(_HEALTHY))
+    rc = cli.main(["reset", "--yes"], run=fake, out=io.StringIO(), env=ENV)
+    assert rc == cli.EX_OK
+    err = capsys.readouterr().err
+    assert "roll back with: hive restore" in err
+    assert os.path.abspath(cli._DEFAULT_RESET_OUT) in err   # names the snapshot dest path
+
+
 def test_reset_aborts_without_destroying_if_snapshot_fails():
     # if the pre-reset snapshot fails, the volume is NEVER destroyed (fail-safe toward
     # preservation) — an accidental or re-failing reset costs nothing.
