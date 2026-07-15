@@ -25,6 +25,7 @@ from hive.domain.lifecycle import (
     DEPRECATED, ESTABLISHED, PROVISIONAL, QUARANTINED, TRUST_STATES,
     MissRow, decayed, is_servable,
 )
+from hive.domain.meta import meta_version_histogram
 from hive.domain.models import Episode, content_hash
 from hive.domain.provenance import DEFAULT_PROVENANCE, PROVENANCE_NAMES
 
@@ -655,6 +656,16 @@ class SqliteEpisodeStore:
             if r["trust"] in out:
                 out[r["trust"]] = int(r["c"])
         return out
+
+    def meta_version_counts(self) -> dict[str, dict]:
+        """Per-meta-key token-version histogram for hive_health, over the LIVE corpus
+        (status='approved' AND trust != 'deprecated' — servable + quarantined, retired
+        tombstones excluded). Pure fold lives in domain meta.meta_version_histogram; this
+        method only streams the rows (the ONE sanctioned prefix-only meta read — THEORY §5)."""
+        rows = self.conn.execute(
+            "SELECT meta FROM episodes WHERE status='approved' AND trust != ?",
+            (DEPRECATED,))
+        return meta_version_histogram(r["meta"] for r in rows)
 
     # ── ExposureLedger port (the recall side-channel writer) ──────────────────
     def record_exposure(self, trace_id: str, items: Sequence[tuple[int, float]],

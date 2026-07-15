@@ -648,6 +648,12 @@ class HiveMCPServer:
             # wrapper method); dropping the request flag ⇒ always-emits mutation.
             if args.get("include_census_health"):
                 snap["census_health"] = census_health_report(self.store.conn)
+            # the corpus token-version histogram (the meta envelope law's no-migration
+            # observability): same sole-request-flag gate, no config knob; the ONE sanctioned
+            # server-side read of meta content is the version PREFIX, in domain meta.py —
+            # dropping the request flag ⇒ always-emits mutation.
+            if args.get("include_meta_versions"):
+                snap["meta_versions"] = self.store.meta_version_counts()
             # the full install payload — the uncapped-channel answer to BUG-023: same
             # sole-request-flag gate (byte-inert when off ⇒ dropping the flag ⇒
             # always-emits mutation), no config knob.

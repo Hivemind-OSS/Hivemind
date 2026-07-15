@@ -3,6 +3,20 @@
 All notable changes to this project are documented here.
 
 ## Added
+- `hive_health(include_meta_versions=true)` — the corpus token-version histogram, the meta
+  envelope law's no-migration observability. Per episode-meta key over the LIVE corpus
+  (`status='approved' AND trust != 'deprecated'` — servable + quarantined, retired tombstones
+  excluded): counts per token-version prefix, an `absent` count (live rows carrying no value for
+  that key), and a `malformed` bucket (values with no parseable version prefix, present only when
+  nonzero) — so an operator can watch old token formats age out instead of migrating them. The
+  fold is a pure domain function (`hive/domain/meta.py:meta_version_histogram` over
+  `token_version`), the ONE sanctioned read of meta content server-side, and it reads only the
+  `<engine>-<kind>/<N>:` version PREFIX — never the body, never per-episode behavior.
+  `SqliteEpisodeStore.meta_version_counts` streams the rows; the flag joins its `include_*`
+  siblings in the tool schema and description behind the same sole-request-flag gate (byte-inert
+  when omitted). The meta-key catalog itself is committed in hive-edge
+  (`hive_edge/meta_registry.py`, test-enforced coverage/agreement/retention ratchets); no contract
+  bump, no `MIN_EDGE_VERSION` change.
 - The served contract teaches the dependency-neighborhood fingerprint and the commit-lined-up
   census feed (contract v.10): `MINT_DIRECTIVE`'s printed map now names both fingerprint keys
   (`combdrift/fp` + `matrix/subgraph_fp` — passing the printed map verbatim as capture meta is
@@ -318,6 +332,15 @@ All notable changes to this project are documented here.
   old-format `episodes` table is refused at store construction.
 
 ## Fixed
+- A `SUBGRAPH_FP_VERSION` bump would have emitted a false `radius: "changed"` advisory on every
+  memory minted under the old version (BUG-037). `hive-edge`'s `_verify_core` compared the stored
+  `matrix/subgraph_fp` token against the recompute as whole-token raw `!=`, so any version bump
+  made every old token compare unequal — a false re-verify alarm fleet-wide, with no way to
+  distinguish it from a genuinely moved neighborhood. Fixed in `hive-edge` 0.5.1: a
+  `_subgraph_fp_version` envelope parse gates the compare — same version ⇒ body compare exactly as
+  before (current-version corpora byte-identical); different/unknown/malformed ⇒ the `radius` key
+  is OMITTED (silence, the meta envelope law's failure direction) and the graph recompute is never
+  attempted; the post-recall hook's once-per-recall graph load is gated the same way.
 - Post-merge census hook built zero receipts on every real merge (BUG-034). git populates a hook
   subprocess's environment with `GIT_DIR`/`GIT_WORK_TREE` pointing at the invoking repo; an absolute
   `GIT_DIR` silently overrides `git -C <path>` targeting, so the census pipeline read the base/head

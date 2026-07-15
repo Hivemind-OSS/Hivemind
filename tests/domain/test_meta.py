@@ -18,7 +18,8 @@ import json
 import pytest
 
 from hive.domain.meta import (
-    BadMeta, META_MAX_KEYS, META_MAX_SERIALIZED, META_MAX_VALUE_LEN, normalize_meta,
+    BadMeta, META_MAX_KEYS, META_MAX_SERIALIZED, META_MAX_VALUE_LEN,
+    meta_version_histogram, normalize_meta, token_version,
 )
 
 
@@ -105,3 +106,73 @@ def test_oversize_serialized_raises_badmeta():
 def test_non_dict_raw_raises_badmeta(raw):
     with pytest.raises(BadMeta):
         normalize_meta(raw)
+
+
+# ── token_version: the ONE sanctioned prefix-only read (the opacity carve-out) ──
+def test_token_version_reads_the_version_prefix_never_the_body():
+    assert token_version("matrix-subgraph-fp/1:" + "0" * 64) == "1"
+    assert token_version("combdrift-fp/1:func(req=1,max=2)") == "1"
+    assert token_version("matrix-subgraph-fp/999:deadbeef") == "999"   # future reads too
+
+
+@pytest.mark.parametrize("value", [
+    "garbage",                # no ':' separator
+    "noslash:body",           # no '/' before the separator
+    "tool-x/v2beta:body",     # non-digit version segment
+    "tool-x/:body",           # empty version segment
+    "",                       # empty value
+])
+def test_token_version_unparseable_prefix_is_none(value):
+    assert token_version(value) is None
+
+
+# ── meta_version_histogram: the pure fold behind hive_health(include_meta_versions) ──
+def test_histogram_folds_a_mixed_corpus_per_key():
+    rows = [
+        '{"matrix/subgraph_fp":"matrix-subgraph-fp/1:aaa"}',
+        '{"combdrift/fp":"combdrift-fp/1:func(req=1)",'
+        '"matrix/subgraph_fp":"matrix-subgraph-fp/1:bbb"}',
+        '{"matrix/subgraph_fp":"matrix-subgraph-fp/2:ccc"}',
+        '{"matrix/subgraph_fp":"garbage"}',
+        "",                                        # no carrier at all
+    ]
+    assert meta_version_histogram(rows) == {
+        "matrix/subgraph_fp": {"versions": {"1": 2, "2": 1}, "absent": 1,
+                               "malformed": 1},
+        "combdrift/fp": {"versions": {"1": 1}, "absent": 4},
+    }
+
+
+def test_histogram_key_appears_only_when_carried():
+    # No live row carries the key ⇒ it never appears — `absent` is a property of a
+    # PRESENT key, not a roll call of every key ever known.
+    rows = ["", '{"combdrift/fp":"combdrift-fp/1:x"}']
+    out = meta_version_histogram(rows)
+    assert set(out) == {"combdrift/fp"}
+    assert out["combdrift/fp"] == {"versions": {"1": 1}, "absent": 1}
+
+
+def test_histogram_empty_input_is_empty():
+    assert meta_version_histogram([]) == {}
+
+
+def test_histogram_unparseable_serialized_row_counts_toward_totals_only():
+    # A corrupt serialized carrier cannot name a key — it contributes no keys, but it IS
+    # a live row, so every present key's `absent` counts it. Total: never raises.
+    rows = ["not json{", '["a","list"]', '{"combdrift/fp":"combdrift-fp/1:x"}']
+    assert meta_version_histogram(rows) == {
+        "combdrift/fp": {"versions": {"1": 1}, "absent": 2},
+    }
+
+
+def test_histogram_non_str_value_is_malformed():
+    rows = ['{"tool/attr":5}', '{"tool/attr":"tool-attr/1:ok"}']
+    assert meta_version_histogram(rows) == {
+        "tool/attr": {"versions": {"1": 1}, "absent": 0, "malformed": 1},
+    }
+
+
+def test_histogram_omits_malformed_when_zero():
+    out = meta_version_histogram(['{"tool/attr":"tool-attr/1:ok"}'])
+    assert out == {"tool/attr": {"versions": {"1": 1}, "absent": 0}}
+    assert "malformed" not in out["tool/attr"]

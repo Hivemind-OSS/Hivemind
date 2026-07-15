@@ -340,6 +340,27 @@ def test_trust_counts_all_states_present():
     assert counts[ESTABLISHED] == 1 and counts[DEPRECATED] == 0   # zero-states visible
 
 
+def test_meta_version_counts_live_predicate():
+    # The LIVE corpus only: approved rows across all three live trust states count;
+    # a pending row (never materialized) and a deprecated tombstone are excluded.
+    s = _store()
+    v1 = '{"matrix/subgraph_fp":"matrix-subgraph-fp/1:aaa"}'
+    for i, trust in enumerate((QUARANTINED, PROVISIONAL, ESTABLISHED)):
+        eid, _ = s.stage(text=f"live {trust} carrier", weight=1.0, tags="",
+                         proposed_by="w", ts=10, meta=v1)
+        assert s.complete(eid, _VECS[i], expected_version=0, trust=trust,
+                          approved_ts=10, last_active_ts=10)
+    s.stage(text="pending carrier", weight=1.0, tags="", proposed_by="w",
+            ts=10, meta=v1)                                    # never completed
+    dep_eid, _ = s.stage(text="retired carrier", weight=1.0, tags="",
+                         proposed_by="w", ts=10, meta=v1)
+    assert s.complete(dep_eid, _VECS[3], expected_version=0, trust=QUARANTINED,
+                      approved_ts=10, last_active_ts=10)
+    s.set_trust(dep_eid, DEPRECATED, now=20)
+    assert s.meta_version_counts() == {
+        "matrix/subgraph_fp": {"versions": {"1": 3}, "absent": 0}}
+
+
 # ── kind / anchor carried labels: stage → get_episode round-trip ───────────────
 def test_stage_roundtrips_kind_and_anchor():
     s = _store()

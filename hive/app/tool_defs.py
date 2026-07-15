@@ -174,6 +174,8 @@ TOOL_DEFINITIONS: list[dict] = [
                     "stale. "
                     "include_census_health=true adds days_since_last_change_outcome, a "
                     "passive dark-feed signal (null on an empty feed). "
+                    "include_meta_versions=true adds the live-corpus per-key "
+                    "token-version histogram (+absent). "
                     "embedder_loaded reports whether this process's embedder is resident "
                     "(the container HEALTHCHECK is a separate process reading boot markers). "
                     "include_onboarding=true adds the full install payload (rules block, "
@@ -187,6 +189,7 @@ TOOL_DEFINITIONS: list[dict] = [
                                     "include_suspect_consensus": {"type": "boolean"},
                                     "include_stale_suspects": {"type": "boolean"},
                                     "include_census_health": {"type": "boolean"},
+                                    "include_meta_versions": {"type": "boolean"},
                                     "include_onboarding": {"type": "boolean"}}}},
 ]
 
