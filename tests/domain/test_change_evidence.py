@@ -946,3 +946,77 @@ def test_malformed_propagation_entries_count_into_skipped_lines():
         _verified_lines(), ["garbage", _prop_entry()]))
     assert report.skipped_lines == 1                           # the malformed entry, counted
     assert report.stale_suspects == 1                          # the good one still lands
+
+
+# ═══ U3: the receipt ref stamp threaded into the ledger payloads ═════════════════
+
+
+def _ref_stamped_receipt(lines, ref="master"):
+    prov = json.loads(json.dumps(_STAMPED_PROV))
+    prov["ref"] = ref
+    return _receipt(lines, provenance=prov)
+
+
+def test_change_outcome_ref_defaults_empty_and_carries():
+    assert _outcome().ref == ""                         # defaulted — legacy constructors compile
+    assert _outcome(ref="master").ref == "master"
+
+
+def test_ingest_threads_ref_into_payloads():
+    # A ref-stamped receipt: EVERY rendered payload — change_outcome AND the
+    # verified/verify riders — carries {"ref": "<the measured line>"}.
+    svc, appender = _service([(7, _ANCHOR, "dont")])
+    report = svc.ingest(_ref_stamped_receipt(_verified_lines()))
+    kinds = [row[1] for row in appender.batches[0]]
+    assert kinds == [EK_CHANGE_OUTCOME, EK_OUTCOME_VERIFIED_HELPED, EK_VERIFY_STALE]
+    assert report.matched == 1
+    for row in appender.batches[0]:
+        assert json.loads(row[4])["ref"] == "master", row[1]
+
+
+def test_ingest_non_string_ref_is_ignored():
+    # D8 at the boundary: a non-string provenance ref coerces to "" ⇒ no key rides.
+    svc, appender = _service([(7, _ANCHOR, "dont")])
+    svc.ingest(_ref_stamped_receipt(_verified_lines(), ref=7))
+    for row in appender.batches[0]:
+        assert "ref" not in json.loads(row[4]), row[1]
+
+
+def test_ingest_legacy_receipt_payloads_byte_identical():
+    # A legacy (ref-less) receipt renders payloads byte-identical to pre-U3 — pinned
+    # by the exact change_outcome golden bytes — and content-keyed dedup with a
+    # previously-ingested row is preserved (a re-ingest is absorbed, never duplicated).
+    env = _receipt(_LINES)
+    statement = json.loads(base64.b64decode(env["payload"]))
+    sha = statement["subject"][0]["digest"]["sha256"]
+    svc, appender = _service([(7, _ANCHOR)])
+    first = svc.ingest(env)
+    assert len(first.inserted) == 1
+    payload = appender.batches[0][0][4]
+    assert payload == (
+        '{"base_sha":"' + BASE + '","head_sha":"' + HEAD + '",'
+        '"hive_census_version":"0.1.0",'
+        '"matched":{"level":"symbol","path":"matrix/x.py","symbol":"LanguageConfig"},'
+        '"phase":"pre_merge",'
+        '"predicate_type":"urn:hive-census:receipt:v0",'
+        '"receipt_schema_version":"v0",'
+        '"receipt_sha256":"' + sha + '",'
+        '"schema":"change_outcome/v1",'
+        '"signal":"none",'
+        '"tag":"machine-checked",'
+        '"verdict":"pass"}')
+    again = svc.ingest(_receipt(_LINES))
+    assert again.inserted == () and again.already_recorded == 1
+
+
+def test_legacy_stamped_receipt_rider_payloads_carry_no_ref_key():
+    # The verified/verify riders of a ref-LESS stamped receipt keep their exact pre-U3
+    # key sets (the conditional key is absent, never null) — dedup bytes unchanged.
+    svc, appender = _service([(7, _ANCHOR, "dont")])
+    svc.ingest(_stamped_receipt(_verified_lines()))
+    by_kind = {row[1]: json.loads(row[4]) for row in appender.batches[0]}
+    assert set(by_kind[EK_OUTCOME_VERIFIED_HELPED]) == {
+        "schema", "receipt_sha256", "phase", "verdict", "tag", "matched", "reason",
+        "stamp"}
+    assert set(by_kind[EK_VERIFY_STALE]) == {
+        "schema", "matched", "exists_after", "drift", "stamp"}

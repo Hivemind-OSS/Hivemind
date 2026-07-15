@@ -8,7 +8,7 @@ single-host, one SQLite store.
 Recall is deliberately conservative: a query is embedded, matched by dense cosine similarity,
 and passed through an **absolute-relevance abstention gate** — when the top match does not
 clear an absolute similarity floor, Hivemind returns nothing rather than guess. Memories enter **quarantined**
-via `hive_capture` and become servable only once independent fleet demand promotes them
+via `hive_capture` and become servable only once independent fleet demand or a verified change outcome promotes them
 (`provisional`); the trusted `established` tier is reached **only** by an explicit
 human-approved `hive_write`. Unused memories decay on a TTL. Nothing is auto-trusted, and the
 store never silently migrates across schema generations.
@@ -20,7 +20,7 @@ A connected agent gets exactly eight tools:
 | Tool | Purpose |
 |---|---|
 | `hive_recall(query)` | Dense recall behind the abstention gate. Returns reference context (or abstains) with each hit's `trust`, `ts`, `polarity`, `kind`, and `anchor`. |
-| `hive_capture(text)` | Record a durable insight. Lands quarantined; served only after fleet demand promotes it. |
+| `hive_capture(text)` | Record a durable insight. Lands quarantined; served only after fleet demand or a verified change outcome promotes it. |
 | `hive_write(text, approved_by=…)` | Human-vouched memory served immediately as `established`. `replaces=<id>` supersedes an existing one. |
 | `hive_supersede(loser, winner, approved_by=…)` | Human-vouched: retire one memory in favor of another. Nothing new is written. |
 | `hive_prune(episode_id, approved_by=…)` | Human-vouched: retire an incorrect or misleading memory with no replacement (it stays in the audit ledger). |

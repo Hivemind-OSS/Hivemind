@@ -3,6 +3,33 @@
 All notable changes to this project are documented here.
 
 ## Added
+- Branch-scope tagging + the census ref stamp (contract v.12, `MIN_EDGE_VERSION` 0.5.0 → 0.6.0
+  alongside the hive-edge 0.6.0 release). Four pieces, each byte-inert when unused:
+  (1) the edge mints an OPT-IN, set-valued `git/branches` relevance tag (`hive-edge mint
+  --branch-scope [NAME…]`, token `git-branches/1:<sorted space-joined names>`, registered in the
+  hive-edge meta-key registry; never auto-attached — the pre-capture hook adds only the two
+  fingerprint cores) and `hive-edge verify --branches <token>` routes by set membership: an
+  off-set consumer whose anchor would read stale gets the advisory `branch_scoped` verdict —
+  no remediation, no delta, radius suppressed — while member/untagged/unreadable-token/detached
+  runs stay byte-identical; the post-recall hook relays it as ONE off-branch notice line.
+  (2) `census build` stamps the measured checkout's branch as `provenance.ref` (resolved inside
+  the build; detached ⇒ omitted; receipt schema v0 unchanged — the key is optional).
+  (3) ingest threads that `ref` into every `change_outcome` / `verify_*` / `outcome_verified`
+  payload as a conditional key, so legacy (ref-less) receipts render byte-identical payloads and
+  their content-keyed dedup never moves.
+  (4) a new `CensusConfig` group (`HIVE_CENSUS__CANONICAL_REF`, default "" = byte-identical
+  unscoped build) scopes the recall rider: when set, `last_verified` + the stale `remediation`
+  derive only from verify rows measured on that line — a newest foreign-line row is skipped and
+  an older canonical row answers; legacy ref-less rows always count (the absence rule).
+  The served contract teaches the flow: `MINT_DIRECTIVE` gains the opt-in clause (a relevance
+  scope, never required), `VERIFY_DIRECTIVE` gains the membership semantics plus the human-gated
+  supersession flow (an off-set hit verifying `current` on your branch ⇒ propose a superseding
+  memory tagged with ALL relevant branches via `hive_write(replaces=…)`/`hive_supersede`).
+  Non-goals held: no auto-minting, no serve-side branch filtering, no `git/head_sha`, promotion
+  fuel (`verified_wins`) and the conflict worklist stay branch-unaware. Rides along: the
+  single-source-root receipt join (BUG-038, fixed in hive-edge's matrix 0.3.4) is pinned on the
+  ingest leg by a regression test + fixture (`tests/container/test_censusctl.py::
+  test_single_source_root_receipt_joins_a_repo_relative_anchor`, `tests/data/receipt.singleroot.json`).
 - `hive_health(include_meta_versions=true)` — the corpus token-version histogram, the meta
   envelope law's no-migration observability. Per episode-meta key over the LIVE corpus
   (`status='approved' AND trust != 'deprecated'` — servable + quarantined, retired tombstones

@@ -60,14 +60,14 @@ METADATA_FIELD_LIMIT: int = 2048
 # The single owner of the bundle version. Bump it (and regenerate the keystone golden) on ANY
 # change to AGENT_RULES_BLOCK / CLAUDE_CODE_HOOKS / the rendered allowlist. The beacon stamps this
 # on every tool result; an agent whose installed marker differs re-onboards.
-CONTRACT_VERSION: str = "v.11"
+CONTRACT_VERSION: str = "v.12"
 
 # The minimum hive-edge CLI version this contract requires (mint / verify / census / hook
 # capability). Rendered into the EDGE_CLI floor text below. When the CLI's capability moves, bump
 # this in the SAME release as the hive-edge change (Hive-edge's version-coupling rule) so the
 # pre-commit guard bumps CONTRACT_VERSION and the new floor propagates to every connected edge. A
 # contract-only edit that does not change CLI capability leaves this untouched.
-MIN_EDGE_VERSION: str = "0.5.0"
+MIN_EDGE_VERSION: str = "0.6.0"
 
 # The edge-CLI tooling loop, served in the install payload: mint / verify / census computation
 # rides ONE console script so every harness runs identical code — the hooks only AUTOMATE these
@@ -176,7 +176,12 @@ MINT_DIRECTIVE: str = (
     "(0-false-stale). "
     "Where the served Claude-Code pre-capture hook is installed and firing it mints for you; run it "
     "yourself on every other harness, or if the hook is disabled or failed. No `hive-edge` on PATH -> "
-    "install per EDGE CLI; still absent -> omit meta (capture is unaffected)."
+    "install per EDGE CLI; still absent -> omit meta (capture is unaffected). "
+    "When a memory is true ONLY on specific branch(es), add `--branch-scope` (tags the current "
+    "branch) or `--branch-scope <names…>` (an explicit set) to the mint call: the resulting "
+    "git/branches tag is a set-valued RELEVANCE SCOPE — it marks which lines the memory applies "
+    "to, it is never auto-attached (no hook mints it) and never required (most memories are "
+    "branch-agnostic; leave them untagged)."
 )
 
 # The repo-level census wiring directive — the ONE command that writes the post-merge +
@@ -218,7 +223,14 @@ VERIFY_DIRECTIVE: str = (
     "rider and your own verify disagrees, YOUR point-local verdict wins — a local `current` overrides "
     "the server rider; treat the server tier strictly as the fallback for anchors you could not "
     "verify yourself, never a second vote on ones you could. Where the served post-recall hook is "
-    "installed and firing the verify notice arrives annotated; verify manually on every other harness."
+    "installed and firing the verify notice arrives annotated; verify manually on every other harness. "
+    "When the hit's meta carries a git/branches tag, pass it as `--branches <the token>`: a "
+    "`branch_scoped` verdict means the memory is scoped to another line — likely not relevant on "
+    "your branch, NOT stale, and it carries no retirement options (disregard it unless you are "
+    "working that line). And when an off-set hit verifies `current` on YOUR branch, the fact now "
+    "holds here too: propose to your human a SUPERSEDING memory tagged with ALL relevant branches "
+    "(`hive_write(replaces=…)` or `hive_supersede` — the human-gated flow; never retire the "
+    "scoped original on your own judgment)."
 )
 
 # The per-hit remediation rider the SERVER attaches to a recall hit it already knows is stale

@@ -22,7 +22,7 @@ from hive.domain.kinds import render_taxonomy
 # Regenerate when the bundle legitimately changes (and bump CONTRACT_VERSION) — the pre-commit
 # contract-version guard does this automatically, or by hand:
 #   python -c "from hive.app.onboard_ref import bundle_digest; print(bundle_digest())"
-_GOLDEN_BUNDLE_SHA256 = "3124fdc384f5ff1b0ada1d56b98e404ea7078e1902f89f3156bacf02cfc7dc97"
+_GOLDEN_BUNDLE_SHA256 = "35874c43c67e338b070664d6410959517933395a46fafb8b12f09e2fa4b8bf09"
 
 
 def test_server_instructions_cover_the_verbs_and_search_first_timing():
@@ -479,3 +479,39 @@ def test_remediation_notice_names_the_option_vocabulary_without_hive_flag():
 def test_write_vs_capture_and_bad_vs_stale_single_instance():
     assert SERVER_INSTRUCTIONS.count(WRITE_VS_CAPTURE) == 1
     assert SERVER_INSTRUCTIONS.count(BAD_VS_STALE) == 1
+
+
+# ── the branch-scope contract (mint opt-in + membership verify + the supersession flow) ──
+def test_mint_directive_teaches_branch_scope_opt_in():
+    """The capture-time opt-in: a memory true ONLY on specific branch(es) gets
+    `--branch-scope` (current branch) or explicit names — a set-valued RELEVANCE SCOPE,
+    never auto-attached, never required."""
+    m = MINT_DIRECTIVE
+    assert "--branch-scope" in m
+    low = m.lower()
+    assert "relevance scope" in low
+    assert "set-valued" in low
+    assert "never auto-attached" in low and "never required" in low
+    # the edge capability floor moves with the new CLI surface (the version-coupling rule)
+    assert MIN_EDGE_VERSION == "0.6.0"
+
+
+def test_verify_directive_teaches_branch_scope_supersession():
+    """The recall-time membership semantics + the human-gated supersession flow: pass the
+    hit's git/branches token as --branches; branch_scoped = scoped to another line, likely
+    not relevant here, NOT stale, no retirement options; an off-set hit that verifies
+    CURRENT on your branch means the fact now holds here — propose a superseding memory
+    tagged with ALL relevant branches (RULE-2 target: dropping the supersession sentence
+    reds this test)."""
+    v = VERIFY_DIRECTIVE
+    assert "--branches" in v
+    assert "git/branches" in v                      # names the meta key the token comes from
+    assert "branch_scoped" in v
+    low = v.lower()
+    assert "scoped to another" in low               # the membership meaning
+    assert "not stale" in low
+    assert "no retirement options" in low or "carries no retirement" in low
+    # the supersession flow (taught, never mechanical): off-set + current-here ⇒ propose
+    assert "supersed" in low                        # supersede/superseding
+    assert "all relevant branches" in low
+    assert "hive_supersede" in v and "hive_write(replaces=" in v

@@ -92,7 +92,10 @@ class ReceiptRefused(ValueError):
 
 @dataclass(frozen=True, slots=True)
 class ChangeOutcome:
-    """The derived, SHA-bound outcome of one change — enums + hashes only, no prose."""
+    """The derived, SHA-bound outcome of one change — enums + hashes only, no prose.
+    ``ref`` is the receipt's measured line (the checkout branch the census resolved at
+    build time); "" for a legacy/detached receipt — defaulted so every existing
+    constructor call compiles and legacy payload bytes stay identical."""
     base_sha: str
     head_sha: str
     receipt_sha256: str
@@ -103,6 +106,7 @@ class ChangeOutcome:
     tag: str                        # machine-checked | bounded-estimate | unverified-judgment
     signal: str = "none"            # randomized | canary | none
     hive_census_version: str = ""
+    ref: str = ""                   # the measured branch; "" = legacy/detached (no key rides)
 
     def __post_init__(self) -> None:
         if self.phase not in _PHASES:
@@ -535,7 +539,9 @@ def match_anchors(subjects: Sequence[TouchedSubject],
 def render_payload(outcome: ChangeOutcome, subject: TouchedSubject, level: str) -> str:
     """Canonical JSON (sort_keys + tight separators) — byte-stable, so the store's
     content-keyed idempotency holds across re-ingests. Ids/enums/hashes/versions only:
-    no memory text, no source code, no receipt prose (Law 4)."""
+    no memory text, no source code, no receipt prose (Law 4). The receipt's measured
+    ``ref`` rides only when present — a legacy (ref-less) receipt renders the exact
+    pre-stamp bytes, so its dedup key never moves."""
     return json.dumps({
         "schema": PAYLOAD_SCHEMA,
         "base_sha": outcome.base_sha,
@@ -547,16 +553,21 @@ def render_payload(outcome: ChangeOutcome, subject: TouchedSubject, level: str) 
         "verdict": outcome.verdict,
         "tag": outcome.tag,
         "signal": outcome.signal,
+        # marker: unconditional emission ("ref" on a legacy payload) is a mutation —
+        # it breaks legacy content-keyed dedup (every re-ingest would double-write).
+        **({"ref": outcome.ref} if outcome.ref else {}),
         "matched": {"path": subject.path, "symbol": subject.symbol, "level": level},
         "hive_census_version": outcome.hive_census_version,
     }, sort_keys=True, separators=(",", ":"))
 
 
 def render_verified_payload(outcome: ChangeOutcome, subject: TouchedSubject,
-                            level: str, kind_reason: str, stamp: dict) -> str:
+                            level: str, kind_reason: str, stamp: dict,
+                            ref: str = "") -> str:
     """The verified-outcome payload: canonical JSON, ids/enums/stamps only.
     ``kind_reason`` is the machine enum (corroborated/contradicted), never receipt
-    prose; the full version ``stamp`` binds the row (L7)."""
+    prose; the full version ``stamp`` binds the row (L7). ``ref`` (the measured line)
+    rides only when present — legacy bytes stay identical."""
     return json.dumps({
         "schema": VERIFIED_PAYLOAD_SCHEMA,
         "receipt_sha256": outcome.receipt_sha256,
@@ -565,21 +576,28 @@ def render_verified_payload(outcome: ChangeOutcome, subject: TouchedSubject,
         "tag": outcome.tag,
         "matched": {"path": subject.path, "symbol": subject.symbol, "level": level},
         "reason": kind_reason,
+        # marker: unconditional emission ("ref" on a legacy payload) is a mutation —
+        # it breaks legacy content-keyed dedup.
+        **({"ref": ref} if ref else {}),
         "stamp": stamp,
     }, sort_keys=True, separators=(",", ":"))
 
 
 def render_verify_payload(subject: TouchedSubject, ev: SubjectEvidence,
-                          stamp: dict) -> str:
+                          stamp: dict, ref: str = "") -> str:
     """The anchor-verification payload: the observed existence/drift facts + the full
     version stamp. Deliberately receipt-digest-free — the verification state of an
     anchor at a head SHA is a fact about the CHANGE, so a re-issued receipt for the
-    same change dedups to the same row (content-keyed idempotency)."""
+    same change dedups to the same row (content-keyed idempotency). ``ref`` (the
+    measured line) rides only when present — legacy bytes stay identical."""
     return json.dumps({
         "schema": VERIFY_PAYLOAD_SCHEMA,
         "matched": {"path": subject.path, "symbol": subject.symbol},
         "exists_after": ev.exists_after,
         "drift": ev.drift,
+        # marker: unconditional emission ("ref" on a legacy payload) is a mutation —
+        # it breaks legacy content-keyed dedup.
+        **({"ref": ref} if ref else {}),
         "stamp": stamp,
     }, sort_keys=True, separators=(",", ":"))
 
@@ -635,6 +653,10 @@ class ChangeEvidenceService:
         else:
             raise ValueError(f"unknown phase {phase!r}")
         subjects, skipped_lines = touched_subjects(lines)
+        # The measured line: the census-resolved branch riding provenance.ref. D8 at
+        # the boundary — a non-string/absent ref coerces to "" (no key rides).
+        ref_raw = provenance.get("ref")
+        ref = ref_raw.strip() if isinstance(ref_raw, str) else ""
         outcome = ChangeOutcome(
             base_sha=str(provenance.get("base_sha")),
             head_sha=str(provenance.get("head_sha")),
@@ -642,7 +664,8 @@ class ChangeEvidenceService:
             receipt_schema_version=str(predicate.get("schema_version") or ""),
             predicate_type=str(statement.get("predicateType")),
             phase=phase, verdict=derived_verdict, tag=tag, signal=signal,
-            hive_census_version=str(provenance.get("hive_census_version") or ""))
+            hive_census_version=str(provenance.get("hive_census_version") or ""),
+            ref=ref)
         anchored = self._reader.anchored_episodes()
         polarity_by_id = {int(eid): pol for eid, _anchor, pol in anchored}
         matches = match_anchors(
@@ -669,12 +692,13 @@ class ChangeEvidenceService:
                 rows.append((episode_id, verified_kind, CHANGE_ACTOR, ts,
                              render_verified_payload(
                                  outcome, subject, level,
-                                 _VERIFIED_REASONS[verified_kind], stamp)))
+                                 _VERIFIED_REASONS[verified_kind], stamp,
+                                 outcome.ref)))
                 counts[verified_kind] += 1
             verify_kind = classify_verify(ev)
             if verify_kind is not None:
                 rows.append((episode_id, verify_kind, CHANGE_ACTOR, ts,
-                             render_verify_payload(subject, ev, stamp)))
+                             render_verify_payload(subject, ev, stamp, outcome.ref)))
                 counts[verify_kind] += 1
         # T2 rider: graph-propagated staleness — join the receipt's OPTIONAL propagation
         # neighbours with the SAME anchor rule, in the same atomic batch. Stamp-gated like

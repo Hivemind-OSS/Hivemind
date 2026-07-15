@@ -342,3 +342,21 @@ def test_build_provider_sources_native_dim():
     from hive.adapters.embedding.factory import build_provider, native_dim_for
     cfg = Config.load(db_path=":memory:")
     assert build_provider(cfg).d == native_dim_for(cfg.embedding.model) == 1024
+
+# ── CensusConfig group (canonical-ref rider scoping; default "" = byte-inert) ─────
+def test_census_canonical_ref_defaults_off():
+    cfg = Config.load(db_path=":memory:")
+    assert cfg.census.canonical_ref == ""            # "" = unscoped, byte-identical
+
+
+def test_census_canonical_ref_via_env_and_override():
+    cfg = Config.load(db_path=":memory:", env={"HIVE_CENSUS__CANONICAL_REF": "master"})
+    assert cfg.census.canonical_ref == "master"
+    assert Config.load(db_path=":memory:",
+                       census={"canonical_ref": "main"}).census.canonical_ref == "main"
+
+
+def test_census_group_is_frozen():
+    cfg = Config.load(db_path=":memory:")
+    with pytest.raises(dataclasses.FrozenInstanceError):
+        cfg.census.canonical_ref = "x"   # type: ignore[misc]

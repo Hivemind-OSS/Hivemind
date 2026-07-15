@@ -141,7 +141,8 @@ class Container:
             conflict=self.cfg.conflict, flag_service=self.flag_service,
             suspect_consensus=self.cfg.suspect_consensus,
             agi_mode=self.cfg.agi.mode,
-            secret_scan_enabled=self.cfg.secret_scan.enabled)
+            secret_scan_enabled=self.cfg.secret_scan.enabled,
+            canonical_ref=self.cfg.census.canonical_ref)
 
     # ── convenience surface (clean shutdown) ──────────────────────────────────────
     def close(self) -> None:

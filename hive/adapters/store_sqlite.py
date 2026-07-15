@@ -554,7 +554,8 @@ class SqliteEpisodeStore:
             f"WHERE kind=? AND episode_id IN ({placeholders})",
             [EK_OUTCOME_VERIFIED_HELPED, *ids])}
 
-    def last_verification(self, episode_ids: Sequence[int]
+    def last_verification(self, episode_ids: Sequence[int], *,
+                          canonical_ref: Optional[str] = None
                           ) -> dict[int, tuple[int, str, str]]:
         """LastVerificationReader: the newest ``verify_current``/``verify_stale``
         ledger row per requested id → ``{eid: (ts, head_sha, state)}``, state derived
@@ -562,7 +563,11 @@ class SqliteEpisodeStore:
         ``promotion_provenance`` idiom): a malformed payload or a missing
         ``stamp.head_sha`` SKIPS that row — an older parseable row may still answer;
         an id with nothing parseable is simply ABSENT (under-claim, never a raise).
-        // O(rows)."""
+        ``canonical_ref`` (None/"" ⇒ today's unscoped read) additionally SKIPS a row
+        whose payload ``ref`` names a DIFFERENT line — the same first-parseable-wins
+        loop lets an older canonical row answer instead; a legacy ref-LESS row always
+        counts (the absence rule: scoping filters foreign refs, never the pre-stamp
+        corpus). // O(rows)."""
         ids = [int(e) for e in episode_ids]
         if not ids:
             return {}
@@ -578,7 +583,14 @@ class SqliteEpisodeStore:
             if eid in out:
                 continue                              # already have the newest for this id
             try:
-                stamp = json.loads(r["payload"]).get("stamp")
+                payload = json.loads(r["payload"])    # stamp AND ref read from ONE parse
+                # marker: skipping legacy ref-less rows under a set canonical_ref is a
+                # mutation (the absence rule) — only a PRESENT, DIFFERENT ref is foreign.
+                row_ref = payload.get("ref")
+                if (canonical_ref and isinstance(row_ref, str) and row_ref
+                        and row_ref != canonical_ref):
+                    continue                          # measured a foreign line ⇒ skip
+                stamp = payload.get("stamp")
                 head_sha = stamp.get("head_sha") if isinstance(stamp, dict) else None
                 if not isinstance(head_sha, str) or not head_sha:
                     continue                          # stamp-less row ⇒ skip (under-claim)

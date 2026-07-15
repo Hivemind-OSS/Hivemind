@@ -147,6 +147,37 @@ def test_real_receipt_lands_change_outcome_and_verify_rows_with_the_receipt_shas
     assert (report["verify_current"], report["verify_stale"]) == (0, 1)
 
 
+SINGLEROOT_RECEIPT = _DATA / "receipt.singleroot.json"
+SINGLEROOT_ANCHOR = "pkg/mod.py:fn"                  # the agent-dialect anchor spelling
+
+
+def test_single_source_root_receipt_joins_a_repo_relative_anchor():
+    """BUG-038's ingest leg: a receipt built by the REAL hive-census on a checkout
+    whose parsed source ALL lives under one top-level dir (pkg/) must spell its
+    subjects repo-root-relative, so an episode anchored ``pkg/mod.py:fn`` joins and
+    earns its change_outcome + verify evidence. Pre-fix, such receipts carried ZERO
+    existence/contract lines (the graph's flattened dialect never met the diff's
+    repo dialect) and this join matched nothing, silently."""
+    cf = RecordingConnect()
+    eid = _seed_anchored(cf.conn, "fn arity gotcha", SINGLEROOT_ANCHOR)
+    _seed_anchored(cf.conn, "unrelated memory", "other/place.py::Elsewhere")
+    rc, out, _ = _run(["ingest", str(SINGLEROOT_RECEIPT)], connect_fn=cf)
+    assert rc == censusctl.EX_OK
+
+    report = json.loads(out)
+    assert report["matched"] == 1, report            # the repo-relative subject joined
+    rows = _rows(cf.conn)
+    assert [r["episode_id"] for r in rows] == [eid, eid]
+    outcome = json.loads(rows[0]["payload"])
+    assert rows[0]["kind"] == EK_CHANGE_OUTCOME
+    assert outcome["matched"] == {"path": "pkg/mod.py", "symbol": "fn",
+                                  "level": "symbol"}
+    # fn was NARROWED at head (drift=breaking, still exists) ⇒ one verify_stale row.
+    assert rows[1]["kind"] == EK_VERIFY_STALE
+    vbody = json.loads(rows[1]["payload"])
+    assert (vbody["exists_after"], vbody["drift"]) == (True, "breaking")
+
+
 def test_reingest_of_the_same_receipt_is_idempotent():
     cf = RecordingConnect()
     _seed_anchored(cf.conn, "LanguageConfig gotcha", REAL_ANCHOR)

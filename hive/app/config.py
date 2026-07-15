@@ -227,6 +227,15 @@ class SecretScanConfig:
     enabled: bool = True
 
 
+@dataclass(frozen=True)
+class CensusConfig:
+    """Census/ledger scoping (HIVE_CENSUS__*). canonical_ref names the repo's canonical
+    line (e.g. "master"): when set, the stale remediation / last_verified rider derives
+    only from receipts stamped with that ref (legacy ref-less rows still count — the
+    absence rule). "" (default) ⇒ byte-identical to the unscoped build (§9.9)."""
+    canonical_ref: str = ""
+
+
 # ── the root ──────────────────────────────────────────────────────────────────
 # Auth is NOT a config group: it is a property of the listening socket (a tokenless
 # loopback door + a token-required tunnel door, bound by the entrypoint), so there is no
@@ -242,6 +251,7 @@ _GROUP_TYPES: dict[str, type] = {
     "obs": ObservabilityConfig,
     "agi": AgiConfig,
     "secret_scan": SecretScanConfig,
+    "census": CensusConfig,
 }
 # field-groups constructed (and thus validated) BEFORE runtime, so a field-level error
 # (e.g. recall.tau_serve) surfaces ahead of the db_path-required check. Derived from
@@ -261,6 +271,7 @@ class Config:
     obs: ObservabilityConfig
     agi: AgiConfig
     secret_scan: SecretScanConfig
+    census: CensusConfig
 
     @property
     def db_path(self) -> str:
