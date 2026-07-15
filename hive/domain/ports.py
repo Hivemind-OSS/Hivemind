@@ -141,6 +141,23 @@ class ChangeEvidenceAppender(Protocol):
 
 
 @runtime_checkable
+class RangeLedger(Protocol):
+    """The census feed's durable range-dedupe seam: has this EXACT
+    ``(repo, base_sha, head_sha, phase)`` range already been ingested, and record that it
+    now has. Exact-key equality only — NO subsumption/overlap reasoning (a legacy A..B +
+    B..C alongside a sync A..C are three distinct keys that all land; transition noise is
+    tolerated, never interpreted). ``repo`` "" is the legacy receipt identity (pre-repo-key
+    receipts dedupe among themselves). ``record_ingested_range`` is idempotent-bool: True
+    iff a NEW row was written; a repeat of the same key is a no-op False (the first write
+    stands). A SEPARATE narrow port (not a widening) so existing narrow fakes stay
+    conformant; the SqliteEpisodeStore satisfies it with one table."""
+    def already_ingested_range(self, repo: str, base_sha: str, head_sha: str,
+                               phase: str) -> bool: ...
+    def record_ingested_range(self, repo: str, base_sha: str, head_sha: str,
+                              phase: str, ts: int) -> bool: ...
+
+
+@runtime_checkable
 class ConflictFlagStore(Protocol):
     """The ONE new narrow port: the durable write seam for an advisory conflict flag. The
     ConflictFlagService depends on this (+ ``EpisodeReader`` for id-exists + ``SecretScanner``

@@ -177,6 +177,15 @@ def test_migrate_raises_on_missing_table(tmp_path):
         c.migrate()
 
 
+def test_migrate_raises_on_missing_ingested_ranges_table(tmp_path):
+    """The census range ledger is boot-checked like every required table — a store
+    missing it would silently re-ingest every duplicate range."""
+    c = _build(tmp_path)
+    c.conn.execute("DROP TABLE ingested_ranges")
+    with pytest.raises(RuntimeError, match="migration incomplete"):
+        c.migrate()
+
+
 def test_migrate_passes_dim_guard_on_fresh_store(tmp_path):
     """A fresh store (no persisted vectors) trivially passes the stored-vector dim guard —
     the fresh-start path the swap targets."""

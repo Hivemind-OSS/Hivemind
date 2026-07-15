@@ -45,7 +45,7 @@ from hive.domain.evidence_kinds import (
     EK_CHANGE_OUTCOME, EK_OUTCOME_VERIFIED_HELPED, EK_OUTCOME_VERIFIED_HURT,
     EK_STALE_SUSPECT, EK_VERIFY_CURRENT, EK_VERIFY_STALE,
 )
-from hive.domain.ports import AnchoredEpisodeReader, ChangeEvidenceAppender
+from hive.domain.ports import AnchoredEpisodeReader, ChangeEvidenceAppender, RangeLedger
 
 # ── the receipt contract (version-bound; never guess a schema) ─────────────────
 RECEIPT_PREDICATE_TYPE = "urn:hive-census:receipt:v0"
@@ -94,8 +94,9 @@ class ReceiptRefused(ValueError):
 class ChangeOutcome:
     """The derived, SHA-bound outcome of one change — enums + hashes only, no prose.
     ``ref`` is the receipt's measured line (the checkout branch the census resolved at
-    build time); "" for a legacy/detached receipt — defaulted so every existing
-    constructor call compiles and legacy payload bytes stay identical."""
+    build time); ``repo`` the receipt's recorded repo identity (``provenance.repo``,
+    verbatim). Both "" for a legacy receipt — defaulted so every existing constructor
+    call compiles and legacy payload bytes stay identical."""
     base_sha: str
     head_sha: str
     receipt_sha256: str
@@ -107,6 +108,7 @@ class ChangeOutcome:
     signal: str = "none"            # randomized | canary | none
     hive_census_version: str = ""
     ref: str = ""                   # the measured branch; "" = legacy/detached (no key rides)
+    repo: str = ""                  # the repo identity; "" = legacy (no key rides)
 
     def __post_init__(self) -> None:
         if self.phase not in _PHASES:
@@ -154,7 +156,9 @@ class IngestReport:
     """The machine-readable result of one ingest (ids + counts, never prose).
     The four verified/verify counters and ``stale_suspects`` count rows RENDERED into
     the batch (mirroring ``matched``'s join-level semantics) — a re-ingest keeps the
-    counts while ``already_recorded`` absorbs the skips."""
+    counts while ``already_recorded`` absorbs the skips. ``range_skipped`` True means
+    the range ledger absorbed the whole receipt BEFORE any join/render — every other
+    field is then zero (nothing was done)."""
     inserted: tuple[int, ...]
     already_recorded: int
     matched: int
@@ -164,6 +168,7 @@ class IngestReport:
     verify_current: int = 0
     verify_stale: int = 0
     stale_suspects: int = 0
+    range_skipped: bool = False
 
 
 # ── parsing (D8: .get() + coerce everywhere; refuse the receipt, never crash) ──
@@ -540,8 +545,8 @@ def render_payload(outcome: ChangeOutcome, subject: TouchedSubject, level: str) 
     """Canonical JSON (sort_keys + tight separators) — byte-stable, so the store's
     content-keyed idempotency holds across re-ingests. Ids/enums/hashes/versions only:
     no memory text, no source code, no receipt prose (Law 4). The receipt's measured
-    ``ref`` rides only when present — a legacy (ref-less) receipt renders the exact
-    pre-stamp bytes, so its dedup key never moves."""
+    ``ref`` and recorded ``repo`` ride only when present — a legacy (stamp-less)
+    receipt renders the exact pre-stamp bytes, so its dedup key never moves."""
     return json.dumps({
         "schema": PAYLOAD_SCHEMA,
         "base_sha": outcome.base_sha,
@@ -556,6 +561,9 @@ def render_payload(outcome: ChangeOutcome, subject: TouchedSubject, level: str) 
         # marker: unconditional emission ("ref" on a legacy payload) is a mutation —
         # it breaks legacy content-keyed dedup (every re-ingest would double-write).
         **({"ref": outcome.ref} if outcome.ref else {}),
+        # marker: unconditional emission ("repo" on a legacy payload) is a mutation —
+        # it breaks legacy content-keyed dedup (every re-ingest would double-write).
+        **({"repo": outcome.repo} if outcome.repo else {}),
         "matched": {"path": subject.path, "symbol": subject.symbol, "level": level},
         "hive_census_version": outcome.hive_census_version,
     }, sort_keys=True, separators=(",", ":"))
@@ -623,14 +631,19 @@ def render_suspect_payload(subject: TouchedSubject, seed: str, drift: str,
 
 class ChangeEvidenceService:
     """parse → derive → join → render → ONE append_evidence batch. Holds NO trust
-    handle — the two injected ports read anchors and append evidence, nothing else
-    (O7-safe by construction, the hive_outcome idiom)."""
+    handle — the injected ports read anchors and append evidence, nothing else
+    (O7-safe by construction, the hive_outcome idiom). ``ranges`` (optional) is the
+    durable range-dedupe seam: a receipt whose exact ``(repo, base, head, phase)``
+    range already ingested is skipped whole; None (every legacy construction) keeps
+    today's behavior byte-identical — content-keyed dedupe alone."""
 
     def __init__(self, *, reader: AnchoredEpisodeReader,
-                 appender: ChangeEvidenceAppender, now: Callable[[], int]) -> None:
+                 appender: ChangeEvidenceAppender, now: Callable[[], int],
+                 ranges: Optional[RangeLedger] = None) -> None:
         self._reader = reader
         self._appender = appender
         self._now = now
+        self._ranges = ranges
 
     def ingest(self, envelope: object, *, phase: str = "pre_merge",
                verdict: Optional[str] = None, signal: str = "none") -> IngestReport:
@@ -653,10 +666,12 @@ class ChangeEvidenceService:
         else:
             raise ValueError(f"unknown phase {phase!r}")
         subjects, skipped_lines = touched_subjects(lines)
-        # The measured line: the census-resolved branch riding provenance.ref. D8 at
-        # the boundary — a non-string/absent ref coerces to "" (no key rides).
+        # The measured line + repo identity: provenance.ref / provenance.repo. D8 at
+        # the boundary — a non-string/absent value coerces to "" (no key rides).
         ref_raw = provenance.get("ref")
         ref = ref_raw.strip() if isinstance(ref_raw, str) else ""
+        repo_raw = provenance.get("repo")
+        repo = repo_raw.strip() if isinstance(repo_raw, str) else ""
         outcome = ChangeOutcome(
             base_sha=str(provenance.get("base_sha")),
             head_sha=str(provenance.get("head_sha")),
@@ -665,7 +680,15 @@ class ChangeEvidenceService:
             predicate_type=str(statement.get("predicateType")),
             phase=phase, verdict=derived_verdict, tag=tag, signal=signal,
             hive_census_version=str(provenance.get("hive_census_version") or ""),
-            ref=ref)
+            ref=ref, repo=repo)
+        # The range-ledger skip: an exact (repo, base, head, phase) range already
+        # ingested absorbs the whole receipt with zero rows — checked only AFTER
+        # parse + derivation, so a malformed duplicate still refuses loudly (the
+        # ledger vouches only for receipts this module can vouch for).
+        if self._ranges is not None and self._ranges.already_ingested_range(
+                outcome.repo, outcome.base_sha, outcome.head_sha, phase):
+            return IngestReport(inserted=(), already_recorded=0, matched=0,
+                                skipped_lines=0, range_skipped=True)
         anchored = self._reader.anchored_episodes()
         polarity_by_id = {int(eid): pol for eid, _anchor, pol in anchored}
         matches = match_anchors(
@@ -725,6 +748,13 @@ class ChangeEvidenceService:
                                  render_suspect_payload(subject, seed, drift, stamp)))
                     stale_suspects += 1
         inserted, already = self._appender.append_evidence(rows) if rows else ([], 0)
+        # Record the range only after a SUCCESSFUL append batch (an appender fault
+        # propagates before this line) and only when a batch existed — a zero-match
+        # receipt records nothing, so a re-ingest after an anchored memory lands
+        # still gets its rows (the ledger marks ingested WORK, not seen receipts).
+        if rows and self._ranges is not None:
+            self._ranges.record_ingested_range(
+                outcome.repo, outcome.base_sha, outcome.head_sha, phase, ts)
         return IngestReport(inserted=tuple(inserted), already_recorded=already,
                             matched=len(matches), skipped_lines=skipped_lines,
                             verified_helped=counts[EK_OUTCOME_VERIFIED_HELPED],

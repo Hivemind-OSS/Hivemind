@@ -1020,3 +1020,177 @@ def test_legacy_stamped_receipt_rider_payloads_carry_no_ref_key():
         "stamp"}
     assert set(by_kind[EK_VERIFY_STALE]) == {
         "schema", "matched", "exists_after", "drift", "stamp"}
+
+
+# ═══ U1: the repo identity key + the range-ledger dedupe seam ════════════════════
+
+_REPO = "https://github.com/acme/widgets"
+
+
+def _repo_receipt(lines, repo=_REPO):
+    prov = {"base_sha": BASE, "head_sha": HEAD, "hive_census_version": "0.1.0",
+            "repo": repo}
+    return _receipt(lines, provenance=prov)
+
+
+class FakeRangeLedger:
+    """Honors the RangeLedger contract: exact-key membership, idempotent-bool record."""
+
+    def __init__(self, known=()):
+        self.known = {tuple(k) for k in known}
+        self.recorded: list[tuple] = []
+
+    def already_ingested_range(self, repo, base_sha, head_sha, phase):
+        return (repo, base_sha, head_sha, phase) in self.known
+
+    def record_ingested_range(self, repo, base_sha, head_sha, phase, ts):
+        self.recorded.append((repo, base_sha, head_sha, phase, ts))
+        key = (repo, base_sha, head_sha, phase)
+        if key in self.known:
+            return False
+        self.known.add(key)
+        return True
+
+
+def _ranged_service(reader_rows=(), *, known=(), now=lambda: 12_345):
+    rows = [r if len(r) == 3 else (*r, "neutral") for r in reader_rows]
+    reader, appender = FakeReader(rows), FakeAppender()
+    ranges = FakeRangeLedger(known)
+    svc = ChangeEvidenceService(reader=reader, appender=appender, now=now,
+                                ranges=ranges)
+    return svc, appender, ranges
+
+
+# ── the repo provenance key: parsed like ref, rides only when present ──────────
+
+
+def test_change_outcome_repo_defaults_empty_and_carries():
+    assert _outcome().repo == ""                        # defaulted — legacy constructors compile
+    assert _outcome(repo=_REPO).repo == _REPO
+
+
+def test_ingest_threads_repo_into_the_change_outcome_payload_only():
+    # repo rides the change_outcome payload; the verified/verify riders keep their
+    # exact key sets (ref is their only conditional key).
+    prov = json.loads(json.dumps(_STAMPED_PROV))
+    prov["repo"] = _REPO
+    svc, appender = _service([(7, _ANCHOR, "dont")])
+    svc.ingest(_receipt(_verified_lines(), provenance=prov))
+    by_kind = {row[1]: json.loads(row[4]) for row in appender.batches[0]}
+    assert by_kind[EK_CHANGE_OUTCOME]["repo"] == _REPO
+    assert "repo" not in by_kind[EK_OUTCOME_VERIFIED_HELPED]
+    assert "repo" not in by_kind[EK_VERIFY_STALE]
+
+
+def test_ingest_non_string_repo_is_ignored():
+    # D8 at the boundary: a non-string provenance repo coerces to "" ⇒ no key rides.
+    svc, appender = _service([(7, _ANCHOR)])
+    svc.ingest(_repo_receipt(_LINES, repo=7))
+    assert "repo" not in json.loads(appender.batches[0][0][4])
+
+
+def test_repo_key_absent_renders_legacy_byte_identical_payload():
+    # THE repo-key legacy-bytes guard: a repo-less outcome renders the EXACT legacy
+    # bytes (unconditional emission would move every already-landed row's dedup key),
+    # and a repo-stamped payload differs from those bytes by exactly the repo key.
+    sub = TouchedSubject(path="matrix/x.py", symbol="F")
+    legacy = render_payload(_outcome(hive_census_version="0.1.0"), sub, "symbol")
+    assert legacy == (
+        '{"base_sha":"' + BASE + '","head_sha":"' + HEAD + '",'
+        '"hive_census_version":"0.1.0",'
+        '"matched":{"level":"symbol","path":"matrix/x.py","symbol":"F"},'
+        '"phase":"pre_merge",'
+        '"predicate_type":"urn:hive-census:receipt:v0",'
+        '"receipt_schema_version":"v0",'
+        '"receipt_sha256":"' + "d" * 64 + '",'
+        '"schema":"change_outcome/v1",'
+        '"signal":"none",'
+        '"tag":"machine-checked",'
+        '"verdict":"pass"}')
+    stamped = render_payload(_outcome(hive_census_version="0.1.0", repo="acme"),
+                             sub, "symbol")
+    assert json.loads(stamped)["repo"] == "acme"
+    assert stamped.replace('"repo":"acme",', "") == legacy
+
+
+# ── the optional range ledger: duplicate ranges absorbed BEFORE the store ──────
+
+
+def test_ingest_skips_an_already_ingested_range_with_zero_rows():
+    key = ("", BASE, HEAD, "pre_merge")                 # legacy receipt ⇒ "" repo identity
+    svc, appender, ranges = _ranged_service([(7, _ANCHOR)], known=[key])
+    report = svc.ingest(_receipt(_LINES))
+    assert report.range_skipped is True
+    assert report.inserted == () and report.already_recorded == 0
+    assert report.matched == 0 and report.skipped_lines == 0
+    assert appender.batches == []                       # zero rows — the store never touched
+    assert ranges.recorded == []                        # a skip never re-records
+
+
+def test_ingest_records_the_range_after_a_successful_append():
+    svc, appender, ranges = _ranged_service([(7, _ANCHOR)])
+    report = svc.ingest(_repo_receipt(_LINES))
+    assert report.range_skipped is False and len(report.inserted) == 1
+    assert ranges.recorded == [(_REPO, BASE, HEAD, "pre_merge", 12_345)]
+    # the second ingest of the same range is absorbed by the ledger, before dedupe
+    again = svc.ingest(_repo_receipt(_LINES))
+    assert again.range_skipped is True and again.inserted == ()
+    assert len(appender.batches) == 1
+
+
+def test_ingest_zero_match_never_records_the_range():
+    # no batch appended ⇒ no range recorded: a re-ingest AFTER an anchored memory
+    # lands still gets its rows (the ledger marks ingested WORK, not seen receipts).
+    svc, appender, ranges = _ranged_service([(8, "unrelated/other.py::Thing")])
+    report = svc.ingest(_repo_receipt(_LINES))
+    assert report.matched == 0 and report.range_skipped is False
+    assert appender.batches == [] and ranges.recorded == []
+
+
+def test_ingest_phase_rides_the_range_key_so_ff_merge_lands_twice():
+    # an FF merge yields the same (base, head) pre- and post-merge — phase in the key
+    # lets both receipts land.
+    svc, _appender, ranges = _ranged_service([(7, _ANCHOR)])
+    svc.ingest(_repo_receipt(_LINES))
+    report = svc.ingest(_repo_receipt(_LINES), phase="post_merge", verdict="pass")
+    assert report.range_skipped is False and len(report.inserted) == 1
+    assert [k[3] for k in ranges.recorded] == ["pre_merge", "post_merge"]
+
+
+def test_ingest_legacy_empty_repo_receipts_dedupe_on_the_empty_identity():
+    svc, _appender, ranges = _ranged_service([(7, _ANCHOR)])
+    first = svc.ingest(_receipt(_LINES))                # legacy: no provenance.repo
+    assert first.range_skipped is False
+    assert ranges.recorded[0][0] == ""                  # the legacy "" identity
+    again = svc.ingest(_receipt(_LINES))
+    assert again.range_skipped is True
+
+
+def test_ingest_without_a_ledger_is_byte_identical_to_today():
+    # ranges=None (every legacy construction): the ledger leg is absent — batch bytes
+    # and the report match a ledger-wired first ingest exactly, and a re-ingest is
+    # absorbed by content-keyed dedupe alone (never range-skipped).
+    plain_svc, plain_appender = _service([(7, _ANCHOR)])
+    plain = plain_svc.ingest(_repo_receipt(_LINES))
+    ranged_svc, ranged_appender, _ranges = _ranged_service([(7, _ANCHOR)])
+    ranged = ranged_svc.ingest(_repo_receipt(_LINES))
+    assert plain_appender.batches == ranged_appender.batches   # identical payload bytes
+    assert plain == ranged
+    assert plain.range_skipped is False
+    again = plain_svc.ingest(_repo_receipt(_LINES))
+    assert again.range_skipped is False and again.already_recorded == 1
+
+
+def test_ingest_report_range_skipped_defaults_false():
+    rep = IngestReport(inserted=(), already_recorded=0, matched=0, skipped_lines=0)
+    assert rep.range_skipped is False
+
+
+def test_refused_receipt_refuses_even_when_the_range_is_known():
+    # refusal wins over the skip: the ledger absorbs only receipts the module can
+    # vouch for — a malformed duplicate still refuses loudly, never a quiet "ok".
+    key = ("", BASE, HEAD, "pre_merge")
+    svc, appender, ranges = _ranged_service([(7, _ANCHOR)], known=[key])
+    with pytest.raises(ReceiptRefused):
+        svc.ingest(_receipt([_subj_line("existence", _ANCHOR)]))   # nothing decided
+    assert appender.batches == [] and ranges.recorded == []

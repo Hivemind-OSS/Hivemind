@@ -105,6 +105,11 @@ CREATE TABLE IF NOT EXISTS conflict_flags(
   status TEXT NOT NULL DEFAULT 'open' CHECK(status IN ('open','dismissed')));
 CREATE UNIQUE INDEX IF NOT EXISTS idx_conflict_flags_pair
   ON conflict_flags(a_id, b_id, kind);
+CREATE TABLE IF NOT EXISTS ingested_ranges(
+  repo TEXT NOT NULL,        -- "" = the legacy (pre-repo-key) receipt identity
+  base_sha TEXT NOT NULL, head_sha TEXT NOT NULL,
+  phase TEXT NOT NULL, ts INTEGER NOT NULL,
+  PRIMARY KEY(repo, base_sha, head_sha, phase));
 """.replace("__KIND_COLUMN__", _KIND_COLUMN_DDL).replace(
     "__PROVENANCE_COLUMN__", _PROVENANCE_COLUMN_DDL)
 
@@ -658,6 +663,36 @@ class SqliteEpisodeStore:
             _log.info("store.append_evidence inserted=%d skipped=%d",
                       len(inserted), skipped)
         return inserted, skipped
+
+    # ── RangeLedger port (the census feed's durable range-dedupe seam) ─────────
+    def already_ingested_range(self, repo: str, base_sha: str, head_sha: str,
+                               phase: str) -> bool:
+        """RangeLedger: has this EXACT ``(repo, base_sha, head_sha, phase)`` range
+        already been ingested? Exact-key equality only — no subsumption/overlap
+        reasoning (legacy A..B + B..C and a sync A..C are distinct keys; transition
+        noise all lands). Read-only, no DDL. // O(1) (PK probe)."""
+        return self.conn.execute(
+            "SELECT 1 FROM ingested_ranges "
+            "WHERE repo=? AND base_sha=? AND head_sha=? AND phase=? LIMIT 1",
+            (repo, base_sha, head_sha, phase)).fetchone() is not None
+
+    def record_ingested_range(self, repo: str, base_sha: str, head_sha: str,
+                              phase: str, ts: int) -> bool:
+        """RangeLedger: durably record one ingested range, idempotent on the exact key.
+        True iff a NEW row was written; a repeat is a no-op False (the first write
+        stands — its ts is never refreshed). Existence is checked explicitly (not
+        INSERT OR IGNORE) so any other IntegrityError still RAISES rather than being
+        silently swallowed (the record_conflict_flag idiom). ONE tx. // O(1)."""
+        with tx(self.conn):
+            if self.conn.execute(
+                    "SELECT 1 FROM ingested_ranges "
+                    "WHERE repo=? AND base_sha=? AND head_sha=? AND phase=?",
+                    (repo, base_sha, head_sha, phase)).fetchone() is not None:
+                return False
+            self.conn.execute(
+                "INSERT INTO ingested_ranges(repo, base_sha, head_sha, phase, ts) "
+                "VALUES(?,?,?,?,?)", (repo, base_sha, head_sha, phase, int(ts)))
+        return True
 
     def trust_counts(self) -> dict[str, int]:
         """Per-trust-state row counts for hive_health — ALL four states present

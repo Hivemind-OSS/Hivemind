@@ -42,7 +42,7 @@ _DAY_S = 86_400
 # caught at boot rather than at first recall.
 _REQUIRED_TABLES = frozenset({
     "blobs", "episodes", "exposure", "meta",
-    "recall_misses", "evidence_events", "conflict_flags",
+    "recall_misses", "evidence_events", "conflict_flags", "ingested_ranges",
 })
 
 
