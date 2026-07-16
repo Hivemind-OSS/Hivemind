@@ -76,3 +76,4 @@ CONTEXT/
 # ── /looper agent-loop scratch state (local only; never shipped) ──
 .looper/
 
+.daisy-chain-build/
