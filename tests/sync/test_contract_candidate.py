@@ -12,8 +12,11 @@ verify row is NEVER visible to a canonical-scoped ``last_verified`` read.
 Every test drives a REAL tmp origin (bare + pushes + real ``refs/pull/N/head``)
 through ``SyncService.tick()`` with the real sqlite store and REAL subprocess
 census builds — the verifier actually runs the candidate tree's tests. The
-flagship promotion test runs on a SINGLE-ROOT candidate tree, so it doubles as
-the BUG-039 end-to-end (single-root receipts must join).
+default candidate tree is a GENUINE single-source-root package layout (ALL
+parsed source under ``pkg/``, the in-corpus test importing via the package
+path), so the flagship promotion test doubles as the BUG-039 end-to-end
+(package-dialect receipts must join); the flagship's second arm keeps the flat
+root-level shape as the offset-"" regression dual.
 """
 from __future__ import annotations
 
@@ -45,20 +48,50 @@ META_EVALUATED = "sync:candidates_evaluated"
 META_REFUSED = "sync:candidates_refused"
 META_LAST_ERROR = "sync:last_error"
 
-CANDIDATE_ANCHOR = "lib.py::risky"
+CANDIDATE_ANCHOR = "pkg/mod.py::risky"
 
-PYPROJECT = '[project]\nname = "candidate"\nversion = "0.1.0"\n'
+# The default candidate dialect is the BUG-039 package shape: ALL parsed source
+# under pkg/, imports via the package path, only config at the repo root. The
+# [tool.pytest.ini_options] table anchors the spawned run's rootdir at the
+# candidate root (a bare [project] table is not a config anchor under pytest 9);
+# mod.py carries a second symbol so the file's source_file index is never a
+# single-node degenerate case.
+PYPROJECT = ('[project]\nname = "candidate"\nversion = "0.1.0"\n\n'
+             '[tool.pytest.ini_options]\ntestpaths = ["pkg"]\n')
 PYPROJECT_UV = PYPROJECT + '\n[tool.uv]\npackage = false\n'
-LIB_V1 = 'def risky(name):\n    return "hi " + name\n'
-LIB_BREAKING = 'def risky(name, mode):\n    return "hi " + name + mode\n'
-LIB_ADDITIVE = 'def risky(name, mode=""):\n    return "hi " + name + mode\n'
-TEST_V1 = ('from lib import risky\n\n'
+MOD_V1 = ('def risky(name):\n    return "hi " + name\n\n\n'
+          'def steady(name):\n    return risky(name)\n')
+MOD_BREAKING = ('def risky(name, mode):\n    return "hi " + name + mode\n\n\n'
+                'def steady(name):\n    return risky(name, "!")\n')
+MOD_ADDITIVE = ('def risky(name, mode=""):\n    return "hi " + name + mode\n\n\n'
+                'def steady(name):\n    return risky(name)\n')
+TEST_V1 = ('from pkg.mod import risky\n\n'
            'def test_risky():\n    assert risky("x") == "hi x"\n')
-TEST_FIXED = ('from lib import risky\n\n'
+TEST_FIXED = ('from pkg.mod import risky\n\n'
               'def test_risky():\n    assert risky("x", "!") == "hi x!"\n')
-TEST_SLEEPY = ('import time\n\nfrom lib import risky\n\n'
+TEST_SLEEPY = ('import time\n\nfrom pkg.mod import risky\n\n'
                'def test_risky():\n    time.sleep(60)\n'
                '    assert risky("x") == "hi x"\n')
+
+# The flat root-level dual (offset "" — the pre-existing working dialect), kept
+# as the flagship's explicit regression arm after the symbol-seeding change.
+FLAT_PYPROJECT = '[project]\nname = "candidate"\nversion = "0.1.0"\n'
+FLAT_LIB_V1 = 'def risky(name):\n    return "hi " + name\n'
+FLAT_LIB_BREAKING = 'def risky(name, mode):\n    return "hi " + name + mode\n'
+FLAT_TEST_V1 = ('from lib import risky\n\n'
+                'def test_risky():\n    assert risky("x") == "hi x"\n')
+
+LAYOUTS: dict[str, dict] = {
+    "package": {"pyproject": PYPROJECT,
+                "seed": {"pkg/__init__.py": "", "pkg/mod.py": MOD_V1,
+                         "pkg/test_mod.py": TEST_V1},
+                "anchor": CANDIDATE_ANCHOR,
+                "breaking": {"pkg/mod.py": MOD_BREAKING}},
+    "flat": {"pyproject": FLAT_PYPROJECT,
+             "seed": {"lib.py": FLAT_LIB_V1, "test_lib.py": FLAT_TEST_V1},
+             "anchor": "lib.py::risky",
+             "breaking": {"lib.py": FLAT_LIB_BREAKING}},
+}
 
 
 @pytest.fixture(autouse=True)
@@ -72,16 +105,36 @@ def _verifier_tools_on_path(monkeypatch):
 
 # ── candidate-repo scaffolding (real trees, real PR refs) ──────────────────────
 
-def seed_project(origin, pyproject: str = PYPROJECT) -> str:
-    """A SINGLE-ROOT python candidate project on the tracked branch: one
-    pyproject.toml at the repo root, the watched symbol, and an in-corpus test
-    exercising it (root-level so `from lib import risky` resolves wherever the
-    verifier spawns pytest from)."""
-    (origin.work / "pyproject.toml").write_text(pyproject)
-    (origin.work / "lib.py").write_text(LIB_V1)
-    origin.commit("test_lib.py", TEST_V1, "candidate project")
+def seed_project(origin, pyproject: str | None = None,
+                 layout: str = "package") -> str:
+    """The candidate project on the tracked branch. The default is the GENUINE
+    single-source-root package shape (BUG-039's precondition): every parsed
+    source file lives under pkg/ — Origin's root-level app.py is removed — with
+    the in-corpus test importing via the package path and only config at the
+    repo root, so matrix roots the graph at pkg/ and the receipt must bridge
+    the dialect. ``layout="flat"`` keeps the offset-"" dual (root-level source)
+    as the regression arm."""
+    spec = LAYOUTS[layout]
+    (origin.work / "pyproject.toml").write_text(pyproject or spec["pyproject"])
+    for rel, content in spec["seed"].items():
+        path = origin.work / rel
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(content)
+    if layout == "package":
+        (origin.work / "app.py").unlink()  # root source would flip the dialect
+    git(origin.work, "add", "-A")
+    git(origin.work, "commit", "-qm", "candidate project")
     origin.push()
-    return origin.sha("HEAD")
+    sha = origin.sha("HEAD")
+    if layout == "package":
+        # Pin the premise the docstring claims — the e2e verifier's finding was
+        # exactly a "single-root" fixture that wasn't: any parsed source outside
+        # pkg/ silently reconverges this tree to the flat/offset-"" dialect.
+        tree = git(origin.work, "ls-tree", "-r", "--name-only", sha).stdout
+        stray = [p for p in tree.splitlines()
+                 if p.endswith(".py") and not p.startswith("pkg/")]
+        assert not stray, f"single-root premise broken by root-level source: {stray}"
+    return sha
 
 
 def open_pr(origin, number: int, files: dict[str, str]) -> str:
@@ -172,7 +225,7 @@ def test_pr_head_evaluated(origin, store, tmp_path):
     svc.tick()                                    # first connect
     assert pr_heads_meta(store) == {}             # baselined: zero PRs yet
     main_tip = origin.sha("main")
-    head = open_pr(origin, 1, {"lib.py": LIB_BREAKING})
+    head = open_pr(origin, 1, {"pkg/mod.py": MOD_BREAKING})
     svc.tick()
 
     bodies = pre_merge_payloads(store)
@@ -191,18 +244,22 @@ def test_pr_head_evaluated(origin, store, tmp_path):
     assert meta(store, META_LAST_ERROR) is None
 
 
-def test_helped_fuel_promotes(origin, store, tmp_path):
+@pytest.mark.parametrize("layout", ["package", "flat"])
+def test_helped_fuel_promotes(origin, store, tmp_path, layout):
     """The flagship, end to end with ZERO human/agent action: a dont-memory whose
     warned anchor drifts breaking under a PR whose reached test fails ⇒ the HELPED
     row lands mechanically, and the L4 verified-win rung promotes the quarantined
-    memory at the next demand tick with the competitor veto held. Runs on a
-    SINGLE-ROOT candidate tree — the BUG-039 end-to-end (the receipt must join)."""
-    seed_project(origin)
+    memory at the next demand tick with the competitor veto held. The "package"
+    arm runs on a GENUINE single-source-root tree (all parsed source under pkg/,
+    package-path imports) — the BUG-039 end-to-end: the package-dialect receipt
+    must join. The "flat" arm is the offset-"" regression dual: root-level
+    source must keep deciding after the symbol-seeding change."""
+    seed_project(origin, layout=layout)
     eid = quarantine_dont(store, "dont widen risky's signature — callers pass "
-                                 "one arg", CANDIDATE_ANCHOR)
+                                 "one arg", LAYOUTS[layout]["anchor"])
     svc = make_service(origin, store, tmp_path)
     svc.tick()
-    head = open_pr(origin, 1, {"lib.py": LIB_BREAKING})
+    head = open_pr(origin, 1, LAYOUTS[layout]["breaking"])
     svc.tick()
 
     helped = evidence_rows(store, "outcome_verified_helped")
@@ -210,6 +267,11 @@ def test_helped_fuel_promotes(origin, store, tmp_path):
     body = json.loads(helped[0]["payload"])
     assert body["verdict"] == "fail" and body["ref"] == "refs/pull/1/head"
     assert body["stamp"]["head_sha"] == head      # SHA-bound corroboration
+    # The join happened in the REPO dialect (the BUG-039 seam): an unbridged
+    # package receipt speaks "mod.py::risky", which cannot match this anchor.
+    anchor_path, _, anchor_symbol = LAYOUTS[layout]["anchor"].partition("::")
+    assert body["matched"] == {"path": anchor_path, "symbol": anchor_symbol,
+                               "level": "symbol"}
 
     # The next demand tick: demand alone cannot promote (m astronomically high) —
     # the SHA-bound verified win does, competitor veto consulted against the index.
@@ -236,9 +298,9 @@ def test_revision_reevaluated(origin, store, tmp_path):
     svc = make_service(origin, store, tmp_path)
     svc.tick()
     main_tip = origin.sha("main")
-    head1 = open_pr(origin, 1, {"lib.py": LIB_BREAKING})
+    head1 = open_pr(origin, 1, {"pkg/mod.py": MOD_BREAKING})
     svc.tick()
-    head2 = open_pr(origin, 1, {"test_lib.py": TEST_FIXED})
+    head2 = open_pr(origin, 1, {"pkg/test_mod.py": TEST_FIXED})
     svc.tick()
 
     bodies = pre_merge_payloads(store)
@@ -256,7 +318,7 @@ def test_closed_silent(origin, store, tmp_path):
     baseline, no receipt, no error — nothing to measure, nothing measured."""
     seed_project(origin)
     seed_episode(store, "risky trips on widened signatures", CANDIDATE_ANCHOR)
-    head = open_pr(origin, 1, {"lib.py": LIB_BREAKING})   # exists before first tick
+    head = open_pr(origin, 1, {"pkg/mod.py": MOD_BREAKING})   # exists before first tick
     spy = RunSpy()
     svc = make_service(origin, store, tmp_path, run=spy)
     svc.tick()                                    # first connect: baselined only
@@ -277,7 +339,8 @@ def test_hang_fail_open(origin, store, tmp_path, monkeypatch):
     seed_episode(store, "risky trips on widened signatures", CANDIDATE_ANCHOR)
     svc = make_service(origin, store, tmp_path)
     svc.tick()
-    head1 = open_pr(origin, 1, {"lib.py": LIB_BREAKING, "test_lib.py": TEST_SLEEPY})
+    head1 = open_pr(origin, 1, {"pkg/mod.py": MOD_BREAKING,
+                                "pkg/test_mod.py": TEST_SLEEPY})
     head2 = open_pr(origin, 2, {"README.md": "notes\n"})
     # marker: an unbounded candidate build turns this tick into the 60s sleep —
     # the elapsed bound below reds without the timeout kill.
@@ -297,7 +360,7 @@ def test_opt_out(origin, store, tmp_path):
     """verify_candidates=False ⇒ the leg is ABSENT (no handle), not merely idle:
     no discovery, no baseline meta, no counters, no builds — byte-inert."""
     seed_project(origin)
-    open_pr(origin, 1, {"lib.py": LIB_BREAKING})
+    open_pr(origin, 1, {"pkg/mod.py": MOD_BREAKING})
     spy = RunSpy()
     svc = make_service(origin, store, tmp_path, run=spy, verify_candidates=False)
     assert svc._candidate_leg is None             # the §9.9 shape: OFF ⇒ no handle
@@ -317,7 +380,7 @@ def test_candidate_ref_never_canonical(origin, store, tmp_path):
     eid = seed_episode(store, "risky trips on widened signatures", CANDIDATE_ANCHOR)
     svc = make_service(origin, store, tmp_path)
     svc.tick()
-    head = open_pr(origin, 1, {"lib.py": LIB_BREAKING})
+    head = open_pr(origin, 1, {"pkg/mod.py": MOD_BREAKING})
     svc.tick()
 
     stale = evidence_rows(store, "verify_stale")
@@ -338,7 +401,7 @@ def test_first_connect_baselines_without_evaluating(origin, store, tmp_path):
     PR-storm direction); only movement AFTER the baseline is measured."""
     seed_project(origin)
     seed_episode(store, "risky trips on widened signatures", CANDIDATE_ANCHOR)
-    head1 = open_pr(origin, 1, {"lib.py": LIB_BREAKING})
+    head1 = open_pr(origin, 1, {"pkg/mod.py": MOD_BREAKING})
     spy = RunSpy()
     svc = make_service(origin, store, tmp_path, run=spy)
     svc.tick()
@@ -348,7 +411,7 @@ def test_first_connect_baselines_without_evaluating(origin, store, tmp_path):
     assert pre_merge_payloads(store) == []
     assert meta(store, META_EVALUATED) is None
 
-    head2 = open_pr(origin, 1, {"lib.py": LIB_ADDITIVE})  # movement after baseline
+    head2 = open_pr(origin, 1, {"pkg/mod.py": MOD_ADDITIVE})  # movement after baseline
     svc.tick()
     assert len(spy.candidate_builds()) == 1
     assert pr_heads_meta(store) == {"1": head2}
