@@ -353,6 +353,25 @@ def _blast_radius(engine: Graph | nx.DiGraph, seed: str, *, depth: int,
     return blast_radius(engine, seed, depth=depth, test_globs=test_globs)
 
 
+def _symbol_seeds(engine: Graph | nx.DiGraph, graph_path: str) -> tuple[str, ...]:
+    """Every node the graph roots in one touched file (graph dialect): the
+    file's contained symbols plus the file's own node, keyed by the nodes'
+    ``source_file`` — the one file→symbol index that holds in BOTH path
+    dialects. Node ids resolve as seeds directly (exact-id match), so each
+    seed's radius is live wherever the graph has edges. Read defensively: an
+    engine that cannot be enumerated yields no seeds, and the caller falls
+    back to the file-path seed."""
+    g = getattr(engine, "nx", engine)  # a matrix Graph carries .nx; nx is itself
+    try:
+        return tuple(sorted(
+            str(node_id)
+            for node_id, data in g.nodes(data=True)
+            if str(data.get("source_file") or "") == graph_path
+        ))
+    except Exception:
+        return ()
+
+
 def _compute_affected(
     engine: Graph | nx.DiGraph,
     touched: TouchedSet,
@@ -360,17 +379,29 @@ def _compute_affected(
     test_globs: tuple[str, ...],
     root_offset: str,
 ) -> Affected:
-    """Union the blast radius over every touched file. v1 seeds by FILE — a
+    """Union the blast radius over every touched file, seeded at SYMBOL level:
+    each touched file contributes every node the graph roots in it (contained
+    symbols plus the file's own node), and the file PATH stays as the seed of
+    last resort where the graph does not know the file. The graph's test
+    edges are symbol-level (``test_fn -[calls]-> fn``) while a nested file
+    path is a dead seed in both graph dialects (multi-root: sanitized ids,
+    basename labels, and an ambiguous ``source_file`` make it unresolvable;
+    single-root: the bridged basename resolves to a bare file node that
+    package-dialect imports never join), so file-only seeding starved every
+    package layout; symbol seeds keep the radius live everywhere, and the
+    file's own node rides the seed set so file-level import edges (the
+    flat-repo shape) keep theirs. Seeding the whole file's symbols is the
     conservative superset of the line-touched symbols' radius (more tests,
     never fewer); touched lines ride the input for provenance only.
 
     ``root_offset`` bridges the path dialects (BUG-039): matrix roots its
     graph at the corpus' common ancestor, so on a single-source-root checkout
     node paths drop the leading ``<root_offset>/`` that the composer's
-    repo-relative touched paths carry. Each seed is translated INTO the graph
-    dialect (prefix stripped) and every returned ``hit.source_file`` — files
-    and tests alike — is re-rooted BACK to the repo dialect (prefix restored),
-    so the affected tests the spawn receives join the real worktree.
+    repo-relative touched paths carry. Every seed is derived IN the graph
+    dialect (prefix stripped before the ``source_file`` match) and every
+    returned ``hit.source_file`` — files and tests alike — is re-rooted BACK
+    to the repo dialect (prefix restored), so the affected tests the spawn
+    receives join the real worktree.
     """
     # marker: the "" offset must stay a structural no-op (identity both ways),
     # and the two directions must stay PAIRED — stripping seeds without
@@ -388,17 +419,24 @@ def _compute_affected(
     symbols: set[str] = set()
     tests: set[str] = set()
     for touched_file in touched.files:
-        radius = _blast_radius(
-            engine, to_graph(touched_file.path), depth=depth, test_globs=test_globs
-        )
-        # Hit fields are read defensively: an empty source_file is tolerated.
-        for hit in (*radius.callers, *radius.dependents):
-            symbols.add(str(hit.node_id))
-            if hit.source_file:
-                files.add(to_repo(str(hit.source_file)))
-        for hit in radius.tests:
-            if hit.source_file:
-                tests.add(to_repo(str(hit.source_file)))
+        graph_path = to_graph(touched_file.path)
+        # marker: seeding must stay SYMBOL-level with the file-path fallback —
+        # file-path-only seeds starve every nested layout (the test edges are
+        # symbol-level), and dropping the fallback blinds engines that carry
+        # no source_file index for the touched file.
+        seeds = _symbol_seeds(engine, graph_path) or (graph_path,)
+        for seed in seeds:
+            radius = _blast_radius(
+                engine, seed, depth=depth, test_globs=test_globs
+            )
+            # Hit fields are read defensively: an empty source_file is tolerated.
+            for hit in (*radius.callers, *radius.dependents):
+                symbols.add(str(hit.node_id))
+                if hit.source_file:
+                    files.add(to_repo(str(hit.source_file)))
+            for hit in radius.tests:
+                if hit.source_file:
+                    tests.add(to_repo(str(hit.source_file)))
     return Affected(
         files=tuple(sorted(files)),
         symbols=tuple(sorted(symbols)),
