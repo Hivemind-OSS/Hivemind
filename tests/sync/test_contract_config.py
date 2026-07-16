@@ -2,10 +2,11 @@
 
 Given env with repo_url[+credential] ⇒ sync arms (a live daemon thread through the
 REAL ``start_sync``); a half-set credential without repo_url ⇒ EX_CONFIG at boot,
-the refusal naming the missing var; NO ``HIVE_SYNC__*`` at all ⇒ the boot is
-byte-inert — same thread set, no census/matrix import, ``start_sync`` → None, a
-clean stdout (the JSON-RPC channel), the config group at pure defaults. The
-byte-inert case is the MASTER check for the whole subsystem.
+the refusal naming the vars on OPERATOR-VISIBLE STDERR at the real boot path (never
+the credential value); NO ``HIVE_SYNC__*`` at all ⇒ the boot is byte-inert — same
+thread set, no census/matrix import, ``start_sync`` → None, a clean stdout (the
+JSON-RPC channel), the config group at pure defaults. The byte-inert case is the
+MASTER check for the whole subsystem.
 """
 from __future__ import annotations
 
@@ -90,7 +91,7 @@ def test_armed(origin, store, tmp_path):
     ({"HIVE_SYNC__TOKEN": "tok-credential"}, "tok-credential"),
     ({"HIVE_SYNC__WEBHOOK_SECRET": "hook-credential"}, "hook-credential"),
 ])
-def test_partial_fails_ex_config(halfset, secret):
+def test_partial_fails_ex_config(halfset, secret, capsys):
     assembled: list = []
 
     def build_boot(cfg, *, tenant_id, agent_id):
@@ -100,7 +101,17 @@ def test_partial_fails_ex_config(halfset, secret):
     rc = E.main(env=halfset, build_boot=build_boot, serve=lambda s: None)
     assert rc == E.EX_CONFIG == 78
     assert assembled == []                          # refused BEFORE assembly
-    # the refusal names the missing var — and NEVER echoes the credential value
+    # the BOOT-path refusal reaches operator-visible STDERR naming both vars — the
+    # missing one to set AND the offending one to unset (an operator staring at a
+    # container exiting 78 must know which var to fix); the credential VALUE never
+    # rides the line.
+    err = capsys.readouterr().err
+    (offending_var,) = halfset
+    assert "entrypoint.config_invalid" in err
+    assert "HIVE_SYNC__REPO_URL" in err
+    assert offending_var in err
+    assert secret not in err
+    # and the in-process raise (the boot line's source) carries the same naming
     with pytest.raises(ValueError, match="HIVE_SYNC__REPO_URL") as ei:
         Config.load(db_path=":memory:", env=halfset)
     assert secret not in str(ei.value)

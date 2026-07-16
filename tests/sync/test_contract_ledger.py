@@ -16,7 +16,9 @@ with the real sqlite store and REAL subprocess census builds.
 from __future__ import annotations
 
 import logging
+import subprocess
 
+from hive.app.sync import META_LAST_SYNC_TS, default_run
 from hive.domain.change_evidence import ChangeEvidenceService
 
 from tests.sync.conftest import (
@@ -160,6 +162,37 @@ def test_foreign_branch_silent(origin, store, tmp_path):
     assert evidence_rows(store) == []
     assert meta(store, META_LAST_TIP) == base
     assert meta(store, META_LAST_ERROR) is None
+
+
+def test_ledger_fault_does_not_advance_last_sync_ts(origin, store, tmp_path):
+    """A tick whose ledger leg faults (census build broken) holds ``sync:last_sync_ts``
+    at the last CLEAN tick — the stamp means "the last fully-successful sync", read
+    against ``sync:last_error``; only a fault-free tick advances it, and a repaired
+    build resumes advancing."""
+    clock = [1_000]
+    broken = [False]
+
+    def breaking_run(argv, env=None, timeout=None):
+        if broken[0] and "hive.census.cli" in list(argv):
+            return subprocess.CompletedProcess(list(argv), 1, stdout="",
+                                               stderr="census build broken")
+        return default_run(argv, env=env, timeout=timeout)
+
+    svc = make_service(origin, store, tmp_path, run=breaking_run,
+                       now=lambda: clock[0])
+    svc.tick()                                   # first connect: baseline only — clean
+    assert meta(store, META_LAST_SYNC_TS) == "1000"
+
+    origin.commit("app.py", _V2, "move the tip")
+    origin.push()
+    broken[0], clock[0] = True, 2_000
+    svc.tick()                                   # the build breaks → ledger-leg fault
+    assert meta(store, META_LAST_ERROR).startswith("ledger:")
+    assert meta(store, META_LAST_SYNC_TS) == "1000"   # ← the faulted tick held the stamp
+
+    broken[0], clock[0] = False, 3_000
+    svc.tick()                                   # repaired: the clean tick advances it
+    assert meta(store, META_LAST_SYNC_TS) == "3000"
 
 
 def test_legacy_overlap_lands(origin, store, tmp_path):

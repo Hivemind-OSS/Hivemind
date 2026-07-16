@@ -126,10 +126,11 @@ def meta(store: SqliteEpisodeStore, key: str) -> Optional[str]:
 
 
 def make_service(url: str | Origin, store: SqliteEpisodeStore, tmp_path: Path,
-                 run=None, **cfg_kw):
+                 run=None, now=None, **cfg_kw):
     """A SyncService wired the entrypoint way: real store as reader/appender/ranges,
     one fresh global lock, mirror under tmp_path. ``run`` (optional) injects the
-    spawn seam — an observing/replacing double; None keeps the real default."""
+    spawn seam — an observing/replacing double; ``now`` (optional) injects the clock
+    seam (``sync:last_sync_ts`` stamps through it); None keeps each real default."""
     from hive.app.config import SyncConfig
     from hive.app.sync import SyncService
     canonical_ref = cfg_kw.pop("canonical_ref", "")
@@ -139,6 +140,7 @@ def make_service(url: str | Origin, store: SqliteEpisodeStore, tmp_path: Path,
                                      now=lambda: 424242, ranges=store)
     return SyncService(cfg, store, evidence, threading.Lock(),
                        **({"run": run} if run is not None else {}),
+                       **({"now": now} if now is not None else {}),
                        canonical_ref=canonical_ref)
 
 

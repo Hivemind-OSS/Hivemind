@@ -184,6 +184,23 @@ def _resolve_max_body(env: Mapping[str, str]) -> Optional[int]:
     return max_body
 
 
+# The env vars whose VALUES are credentials: a value must never ride any log line
+# (the config-invalid detail included). Variable NAMES may appear; values never.
+_SECRET_ENV_VARS = ("HIVE_SYNC__TOKEN", "HIVE_SYNC__WEBHOOK_SECRET")
+
+
+def _scrub_secret_values(text: str, env: Mapping[str, str]) -> str:
+    """Replace any configured credential VALUE with ``***`` in an outbound message.
+    Config's own error messages are name-only by construction — this belt makes the
+    never-echo-a-secret invariant MECHANICAL at the escape path (the same direction
+    as sync's ``_redact``), surviving any upstream message regression. // O(#secrets)."""
+    for var in _SECRET_ENV_VARS:
+        value = env.get(var) or ""
+        if value:
+            text = text.replace(value, "***")
+    return text
+
+
 def _resolve_env(env: Mapping[str, str]) -> tuple[str, str, str]:
     """Resolve the three boot-critical operator values, all with safe defaults so the
     container boots zero-config. `tenant_id` is a constant label (never a query filter —
@@ -252,7 +269,11 @@ def main(argv: Optional[list[str]] = None, *, env: Optional[Mapping[str, str]] =
     try:
         cfg = Config.load(db_path=db_path, env=env, runtime={"tenant_id": tenant_id})
     except Exception as exc:                            # noqa: BLE001 — bad config is EX_CONFIG
-        _log.error("entrypoint.config_invalid kind=%s code=%d", type(exc).__name__, EX_CONFIG)
+        # detail carries the exception message, which NAMES the offending variable —
+        # an operator staring at exit 78 must know which var to fix; the scrub belt
+        # guarantees no credential VALUE can ride the line.
+        _log.error("entrypoint.config_invalid kind=%s code=%d detail=%s",
+                   type(exc).__name__, EX_CONFIG, _scrub_secret_values(str(exc), env))
         return EX_CONFIG
     _configure_logging(int(getattr(cfg.obs, "log_level", _DEFAULT_LOG_LEVEL)))  # operator level now live
     _log.info("entrypoint.config_loaded tenant_id=%s db_path=%s", tenant_id, db_path)

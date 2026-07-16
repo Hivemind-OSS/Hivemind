@@ -106,7 +106,7 @@ def test_missing_tenant_defaults_and_boots(env):
     assert captured["tenant_id"] == "default"
 
 
-def test_config_validation_failure_exits_config():
+def test_config_validation_failure_exits_config(capsys):
     # a known-bad config field (tau_serve=0 disables the never-hallucinate floor) ⇒ 78,
     # and the booter is NEVER built (we fail before assembly).
     calls: list = []
@@ -120,6 +120,22 @@ def test_config_validation_failure_exits_config():
     rc = E.main(env=env, build_boot=build_boot, serve=_serve_recorder(calls))
     assert rc == E.EX_CONFIG
     assert assembled == [] and calls == []
+    # the stderr line carries the exception detail NAMING the offending field — an
+    # exit code alone cannot tell the operator WHICH variable to fix.
+    err = capsys.readouterr().err
+    assert "entrypoint.config_invalid" in err and "tau_serve" in err
+
+
+def test_config_invalid_detail_scrubs_credential_values():
+    # Defense in depth for the config-invalid detail: a configured credential VALUE is
+    # scrubbed at the escape path even if an upstream message regressed into echoing
+    # it; variable NAMES pass through untouched, and no secrets set is a no-op.
+    env = {"HIVE_SYNC__TOKEN": "sekrit-value", "HIVE_SYNC__WEBHOOK_SECRET": "hook-value"}
+    assert (E._scrub_secret_values("boom sekrit-value and hook-value end", env)
+            == "boom *** and *** end")
+    assert (E._scrub_secret_values("set HIVE_SYNC__REPO_URL or unset HIVE_SYNC__TOKEN", env)
+            == "set HIVE_SYNC__REPO_URL or unset HIVE_SYNC__TOKEN")
+    assert E._scrub_secret_values("unchanged", {}) == "unchanged"
 
 
 def test_empty_env_boot_does_not_pollute_stdout(capsys):

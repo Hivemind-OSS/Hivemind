@@ -76,6 +76,8 @@ _log = logging.getLogger("hive.sync")
 
 META_LAST_TIP = "sync:last_tip"      # the durable watermark (store meta = truth, D4)
 META_LAST_ERROR = "sync:last_error"  # the last surfaced fault (redacted, advisory)
+META_TRACKED_REF = "sync:tracked_ref"    # the resolved tracked line (operator surface)
+META_LAST_SYNC_TS = "sync:last_sync_ts"  # ts of the last fault-free tick (via the now seam)
 META_PR_HEADS = "sync:pr_heads"      # {pr-number: head-sha} — the candidate baseline
 META_CANDIDATES_EVALUATED = "sync:candidates_evaluated"  # completed evaluations
 META_CANDIDATES_REFUSED = "sync:candidates_refused"      # nothing-decided receipts
@@ -188,10 +190,17 @@ class SyncService:
     def tick(self) -> None:
         """ONE poll cycle: mirror + fetch first (shared by every leg), then each leg
         under its OWN fail-open guard — one leg's fault never kills the others, and
-        nothing raises past this method toward the caller."""
+        nothing raises past this method toward the caller. Two operator-surface meta
+        keys ride the tick (the census-health sync block serves store meta ONLY):
+        ``sync:tracked_ref`` the moment the tracked line is resolved, and
+        ``sync:last_sync_ts`` — stamped through the injected ``now`` seam — only when
+        EVERY leg ran fault-free, so it reads as "the last fully-clean sync" against
+        the sticky ``sync:last_error``."""
         try:
             self.ensure_mirror()
             branch = self._tracked_branch()
+            with self._lock:
+                self._store.meta_set(META_TRACKED_REF, branch)
             prev_local = self._rev(f"refs/remotes/origin/{branch}")
             self._fetch(branch)
         except Exception as exc:  # noqa: BLE001 — marker: re-raising breaks
@@ -199,21 +208,31 @@ class SyncService:
             # the next tick retries, the serve path never feels it).
             self._note_error("mirror", exc)
             return
+        clean = True
         try:
             self._ledger_leg(branch, prev_local)
         except Exception as exc:  # noqa: BLE001 — the leg fails open too
             self._note_error("ledger", exc)
+            clean = False
         if self._candidate_leg is not None:
             try:
                 self._candidate_leg(branch)
             except Exception as exc:  # noqa: BLE001 — the leg fails open too
                 self._note_error("candidate", exc)
+                clean = False
         try:
             tip = self._rev(f"refs/remotes/origin/{branch}")
             if tip is not None:
                 self._backfill(tip, branch)
         except Exception as exc:  # noqa: BLE001 — the leg fails open too
             self._note_error("backfill", exc)
+            clean = False
+        if clean:
+            with self._lock:
+                # marker: stamping this on a faulted tick reds
+                # test_ledger_fault_does_not_advance_last_sync_ts — a fault anywhere
+                # means the sync did NOT complete, and the timestamp must not lie.
+                self._store.meta_set(META_LAST_SYNC_TS, str(self._now()))
 
     # ── the mirror (a rebuildable cache — never the durable truth) ─────────────
     def ensure_mirror(self) -> None:
