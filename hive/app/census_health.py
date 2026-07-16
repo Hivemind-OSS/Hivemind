@@ -20,16 +20,18 @@ It serves the raw day-count with no invented "too stale" threshold (THEORY §9 #
 number an operator could mis-set), and "dark" stays threshold-free the same way: dark == no
 ``change_outcome`` evidence at all. The ``sync`` block is PRESENT only when the store carries
 sync evidence (the key-present-only-when-true idiom) — a non-sync deployment's payload keeps
-today's exact shape. ``tracked_ref`` and ``last_sync_ts`` are served as None: the daemon
-persists no meta key for either and this module reads ONLY the store (live config never
-reaches a bare conn) — honest absence over invented data (Law 6).
+today's exact shape. Every key is read from its ``sync:*`` store meta — ``tracked_ref`` and
+``last_sync_ts`` ride the daemon's clean tick expressly for this surface — and this module
+reads ONLY the store (live config never reaches a bare conn), so a key serves None exactly
+when its meta is genuinely absent — honest absence over invented data (Law 6).
 """
 from __future__ import annotations
 
 import time
 
 from hive.app.sync import (META_BACKFILLED_TOTAL, META_CANDIDATES_EVALUATED,
-                           META_LAST_ERROR, META_LAST_TIP)
+                           META_LAST_ERROR, META_LAST_SYNC_TS, META_LAST_TIP,
+                           META_TRACKED_REF)
 from hive.domain.evidence_kinds import EK_CHANGE_OUTCOME
 
 _DAY_S = 86_400
@@ -64,12 +66,9 @@ def census_health_report(conn) -> dict:
         if sync_meta:
             block: dict = {
                 "configured": True,
-                # tracked_ref / last_sync_ts: NO sync:* meta key backs either (the daemon
-                # persists neither; the resolved branch and tick time live only in the
-                # running service) — served as None, never invented.
-                "tracked_ref": None,
+                "tracked_ref": sync_meta.get(META_TRACKED_REF),
                 "last_tip": sync_meta.get(META_LAST_TIP),
-                "last_sync_ts": None,
+                "last_sync_ts": sync_meta.get(META_LAST_SYNC_TS),
                 "last_error": sync_meta.get(META_LAST_ERROR),
                 "candidates_evaluated": _counter(sync_meta.get(META_CANDIDATES_EVALUATED)),
                 "backfilled_total": _counter(sync_meta.get(META_BACKFILLED_TOTAL)),

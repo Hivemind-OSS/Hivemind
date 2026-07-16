@@ -15,7 +15,8 @@ import time
 
 from hive.app.census_health import census_health_report
 from hive.app.sync import (META_BACKFILLED_TOTAL, META_CANDIDATES_EVALUATED,
-                           META_LAST_ERROR, META_LAST_TIP)
+                           META_LAST_ERROR, META_LAST_SYNC_TS, META_LAST_TIP,
+                           META_TRACKED_REF)
 from hive.domain.evidence_kinds import EK_CHANGE_OUTCOME, EK_OUTCOME_HELPED
 from tests.mcp._helpers import build_real_server, content, tool_call
 
@@ -108,9 +109,13 @@ def test_sync_block_absent_when_meta_table_missing():
 
 
 def test_sync_block_serves_the_seven_keys_when_configured():
+    # Every key is sourced from its sync:* store meta — tracked_ref and last_sync_ts
+    # included (the daemon persists both on a clean tick, expressly for this surface).
     conn = _conn_with_meta()
     _insert(conn, EK_CHANGE_OUTCOME, int(time.time()) - _DAY_S)
+    _set_meta(conn, META_TRACKED_REF, "master")
     _set_meta(conn, META_LAST_TIP, "a" * 40)
+    _set_meta(conn, META_LAST_SYNC_TS, "111000")
     _set_meta(conn, META_LAST_ERROR, "mirror: _SyncFault: git clone failed")
     _set_meta(conn, META_CANDIDATES_EVALUATED, "4")
     _set_meta(conn, META_BACKFILLED_TOTAL, "7")
@@ -118,13 +123,24 @@ def test_sync_block_serves_the_seven_keys_when_configured():
     assert report["days_since_last_change_outcome"] == 1
     assert report["sync"] == {
         "configured": True,
-        "tracked_ref": None,       # no sync:* meta key backs it — honest None, never invented
+        "tracked_ref": "master",
         "last_tip": "a" * 40,
-        "last_sync_ts": None,      # the meta table carries no tick timestamp — honest None
+        "last_sync_ts": "111000",  # served as stamped (the writer's seam-clock string)
         "last_error": "mirror: _SyncFault: git clone failed",
         "candidates_evaluated": 4,
         "backfilled_total": 7,
     }
+
+
+def test_tracked_ref_and_last_sync_ts_null_only_when_meta_absent():
+    # The armed-but-no-clean-tick-yet shape: sync meta exists (block present) but the
+    # daemon has not persisted these two keys — absent meta serves honest None, never
+    # an invented ref or timestamp.
+    conn = _conn_with_meta()
+    _set_meta(conn, META_LAST_TIP, "a" * 40)
+    block = census_health_report(conn)["sync"]
+    assert block["tracked_ref"] is None
+    assert block["last_sync_ts"] is None
 
 
 def test_sync_configured_and_dark_reads_sync_stalled():
