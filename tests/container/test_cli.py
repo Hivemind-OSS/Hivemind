@@ -470,9 +470,13 @@ def test_upgrade_prints_manual_hint_when_rollback_itself_fails(capsys):
 
 
 def test_connect_prints_edge_tools_breadcrumb(capsys):
-    # connect cross-references the edge-tools install (hive-edge census init) without merging the verb.
+    # connect cross-references the edge-tools install without merging the verb; census evidence is
+    # server-side (the sync service), so no deleted `hive-edge census` verb may be instructed.
     cli.main(["connect"], run=FakeRun(), out=io.StringIO(), env=ENV)
-    assert "hive-edge census init" in capsys.readouterr().err
+    err = capsys.readouterr().err
+    assert "install `hive-edge`" in err
+    assert "HIVE_SYNC__REPO_URL" in err     # census is server-side, keyed off the sync config
+    assert "census init" not in err          # the deleted edge verb never resurfaces here
 
 
 # ── status: aggregation (ps + in-container healthcheck + tunnel + seat count) ───
