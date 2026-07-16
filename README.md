@@ -102,6 +102,11 @@ silently clamping.
 
 There is no `HIVE_AUTH__MODE` switch — delete any leftover one from `.env` (it is ignored).
 
+**Automatic census feed (optional).** Set `HIVE_SYNC__REPO_URL` (plus `HIVE_SYNC__TOKEN` for a
+private remote) and the server itself mirrors the repo and feeds every landing on the tracked
+branch into the change-outcome evidence ledger — detect-only, fail-open, byte-inert when unset;
+nothing is wired per repo or per device. Knob table + details: **[HIVE-ADMIN.md §4](HIVE-ADMIN.md)**.
+
 ## Remote teammates
 
 Loopback never leaves the host, so open exactly one door:
@@ -120,7 +125,8 @@ Never publish `0.0.0.0:8765` — a bearer token over plain LAN HTTP is cleartext
 non-blocking start/stop, tunnel activate/deactivate, restore from an in-volume backup behind a
 typed confirm, log tail; no reset) / `hive status` / `logs` / `tokens` / `revoke <seat>` /
 `backup` (manual snapshot) / `ingest
-<receipt.json>` (feed an unsigned census receipt's change outcome into the evidence ledger) / `down`
+<receipt.json>` (manually feed an unsigned census receipt's change outcome into the evidence
+ledger — the escape hatch; with `HIVE_SYNC__REPO_URL` set the server feeds itself) / `down`
 (stop, keep data) / `reset` (snapshot the store out of the volume, then destroy + recreate it
 empty — recoverable; typed confirm) / `restore` (replace the live store from a snapshot) / `upgrade
 [--ref release]` (move the server to a vetted release ref — backup-gated, auto-rollback on failure).
@@ -132,25 +138,25 @@ KPIs).
 
 ## Edge tooling
 
-Anchor mint/verify (recall freshness, including the dependency-neighborhood `radius` advisory), a
-persistent per-repo code graph (`hive-edge graph`), and the census evidence hooks (post-merge +
-post-commit) ride a companion, per-workstation CLI,
+Anchor mint/verify (recall freshness, including the dependency-neighborhood `radius` advisory) and
+a persistent per-repo code graph (`hive-edge graph`) ride a companion, per-workstation CLI,
 **[`hive-edge`](https://github.com/Hivemind-OSS/Hive-edge)** — it is not baked
 into the server image. It is not required for the core recall/capture/write loop (absent, mint and
-verify simply no-op; nothing else is affected), but the trust-lifecycle verify step and the census
-evidence flow depend on it.
+verify simply no-op; nothing else is affected), but the trust-lifecycle verify step depends on it.
+Census change evidence does **not**: it is computed and fed server-side (`HIVE_SYNC__REPO_URL`,
+above), so there is nothing to wire per repo or per device.
 
 You don't need to install it yourself: a connected agent checks for it during onboarding and
 installs or upgrades it automatically. To install it manually instead:
 
 ```bash
-uv tool install hive-edge --from git+https://github.com/Hivemind-OSS/Hive-edge@release
+uv tool install hive-edge
 ```
 
-Per-device edge state (config, release cache, logs, the per-checkout code-graph cache) lives under
-`~/.hive-edge/` (`HIVE_EDGE_HOME` overrides); it is safe to delete and regenerates. See
-**[HIVE-ADMIN.md §8](HIVE-ADMIN.md)** for the full install/upgrade/rollback flow and the
-census hooks (post-merge + post-commit) it wires.
+Per-device edge state (the rollback-pin config, worktree-delta baselines, the per-checkout
+code-graph cache) lives under `~/.hive-edge/` (`HIVE_EDGE_HOME` overrides); it is safe to delete
+and regenerates. See **[HIVE-ADMIN.md §8](HIVE-ADMIN.md)** for the full install/upgrade/rollback
+flow.
 
 ## Embedding model & attribution
 

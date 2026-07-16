@@ -3,6 +3,53 @@
 All notable changes to this project are documented here.
 
 ## Added
+- Server-automatic census (contract v.13, `MIN_EDGE_VERSION` 0.6.0 → 0.7.0 alongside the hive-edge
+  0.7.0 release): the change-outcome evidence feed no longer needs per-repo/per-device git hooks —
+  the server feeds itself. Armed by `HIVE_SYNC__REPO_URL` (unset ⇒ byte-inert: no thread, no
+  clone, no census import; a token/webhook-secret without a repo URL fails boot EX_CONFIG), an
+  in-process daemon thread (`hive/app/sync.py`, started by the entrypoint only after serve-ready,
+  sharing THE one global write lock — held only for store access, never across git/subprocess
+  work) keeps a local mirror (`/data/sync/mirror`, a rebuildable cache) and runs three fail-open
+  legs per tick. (1) LEDGER: ONE unsigned receipt per contiguous watermark..tip range on the
+  tracked branch (`HIVE_CENSUS__CANONICAL_REF`, else the origin default), built by
+  `python -m hive.census.cli build` in a subprocess and ingested in-proc as
+  post_merge/pass/none, the watermark (`sync:last_tip`) advanced in the same critical section;
+  first connect baselines at the remote tip (no historical receipt); a force-push logs a
+  discontinuity and records a defensive merge-base..tip receipt. (2) CANDIDATES
+  (`HIVE_SYNC__VERIFY_CANDIDATES`, default on): changed PR heads (`refs/pull/*/head` fetched as
+  `refs/sync/pr/*`, diffed against the `sync:pr_heads` baseline — first connect baselines without
+  evaluating) get merge-base..head pre_merge receipts stamped `--ref refs/pull/<N>/head`, ≤5 per
+  tick, built in a STRIPPED env (no HIVE_*, the token never rides env; `uv sync --frozen`
+  provisioning iff the head carries uv.lock, else the verifier abstains) under a 600 s bound; a
+  nothing-decided receipt is refused (logged + counted), and an exact already-ingested range skips
+  before any build. (3) BACKFILL: approved code-anchored episodes lacking `combdrift/fp` are
+  minted server-side through the real `hive-edge mint` subprocess against the tracked tip
+  (absent-only merge — a present key cannot be displaced; provenance
+  `hive-sync/minted: hive-sync-minted/1:server@<tip> <ref>`; ≤50 per tick). Alongside: a durable
+  RANGE LEDGER — `ingested_ranges` PK `(repo, base, head, phase)`, the
+  `already_ingested_range`/`record_ingested_range` port pair, `IngestReport.range_skipped`, and
+  `ChangeOutcome.repo` — dedupes whole ranges across the daemon and a manual `hive ingest`
+  (censusctl wires `ranges=store`; the report line gains `"range_skipped"`); a
+  `POST /census-webhook` nudge on the TUNNEL door only (live iff `HIVE_SYNC__WEBHOOK_SECRET`;
+  constant-time HMAC-SHA256 vs `X-Hub-Signature-256`, resolved pre-bearer after the
+  body-drain + Origin guard; 204 + wake on match, 401 on mismatch; the payload is never parsed —
+  a wake-up, never a data channel, the poll interval stays the correctness floor); and
+  `hive_health(include_census_health=true)` gains a `sync` block (present iff `sync:*` meta
+  exists: configured/tracked_ref/last_tip/last_sync_ts/last_error/candidates_evaluated/
+  backfilled_total, with `status: "sync stalled"` only when configured yet dark). The census +
+  verifier engines moved INTO the server (`hive/census/` — its CLI reduced to `build`, gaining
+  `--ref`/`--repo-id` — and `hive/verifier/`; suites under `tests/census/` + `tests/verifier/`)
+  behind a `sync` extra (currently a git pin to the hive-edge v0.7.0 tag with a dev-time uv
+  source override to the local clone; it flips to the PyPI `hive-edge==0.7.0` pin after publish)
+  and a Dockerfile that adds git + uv, installs `.[embed,sync]` (bringing the hive-edge CLI +
+  engines into the image), and pre-creates `/data/sync/` — NO compose change (sync config rides
+  `.env`; the mirror lives in the existing hive-data volume). The served contract rewrites
+  `CENSUS_DIRECTIVE` server-automatic (`hive ingest` = the manual escape hatch; nothing to wire
+  per repo or device), points `EDGE_CLI` at the PyPI install (`uv tool install hive-edge`), and
+  drops the census-init wiring step from `ONBOARDING_PROCEDURE`. Operator docs and runbooks
+  (README, HIVE-ADMIN §4/§5/§6/§8, OPERATIONS, llms.txt, the bringup/connect-team/operate skills)
+  reconciled to the server-automatic feed + the reduced 0.7.0 edge CLI; OPERATIONS.md gains the
+  coupled hivemind + hive-edge release runbook.
 - Branch-scope tagging + the census ref stamp (contract v.12, `MIN_EDGE_VERSION` 0.5.0 → 0.6.0
   alongside the hive-edge 0.6.0 release). Four pieces, each byte-inert when unused:
   (1) the edge mints an OPT-IN, set-valued `git/branches` relevance tag (`hive-edge mint

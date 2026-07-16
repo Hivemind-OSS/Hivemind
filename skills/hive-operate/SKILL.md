@@ -1,6 +1,6 @@
 ---
 name: hive-operate
-description: "Operate and tune a running Hivemind server: read the convergence KPIs over MCP, interpret them, turn the recall / safety knobs, and feed census change-outcome receipts into the evidence ledger (hive ingest). Use when asked to check hive health or KPIs, run the weekly maintenance sweep, tune recall or promotion, fix coverage starvation or silent rot, decide demand_m / tau_serve / conflict.tau, or ingest a census receipt. Knobs apply at boot — restart to take effect."
+description: "Operate and tune a running Hivemind server: read the convergence KPIs over MCP, interpret them, turn the recall / safety knobs, watch the server-side automatic census feed (HIVE_SYNC__*), and feed manual census receipts into the evidence ledger (hive ingest). Use when asked to check hive health or KPIs, run the weekly maintenance sweep, tune recall or promotion, fix coverage starvation or silent rot, decide demand_m / tau_serve / conflict.tau, check or arm the census sync, or ingest a census receipt. Knobs apply at boot — restart to take effect."
 ---
 
 # hive-operate — watch the KPIs & turn the knobs
@@ -23,6 +23,7 @@ Call these from any connected agent (there is no host-side verb):
 | `hive_health(include_gaps=true)` | topics wanted but uncovered; established rows with rivals | `hive_write` the answers; `hive_supersede` the wrong one |
 | `hive_health(include_conflicts=true)` | near-duplicate / contradicting memories + agent advisories | `hive_supersede` |
 | `hive_health(include_suspect_consensus=true)` | promotions on thin *effective* independence | human audit / retire |
+| `hive_health(include_census_health=true)` | days since the last `change_outcome` + the `sync` block (`last_tip`/`last_error`/counters; `status: "sync stalled"` when configured yet dark) | check `HIVE_SYNC__*` / remote reachability |
 
 The **trends window is the only view into silent fail-open rot** — read it on a fixed cadence
 (weekly suffices for a small team).
@@ -43,6 +44,7 @@ nothing cleans it automatically.
 | `HIVE_CONFLICT__TAU` | 0.80 | distinct facts get merged (→ raise) or near-duplicate twins slip through (→ lower) |
 | `HIVE_AUTONOMY__QUARANTINE_TTL_DAYS` / `…__PROVISIONAL_TTL_DAYS` | 14 / 45 | **do not lengthen to hoard** — expiry of unused memory is doing real work |
 | `HIVE_AGI__MODE` | false | only to deliberately let the fleet self-authorize the human-gated trust actions |
+| `HIVE_SYNC__REPO_URL` | unset | arm the automatic census feed (server-side mirror + ingest of the tracked branch); unset = byte-inert. Full knob table: `HIVE-ADMIN.md` §4 |
 
 ## Feeding change outcomes (`hive ingest`)
 
@@ -62,35 +64,28 @@ hive ingest receipt.json --post-merge --verdict fail --signal canary   # rollout
 
 `--signal randomized|canary` is what makes a post-merge outcome machine-checked (anything else
 records unverified judgment). The one-line JSON report on stdout carries
-`inserted/already_recorded/matched/skipped_lines` and the verified/verify rider counters.
+`inserted/already_recorded/matched/skipped_lines/range_skipped` and the verified/verify rider
+counters (`range_skipped: true` = the exact `(repo, base, head, phase)` range was already in the
+ledger — the whole receipt was skipped before any row work).
 Receipts are unsigned by policy — there is no signature to check; integrity rides the subject
 digest, which the ingest door re-checks against the predicate.
 
-### Automated wiring (`.githooks/post-merge` + `.githooks/post-commit`)
+### The automatic feed (server-side sync)
 
-`hive-edge census init` (above) writes a hook pair that closes this loop on every landing without
-an operator in the path: `post-merge` builds an unsigned receipt for `ORIG_HEAD..HEAD` after a
-clean in-process merge, and `post-commit` builds one for `HEAD^..HEAD` after a direct commit or a
-conflict-resolved merge completed via `git commit` (skipping only the parentless initial commit) —
-git's two hook paths are disjoint, so every landing is receipted exactly once. Each hook first
-refreshes the persistent per-repo code graph (`hive-edge graph update` — this runs even where the
-`hive` CLI is absent), then builds the receipt (`hive-edge census build --propagate --hive-url …`)
-and feeds it via `hive ingest <receipt> --post-merge --verdict pass --signal none` (`--post-merge`
-means LANDED — a direct commit is landed; `none` is honest for a bare local landing — no rollout
-telemetry checked it, so it records as unverified judgment; CI can re-ingest with a stronger
-signal). Enable once with `git config core.hooksPath .githooks`. No key or setup is required —
-receipts are unsigned by policy; the ingest-door trust boundary is transport/auth (loopback
-locally, per-seat tokens over a tunnel), not a receipt signature. The hooks are a fail-open
-side-channel: everything runs detached in the background, output lands in
-`~/.hive-edge/last-postmerge.log` / `last-postcommit.log`, and any missing piece (`hive-edge` on
-PATH, a merge/commit base, the hive CLI) skips silently — a merge or commit is never delayed or
-failed by evidence plumbing. The hooks' bytes are constant across devices (binaries and config
-resolve at run time), so a clone without the `hive` CLI still refreshes the graph but stays
-census-inert — the operator clone's pulls receipt the shared repo's merges (per-device details:
-`HIVE-ADMIN.md` §8). When both binaries resolve at wiring time, `hive-edge census init` self-tests
-by building a zero-diff receipt in the hooks' own `GIT_DIR`/`GIT_WORK_TREE` environment and prints
-`self-test PASSED`/`FAILED`, so a broken build environment is caught immediately rather than only
-surfacing in the hook logs.
+With `HIVE_SYNC__REPO_URL` set in `.env` (plus `HIVE_SYNC__TOKEN` for a private remote), the
+server closes this loop itself — no operator, no per-repo or per-device wiring in the path. It
+keeps a local mirror and, each poll tick (`HIVE_SYNC__INTERVAL_S`, default 60 s), builds ONE
+unsigned receipt per new watermark..tip range on the tracked branch (`HIVE_CENSUS__CANONICAL_REF`,
+else the origin default) and ingests it exactly as `hive ingest --post-merge --verdict pass
+--signal none` would. With `HIVE_SYNC__VERIFY_CANDIDATES` (default on) it also evaluates changed
+PR heads pre-merge — the stamped receipts that fuel verified promotion — in sandboxed,
+time-bounded subprocesses, and it backfills absent anchor fingerprints server-side. A push
+webhook (`HIVE_SYNC__WEBHOOK_SECRET`, HMAC-gated on the tunnel door) only wakes the poll early —
+the interval stays the correctness floor. Everything is fail-open and detect-only; the store's
+durable range ledger skips any exact `(repo, base, head, phase)` range already ingested
+(`range_skipped` in the report), so the manual and automatic feeds can never double-count a
+range. Watch it with `hive_health(include_census_health=true)` (the KPI table above). Knob table:
+`HIVE-ADMIN.md` §4.
 
 ## Posture (why)
 

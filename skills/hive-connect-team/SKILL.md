@@ -54,24 +54,21 @@ Then the teammate uses the **local** loopback line above as-is — no ngrok, no 
 
 ## Edge tools — install & stay current
 
-Every connected participant (local or remote) also installs the **`hive-edge` CLI** and wires the
-fail-open census hooks (post-merge + post-commit) — one install, then `hive-edge census init`:
+Every connected participant (local or remote) also installs the **`hive-edge` CLI** — anchor
+mint/verify, the worktree-delta tripwire, the per-checkout code graph, and the Claude-Code hook
+adapters. One install from PyPI, nothing to wire:
 
 ```bash
-uv tool install hive-edge --from git+https://github.com/Hivemind-OSS/Hive-edge@release
-hive-edge census init --repo . --hive-url <the /mcp URL `hive connect` printed>
+uv tool install hive-edge
 ```
 
-The wiring is per-device and succeeds even where the `hive` server CLI is absent — the hooks'
-bytes are constant and they resolve binaries + config at run time on each device, staying inert
-(fail-open) until they exist. Together the pair receipts every landing exactly once (post-merge:
-clean merges; post-commit: direct commits + conflict-resolved merges) and keeps the persistent
-per-repo code graph current. When both `hive-edge` and `hive` resolve, `census init` self-tests the
-wiring immediately — a zero-diff receipt build in the hooks' own `GIT_DIR`/`GIT_WORK_TREE`
-environment — and prints `self-test PASSED`/`FAILED`, so breakage is caught at wiring time rather
-than only later in the hook logs (`~/.hive-edge/last-postmerge.log` / `last-postcommit.log`).
+Census change evidence needs **no per-device setup**: it is computed and fed server-side (the
+operator arms `HIVE_SYNC__REPO_URL` on the server — `HIVE-ADMIN.md` §4), so there are no git
+hooks, no `census init`, and no signing key on workstations. A connected agent normally installs
+and upgrades the CLI itself during onboarding — the served contract pins the minimum version
+(`MIN_EDGE_VERSION`) and has it run `hive-edge upgrade` when below it.
 
-The full flow — the daily release nudge, `hive-edge upgrade`, the per-device state directory
+The full flow — `hive-edge upgrade`, rollback pins, the per-device state directory
 (`~/.hive-edge/`), and the server's own `hive upgrade` — is **`HIVE-ADMIN.md` §8** (the single
 source; not duplicated here).
 

@@ -142,13 +142,23 @@ The trends window is the **only** view into silent fail-open rot — keep it ins
 read it on a fixed cadence (weekly is enough for a small team). Convert gaps into
 `hive_write`s and contested rows into supersessions in the same pass.
 
-The evidence ledger also takes one operator-fed input: `hive ingest <receipt.json>` appends an
-unsigned census receipt's SHA-bound change outcome as `change_outcome` evidence rows on the
-episodes whose anchors the change touched — append-only, idempotent, trust-untouched
-(detect/surface only for the plain change_outcome row -- a pre-merge receipt with a full version stamp can also emit an outcome_verified_helped row, which the verified-promotion rung, HIVE_AUTONOMY__VERIFIED_PROMOTION, default on, may use to promote a quarantined memory). The repo's
-`.githooks/post-merge` + `.githooks/post-commit` hooks automate the feed (build + ingest on every
-merge AND direct commit, fail-open, detached; each refreshes the persistent per-repo code graph
-first); see `skills/hive-operate/SKILL.md` for the wiring.
+The evidence ledger has two inputs. The automatic one is **server-side**: set
+`HIVE_SYNC__REPO_URL` (plus `HIVE_SYNC__TOKEN` for a private remote) and the server itself
+mirrors the repo and feeds every landing on the tracked branch (`HIVE_CENSUS__CANONICAL_REF`,
+else the origin default) into the ledger — one unsigned receipt per new watermark..tip range,
+ingested `post_merge` in-process. With `HIVE_SYNC__VERIFY_CANDIDATES` (default on) it also
+evaluates changed PR heads pre-merge — the stamped receipts that can emit
+`outcome_verified_helped` rows, which the verified-promotion rung
+(`HIVE_AUTONOMY__VERIFIED_PROMOTION`, default on) may use to promote a quarantined memory — and
+it backfills absent anchor fingerprints against the tracked tip. Everything is fail-open and
+detect-only (never a trust mutation); a push webhook (`HIVE_SYNC__WEBHOOK_SECRET`, HMAC-gated on
+the tunnel door) only wakes the poll early — the poll interval stays the correctness floor.
+Watch the feed via `hive_health(include_census_health=true)`: days since the last
+`change_outcome`, plus a `sync` block (`last_tip`, `last_error`, evaluation/backfill counters,
+and `status: "sync stalled"` only when configured yet dark). The manual escape hatch remains
+`hive ingest <receipt.json>`: append a hand-built unsigned receipt's SHA-bound change outcome —
+append-only, idempotent (an exact already-ingested `(repo, base, head, phase)` range is skipped
+whole and reported `range_skipped`), trust-untouched; see `skills/hive-operate/SKILL.md`.
 
 For a browser view of the live picture, `hive ui` serves a loopback-only operator dashboard: the
 same status/seats/logs read plus the controls (backup, seat mint/revoke, non-blocking loopback-only
@@ -199,6 +209,33 @@ leverage on the outcome, but part of the full surface.
 changing the model means rebuilding the image. The store path and tenant are set once via
 `HIVE_STORE__DB_PATH` and `HIVE_TENANT_ID` (you manage the `hive-data` volume, not the path), not
 recall/safety tuning.
+
+## Release runbook — a coupled hivemind + hive-edge release
+
+The current instance: hive-edge **0.7.0** + contract **v.13** (the release that moved census
+computation server-side). When a release moves the served contract and the edge-CLI floor
+together (a `CONTRACT_VERSION` + `MIN_EDGE_VERSION` bump), the human lands it in this order —
+every step is safe to stop after, and the fleet is never directed at an artifact that does not
+exist yet:
+
+1. **Land hive-edge and tag it** (`v0.7.0`) in the hive-edge repository.
+2. **Land hivemind** — the server change that serves the new contract (v.13) and pins the new
+   floor (`MIN_EDGE_VERSION = 0.7.0`).
+3. **Publish hive-edge to PyPI** — `uv publish` from the tagged hive-edge checkout. Publish
+   BEFORE any server cutover: the moment the fleet is served the new floor, `uv tool install
+   hive-edge` must already satisfy it.
+4. **Flip hivemind's `[sync]` pin** from the git tag to the published release
+   (`hive-edge==0.7.0` in `pyproject.toml`) and land that.
+5. **Cut the live server over** — an in-place rebuild + restart of the running container from
+   the landed tree, preserving the `hive-data` volume (this is not `hive upgrade`, which moves
+   the checkout to a ref). **No compose change is required**: sync configuration rides `.env`
+   (`HIVE_SYNC__*`) and the mirror lives inside the existing `hive-data` volume (`/data/sync/`).
+6. **The fleet re-onboards itself — no action**: each agent's next tool result beacons
+   `contract_version` v.13; the installed-marker mismatch triggers the served re-onboard
+   procedure, which also runs `hive-edge upgrade` to meet the new floor.
+7. **Archive what the release retired** — the standalone `Hivemind-OSS/hive-census` repository
+   (its engines now live in the server as `hive/census/` + `hive/verifier/`) — after the fleet
+   is over, never before.
 
 ## Provenance & caveats
 
