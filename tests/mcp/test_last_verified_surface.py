@@ -17,7 +17,7 @@ import json
 
 import numpy as np
 
-from hive.app.onboard_ref import REMEDIATION_NOTICE
+from hive.app.onboard_ref import CONTRACT_VERSION, REMEDIATION_NOTICE
 from hive.domain.evidence_kinds import EK_VERIFY_CURRENT, EK_VERIFY_STALE
 from tests.fakes._fakes import FakeProvider
 from tests.mcp._helpers import build_real_server, content, tool_call
@@ -232,3 +232,15 @@ def test_recall_rider_scoped_no_answerable_row_means_no_rider():
     server, _ = build_real_server(canonical_ref="master")
     hit = _full_hit(server, text, rows)
     assert "last_verified" not in hit and "remediation" not in hit
+
+
+# ── the contract-version beacon (intent 11: a version bump IS the re-onboard trigger) ──
+def test_recall_envelope_beacon_carries_the_live_contract_version():
+    """Every served recall envelope beacons the LIVE CONTRACT_VERSION — single-sourced from
+    onboard_ref, never a literal here, so this pin can never lag a bump: when the contract
+    version flips (v.12 -> v.13), an agent whose installed HIVEMIND-RULES marker differs sees
+    the flip on its very next tool result and re-onboards. (The all-verbs beacon sweep lives in
+    test_tool_surface; this pins the enrichment-heavy recall envelope this file owns.)"""
+    server, _ = build_real_server()
+    env = _write_and_recall(server, "a lesson served with the version beacon")
+    assert env["contract_version"] == CONTRACT_VERSION
