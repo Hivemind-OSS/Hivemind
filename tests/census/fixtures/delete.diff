@@ -1,0 +1,8 @@
+diff --git a/doomed.txt b/doomed.txt
+deleted file mode 100644
+index 142d581..0000000
+--- a/doomed.txt
++++ /dev/null
+@@ -1,2 +0,0 @@
+-doomed one
+-doomed two

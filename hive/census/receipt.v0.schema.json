@@ -1,0 +1,99 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:hive-census:receipt:v0",
+  "title": "hive-census receipt (schema v0)",
+  "description": "A change receipt: evidence lines about one base..head change, each tagged with its epistemic status. Tags are a fixed vocabulary; an undecided producer yields 'unverified' or 'not-run', never a deciding tag.",
+  "type": "object",
+  "properties": {
+    "schema_version": { "const": "v0" },
+    "provenance": {
+      "type": "object",
+      "description": "Engine + composer version stamps and the base/head SHAs the receipt binds to. `ref` (optional) is the measured line's ref name — the checkout's branch resolved at build time, or the builder's explicit --ref override; absent on a detached HEAD or a git fault. `repo` (optional) is the repository identity the builder chose to record (--repo-id), verbatim; absent when unset.",
+      "properties": {
+        "ref": { "type": "string", "minLength": 1 },
+        "repo": { "type": "string", "minLength": 1 }
+      }
+    },
+    "lines": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/line" }
+    },
+    "precision": {
+      "type": "array",
+      "items": { "type": "object" },
+      "description": "Per-class decided-fraction entries; a below-budget class is shown, not gated."
+    },
+    "context": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/context_entry" },
+      "description": "Optional institutional-memory references recalled from the fleet memory for touched subjects. Trust-labelled REFERENCE only: informs the reader, never an evidence line, never gates. Absent when nothing was recalled."
+    },
+    "propagation": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/propagation_entry" },
+      "description": "Optional blast-radius neighbourhoods of breaking/removed seeds (built under --propagate): per seed, the callers/dependents/tests resolved to head-graph path::Symbol spellings. Advisory staleness fuel only — never an evidence line, never gates. Absent when not requested or nothing resolved."
+    }
+  },
+  "required": ["schema_version", "provenance", "lines", "precision"],
+  "additionalProperties": false,
+  "$defs": {
+    "line": {
+      "type": "object",
+      "properties": {
+        "class": { "type": "string" },
+        "tag": {
+          "enum": [
+            "machine-checked",
+            "bounded-estimate",
+            "unverified",
+            "unverified-judgment",
+            "not-run"
+          ]
+        },
+        "subject": { "type": "string" },
+        "detail": {}
+      },
+      "required": ["class", "tag", "subject", "detail"]
+    },
+    "context_entry": {
+      "type": "object",
+      "description": "One fleet-memory reference: labels (trust/polarity/kind) ride verbatim from the recall envelope — carried, never interpreted, no tier filtered.",
+      "properties": {
+        "tag": { "const": "institutional-memory" },
+        "episode_id": { "type": "integer" },
+        "trust": { "type": "string" },
+        "polarity": { "type": "string" },
+        "kind": { "type": "string" },
+        "anchor": { "type": "string" },
+        "ts": { "type": "integer" },
+        "sim": { "type": "number" },
+        "text": { "type": "string" }
+      },
+      "required": [
+        "tag",
+        "episode_id",
+        "trust",
+        "polarity",
+        "kind",
+        "anchor",
+        "ts",
+        "sim",
+        "text"
+      ]
+    },
+    "propagation_entry": {
+      "type": "object",
+      "description": "One breaking/removed seed and its head-resolved blast-radius neighbourhood. Only the two suspicion-justifying drifts are admissible; neighbours are path::Symbol spellings, never engine node ids.",
+      "properties": {
+        "seed": { "type": "string" },
+        "drift": { "enum": ["breaking", "removed"] },
+        "depth": { "type": "integer" },
+        "neighbors": {
+          "type": "array",
+          "items": { "type": "string" }
+        }
+      },
+      "required": ["seed", "drift", "depth", "neighbors"]
+    }
+  }
+}

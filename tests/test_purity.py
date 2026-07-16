@@ -2,6 +2,11 @@
   - hive/domain/** may not import any I/O module (sqlite3|torch|subprocess|os|git|time).
   - hive/domain|adapters|app/** may not import the build-excluded scripts/ utilities.
   - hive/domain|adapters|app/** may not import hive.research (dev-time only).
+  - hive/domain/** may not import the moved-in engines (hive.census|hive.verifier);
+    the engines stay standalone — they never import hive.domain or hive.app.
+  - nothing on the hivemind side imports the pre-move top-level names
+    (hive_census|hive_verifier) — the hive-edge transition install would silently
+    satisfy a missed rename.
 The gate has teeth: the mutation (add `import sqlite3` to a domain file)
 must turn test_domain_imports_no_io red.
 """
@@ -80,6 +85,71 @@ def test_scripts_not_imported_by_runtime() -> None:
         if hits:
             offenders[str(path.relative_to(ROOT))] = hits
     assert not offenders, f"runtime must not import the build-excluded scripts/ utilities: {offenders}"
+
+
+def _dotted_imports(path: pathlib.Path) -> set[str]:
+    """FULL dotted module names imported by a .py file (absolute imports only)."""
+    tree = ast.parse(path.read_text(), filename=str(path))
+    names: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                names.add(alias.name)
+        elif isinstance(node, ast.ImportFrom):
+            if node.level and node.level > 0:
+                continue
+            if node.module:
+                names.add(node.module)
+    return names
+
+
+def _imports_under(path: pathlib.Path, roots: tuple[str, ...]) -> set[str]:
+    return {
+        name
+        for name in _dotted_imports(path)
+        if any(name == root or name.startswith(root + ".") for root in roots)
+    }
+
+
+def test_domain_never_imports_census_or_verifier() -> None:
+    # The moved-in engines are driving-adapter territory (subprocess spawns, git,
+    # jsonschema): the pure domain may never grow a dependency on them.
+    offenders: dict[str, set[str]] = {}
+    for path in (ROOT / "domain").rglob("*.py"):
+        bad = _imports_under(path, ("hive.census", "hive.verifier"))
+        if bad:
+            offenders[str(path.relative_to(ROOT))] = bad
+    assert not offenders, f"domain/ must not import the census/verifier engines: {offenders}"
+
+
+def test_engines_never_import_hive_domain_or_app() -> None:
+    # The engines moved IN wholesale but stay standalone: hive.census/hive.verifier
+    # depend only on each other + the edge engine packages (matrix, combdrift),
+    # never on the hive server stack — the dependency arrow points one way.
+    offenders: dict[str, set[str]] = {}
+    for path in _full_module_paths("census", "verifier"):
+        bad = _imports_under(path, ("hive.domain", "hive.app", "hive.adapters", "hive.tools"))
+        if bad:
+            offenders[str(path.relative_to(ROOT))] = bad
+    assert not offenders, f"the engines must stay standalone of the server stack: {offenders}"
+
+
+def test_no_module_imports_the_premove_engine_names() -> None:
+    # The transition venv still carries hive-edge's `hive_census`/`hive_verifier`
+    # top-level packages, so a missed import rename would resolve SILENTLY against
+    # the wrong (agent-side) copy instead of failing loudly. Runtime and the moved
+    # test suites alike must name only hive.census / hive.verifier.
+    offenders: dict[str, set[str]] = {}
+    scan_roots = [
+        *(path for path in ROOT.rglob("*.py") if "research" not in path.parts),
+        *(ROOT.parent / "tests" / "census").rglob("*.py"),
+        *(ROOT.parent / "tests" / "verifier").rglob("*.py"),
+    ]
+    for path in scan_roots:
+        bad = _imports_under(path, ("hive_census", "hive_verifier"))
+        if bad:
+            offenders[str(path)] = bad
+    assert not offenders, f"pre-move engine names must not be imported: {offenders}"
 
 
 def test_research_not_imported_by_runtime() -> None:

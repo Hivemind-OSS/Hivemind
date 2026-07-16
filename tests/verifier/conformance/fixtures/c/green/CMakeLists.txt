@@ -1,0 +1,5 @@
+cmake_minimum_required(VERSION 3.21)
+project(fx_green C)
+enable_testing()
+add_executable(test_calc test_calc.c calc.c)
+add_test(NAME calc_adds COMMAND test_calc)

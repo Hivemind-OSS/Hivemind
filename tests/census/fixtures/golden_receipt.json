@@ -1,0 +1,272 @@
+{
+  "schema_version": "v0",
+  "provenance": {
+    "base_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "head_sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "schema_version": "v0",
+    "hive_census_version": "0.0.1",
+    "precision_model": "v0-decided-fraction",
+    "blast_depth": 2,
+    "combdrift": {
+      "combdrift_version": "0.1.0",
+      "fingerprint_version": "1",
+      "base_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "head_sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+    },
+    "matrix": {
+      "base": {
+        "graph_sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+        "commit_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "engine_version": "0.1.0",
+        "built_at": "2026-07-06T00:00:00+00:00",
+        "node_count": 10,
+        "edge_count": 12
+      },
+      "head": {
+        "graph_sha256": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+        "commit_sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "engine_version": "0.1.0",
+        "built_at": "2026-07-06T00:00:01+00:00",
+        "node_count": 9,
+        "edge_count": 11
+      }
+    },
+    "verifier": {
+      "head_sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "base_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "tool_versions": [
+        [
+          "pyright",
+          "1.1.0"
+        ],
+        [
+          "pytest",
+          "8.0.0"
+        ]
+      ],
+      "registry_version": "r3"
+    }
+  },
+  "lines": [
+    {
+      "class": "existence",
+      "tag": "machine-checked",
+      "subject": "pkg/lib.py::greet",
+      "reason": "signature_changed: required parameter removed: punct",
+      "detail": {
+        "existed_before": true,
+        "exists_after": true
+      },
+      "gating": false
+    },
+    {
+      "class": "contract",
+      "tag": "machine-checked",
+      "subject": "pkg/lib.py::greet",
+      "reason": "signature_changed: required parameter removed: punct",
+      "detail": {
+        "drift": "breaking",
+        "old_fingerprint": "cd1:function(name,punct)",
+        "new_fingerprint": "cd1:function(name)"
+      },
+      "gating": false
+    },
+    {
+      "class": "existence",
+      "tag": "machine-checked",
+      "subject": "pkg/lib.py::helper",
+      "reason": "ok",
+      "detail": {
+        "existed_before": true,
+        "exists_after": true
+      },
+      "gating": false
+    },
+    {
+      "class": "contract",
+      "tag": "machine-checked",
+      "subject": "pkg/lib.py::helper",
+      "reason": "ok",
+      "detail": {
+        "drift": "additive",
+        "old_fingerprint": "cd1:function(x)",
+        "new_fingerprint": "cd1:function(x,y=None)"
+      },
+      "gating": false
+    },
+    {
+      "class": "existence",
+      "tag": "unverified",
+      "subject": "pkg/lib.py::mystery",
+      "reason": "symbol_indirect: re-export or dynamic binding",
+      "detail": {
+        "existed_before": true,
+        "exists_after": true
+      },
+      "gating": false
+    },
+    {
+      "class": "contract",
+      "tag": "unverified",
+      "subject": "pkg/lib.py::mystery",
+      "reason": "symbol_indirect: re-export or dynamic binding",
+      "detail": {
+        "drift": "indeterminate",
+        "old_fingerprint": null,
+        "new_fingerprint": null
+      },
+      "gating": false
+    },
+    {
+      "class": "blast-radius",
+      "tag": "bounded-estimate",
+      "subject": "pkg/lib.py::greet",
+      "reason": "blast-radius-lower-bound",
+      "detail": {
+        "seed": "pkg/lib.py::greet()",
+        "depth": 2,
+        "unsound": true,
+        "callers": [
+          "pkg/app.py::caller()"
+        ],
+        "dependents": [
+          "pkg/app.py"
+        ],
+        "tests": [
+          "tests/test_lib.py::test_greet()"
+        ]
+      },
+      "gating": false
+    },
+    {
+      "class": "blast-radius",
+      "tag": "unverified",
+      "subject": "pkg/lib.py::Ghost.gone",
+      "reason": "seed-unresolved",
+      "detail": {
+        "seed": null,
+        "depth": 2,
+        "unsound": true,
+        "callers": [],
+        "dependents": [],
+        "tests": []
+      },
+      "gating": false
+    },
+    {
+      "class": "regression",
+      "tag": "bounded-estimate",
+      "subject": "pkg/lib.py::greet",
+      "reason": "blast-radius-lower-bound",
+      "detail": {
+        "drift": "breaking",
+        "seed": "pkg/lib.py::greet()",
+        "depth": 2,
+        "callers": [
+          "pkg/app.py::caller()"
+        ],
+        "dependents": [
+          "pkg/app.py"
+        ],
+        "tests": [
+          "tests/test_lib.py::test_greet()"
+        ]
+      },
+      "gating": false
+    },
+    {
+      "class": "regression",
+      "tag": "unverified",
+      "subject": "pkg/lib.py::Ghost.gone",
+      "reason": "seed-unresolved",
+      "detail": {
+        "drift": "removed",
+        "seed": null,
+        "depth": 2,
+        "callers": [],
+        "dependents": [],
+        "tests": []
+      },
+      "gating": false
+    },
+    {
+      "class": "typecheck",
+      "tag": "bounded-estimate",
+      "subject": "typecheck",
+      "reason": "",
+      "detail": {
+        "state": "passed",
+        "passed": 2,
+        "failed": 0,
+        "errored": 0,
+        "runners": [
+          "pyright"
+        ]
+      }
+    },
+    {
+      "class": "tests",
+      "tag": "bounded-estimate",
+      "subject": "tests",
+      "reason": "",
+      "detail": {
+        "state": "failed",
+        "passed": 1,
+        "failed": 1,
+        "errored": 0,
+        "runners": [
+          "pytest"
+        ]
+      }
+    },
+    {
+      "class": "differential",
+      "tag": "not-run",
+      "subject": "differential",
+      "reason": "no-producer",
+      "detail": {}
+    }
+  ],
+  "precision": [
+    {
+      "class": "node",
+      "decided": 2,
+      "total": 3,
+      "value": 0.6666666666666666,
+      "budget": 0.9,
+      "gating": false
+    },
+    {
+      "class": "edge",
+      "decided": 1,
+      "total": 2,
+      "value": 0.5,
+      "budget": 0.9,
+      "gating": false
+    },
+    {
+      "class": "regression",
+      "decided": 1,
+      "total": 2,
+      "value": 0.5,
+      "budget": 0.9,
+      "gating": false
+    },
+    {
+      "class": "execution",
+      "decided": 2,
+      "total": 2,
+      "value": 1.0,
+      "budget": 0.9,
+      "gating": true
+    },
+    {
+      "class": "differential",
+      "decided": 0,
+      "total": 0,
+      "value": null,
+      "budget": 0.9,
+      "gating": true
+    }
+  ]
+}

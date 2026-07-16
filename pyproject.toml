@@ -35,7 +35,17 @@ hive = "hive.tools.cli:main"
 # Real embedder adapter (Phase 1); the pure domain + slice need none of these.
 # Qwen3-Embedding needs sentence-transformers 5.x.
 embed = ["sentence-transformers>=5.0"]
-dev = ["pytest>=7"]
+# Server-side census/verifier engines (hive.census + hive.verifier) and the sync
+# subsystem's mint shell-out. The ONE hive-edge pin transitively pins comb-drift +
+# matrix; jsonschema/defusedxml are the moved engines' own third-party deps (the
+# reduced hive-edge 0.7.0 does not carry them). Switch the git pin to
+# `hive-edge==0.7.0` after the PyPI publish.
+sync = [
+    "hive-edge @ git+https://github.com/Hivemind-OSS/Hive-edge@v0.7.0",
+    "jsonschema>=4.21,<5",
+    "defusedxml>=0.7",
+]
+dev = ["pytest>=7", "hive[sync]"]
 # Dev-time benchmark harness (hive/research/bench): the LongMemEval head-to-head vs mem0.
 # mem0 is run offline (local embedder, infer=False) — never a runtime dependency of the server.
 bench = ["hive[embed]", "mem0ai==2.0.7", "huggingface-hub>=0.20"]
@@ -47,6 +57,33 @@ bench = ["hive[embed]", "mem0ai==2.0.7", "huggingface-hub>=0.20"]
 # repo for editable checkouts but is NOT shipped in the built wheel an operator installs.
 include = ["hive*", "tests*"]
 exclude = ["hive.research*"]
+
+[tool.setuptools.package-data]
+# The versioned receipt schema is hive.census's write-boundary contract; without this
+# declaration a wheel build silently drops the .json and load_schema() dies at runtime.
+"hive.census" = ["receipt.v0.schema.json"]
+
+# Dev-time-only resolution override: the declared `sync` dependency names the REAL
+# release shape (the v0.7.0 tag a human publishes in the release runbook), which does
+# not exist yet; until then uv resolves hive-edge — and its workspace-member engines,
+# whose sources uv would otherwise hunt on PyPI (where `matrix` is an unrelated
+# project) — from the local hive-edge clone's committed state. pip ignores this table,
+# so the built image always resolves the honest declared pin.
+[tool.uv]
+# comb-drift's requirement must be single-sourced by THIS project (see its editable
+# source below) — without the override, hive-edge's workspace-derived git source for
+# the same name conflicts and the lock refuses.
+override-dependencies = ["comb-drift"]
+
+[tool.uv.sources]
+hive-edge = { git = "file:///home/null/Desktop/work/hive-edge", rev = "development" }
+# comb-drift rides an EDITABLE path (not a git-built wheel): its own pyproject lists
+# `packages = ["combdrift"]` under setuptools, so a wheel build silently drops the
+# combdrift.langs subpackage — broken until hive-edge fixes its packaging for 0.7.0.
+comb-drift = { path = "../hive-edge/packages/comb-drift", editable = true }
+matrix = { git = "file:///home/null/Desktop/work/hive-edge", rev = "development", subdirectory = "packages/matrix" }
+hive-census = { git = "file:///home/null/Desktop/work/hive-edge", rev = "development", subdirectory = "packages/hive-census" }
+hive-verifier = { git = "file:///home/null/Desktop/work/hive-edge", rev = "development", subdirectory = "packages/hive-verifier" }
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

@@ -1,0 +1,9 @@
+diff --git a/greeting.txt b/greeting.txt
+new file mode 100644
+index 0000000..0056b4a
+--- /dev/null
++++ b/greeting.txt
+@@ -0,0 +1,3 @@
++hello
++world
++again
