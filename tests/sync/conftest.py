@@ -102,9 +102,9 @@ def store() -> SqliteEpisodeStore:
 
 
 def seed_episode(store: SqliteEpisodeStore, text: str, anchor: str = ANCHOR,
-                 ts: int = 10) -> int:
+                 ts: int = 10, meta: str = "") -> int:
     eid, _ = store.stage(text=text, weight=1.0, tags="", proposed_by="w", ts=ts,
-                         anchor=anchor)
+                         anchor=anchor, meta=meta)
     assert store.approve(eid, "h", np.eye(DIM, dtype=np.float32)[0],
                          expected_version=0, approved_ts=ts)
     return eid

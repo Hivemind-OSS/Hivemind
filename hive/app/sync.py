@@ -32,6 +32,9 @@ Named safe directions (Law 6):
 - CANDIDATE ROWS NEVER IMPERSONATE THE TRACKED LINE: every pre-merge row is
   stamped with ``--ref refs/pull/N/head``, so a canonical-scoped
   ``last_verified`` read structurally cannot serve a PR-head verification.
+- THE BACKFILL NEVER OVERWRITES: minted fp keys land through the store's
+  absent-only merge (a present key structurally cannot be displaced), so a
+  tagged episode is untouched byte-for-byte and text/hash/vector never move.
 
 The candidate leg evaluates CHANGED PR heads only (``refs/sync/pr/*`` against the
 ``sync:pr_heads`` baseline): first connect baselines every existing head WITHOUT
@@ -40,8 +43,14 @@ exact ``(repo, merge-base, head, pre_merge)`` range already in the ledger is
 skipped before any build, and a nothing-decided receipt is REFUSED by the
 pre-merge derivation — logged and counted, never a fault.
 
-Extension seams: ``tick()`` runs the LEDGER and CANDIDATE legs today; the
-backfill sweep slots in as a sibling ``_backfill_leg()`` call under its own
+The backfill leg sweeps approved code-anchored episodes whose meta lacks
+``combdrift/fp`` and mints the absent fingerprint keys server-side through the
+REAL ``hive-edge`` CLI subprocess against the mirror synced to the tracked tip —
+one mint owner fleet-wide, so server-backfilled keys stay byte-equal to
+edge-minted ones. An unresolvable anchor mints ``{}`` and is skipped silently;
+at most ``_BACKFILL_PER_TICK`` mints run per tick, the rest carry over.
+
+``tick()`` runs the LEDGER, CANDIDATE, and BACKFILL legs, each under its own
 fail-open guard. The returned thread carries its control events (``sync_stop`` /
 ``sync_nudge``) so the webhook nudge door can wake the loop without touching this
 module's internals.
@@ -70,10 +79,13 @@ META_LAST_ERROR = "sync:last_error"  # the last surfaced fault (redacted, adviso
 META_PR_HEADS = "sync:pr_heads"      # {pr-number: head-sha} — the candidate baseline
 META_CANDIDATES_EVALUATED = "sync:candidates_evaluated"  # completed evaluations
 META_CANDIDATES_REFUSED = "sync:candidates_refused"      # nothing-decided receipts
+META_BACKFILLED_TOTAL = "sync:backfilled_total"          # episodes fp-backfilled, ever
 _DEFAULT_MIRROR_DIR = "/data/sync/mirror"
 _PR_REFSPEC = "+refs/pull/*/head:refs/sync/pr/*"
 _CANDIDATES_PER_TICK = 5             # changed-head cap per tick; the rest carry over
-_CANDIDATE_TIMEOUT_S = 600           # the ONE bound on uv-sync and candidate builds
+_CANDIDATE_TIMEOUT_S = 600           # the ONE bound on uv-sync / candidate / mint spawns
+_BACKFILL_PER_TICK = 50              # fp-mint cap per tick; the rest carry over
+_FP_KEY = "combdrift/fp"             # the sweep key: absent ⇒ the episode needs a mint
 
 # The spawn seam (mirrors hive.tools.cli's Run/default_run shape): full child argv
 # + an env mapping in, the completed process out — injectable so contract tests can
@@ -148,6 +160,13 @@ class SyncService:
         self.mirror_dir = cfg.mirror_dir or _DEFAULT_MIRROR_DIR
         # per-lock-hash uv venvs, beside the mirror (volume-local, rebuildable cache)
         self._env_cache_dir = str(Path(self.mirror_dir).parent / "candidate-envs")
+        # the mint CLI's own state home, beside the mirror too (volume-local cache;
+        # pinned explicitly so the daemon never writes an operator's home dir)
+        self._edge_home = str(Path(self.mirror_dir).parent / "edge-home")
+        # hive-edge ships in the image beside the server interpreter; PATH is the
+        # fallback for layouts that install it elsewhere
+        _edge = Path(sys.executable).parent / "hive-edge"
+        self._edge_cli = str(_edge) if _edge.exists() else "hive-edge"
         # verify_candidates=False ⇒ the leg holds NO handle (the verified_reader
         # idiom: OFF is unreachable, not merely idle).
         self._candidate_leg: Optional[Callable[[str], None]] = (
@@ -189,8 +208,12 @@ class SyncService:
                 self._candidate_leg(branch)
             except Exception as exc:  # noqa: BLE001 — the leg fails open too
                 self._note_error("candidate", exc)
-        # The backfill sweep slots in here as the next sibling leg, under its own
-        # fail-open guard.
+        try:
+            tip = self._rev(f"refs/remotes/origin/{branch}")
+            if tip is not None:
+                self._backfill(tip, branch)
+        except Exception as exc:  # noqa: BLE001 — the leg fails open too
+            self._note_error("backfill", exc)
 
     # ── the mirror (a rebuildable cache — never the durable truth) ─────────────
     def ensure_mirror(self) -> None:
@@ -501,6 +524,75 @@ class SyncService:
                 detail = (proc.stderr or proc.stdout or "").strip()[-500:]
                 raise _SyncFault(self._redact(f"candidate build failed: {detail}"))
             return json.loads(out.read_text(encoding="utf-8"))
+
+    # ── the backfill leg (intent 7): absent fp keys minted server-side ────────
+    def _backfill(self, tip_sha: str, ref: str) -> None:
+        """Fill ABSENT fingerprint keys on approved code-anchored episodes: sweep
+        for carriers lacking ``combdrift/fp``, sync the mirror worktree to
+        ``tip_sha`` (the fetch alone never moves the checkout — minting the
+        clone-time tree would stamp provenance for a tree it never measured), mint
+        each anchor through the real ``hive-edge`` CLI, and merge under the store's
+        absent-only guard with ``hive-sync/minted`` provenance. ``{}`` (an
+        unresolvable anchor / an engine fault) skips silently and the loop stays
+        alive — the next tick retries; at most ``_BACKFILL_PER_TICK`` mints per
+        tick, the rest carry over. The lock is held ONLY for store access — never
+        across a mint."""
+        with self._lock:
+            rows = self._store.anchored_episodes_with_meta()
+        todo = [(eid, anchor) for eid, anchor, raw in rows if self._lacks_fp(raw)]
+        if not todo:
+            return
+        self._git("reset", "--hard", "--quiet", tip_sha)
+        provenance = f"hive-sync-minted/1:server@{tip_sha} {ref}"
+        filled = 0
+        # marker: lifting the cap (an un-sliced todo) reds test_cap_carries_over —
+        # mint spawns per tick are bounded, the rest stay LACKING for the next sweep.
+        for eid, anchor in todo[:_BACKFILL_PER_TICK]:
+            minted = self._mint(anchor)
+            if not minted:
+                continue                 # unresolvable ⇒ silent skip, loop alive
+            with self._lock:
+                if self._store.fill_absent_meta(
+                        eid, {**minted, "hive-sync/minted": provenance}):
+                    filled += 1
+                    self._bump_counter_locked(META_BACKFILLED_TOTAL)
+        if filled:
+            _log.info("sync.backfilled episodes=%d tip=%.12s ref=%s",
+                      filled, tip_sha, ref)
+
+    @staticmethod
+    def _lacks_fp(raw: str) -> bool:
+        """True iff the carrier can take a minted fp: absent ('') or a map without
+        ``combdrift/fp``. An unparseable / non-map carrier reads False — it cannot
+        be merged into, so the sweep never selects it (skipped, not a fault)."""
+        if not raw:
+            return True
+        try:
+            parsed = json.loads(raw)
+        except ValueError:
+            return False
+        return _FP_KEY not in parsed if isinstance(parsed, dict) else False
+
+    def _mint(self, anchor: str) -> dict[str, str]:
+        """One ``hive-edge mint`` subprocess against the mirror — the edge CLI owns
+        every fingerprint computation (a server-side reimplementation would fork the
+        token format), so backfilled keys are byte-equal to edge-minted ones.
+        ``HIVE_EDGE_HOME`` pins the CLI's cache/state beside the mirror. Any fault
+        (nonzero exit, unparseable stdout) reads as ``{}`` — the caller skips."""
+        env = dict(_clean_env())
+        env["HIVE_EDGE_HOME"] = self._edge_home
+        proc = self._run([self._edge_cli, "mint", "--repo", self.mirror_dir,
+                          "--anchor", anchor], env=env,
+                         timeout=_CANDIDATE_TIMEOUT_S)
+        if proc.returncode != 0:
+            return {}
+        try:
+            parsed = json.loads(proc.stdout or "")
+        except ValueError:
+            return {}
+        if not isinstance(parsed, dict):
+            return {}
+        return {str(k): v for k, v in parsed.items() if isinstance(v, str)}
 
     # ── narrow git/store helpers ───────────────────────────────────────────────
     def _git(self, *args: str) -> str:

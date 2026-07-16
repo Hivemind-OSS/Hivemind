@@ -10,7 +10,7 @@ from __future__ import annotations
 import json
 import logging
 import sqlite3
-from typing import Optional, Sequence
+from typing import Mapping, Optional, Sequence
 
 import numpy as np
 
@@ -25,7 +25,7 @@ from hive.domain.lifecycle import (
     DEPRECATED, ESTABLISHED, PROVISIONAL, QUARANTINED, TRUST_STATES,
     MissRow, decayed, is_servable,
 )
-from hive.domain.meta import meta_version_histogram
+from hive.domain.meta import meta_version_histogram, normalize_meta
 from hive.domain.models import Episode, content_hash
 from hive.domain.provenance import DEFAULT_PROVENANCE, PROVENANCE_NAMES
 
@@ -693,6 +693,48 @@ class SqliteEpisodeStore:
                 "INSERT INTO ingested_ranges(repo, base_sha, head_sha, phase, ts) "
                 "VALUES(?,?,?,?,?)", (repo, base_sha, head_sha, phase, int(ts)))
         return True
+
+    # ── the backfill-mint seam (duck-typed app reads/writes — no port) ─────────
+    def anchored_episodes_with_meta(self) -> list[tuple[int, str, str]]:
+        """``(id, anchor, meta)`` for approved rows with a non-empty anchor — the
+        fp-backfill sweep's candidate set (the ``anchored_episodes`` shape with the
+        serialized meta carrier riding along verbatim). ALL trust states included,
+        same as its twin — the consumer owns any further filtering. Duck-typed app
+        read, NOT a domain port. Read-only, no DDL. // O(rows)."""
+        return [(int(r["id"]), r["anchor"], r["meta"]) for r in self.conn.execute(
+            "SELECT id, anchor, meta FROM episodes "
+            "WHERE status='approved' AND anchor != '' ORDER BY id")]
+
+    def fill_absent_meta(self, episode_id: int, additions: Mapping[str, str]) -> int:
+        """Absent-only meta merge in ONE tx: parse the current carrier ('' ⇒ {}),
+        fold ``additions`` in UNDER it, write back canonical (``normalize_meta``
+        stays the one grammar gate — a non-conforming result refuses loudly and the
+        tx rolls back). Returns the count of keys added; 0 = no-op, nothing written
+        (unknown id, empty or all-present additions). Meta is a carried label: the
+        write touches ONLY the meta column — text / content_hash / value / version
+        stay byte-identical.
+
+        STRUCTURALLY absent-only: the merge spreads the CURRENT map last, so a
+        present key cannot be displaced — an overwrite is unconstructable, not
+        merely refused. // marker: swapping the spread order (additions last) is
+        the mutation — test_fill_absent_meta_never_overwrites and CT-7
+        test_never_overwrites red."""
+        with tx(self.conn):
+            row = self.conn.execute(
+                "SELECT meta FROM episodes WHERE id=?", (int(episode_id),)).fetchone()
+            if row is None:
+                return 0
+            current = json.loads(row["meta"]) if row["meta"] else {}
+            if not isinstance(current, dict):
+                raise ValueError(
+                    f"episode {episode_id} meta carrier is not a map — refusing to merge")
+            merged = {**dict(additions), **current}
+            added = len(merged) - len(current)
+            if added == 0:
+                return 0
+            self.conn.execute("UPDATE episodes SET meta=? WHERE id=?",
+                              (normalize_meta(merged), int(episode_id)))
+            return added
 
     def trust_counts(self) -> dict[str, int]:
         """Per-trust-state row counts for hive_health — ALL four states present
