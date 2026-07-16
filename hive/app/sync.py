@@ -25,18 +25,32 @@ Named safe directions (Law 6):
   value passes ``_redact`` first.
 - TRUST-UNTOUCHED (O7): rows land through the same ChangeEvidenceService door as
   ``hive ingest`` — no trust handle exists here.
+- REPO CODE RUNS ONLY IN CHILDREN: the candidate leg executes the PR tree's own
+  tests, so every candidate spawn gets a STRIPPED env (clean git env, every
+  ``HIVE_*`` var dropped, the token never rides env at all) and is killed at a
+  constant timeout — the serve process never imports or executes candidate code.
+- CANDIDATE ROWS NEVER IMPERSONATE THE TRACKED LINE: every pre-merge row is
+  stamped with ``--ref refs/pull/N/head``, so a canonical-scoped
+  ``last_verified`` read structurally cannot serve a PR-head verification.
 
-Extension seams: ``tick()`` runs the LEDGER leg today; the candidate-PR
-verification leg and the backfill sweep slot in as sibling ``_candidate_leg()`` /
-``_backfill_leg()`` calls, each under its own fail-open guard. The PR refspec
-(``refs/sync/pr/*``) is already fetched for the candidate leg's benefit, and the
-returned thread carries its control events (``sync_stop`` / ``sync_nudge``) so the
-webhook nudge door can wake the loop without touching this module's internals.
+The candidate leg evaluates CHANGED PR heads only (``refs/sync/pr/*`` against the
+``sync:pr_heads`` baseline): first connect baselines every existing head WITHOUT
+evaluating, at most five changed heads run per tick (the rest carry over), an
+exact ``(repo, merge-base, head, pre_merge)`` range already in the ledger is
+skipped before any build, and a nothing-decided receipt is REFUSED by the
+pre-merge derivation — logged and counted, never a fault.
+
+Extension seams: ``tick()`` runs the LEDGER and CANDIDATE legs today; the
+backfill sweep slots in as a sibling ``_backfill_leg()`` call under its own
+fail-open guard. The returned thread carries its control events (``sync_stop`` /
+``sync_nudge``) so the webhook nudge door can wake the loop without touching this
+module's internals.
 """
 from __future__ import annotations
 
 import json
 import logging
+import os
 import shutil
 import subprocess
 import sys
@@ -47,14 +61,19 @@ from pathlib import Path
 from typing import Callable, Mapping, Optional, Sequence
 
 from hive.app.config import SyncConfig
-from hive.domain.change_evidence import ChangeEvidenceService
+from hive.domain.change_evidence import ChangeEvidenceService, ReceiptRefused
 
 _log = logging.getLogger("hive.sync")
 
 META_LAST_TIP = "sync:last_tip"      # the durable watermark (store meta = truth, D4)
 META_LAST_ERROR = "sync:last_error"  # the last surfaced fault (redacted, advisory)
+META_PR_HEADS = "sync:pr_heads"      # {pr-number: head-sha} — the candidate baseline
+META_CANDIDATES_EVALUATED = "sync:candidates_evaluated"  # completed evaluations
+META_CANDIDATES_REFUSED = "sync:candidates_refused"      # nothing-decided receipts
 _DEFAULT_MIRROR_DIR = "/data/sync/mirror"
 _PR_REFSPEC = "+refs/pull/*/head:refs/sync/pr/*"
+_CANDIDATES_PER_TICK = 5             # changed-head cap per tick; the rest carry over
+_CANDIDATE_TIMEOUT_S = 600           # the ONE bound on uv-sync and candidate builds
 
 # The spawn seam (mirrors hive.tools.cli's Run/default_run shape): full child argv
 # + an env mapping in, the completed process out — injectable so contract tests can
@@ -63,9 +82,9 @@ Run = Callable[..., "subprocess.CompletedProcess"]
 
 
 def default_run(argv: Sequence[str], env: Optional[Mapping[str, str]] = None,
-                ) -> subprocess.CompletedProcess:
+                timeout: Optional[float] = None) -> subprocess.CompletedProcess:
     return subprocess.run(list(argv), env=None if env is None else dict(env),
-                          capture_output=True, text=True)
+                          capture_output=True, text=True, timeout=timeout)
 
 
 class _SyncFault(RuntimeError):
@@ -127,6 +146,12 @@ class SyncService:
         self._now = now or (lambda: int(time.time()))
         self._canonical_ref = canonical_ref      # census.canonical_ref: the tracked line
         self.mirror_dir = cfg.mirror_dir or _DEFAULT_MIRROR_DIR
+        # per-lock-hash uv venvs, beside the mirror (volume-local, rebuildable cache)
+        self._env_cache_dir = str(Path(self.mirror_dir).parent / "candidate-envs")
+        # verify_candidates=False ⇒ the leg holds NO handle (the verified_reader
+        # idiom: OFF is unreachable, not merely idle).
+        self._candidate_leg: Optional[Callable[[str], None]] = (
+            self._evaluate_candidates if cfg.verify_candidates else None)
 
     # ── the poll loop ──────────────────────────────────────────────────────────
     def run_forever(self, stop: threading.Event, nudge: threading.Event) -> None:
@@ -159,9 +184,13 @@ class SyncService:
             self._ledger_leg(branch, prev_local)
         except Exception as exc:  # noqa: BLE001 — the leg fails open too
             self._note_error("ledger", exc)
-        # Sibling legs slot in here, one fail-open guard each: the candidate-PR
-        # verification leg (refs/sync/pr/* is already fetched for it) and the
-        # backfill sweep.
+        if self._candidate_leg is not None:
+            try:
+                self._candidate_leg(branch)
+            except Exception as exc:  # noqa: BLE001 — the leg fails open too
+                self._note_error("candidate", exc)
+        # The backfill sweep slots in here as the next sibling leg, under its own
+        # fail-open guard.
 
     # ── the mirror (a rebuildable cache — never the durable truth) ─────────────
     def ensure_mirror(self) -> None:
@@ -258,6 +287,219 @@ class SyncService:
             if proc.returncode != 0:
                 detail = (proc.stderr or proc.stdout or "").strip()[-500:]
                 raise _SyncFault(self._redact(f"census build failed: {detail}"))
+            return json.loads(out.read_text(encoding="utf-8"))
+
+    # ── the candidate leg (intent 4): changed PR heads → pre_merge receipts ───
+    def _evaluate_candidates(self, branch: str) -> None:
+        """Diff the fetched ``refs/sync/pr/*`` heads against the ``sync:pr_heads``
+        baseline; evaluate the changed ones (capped, carried over), drop the
+        closed ones silently. Each candidate runs under its OWN guard — one bad
+        PR never starves the rest of the tick's slots."""
+        heads = self._pr_heads()
+        with self._lock:
+            baseline = self._parse_pr_baseline(self._meta_get(META_PR_HEADS))
+        if baseline is None:
+            # FIRST CONNECT: record every existing head WITHOUT evaluating —
+            # marker: evaluating here is the first-connect PR storm
+            # (test_first_connect_baselines_without_evaluating reds).
+            with self._lock:
+                self._store.meta_set(META_PR_HEADS,
+                                     json.dumps(heads, sort_keys=True))
+            _log.info("sync.candidates_baselined heads=%d", len(heads))
+            return
+        closed = [n for n in baseline if n not in heads]
+        if closed:
+            # a pruned ref IS the close signal: silence, minus the baseline entry
+            with self._lock:
+                self._advance_pr_heads_locked(remove=closed)
+        changed = [n for n, sha in heads.items() if baseline.get(n) != sha]
+        # marker: lifting the cap (or advancing unprocessed heads) reds
+        # test_cap_carries_over — slots are bounded, the rest stay CHANGED.
+        for number in self._pr_order(changed)[:_CANDIDATES_PER_TICK]:
+            try:
+                self._evaluate_one(number, heads[number], branch)
+            except Exception as exc:  # noqa: BLE001 — one candidate never kills the leg
+                self._note_error(f"candidate:{number}", exc)
+
+    def _evaluate_one(self, number: str, head_sha: str, branch: str) -> None:
+        """One changed head: merge-base against the tracked tip, the durable range
+        dedupe, D8 env provisioning, the bounded build, then the in-proc pre_merge
+        ingest (verdict DERIVED; a nothing-decided receipt is refused = logged +
+        counted). The baseline advances only when the evaluation CONCLUDED
+        (ingested, refused, deduped, or unmeasurable) — a killed or failed build
+        leaves the head changed, so the next tick retries it."""
+        tip = self._rev(f"refs/remotes/origin/{branch}")
+        merge_base = self._merge_base(tip, head_sha) if tip else None
+        if merge_base is None or merge_base == head_sha:
+            # unrelated history, or a head already ON the tracked line: nothing
+            # measurable pre-merge — concluded, never re-probed
+            with self._lock:
+                self._advance_pr_heads_locked(set_entry=(number, head_sha))
+            return
+        repo_id = normalized_repo_id(self._cfg.repo_url)
+        with self._lock:
+            # marker: dropping this durable dedupe rebuilds every restart-replayed
+            # head (test_already_ingested_range_skips_build reds).
+            already = self._store.already_ingested_range(
+                repo_id, merge_base, head_sha, "pre_merge")
+            if already:
+                self._advance_pr_heads_locked(set_entry=(number, head_sha))
+        if already:
+            _log.info("sync.candidate_deduped pr=%s head=%.12s", number, head_sha)
+            return
+        extra_bin = self._provision_candidate_env(head_sha)
+        envelope = self._build_candidate_receipt(merge_base, head_sha, number,
+                                                 extra_bin)
+        refusal: Optional[str] = None
+        with self._lock:
+            try:
+                report = self._evidence.ingest(envelope, phase="pre_merge")
+            except ReceiptRefused as refused:
+                refusal = str(refused)
+                self._bump_counter_locked(META_CANDIDATES_REFUSED)
+            self._bump_counter_locked(META_CANDIDATES_EVALUATED)
+            # same critical section as the ingest: an advanced head can never
+            # run ahead of rows the serve path could observe
+            self._advance_pr_heads_locked(set_entry=(number, head_sha))
+        if refusal is not None:
+            _log.info("sync.candidate_refused pr=%s head=%.12s reason=%s",
+                      number, head_sha, refusal)
+            return
+        _log.info("sync.candidate_ingested pr=%s base=%.12s head=%.12s matched=%d "
+                  "inserted=%d helped=%d hurt=%d range_skipped=%s", number,
+                  merge_base, head_sha, report.matched, len(report.inserted),
+                  report.verified_helped, report.verified_hurt,
+                  report.range_skipped)
+
+    def _pr_heads(self) -> dict[str, str]:
+        """The fetched candidate refs: ``{pr-number: head-sha}`` from
+        ``refs/sync/pr/*`` (the fetch's mapping of ``refs/pull/*/head``)."""
+        out = self._git("for-each-ref", "--format=%(refname) %(objectname)",
+                        "refs/sync/pr/")
+        heads: dict[str, str] = {}
+        for line in out.splitlines():
+            ref, _, sha = line.strip().partition(" ")
+            if ref.startswith("refs/sync/pr/") and sha:
+                heads[ref[len("refs/sync/pr/"):]] = sha
+        return heads
+
+    @staticmethod
+    def _parse_pr_baseline(raw: Optional[str]) -> Optional[dict[str, str]]:
+        """The stored baseline, or None meaning FIRST CONNECT. Unparseable meta
+        also reads as first connect — corruption re-baselines (a quiet skip),
+        never a storm of evaluations."""
+        if raw is None:
+            return None
+        try:
+            parsed = json.loads(raw)
+        except ValueError:
+            return None
+        if not isinstance(parsed, dict):
+            return None
+        return {str(k): str(v) for k, v in parsed.items()}
+
+    @staticmethod
+    def _pr_order(numbers: Sequence[str]) -> list[str]:
+        """Ascending PR number (numeric first, lexicographic fallback) — the cap's
+        slots are deterministic, so carry-over drains oldest-first."""
+        return sorted(numbers,
+                      key=lambda n: (0, int(n)) if n.isdigit() else (1, n))
+
+    def _advance_pr_heads_locked(self, *,
+                                 set_entry: Optional[tuple[str, str]] = None,
+                                 remove: Sequence[str] = ()) -> None:
+        """Read-modify-write of the ``sync:pr_heads`` baseline. The caller HOLDS
+        the one global lock (this helper never takes it)."""
+        current = self._parse_pr_baseline(self._meta_get(META_PR_HEADS)) or {}
+        if set_entry is not None:
+            current[set_entry[0]] = set_entry[1]
+        for number in remove:
+            current.pop(number, None)
+        self._store.meta_set(META_PR_HEADS, json.dumps(current, sort_keys=True))
+
+    def _bump_counter_locked(self, key: str) -> None:
+        """Increment an integer ``sync:*`` meta counter. Caller holds the lock."""
+        raw = self._meta_get(key)
+        count = int(raw) if raw and raw.isdigit() else 0
+        self._store.meta_set(key, str(count + 1))
+
+    def _provision_candidate_env(self, head_sha: str) -> Optional[str]:
+        """D8 provisioning: IFF ``uv.lock`` exists at the candidate root, ``uv
+        sync --frozen`` into a venv keyed by the lock's blob OID (a content hash —
+        candidates sharing the lock share the venv, one sync per lock); anything
+        less returns None and the verifier abstains honestly. Fail-open: a
+        missing or failing uv is a logged skip, never a leg fault. Returns the
+        venv bin dir to prepend to the build child's PATH."""
+        probe = self._run(["git", "-C", self.mirror_dir, "cat-file", "-e",
+                           f"{head_sha}:uv.lock"], env=_clean_env())
+        if probe.returncode != 0:
+            return None
+        lock_oid = self._rev(f"{head_sha}:uv.lock")
+        if lock_oid is None:
+            return None
+        venv = Path(self._env_cache_dir) / lock_oid
+        marker = venv / ".hive-sync-ready"
+        if marker.exists():
+            # marker: re-syncing a ready venv reds test_uv_lock_provisions_env
+            # (cached per lock-hash — one sync per lock, ever).
+            return str(venv / "bin")
+        worktree = Path(tempfile.mkdtemp(prefix="hive-sync-candidate-wt-"))
+        try:
+            added = self._run(["git", "-C", self.mirror_dir, "worktree", "add",
+                               "--detach", str(worktree), head_sha],
+                              env=_clean_env())
+            if added.returncode != 0:
+                return None
+            env = self._candidate_env(None)
+            env["UV_PROJECT_ENVIRONMENT"] = str(venv)
+            proc = self._run(["uv", "sync", "--frozen", "--project",
+                              str(worktree)], env=env,
+                             timeout=_CANDIDATE_TIMEOUT_S)
+            if proc.returncode != 0:
+                detail = (proc.stderr or proc.stdout or "").strip()[-300:]
+                _log.warning("sync.candidate_env_failed head=%.12s detail=%s",
+                             head_sha, self._redact(detail))
+                return None
+            venv.mkdir(parents=True, exist_ok=True)
+            marker.write_text("")
+            return str(venv / "bin")
+        finally:
+            self._run(["git", "-C", self.mirror_dir, "worktree", "remove",
+                       "--force", str(worktree)], env=_clean_env())
+            shutil.rmtree(worktree, ignore_errors=True)
+
+    def _candidate_env(self, extra_bin: Optional[str]) -> dict[str, str]:
+        """The candidate child env: clean git env with EVERY ``HIVE_*`` var
+        dropped — repo code runs in these children, so operator configuration and
+        credentials must be unreachable (the token never rides env anywhere).
+        ``extra_bin`` (the provisioned venv) prepends PATH so the verifier's tool
+        probes resolve inside it."""
+        env = {k: v for k, v in _clean_env().items()
+               if not k.startswith("HIVE_")}
+        if extra_bin:
+            env["PATH"] = extra_bin + os.pathsep + env.get("PATH", "")
+        return env
+
+    def _build_candidate_receipt(self, base: str, head: str, number: str,
+                                 extra_bin: Optional[str]) -> dict:
+        """The pre-merge receipt over merge-base..pr-head — the same battle-tested
+        CLI as the ledger leg, but measured AS the PR line (``--ref``: a detached
+        candidate checkout is not the tracked line), spawned with the stripped
+        env and killed whole at the constant timeout."""
+        with tempfile.TemporaryDirectory(prefix="hive-sync-candidate-") as tmp:
+            out = Path(tmp) / "receipt.json"
+            argv = [sys.executable, "-m", "hive.census.cli", "build",
+                    "--repo", self.mirror_dir, "--base", base, "--head", head,
+                    "--repo-id", normalized_repo_id(self._cfg.repo_url),
+                    "--propagate", "--ref", f"refs/pull/{number}/head",
+                    "--out", str(out)]
+            # marker: an unbounded spawn here turns a hanging verifier into a
+            # hanging tick (test_hang_fail_open / test_subprocess_env_stripped red).
+            proc = self._run(argv, env=self._candidate_env(extra_bin),
+                             timeout=_CANDIDATE_TIMEOUT_S)
+            if proc.returncode != 0:
+                detail = (proc.stderr or proc.stdout or "").strip()[-500:]
+                raise _SyncFault(self._redact(f"candidate build failed: {detail}"))
             return json.loads(out.read_text(encoding="utf-8"))
 
     # ── narrow git/store helpers ───────────────────────────────────────────────
