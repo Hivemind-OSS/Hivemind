@@ -383,3 +383,67 @@ def test_main_stale_auth_env_is_ignored_not_a_crash(monkeypatch):
                 build_boot=_boot_factory(_RecordingBoot([])))
     assert rc == E.EX_OK                               # a stale auth env never crashes boot
     assert captured["loopback_port"] == 8765 and captured["tunnel_port"] == 8766
+
+
+# ── the sync side-channel: ONE lock in main(), start after ready, fail-open ────
+def _sync_module():
+    import hive.app.sync as sync_mod
+    return sync_mod
+
+
+def test_main_shares_one_lock_across_serve_and_sync(monkeypatch):
+    """main() owns ONE threading.Lock: the SAME object reaches _make_http_serve (both
+    HTTP doors) AND start_sync — the single-writer invariant now spans the sync thread."""
+    import threading
+    captured: dict = {}
+
+    def fake_make_http_serve(boot, loopback_port, tunnel_port, **kw):
+        captured["serve_lock"] = kw.get("lock")
+        return lambda s: None
+
+    def fake_start_sync(cfg, store, evidence, lock):
+        captured["sync_lock"] = lock
+        return None
+
+    monkeypatch.setattr(E, "_make_http_serve", fake_make_http_serve)
+    monkeypatch.setattr(_sync_module(), "start_sync", fake_start_sync)
+    rc = E.main(env=_OK_ENV, build_boot=_boot_factory(_RecordingBoot([])))
+    assert rc == E.EX_OK
+    assert captured["serve_lock"] is not None
+    assert captured["serve_lock"] is captured["sync_lock"]      # ONE lock, every writer
+    assert isinstance(captured["sync_lock"], type(threading.Lock()))
+
+
+def test_sync_starts_after_ready_markers_and_before_serve(monkeypatch):
+    """start_sync runs strictly AFTER _mark_ready (markers already '1') and before
+    serve blocks; it receives boot.store and a wired ChangeEvidenceService."""
+    from hive.domain.change_evidence import ChangeEvidenceService
+    calls: list = []
+    store = _MetaStore()
+    boot = _RecordingBoot(calls, store=store)
+
+    def fake_start_sync(cfg, store_, evidence, lock):
+        calls.append("start_sync")
+        assert store.meta.get(E.MARK_EMBEDDER_LOADED) == "1"    # ready markers first
+        assert store_ is store
+        assert isinstance(evidence, ChangeEvidenceService)
+        return None
+
+    monkeypatch.setattr(_sync_module(), "start_sync", fake_start_sync)
+    rc = E.main(env=_OK_ENV, build_boot=_boot_factory(boot), serve=_serve_recorder(calls))
+    assert rc == E.EX_OK
+    assert calls == ["migrate", "build_index", "warm", "make_server",
+                     "start_sync", "serve"]
+
+
+def test_sync_start_failure_logs_and_serves_anyway(monkeypatch):
+    """The side-channel fails open: a start_sync explosion never blocks the serve
+    (rc stays EX_OK, the injected serve still runs)."""
+    def boom(cfg, store, evidence, lock):
+        raise RuntimeError("sync exploded")
+
+    monkeypatch.setattr(_sync_module(), "start_sync", boom)
+    served: list = []
+    rc = E.main(env=_OK_ENV, build_boot=_boot_factory(_RecordingBoot([])),
+                serve=lambda s: served.append(True))
+    assert rc == E.EX_OK and served == [True]

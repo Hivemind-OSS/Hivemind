@@ -236,6 +236,40 @@ class CensusConfig:
     canonical_ref: str = ""
 
 
+@dataclass(frozen=True)
+class SyncConfig:
+    """Server-side census sync (HIVE_SYNC__*). ``repo_url`` set ⇒ the server mirrors
+    that repo and feeds tracked-branch movement into the change-outcome ledger
+    automatically (detect-only — never a trust mutation). Unset (the default) is
+    byte-inert (§9.9): no thread, no clone, no census import. ``token`` and
+    ``webhook_secret`` are credentials that only mean anything riding a configured
+    repo, so either set WITHOUT ``repo_url`` is a half-installed sync — refused
+    fail-fast (EX_CONFIG at boot, the refusal naming the missing var) rather than
+    silently ignored. ``mirror_dir`` "" ⇒ /data/sync/mirror (resolved by the sync
+    service, the volume-local default); ``interval_s`` (floor 5) is the poll cadence;
+    ``verify_candidates`` gates the candidate-PR verification leg."""
+    repo_url: str = ""
+    token: str = ""
+    interval_s: int = 60
+    webhook_secret: str = ""
+    verify_candidates: bool = True
+    mirror_dir: str = ""
+
+    def __post_init__(self) -> None:
+        if int(self.interval_s) < 5:
+            raise ValueError(f"sync.interval_s must be >= 5 (got {self.interval_s})")
+        if not self.repo_url:
+            # marker: dropping this partial-config raise fails
+            # test_sync_partial_credential_without_repo_url_raises / CT-1 partial.
+            # NEVER echo the credential value — name the fields/vars only.
+            for field_name, env_var in (("token", "HIVE_SYNC__TOKEN"),
+                                        ("webhook_secret", "HIVE_SYNC__WEBHOOK_SECRET")):
+                if getattr(self, field_name):
+                    raise ValueError(
+                        f"sync.{field_name} is set but sync.repo_url is unset — partial "
+                        f"sync config; set HIVE_SYNC__REPO_URL or unset {env_var}")
+
+
 # ── the root ──────────────────────────────────────────────────────────────────
 # Auth is NOT a config group: it is a property of the listening socket (a tokenless
 # loopback door + a token-required tunnel door, bound by the entrypoint), so there is no
@@ -252,6 +286,7 @@ _GROUP_TYPES: dict[str, type] = {
     "agi": AgiConfig,
     "secret_scan": SecretScanConfig,
     "census": CensusConfig,
+    "sync": SyncConfig,
 }
 # field-groups constructed (and thus validated) BEFORE runtime, so a field-level error
 # (e.g. recall.tau_serve) surfaces ahead of the db_path-required check. Derived from
@@ -272,6 +307,7 @@ class Config:
     agi: AgiConfig
     secret_scan: SecretScanConfig
     census: CensusConfig
+    sync: SyncConfig
 
     @property
     def db_path(self) -> str:
