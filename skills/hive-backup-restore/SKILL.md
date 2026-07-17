@@ -8,6 +8,10 @@ description: "Snapshot, reset, or restore the Hivemind data store via the `hive`
 The data lives in the `hive-data` Docker volume (in-container path `/data/shared.db`). Full
 reference: `HIVE-ADMIN.md` §1 & §5.
 
+**CLI resolve (once per shell):** `command -v hive >/dev/null 2>&1 || hive() { python3 -m hive.tools.cli "$@"; }`
+— makes every `hive …` line below run on an uninstalled checkout (the CLI is stdlib-only;
+Windows shells: `py -m hive.tools.cli <verb>`; prerequisites: **hive-bringup**).
+
 ## `hive backup` — safe snapshot
 
 ```bash

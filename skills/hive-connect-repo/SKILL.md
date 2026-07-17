@@ -14,6 +14,10 @@ The whole connection is **outbound `git`-over-HTTPS with the token in the remote
 CLI, no GitHub App, no SSH key, and no per-device git hooks (census is server-side). The server
 reaches out to GitHub; nothing inbound is required for the feed.
 
+**CLI resolve (once per shell):** `command -v hive >/dev/null 2>&1 || hive() { python3 -m hive.tools.cli "$@"; }`
+— makes every `hive …` line below run on an uninstalled checkout (the CLI is stdlib-only;
+Windows shells: `py -m hive.tools.cli <verb>`; prerequisites: **hive-bringup**).
+
 ## 1. Preflight — server up, and does the image have the daemon?
 
 ```bash

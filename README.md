@@ -26,7 +26,7 @@ A connected agent gets exactly eight tools:
 | `hive_prune(episode_id, approved_by=…)` | Human-vouched: retire an incorrect or misleading memory with no replacement (it stays in the audit ledger). |
 | `hive_flag(a, b, kind)` | Advisory only: record that two memories conflict or one supersedes the other, for a human to resolve. Retires nothing. |
 | `hive_outcome(helped=[…], hurt=[…])` | Log which recalled memories helped or hurt the task; records evidence only — changes no trust. |
-| `hive_health(...)` | Liveness/identity snapshot; `include_trends=true` adds convergence KPIs, `include_gaps=true` the demand-gap report, `include_conflicts=true` the contested-memory worklist. |
+| `hive_health(...)` | Liveness/identity snapshot; `include_trends=true` adds convergence KPIs, `include_gaps=true` the demand-gap report, `include_conflicts=true` the contested-memory worklist; further flags: `suspect_consensus`, `stale_suspects`, `census_health`, `meta_versions`, `onboarding` (the full install payload). |
 
 ## Requirements
 
@@ -38,7 +38,7 @@ A connected agent gets exactly eight tools:
 
 ```bash
 git clone https://github.com/Hivemind-OSS/Hivemind.git hivemind && cd hivemind
-pip install -e .          # installs the `hive` command (uninstalled: python -m hive.tools.cli)
+pip install -e .          # installs the `hive` command (venv on PEP-668 systems; uninstalled: python3 -m hive.tools.cli)
 cp .env.example .env      # persist the store across restarts (sets HIVE_STORE__DB_PATH)
 hive up                   # build + start; blocks until the daemon is healthy
 ```
@@ -148,16 +148,17 @@ Census change evidence does **not**: it is computed and fed server-side (`HIVE_S
 above), so there is nothing to wire per repo or per device.
 
 You don't need to install it yourself: a connected agent checks for it during onboarding and
-installs or upgrades it automatically. To install it manually instead:
+installs or updates it automatically. To install it manually instead — uv required (the CLI's
+workspace engines resolve from git subdirectories via uv sources, which pip/pipx cannot read):
 
 ```bash
-uv tool install hive-edge
+uv tool install git+https://github.com/Hivemind-OSS/Hive-edge@release
+uv tool update-shell   # once, so uv's tool directory is on your PATH
 ```
 
-Per-device edge state (the rollback-pin config, worktree-delta baselines, the per-checkout
-code-graph cache) lives under `~/.hive-edge/` (`HIVE_EDGE_HOME` overrides); it is safe to delete
-and regenerates. See **[HIVE-ADMIN.md §8](HIVE-ADMIN.md)** for the full install/upgrade/rollback
-flow.
+Per-device edge state (worktree-delta baselines, the per-checkout code-graph cache) lives under
+`~/.hive-edge/` (`HIVE_EDGE_HOME` overrides); it is safe to delete and regenerates. See
+**[HIVE-ADMIN.md §8](HIVE-ADMIN.md)** for the full install/update/rollback flow.
 
 ## Embedding model & attribution
 

@@ -11,10 +11,12 @@ from hive.app import onboard_ref
 from hive.app.onboard_ref import (
     AGENT_RULES_BLOCK, AUTO_APPROVE_TOOLS, BAD_VS_STALE, CAPTURE_RECALL_FLOOR,
     CAPTURE_TAXONOMY, CENSUS_DIRECTIVE, CLAUDE_CODE_HOOKS, CONTRACT_VERSION, EDGE_CLI,
-    MIN_EDGE_VERSION, MINT_DIRECTIVE, NOISE_FLOOR, ONBOARDING_PROCEDURE,
+    EDGE_REPO_REF, EDGE_REPO_URL, HIVEMIND_HOOK_COMMAND_MARKERS, MIN_EDGE_VERSION,
+    MINT_DIRECTIVE, NOISE_FLOOR, ONBOARDING_PROCEDURE,
     ONBOARDING_REFERENCE, REMEDIATION_NOTICE, RULES_END, RULES_START,
     SERVER_INSTRUCTIONS, VALUE_RUBRIC, VERIFY_DIRECTIVE, WRITE_VS_CAPTURE,
-    bundle_digest, render_agent_rules_block, render_allowlist, render_onboarding_payload,
+    bundle_digest, is_hivemind_owned_hook_command, render_agent_rules_block,
+    render_allowlist, render_onboarding_payload,
 )
 from hive.app.tool_defs import TOOL_DEFINITIONS
 from hive.domain.kinds import render_taxonomy
@@ -22,7 +24,7 @@ from hive.domain.kinds import render_taxonomy
 # Regenerate when the bundle legitimately changes (and bump CONTRACT_VERSION) — the pre-commit
 # contract-version guard does this automatically, or by hand:
 #   python -c "from hive.app.onboard_ref import bundle_digest; print(bundle_digest())"
-_GOLDEN_BUNDLE_SHA256 = "394c95b42b360477ff000d2ba158b1d7385f709635ddb4532536075b92fae0bb"
+_GOLDEN_BUNDLE_SHA256 = "911c14c6bc0221229544f3c285f51c6f71b3063b3a3934395b3fa6113bddf205"
 
 
 def test_server_instructions_cover_the_verbs_and_search_first_timing():
@@ -351,17 +353,181 @@ def test_claude_code_hooks_is_valid_json_with_the_six_lifecycle_events():
     assert "mint_fp.py" not in CLAUDE_CODE_HOOKS      # the venv-reexec fallback is gone
 
 
-# ── the harness-agnostic edge-CLI contract: mint/verify/upgrade + the serving rider ──
+# ── the deterministic hook reconcile (contract v.14, BUG-043): re-onboard is remove-then-insert
+# keyed on the shipped ownership predicate, so retired hooks can't linger, repeats can't
+# accumulate duplicates, and operator hooks are never touched ──
+def test_every_served_hook_command_is_hivemind_owned():
+    """B5: the ownership predicate COVERS the served set — every command in CLAUDE_CODE_HOOKS
+    (all six events) satisfies is_hivemind_owned_hook_command, so the step-2 reconcile's remove
+    phase can never orphan a hook its insert phase is about to serve. And an operator's own
+    command matches NO marker — the reconcile is structurally unable to touch it."""
+    hooks = json.loads(CLAUDE_CODE_HOOKS)["hooks"]
+    commands = [h["command"] for groups in hooks.values() for g in groups for h in g["hooks"]]
+    assert len(commands) == 6                          # the full served set, nothing skipped
+    for c in commands:
+        assert is_hivemind_owned_hook_command(c), f"served command not predicate-owned: {c!r}"
+    assert not is_hivemind_owned_hook_command("ruff check --fix")   # an operator hook: untouched
+
+
+def _reconcile(settings: dict) -> dict:
+    """In-test ORACLE of the served step-2 reconcile, keyed on the SHIPPED predicate: FIRST
+    remove every hivemind-owned hook command wherever it sits (any event, any matcher group),
+    pruning matcher groups and events left empty; THEN insert the served set verbatim. Hooks
+    matching no marker (the operator's own) and non-hook settings keys pass through untouched."""
+    served = json.loads(CLAUDE_CODE_HOOKS)["hooks"]
+    out = {k: v for k, v in settings.items() if k != "hooks"}
+    hooks: dict = {}
+    for event, groups in settings.get("hooks", {}).items():
+        kept_groups = []
+        for g in groups:
+            kept = [h for h in g["hooks"]
+                    if not is_hivemind_owned_hook_command(h.get("command", ""))]
+            if kept:
+                kept_groups.append({**g, "hooks": kept})
+        if kept_groups:
+            hooks[event] = kept_groups
+    for event, groups in served.items():
+        hooks.setdefault(event, []).extend(json.loads(json.dumps(groups)))
+    out["hooks"] = hooks
+    return out
+
+
+def test_reonboard_hook_reconcile_removes_orphans_dedups_and_preserves_operator_hooks():
+    """B1/B2/B3 over the oracle: a settings file carrying (a) an ORPHANED retired hivemind hook
+    (marker-matching, no longer served — parked in an event the served set doesn't use), (b) a
+    DUPLICATED copy of a served hook from a prior merge-only install (BUG-043's accumulation),
+    and (c) an operator hook sharing a matcher group with a marked orphan, reconciles to: orphans
+    gone (their emptied event pruned), the served set present EXACTLY once, the operator hook
+    byte-identical in place, non-hook keys untouched — and the reconcile is IDEMPOTENT."""
+    served = json.loads(CLAUDE_CODE_HOOKS)["hooks"]
+    operator_hook = {"type": "command", "command": "ruff check --fix"}
+    orphan_retired = {"type": "command", "command": "hive-edge hook census-post-merge"}
+    orphan_echo = {"type": "command", "command": "echo '[hivemind] retired nudge'"}
+    settings = {
+        "permissions": {"allow": ["mcp__hive__hive_recall"]},
+        "hooks": {
+            "PreCompact": [{"matcher": "", "hooks": [dict(orphan_retired)]}],
+            "SessionStart": json.loads(json.dumps(served["SessionStart"])),
+            "PostToolUse": [{"matcher": "Write",
+                             "hooks": [dict(operator_hook), dict(orphan_echo)]}],
+        },
+    }
+    once = _reconcile(settings)
+    assert _reconcile(once) == once                    # idempotent: re-onboard N times, no drift
+    blob = json.dumps(once, ensure_ascii=False)        # keep em-dashes countable verbatim
+    assert "census-post-merge" not in blob             # the retired marked hook is REMOVED…
+    assert "retired nudge" not in blob                 # …wherever it sits, any matcher group
+    assert "PreCompact" not in once["hooks"]           # its emptied event is pruned
+    assert {"matcher": "Write", "hooks": [operator_hook]} in once["hooks"]["PostToolUse"]
+    assert once["permissions"] == settings["permissions"]   # non-hook keys pass through
+    for groups in served.values():                     # the served set lands EXACTLY once each
+        for g in groups:
+            for h in g["hooks"]:
+                assert blob.count(h["command"]) == 1, h["command"]
+
+
+def test_procedure_directs_remove_then_insert_reconcile_restart_and_allowlist_exact_set():
+    """B1/B3/B4/B6 as served TEXT: step 2 directs the deterministic reconcile — remove first
+    (any event, any matcher group, pruning emptied containers), then insert the served set,
+    operator hooks untouched, never a merge — renders its ownership markers from the SAME
+    constant the predicate reads, installs the allowlist as the EXACT served set (never
+    merge-accumulate), and ends with restart-to-activate; step 4's re-onboard repeats the
+    reconcile and restarts."""
+    proc = ONBOARDING_PROCEDURE
+    low = proc.lower()
+    assert "remove every" in low and "then insert" in low
+    assert low.index("remove every") < low.index("then insert")   # the order is the fix
+    assert "any event" in low and "any matcher" in low
+    assert "prun" in low                               # pruning emptied groups/events
+    assert "untouched" in low                          # operator hooks preserved
+    assert "never a merge" in low                      # the old merge-only step is disavowed
+    for marker in HIVEMIND_HOOK_COMMAND_MARKERS:       # the served markers == the predicate's
+        assert marker in proc, f"marker {marker!r} not served in step 2"
+    assert "exactly the served set" in low             # allowlist exact-set…
+    assert "never merge-accumulate" in low             # …replace, don't accumulate
+    assert "restart" in low
+    assert "session start" in low                      # why: hooks/allowlist load then only
+    step4 = proc[proc.index("4)"):]
+    assert "reconcile" in step4.lower() and "restart" in step4.lower()
+
+
+# ── the harness-agnostic edge-CLI contract: mint/verify/update + the serving rider ──
 def test_edge_cli_names_install_version_floor_and_upgrade():
-    """EDGE_CLI teaches the tooling loop on EVERY runtime: the version check, the PyPI install
-    line, the MIN_EDGE_VERSION floor, and `hive-edge upgrade` with the rollback-pin caveat."""
+    """EDGE_CLI teaches the tooling loop on EVERY runtime: the version check, the git install
+    line, the MIN_EDGE_VERSION floor, and the uv-native update with the rollback deference.
+    REVERSES the 0.7.0-era "ships from PyPI, not a git ref" decision (this test used to assert
+    `"git+" not in e`): PyPI never materialized for our dists and is now removed system-wide
+    (BUG-024), so the install line is the public git repo and `git+` MUST appear."""
     e = EDGE_CLI
     assert "hive-edge --version" in e
-    assert "uv tool install hive-edge" in e            # the PyPI install line
-    assert "git+" not in e                             # 0.7.0 ships from PyPI, not a git ref
+    assert "uv tool install git+" in e                  # the git install line (PyPI is dead)
+    assert "git+" in e                                  # flipped from `not in` — see docstring
     assert MIN_EDGE_VERSION in e                        # the capability floor
-    assert "hive-edge upgrade" in e
-    assert "pin" in e.lower()                           # the rollback-pin refusal caveat
+    assert "uv tool upgrade hive-edge" in e             # the uv-native update
+    assert "pin" in e.lower()                           # the rollback deference caveat
+
+
+def test_edge_cli_installs_from_git_repo_not_pypi():
+    """A1 (contract v.14): the served install resolves the CLI from the PUBLIC git repo at the
+    release ref — `uv tool install git+<EDGE_REPO_URL>@<EDGE_REPO_REF>` — never from PyPI. The
+    repo URL and ref are SINGLE-OWNED constants (a repo move or ref-policy change is a one-line
+    edit that every served install/rollback line follows)."""
+    e = EDGE_CLI
+    assert EDGE_REPO_URL == "https://github.com/Hivemind-OSS/Hive-edge"
+    assert EDGE_REPO_REF == "release"
+    assert "git+" + EDGE_REPO_URL + "@" + EDGE_REPO_REF in e   # the composed install target
+    assert "uv tool install git+" in e
+    assert "from PyPI" not in e                        # the dead install direction is GONE
+    assert "uv tool install hive-edge" not in e        # the bare PyPI-resolving form is GONE
+
+
+def test_edge_cli_update_is_uv_native_and_avoids_dead_verb():
+    """A2: updating is uv-native (`uv tool upgrade hive-edge`); the retired `hive-edge upgrade`
+    verb (removed in hive-edge 0.9.0; on an older install a dead PyPI path) appears ONLY inside
+    the explicit do-NOT-run warn-off — strip that phrase and no occurrence may remain."""
+    e = EDGE_CLI
+    assert "uv tool upgrade hive-edge" in e
+    warned_off = "Do NOT run `hive-edge upgrade`"
+    assert warned_off in e
+    assert "hive-edge upgrade" not in e.replace(warned_off, "")
+
+
+def test_edge_cli_states_uv_is_required():
+    """A3: uv is REQUIRED, with the reason served: the CLI's workspace engines (comb-drift,
+    matrix) resolve from git subdirectories via uv sources — pip/pipx read [project.dependencies]
+    alone and would resolve `matrix` against PyPI, where that name is squatted. PATH setup is
+    `uv tool update-shell`, never a hardcoded bin directory."""
+    e = EDGE_CLI
+    assert "uv is REQUIRED" in e
+    assert "comb-drift" in e and "matrix" in e          # the workspace engines, named
+    assert "squatted" in e.lower()                      # why pip/pipx cannot substitute
+    assert "uv tool update-shell" in e                  # PATH via uv…
+    assert "~/.local/bin" not in e                      # …never a hardcoded directory
+
+
+def test_edge_cli_preserves_degraded_mode():
+    """A4 (Law 6): no `hive-edge` on PATH stays a supported no-op — mint/verify degrade,
+    capture/recall unaffected. The git-install rewrite must not lose the degraded-mode clause."""
+    e = EDGE_CLI
+    assert "not an error" in e
+    assert "simply no-op" in e
+    assert "capture / recall are unaffected" in e
+
+
+def test_no_dead_pypi_or_upgrade_reference():
+    """A6, over the LIVE served union ONLY (the frozen v.06 fixture is a historical record and
+    keeps its PyPI-era wording): no served constant, payload, or tool description still directs
+    a PyPI install of our dists or the retired `hive-edge upgrade` verb. The single legitimate
+    `hive-edge upgrade` occurrence is EDGE_CLI's do-NOT-run warn-off."""
+    union = "\n".join([
+        SERVER_INSTRUCTIONS, ONBOARDING_PROCEDURE, EDGE_CLI, MINT_DIRECTIVE, VERIFY_DIRECTIVE,
+        CENSUS_DIRECTIVE, REMEDIATION_NOTICE, ONBOARDING_REFERENCE, AGENT_RULES_BLOCK,
+        CLAUDE_CODE_HOOKS, json.dumps(render_onboarding_payload(), default=str),
+    ] + [t["description"] for t in TOOL_DEFINITIONS])
+    assert "uv tool install hive-edge" not in union     # the bare PyPI-resolving install form
+    assert "from PyPI" not in union                     # the dead install direction
+    warned_off = "Do NOT run `hive-edge upgrade`"
+    assert "hive-edge upgrade" not in union.replace(warned_off, "")
 
 
 def test_edge_cli_and_directives_ride_both_channels():
@@ -380,8 +546,13 @@ def test_edge_cli_and_directives_ride_both_channels():
 
 
 def test_reonboard_names_the_edge_upgrade_step():
-    """RE-ONBOARD must run `hive-edge upgrade` so the CLI matches the new contract."""
-    assert "hive-edge upgrade" in ONBOARDING_PROCEDURE
+    """RE-ONBOARD updates the CLI uv-natively (`uv tool upgrade hive-edge`) so it meets the new
+    MIN_EDGE_VERSION — and the procedure never DIRECTS the retired `hive-edge upgrade` verb
+    (removed in 0.9.0): its only occurrence is EDGE_CLI's do-NOT-run warn-off, embedded via
+    step 3."""
+    assert "uv tool upgrade hive-edge" in ONBOARDING_PROCEDURE
+    warned_off = "Do NOT run `hive-edge upgrade`"
+    assert "hive-edge upgrade" not in ONBOARDING_PROCEDURE.replace(warned_off, "")
 
 
 def test_floor_mint_directive_names_fp_meta_and_the_conditional_hook():
@@ -490,8 +661,9 @@ def test_mint_directive_teaches_branch_scope_opt_in():
     assert "set-valued" in low
     assert "never auto-attached" in low and "never required" in low
     # the edge capability floor moves with the new CLI surface (the version-coupling rule);
-    # 0.7.0 = the U1 reduced agent CLI (census verb deleted, PyPI-published)
-    assert MIN_EDGE_VERSION == "0.7.0"
+    # 0.9.0 = the PyPI-free lockstep: the CLI installs from the public git repo via uv, and the
+    # `upgrade` verb (with the whole PyPI machinery) is removed from hive-edge
+    assert MIN_EDGE_VERSION == "0.9.0"
 
 
 def test_verify_directive_teaches_branch_scope_supersession():

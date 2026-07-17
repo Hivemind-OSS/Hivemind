@@ -12,21 +12,29 @@ a running server use **hive-operate**. Full reference: `HIVE-ADMIN.md` §1 & §5
 ## Prerequisites (server host)
 
 - **Docker** + **Docker Compose v2**, and **Python 3.11+** (the `hive` CLI drives Compose).
-- The `hive` command: `pip install -e .` from the repo root. Uninstalled, every `hive …` below is
-  exactly `python -m hive.tools.cli …`.
+- The `hive` command: `pip install -e .` from the repo root (on a PEP-668 "externally-managed"
+  Python, inside a venv — or skip the install entirely: the CLI is stdlib-only). Uninstalled,
+  every `hive …` below is exactly `python3 -m hive.tools.cli …` (Windows: `py -m hive.tools.cli`).
+  Resolve the form mechanically,
+  once per shell, and every literal command below works either way:
+
+```bash
+command -v hive >/dev/null 2>&1 || hive() { python3 -m hive.tools.cli "$@"; }
+```
 
 ## Bring it up
 
 ```bash
-cp .env.example .env   # persist the store (sets HIVE_STORE__DB_PATH); without it memory is in-RAM only
+cp .env.example .env   # optional: makes the persistent-store choice explicit (sets HIVE_STORE__DB_PATH)
 hive up                # zero-config: builds the image, warms the embedder, blocks until healthy
 ```
 
-- **Persist the store, or lose it on restart.** The store DEFAULTS to in-memory (`:memory:`) —
-  ephemeral. `cp .env.example .env` sets `HIVE_STORE__DB_PATH=/data/shared.db` to persist into the
-  `hive-data` volume; an ephemeral boot WARNs loudly (`container.store_ephemeral`) and `hive_health`
-  reports `store_ephemeral`. Edit `.env` for any other override (**hive-operate**) or the tunnel
-  secrets (**hive-connect-team**).
+- **The store persists by default.** The containerized daemon DEFAULTS to `/data/shared.db` in the
+  `hive-data` volume (the entrypoint injects it when the env is unset); only an explicit
+  `HIVE_STORE__DB_PATH=:memory:` boots ephemeral — such a boot WARNs loudly
+  (`container.store_ephemeral`) and `hive_health` reports `store_ephemeral`. `cp .env.example .env`
+  makes the persistent choice explicit. Edit `.env` for any other override (**hive-operate**) or the
+  tunnel secrets (**hive-connect-team**).
 - **The first `hive up` is slow, and that is normal** — it builds the image and bakes the offline
   embedder (no network at runtime). It is not hung.
 - `up` then **blocks on a bounded health-wait** (default 180 s; "healthy" ≡ the embedder is

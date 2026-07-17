@@ -8,6 +8,10 @@ description: "Operate and tune a running Hivemind server: read the convergence K
 Keep a running server lean and current. The store does not clean itself — **maintenance is the
 product.** Full leverage map: `OPERATIONS.md`; knob tables: `HIVE-ADMIN.md` §4 & §6.
 
+**CLI resolve (once per shell):** `command -v hive >/dev/null 2>&1 || hive() { python3 -m hive.tools.cli "$@"; }`
+— makes every `hive …` line below run on an uninstalled checkout (the CLI is stdlib-only;
+Windows shells: `py -m hive.tools.cli <verb>`; prerequisites: **hive-bringup**).
+
 For a browser view of the live picture, `hive ui` serves a loopback-only operator dashboard (live
 status, seat mint/revoke, backup, non-blocking start/stop, tunnel activate/deactivate, restore from
 an in-volume backup behind a typed confirm, log tail; no reset) — `--no-open` for a headless host.

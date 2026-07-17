@@ -338,6 +338,34 @@ All notable changes to this project are documented here.
   config it is resolved at boot — there is no live reload (tune via `.env` then `hive up`).
 
 ## Changed
+- The shipped operator skills resolve the `hive` CLI mechanically: each runbook opens with a
+  one-line probe (`command -v hive >/dev/null 2>&1 || hive() { python3 -m hive.tools.cli "$@"; }`)
+  so every literal `hive …` step runs on an uninstalled checkout — the CLI is stdlib-only — and
+  the install docs note the PEP-668 externally-managed-Python wrinkle (README, `HIVE-ADMIN.md`
+  §1, `skills/hive-bringup`).
+- PyPI is removed as an install/publish channel for our distributions (`hive-edge`, `matrix`,
+  `comb-drift`) — system-wide, both repos (closes BUG-045). Agents install the edge CLI from the
+  public git repository via uv: the served contract (now **v.14**) renders
+  `uv tool install git+https://github.com/Hivemind-OSS/Hive-edge@release` (+ `uv tool
+  update-shell` for PATH) from the single-owned `EDGE_REPO_URL`/`EDGE_REPO_REF` constants, states
+  uv as REQUIRED with the reason (the CLI's workspace engines resolve from git subdirectories via
+  uv sources — pip/pipx would resolve the squatted `matrix` name), updates via
+  `uv tool upgrade hive-edge`, warns off the retired `hive-edge upgrade` verb (hive-edge 0.9.0
+  removed it with the whole PyPI machinery), reframes rollback as reinstalling an explicit ref
+  (deferring to a human pin), and preserves the degraded-mode clause (no CLI → mint/verify no-op;
+  capture/recall unaffected). Onboarding's Claude-Code step 2 becomes a deterministic hook
+  RECONCILE instead of a merge (closes BUG-043): `HIVEMIND_HOOK_COMMAND_MARKERS` +
+  `is_hivemind_owned_hook_command()` single-own hook ownership; the procedure removes every
+  hivemind-owned hook command wherever it sits (any event, any matcher group, pruning emptied
+  containers), THEN inserts the served set verbatim — operator hooks untouched, the auto-approve
+  allowlist installed as the EXACT served set (never merge-accumulate) — and ends with
+  restart-to-activate (hooks load at session start only); the step-4 re-onboard repeats the
+  reconcile and restart. `MIN_EDGE_VERSION` 0.7.0 → 0.9.0 alongside the hive-edge 0.9.0 lockstep;
+  `vendor/wheels/` re-vendored to 0.9.0 (pyproject wheel pins + `uv.lock` in the same change);
+  the conservation corpus's install probe re-pinned to the frozen∩live intersection (unit 40,
+  BUG-041 precedent); doc mirrors rewritten to the git-install reality (README, HIVE-ADMIN §8,
+  llms.txt, the hive-connect-team skill, the OPERATIONS release runbook — which gains the
+  move-the-`release`-tag-first duty — and the TODOS release tail).
 - The server ships self-contained from this repository alone: the `[sync]` extra's engines
   (comb-drift, matrix — now declared as the direct dependencies they are; `hive/census/join.py`,
   `receipt.py`, and `hive/app/sync.py` import them by name) and the in-image `hive-edge` mint CLI
@@ -428,6 +456,19 @@ All notable changes to this project are documented here.
   old-format `episodes` table is refused at store construction.
 
 ## Fixed
+- `skills/hive-bringup` no longer claims the store defaults to `:memory:` — the fifth surface of
+  the containerized-default drift (the entrypoint injects `/data/shared.db` when the env is unset;
+  only an explicit `:memory:` boots ephemeral), matching the corrected README / `HIVE-ADMIN.md` /
+  `.env.example` / boot-WARN wording.
+- The ephemeral-store messaging matches the containerized default: the boot WARN
+  (`hive/app/container.py`) and the `.env.example` persistence comment no longer claim the store
+  defaults to `:memory:` — the entrypoint injects `/data/shared.db` when the env is unset, so only
+  an explicit `:memory:` boots ephemeral. The verified-win rung's docstring/comment
+  (`hive/domain/lifecycle.py`) now calls the `None`-reader form the opt-OUT form rather than
+  "default OFF" (`HIVE_AUTONOMY__VERIFIED_PROMOTION` defaults ON). README's `hive_health` row
+  names the full include-flag surface, `OPERATIONS.md`'s complete-set knob table gains
+  `HIVE_SYNC__INTERVAL_S` / `HIVE_SYNC__MIRROR_DIR` / `HIVE_HTTP_MAX_BODY_BYTES`, and the TODOS
+  language-support record points at `hive/verifier/registry.py` in this repo.
 - A `SUBGRAPH_FP_VERSION` bump would have emitted a false `radius: "changed"` advisory on every
   memory minted under the old version (BUG-037). `hive-edge`'s `_verify_core` compared the stored
   `matrix/subgraph_fp` token against the recompute as whole-token raw `!=`, so any version bump

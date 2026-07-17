@@ -181,10 +181,10 @@ unmodified AND the entropy arm's true positives (real prefix-less high-entropy s
 ## TODO 14 — Ruby and Bash language support removed; re-add recipe if demand returns
 
 **File:** `../hive-edge/packages/comb-drift/combdrift/langs/`, `../hive-edge/packages/matrix/matrix/extract/`,
-`../hive-edge/packages/hive-verifier/hive_verifier/registry.py`, and the doc-count claims across all three READMEs.
+`hive/verifier/registry.py` (this repo), and the doc-count claims across the engine READMEs.
 
-Ruby and Bash were removed entirely from all three hive-edge language subsystems (matrix AST cone,
-combdrift verdict, hive-verifier execution evidence) so nothing claims a capability the fleet does not
+Ruby and Bash were removed entirely from all three language subsystems (matrix AST cone,
+combdrift verdict, hive-verifier execution evidence — the latter now `hive/verifier/` in this repo) so nothing claims a capability the fleet does not
 provide — the kept set is the six families / eight grammars (python, javascript, typescript, sql, go,
 rust, c, cpp). This is a record, not open work: re-add only if real demand returns, via the now-uniform
 seams — a combdrift `langs/<lang>.py` LangSpec + grammar dep, a matrix extractor + golden + fixture, a
@@ -262,7 +262,7 @@ unaffected.
 
 **Sequencing:** deliberately last in the sync/tagging series — purely additive advisory channels
 on settled semantics and the final tool layout. Start only after the hive-sync split's release
-tail (PyPI publish → pin flip → dogfood cutover → re-onboard) completes, since it edits the same
+tail (move the `release` tag → pin flip → dogfood cutover → re-onboard) completes, since it edits the same
 contract text, edge CLI, and doc surfaces. Two repos + a contract bump: this takes a full planning
 phase (where the candidate cut is decided), not an ad-hoc add.
 

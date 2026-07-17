@@ -80,9 +80,9 @@ exclude = ["hive.research*"]
 # pip (the image build) ignores this table and is satisfied by the pre-installed
 # wheelhouse instead.
 [tool.uv.sources]
-hive-edge = { path = "vendor/wheels/hive_edge-0.8.0-py3-none-any.whl" }
-comb-drift = { path = "vendor/wheels/comb_drift-0.8.0-py3-none-any.whl" }
-matrix = { path = "vendor/wheels/matrix-0.8.0-py3-none-any.whl" }
+hive-edge = { path = "vendor/wheels/hive_edge-0.9.0-py3-none-any.whl" }
+comb-drift = { path = "vendor/wheels/comb_drift-0.9.0-py3-none-any.whl" }
+matrix = { path = "vendor/wheels/matrix-0.9.0-py3-none-any.whl" }
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

@@ -2,7 +2,7 @@
 
 The administrator's reference for standing up a Hivemind server, connecting a fleet, tuning the
 safety/recall knobs, and running it day-2. Everything here goes through the `hive` CLI
-(`pip install -e .` provides the command; uninstalled, `python -m hive.tools.cli` is identical).
+(`pip install -e .` provides the command; uninstalled, `python3 -m hive.tools.cli` is identical).
 For *what Hivemind is* and the agent-facing memory contract, see `llms-full.txt` (the complete
 self-contained guide; `llms.txt` is the short link index); for the quickstart,
 `README.md`. Agent-runnable runbook-skills for the procedures below live in `skills/`
@@ -15,17 +15,17 @@ which drives Compose). Then:
 
 ```bash
 git clone https://github.com/Hivemind-OSS/Hivemind.git hivemind && cd hivemind
-pip install -e .            # installs the `hive` command
+pip install -e .            # installs the `hive` command (venv on PEP-668 systems; or skip — python3 -m hive.tools.cli is identical)
 cp .env.example .env        # persist the store across restarts (sets HIVE_STORE__DB_PATH)
 hive up                    # build + start; blocks until the daemon is healthy
 ```
 
-- **Zero config to boot**, but the store DEFAULTS to in-memory (`:memory:`) — ephemeral. Copy
+- **Zero config to boot** — the store DEFAULTS to `/data/shared.db` in the `hive-data` volume (persistent); only an explicit `HIVE_STORE__DB_PATH=:memory:` boots ephemeral. Copy
   `.env.example` to `.env` to **persist memory across restarts** (it sets
   `HIVE_STORE__DB_PATH=/data/shared.db`), and for any other deliberate override (§4) or the ngrok
   tunnel secrets (§3).
 - **A persistent store lives in the `hive-data` Docker volume** once `HIVE_STORE__DB_PATH` points
-  at it (`/data/shared.db`); **without it the store is in-memory and lost on restart** — an
+  at it (`/data/shared.db`); **only an explicit `HIVE_STORE__DB_PATH=:memory:` boots it ephemeral (lost on restart)** — an
   ephemeral boot WARNs loudly and `hive_health` reports `store_ephemeral`. `hive down` preserves
   the volume; `hive reset` snapshots it out to the host and recreates it empty (recoverable — §5).
 - **Schema upgrades are not in-place.** This build refuses old-format tables at boot (no silent
@@ -240,39 +240,52 @@ TTLs to hoard; and spend human review on the **established tier** (`hive_write` 
 
 ## 8. Staying current — edge tools & server upgrades
 
-The fleet has two install targets: the per-workstation **edge tools** install from **PyPI** and
-follow the served contract's minimum-version floor, while the single **server** moves to a vetted
-git ref deliberately and backup-gated.
+The fleet has two install targets: the per-workstation **edge tools** install from the **public
+git repository via uv** and follow the served contract's minimum-version floor, while the single
+**server** moves to a vetted git ref deliberately and backup-gated. PyPI is not an install or
+publish channel for any of our distributions (`hive-edge`, `matrix`, `comb-drift`) — the `matrix`
+name is squatted there by an unrelated project — so agents install from git and the server ships
+its own copies as vendored wheels (`vendor/wheels/`).
 
 **Edge tools (every participant, local or remote).** After connecting (§2/§3), install the
-`hive-edge` CLI once from PyPI:
+`hive-edge` CLI once from the public repository. **uv is required**: the CLI's workspace engines
+(comb-drift, matrix) resolve from git subdirectories via `[tool.uv.sources]`, which pip/pipx
+cannot read — they would resolve the squatted `matrix` name off the package index instead.
 
 ```bash
-uv tool install hive-edge
+uv tool install git+https://github.com/Hivemind-OSS/Hive-edge@release
+uv tool update-shell   # once, so uv's tool directory is on your PATH
 ```
+
+The `release` tag always points at the lockstep version the server ships in its vendored
+wheelhouse, so a fresh install meets the served `MIN_EDGE_VERSION` floor by construction.
 
 It is the per-workstation anchor toolchain — `mint` (fingerprint an anchor at capture), `verify`
 (check a recalled anchor against the working tree, incl. the `radius` advisory and branch-scope
 routing), `worktree-delta` (the task-end capture tripwire), `graph` (the persistent per-checkout
-code graph), `hook` (the Claude-Code lifecycle adapters), and `upgrade`. **There is nothing to
+code graph), and `hook` (the Claude-Code lifecycle adapters). **There is nothing to
 wire per repo or per device**: census evidence is computed and fed server-side (§4's
 `HIVE_SYNC__*` — the census + verifier engines live in the server image), so no git hooks, no
-`census init`, and no signing key exist on workstations. A connected agent installs or upgrades
+`census init`, and no signing key exist on workstations. A connected agent installs or updates
 the CLI itself during onboarding; where it is absent, mint and verify simply no-op (fail-open —
 capture and recall are unaffected).
 
 **Edge tools stay current.** The served contract pins a minimum CLI version (`MIN_EDGE_VERSION`);
 when an agent's CLI is below it — or the contract version moves — the served re-onboard procedure
-has it run `hive-edge upgrade`: a PyPI self-upgrade that, after a successful install, also runs a
-one-time UNWIRE pass deleting any retired census hooks a pre-0.7.0 release recorded on the device
-(matched strictly by the generated-by marker the rendered hooks carried — a hook a human wrote
-themselves is never touched) and dropping the retired config keys. Roll back with
-`hive-edge upgrade --version <X.Y.Z>` — an explicit older version writes a persistent rollback
-pin that a bare `hive-edge upgrade` refuses to auto-override; `hive-edge upgrade --version latest`
-clears the pin and moves to the newest release.
+has it run `uv tool upgrade hive-edge`, which moves the install to whatever the `release` tag
+points at. The retired `hive-edge upgrade` verb is removed as of 0.9.0 (it was a PyPI
+self-upgrade — a channel that never existed for our dists) — do **not** run it; on an older
+install it is a dead path. Roll back by reinstalling an explicit ref:
+
+```bash
+uv tool install --force git+https://github.com/Hivemind-OSS/Hive-edge@<tag-or-sha>
+```
+
+The served directive tells agents to defer to a human-pinned rollback rather than auto-upgrade
+over it, so a deliberate hold is yours to release.
 
 **State directory.** Per-device edge state lives under `~/.hive-edge/` (`HIVE_EDGE_HOME`
-overrides): the config (rollback pin), worktree-delta baselines, and `state/matrix/<digest>/` —
+overrides): worktree-delta baselines and `state/matrix/<digest>/` —
 the persistent per-checkout code-graph cache `hive-edge graph update` refreshes (the digest keys
 the checkout's real path, so two checkouts of one project never share a cache; the cache never
 lives inside the repo). Safe to delete — everything regenerates.
