@@ -339,7 +339,7 @@ All notable changes to this project are documented here.
 
 ## Changed
 - PyPI is removed as an install/publish channel for our distributions (`hive-edge`, `matrix`,
-  `comb-drift`) — system-wide, both repos (closes BUG-024). Agents install the edge CLI from the
+  `comb-drift`) — system-wide, both repos (closes BUG-045). Agents install the edge CLI from the
   public git repository via uv: the served contract (now **v.14**) renders
   `uv tool install git+https://github.com/Hivemind-OSS/Hive-edge@release` (+ `uv tool
   update-shell` for PATH) from the single-owned `EDGE_REPO_URL`/`EDGE_REPO_REF` constants, states
@@ -451,6 +451,15 @@ All notable changes to this project are documented here.
   old-format `episodes` table is refused at store construction.
 
 ## Fixed
+- The ephemeral-store messaging matches the containerized default: the boot WARN
+  (`hive/app/container.py`) and the `.env.example` persistence comment no longer claim the store
+  defaults to `:memory:` — the entrypoint injects `/data/shared.db` when the env is unset, so only
+  an explicit `:memory:` boots ephemeral. The verified-win rung's docstring/comment
+  (`hive/domain/lifecycle.py`) now calls the `None`-reader form the opt-OUT form rather than
+  "default OFF" (`HIVE_AUTONOMY__VERIFIED_PROMOTION` defaults ON). README's `hive_health` row
+  names the full include-flag surface, `OPERATIONS.md`'s complete-set knob table gains
+  `HIVE_SYNC__INTERVAL_S` / `HIVE_SYNC__MIRROR_DIR` / `HIVE_HTTP_MAX_BODY_BYTES`, and the TODOS
+  language-support record points at `hive/verifier/registry.py` in this repo.
 - A `SUBGRAPH_FP_VERSION` bump would have emitted a false `radius: "changed"` advisory on every
   memory minted under the old version (BUG-037). `hive-edge`'s `_verify_core` compared the stored
   `matrix/subgraph_fp` token against the recompute as whole-token raw `!=`, so any version bump

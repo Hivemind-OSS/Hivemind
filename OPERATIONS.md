@@ -200,6 +200,9 @@ leverage on the outcome, but part of the full surface.
 | `HIVE_CONFLICT__ENABLED` | `true` | conflict detection (the recall `conflicts` carrier + the contested-memory worklist) and the `hive_flag` advisory verb; `false` ⇒ byte-inert |
 | `HIVE_CONFLICT__TOP_N` | `10` | cap on the contested-memory worklist |
 | `HIVE_SUSPECT_CONSENSUS__TOP_N` | `10` | cap on the suspect-consensus worklist |
+| `HIVE_SYNC__INTERVAL_S` | `60` | census-sync daemon poll cadence in seconds (floor 5; the daemon is off unless `HIVE_SYNC__REPO_URL` is set) |
+| `HIVE_SYNC__MIRROR_DIR` | `""` ⇒ `/data/sync/mirror` | where the sync daemon keeps its bare mirror (a rebuildable cache in the hive-data volume) |
+| `HIVE_HTTP_MAX_BODY_BYTES` | `1048576` | request-body cap in bytes on both HTTP doors (1 MiB) |
 | `HIVE_RETENTION__BACKUP_KEEP` | `30` | most-recent `hive backup` snapshots kept |
 | `HIVE_RETENTION__BACKUP_DIR` | `<db_dir>/backups` | where snapshots are written |
 | `HIVE_OBS__LOG_LEVEL` | `20` | Python `logging` level (`20` = INFO) |

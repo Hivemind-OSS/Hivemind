@@ -255,7 +255,8 @@ class LifecycleService:
     ``verified_reader`` (default ``None``) wires the verified-win rung: when the
     demand rule does NOT promote a candidate, a SHA-bound verified win promotes it
     instead (competitor veto retained). ``None`` makes the rung UNREACHABLE — the
-    read is never consulted, every envelope byte-identical (default OFF)."""
+    read is never consulted, every envelope byte-identical (the opt-OUT form —
+    the shipped config default is ON: ``HIVE_AUTONOMY__VERIFIED_PROMOTION``)."""
 
     def __init__(self, *, store, index, rule: DemandRule, now: Callable[[], int],
                  demand_window_s: int, quarantine_ttl_s: int, provisional_ttl_s: int,
@@ -370,7 +371,7 @@ class LifecycleService:
                       episode_id, d.n_misses, d.n_other_identities, anomaly)
             return d
         # the verified-win rung: consulted ONLY when the demand rule did not promote,
-        # and only when a reader is wired (None ⇒ unreachable — the default-OFF form).
+        # and only when a reader is wired (None ⇒ unreachable — the opt-OUT form).
         if d.promote or self._verified_reader is None:
             return d
         has_win = int(episode_id) in self._verified_reader.verified_wins(
