@@ -26,10 +26,18 @@ COPY hive/__init__.py ./hive/__init__.py
 COPY hive/tools/__init__.py ./hive/tools/__init__.py
 COPY hive/tools/bake_model.py ./hive/tools/bake_model.py
 RUN python -m hive.tools.bake_model --model Qwen/Qwen3-Embedding-0.6B --dest /opt/hf-cache/hub
+# Vendored hive-edge wheelhouse: the census/sync engines (comb-drift, matrix) + the
+# in-image `hive-edge` mint CLI. The server host receives ONLY this repo — these names
+# are never resolved from an index or a sibling checkout; scripts/vendor_edge.py (dev-side)
+# refreshes the committed wheels. Installed after the model layer (a wheel refresh never
+# re-bakes weights) and before the volatile hive/ COPY (a source edit never re-installs
+# engines). Their third-party deps (tree-sitter, networkx) resolve from PyPI as usual.
+COPY vendor/wheels/ /wheels/
+RUN pip install --no-cache-dir /wheels/*.whl
 # Volatile source — copied AFTER the model layer so editing it never re-bakes the weights.
-# [sync] brings the hive-edge CLI (+ its comb-drift/matrix engines) for the server-side
-# census; pytest rides along for the candidate-eval verifier tier. Byte-inert at runtime
-# until HIVE_SYNC__* is configured.
+# [sync]'s bare `hive-edge` is already satisfied by the wheelhouse above; jsonschema/
+# defusedxml ride the extra, pytest rides along for the candidate-eval verifier tier.
+# Byte-inert at runtime until HIVE_SYNC__* is configured.
 COPY hive/ ./hive/
 RUN pip install --no-cache-dir ".[embed,sync]" pytest \
  && python -m compileall -q hive

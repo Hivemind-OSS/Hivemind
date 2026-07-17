@@ -2,8 +2,8 @@
 
 Two halves: (1) `.dockerignore` excludes the sensitive trees so a stray credential, the
 git history, a local venv, or the test/doc trees can never enter the build context; (2) a
-scan of the files that WOULD become layers (pyproject.toml + hive/, the exact COPY set)
-finds no AWS/OpenAI/GitHub credential shapes. The full layer-tar scan of a built image is
+scan of the files that WOULD become layers (pyproject.toml + hive/ + vendor/, the exact
+COPY set) finds no AWS/OpenAI/GitHub credential shapes. The full layer-tar scan of a built image is
 in test_container_live.py (skip-guarded); this is the daemon-free static guarantee.
 """
 from __future__ import annotations
@@ -32,7 +32,7 @@ _KNOWN_KEY_FAKES = [
 ]
 
 # exactly the trees the Dockerfile COPYs into a layer
-_CONTEXT = [_ROOT / "pyproject.toml", _ROOT / "hive"]
+_CONTEXT = [_ROOT / "pyproject.toml", _ROOT / "hive", _ROOT / "vendor"]
 _REQUIRED_IGNORES = [".git", "__pycache__", ".env", "*.pem", "*.key",
                      "tests/", "docs/", "*.db"]
 
@@ -87,8 +87,10 @@ def test_secret_regex_matches_modern_key_shapes():
 
 
 def test_context_set_matches_dockerfile_copy():
-    # guard the assumption above: the Dockerfile COPYs pyproject + hive/ and nothing else
-    # source-wise into the builder (so scanning that set == scanning the layered source).
+    # guard the assumption above: the Dockerfile COPYs pyproject + hive/ + vendor/wheels/
+    # and nothing else source-wise into the builder (so scanning that set == scanning the
+    # layered source).
     df = (_ROOT / "Dockerfile").read_text()
     assert re.search(r"(?im)^COPY\s+pyproject\.toml", df)
     assert re.search(r"(?im)^COPY\s+hive/\s", df)
+    assert re.search(r"(?im)^COPY\s+vendor/wheels/\s", df)

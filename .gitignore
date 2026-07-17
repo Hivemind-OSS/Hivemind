@@ -70,9 +70,6 @@ CLAUDE.md
 # local context files and agent artifacts
 CONTEXT/
 
-# ── Server Admin Agent (in development)──
-/queen/
-
 # ── /looper agent-loop scratch state (local only; never shipped) ──
 .looper/
 

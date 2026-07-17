@@ -338,6 +338,21 @@ All notable changes to this project are documented here.
   config it is resolved at boot — there is no live reload (tune via `.env` then `hive up`).
 
 ## Changed
+- The server ships self-contained from this repository alone: the `[sync]` extra's engines
+  (comb-drift, matrix — now declared as the direct dependencies they are; `hive/census/join.py`,
+  `receipt.py`, and `hive/app/sync.py` import them by name) and the in-image `hive-edge` mint CLI
+  install from the committed `vendor/wheels/` wheelhouse. The image build pre-installs it before
+  the extra resolves and dev/uv pins the exact wheel paths in `[tool.uv.sources]`, replacing the
+  remote git pin a production host — which receives only this repo: no package index, no sibling
+  checkout — could never resolve (the `matrix` name on PyPI belongs to an unrelated project).
+  `scripts/vendor_edge.py` is the single refresh seam: it rebuilds the three wheels from a
+  hive-edge checkout, refuses a half-bumped workspace (the hive-edge distributions ship one
+  lockstep version, currently 0.8.0) or a wheel below the served `MIN_EDGE_VERSION` floor,
+  rewrites the pyproject wheel pins, and re-locks — wheelhouse, `pyproject.toml`, and `uv.lock`
+  land as one unit. The build-context secret scan
+  (`tests/container/test_dockerignore_no_secret.py`) now covers `vendor/` as part of the layered
+  COPY set, and the `OPERATIONS.md` release runbook drops its tag/publish/pin-flip steps for the
+  wheelhouse refresh.
 - `AgiConfig`'s docstring (`hive/app/config.py`) adds a scope note: `HIVE_AGI__MODE` today only
   gates the `AGI_OVERRIDE` sentinel check on `hive_write`/`hive_supersede`/`hive_prune` — it is not
   yet a fully autonomous mode. `HIVE-ADMIN.md` and `OPERATIONS.md` already documented this narrow

@@ -31,7 +31,7 @@ A connected agent gets exactly eight tools:
 ## Requirements
 
 - **Docker** + **Docker Compose v2** — the server, its store, and a baked offline embedder run
-  in one container (the image is hermetically offline; no network at runtime).
+  in one container (the image is hermetically offline; no network at runtime beyond the opt-in census sync's git fetches (`HIVE_SYNC__REPO_URL`)).
 - **Python 3.11+** on the host — to run the `hive` operator CLI (it drives `docker compose`).
 
 ## Quickstart (from a clone)
@@ -43,8 +43,8 @@ cp .env.example .env      # persist the store across restarts (sets HIVE_STORE__
 hive up                   # build + start; blocks until the daemon is healthy
 ```
 
-`hive up` is zero-config to boot, but **the store defaults to in-memory (`:memory:`) — ephemeral,
-so all memory is lost on restart.** Copy `.env.example` to `.env` (above) to persist into the
+`hive up` is zero-config to boot, but **the store defaults to `/data/shared.db` in the `hive-data` volume — persistent;
+only an explicit `HIVE_STORE__DB_PATH=:memory:` boots ephemeral, losing all memory on restart.** Copy `.env.example` to `.env` (above) to persist into the
 `hive-data` volume via `HIVE_STORE__DB_PATH=/data/shared.db`; an ephemeral boot WARNs loudly and
 `hive_health` reports `store_ephemeral`. **Agents should bring the server up with the runnable
 [`hive-bringup`](skills/hive-bringup/SKILL.md) skill** rather than the raw commands above — it
@@ -142,8 +142,7 @@ KPIs).
 
 Anchor mint/verify (recall freshness, including the dependency-neighborhood `radius` advisory) and
 a persistent per-repo code graph (`hive-edge graph`) ride a companion, per-workstation CLI,
-**[`hive-edge`](https://github.com/Hivemind-OSS/Hive-edge)** — it is not baked
-into the server image. It is not required for the core recall/capture/write loop (absent, mint and
+**[`hive-edge`](https://github.com/Hivemind-OSS/Hive-edge)** — the server image bakes its own copy for the server-side census leg; each workstation installs its own. It is not required for the core recall/capture/write loop (absent, mint and
 verify simply no-op; nothing else is affected), but the trust-lifecycle verify step depends on it.
 Census change evidence does **not**: it is computed and fed server-side (`HIVE_SYNC__REPO_URL`,
 above), so there is nothing to wire per repo or per device.

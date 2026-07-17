@@ -8,9 +8,6 @@ resolution-markers = [
     "python_full_version < '3.12'",
 ]
 
-[manifest]
-overrides = [{ name = "comb-drift", editable = "../hive-edge/packages/comb-drift" }]
-
 [[package]]
 name = "annotated-doc"
 version = "0.0.4"
@@ -166,8 +163,8 @@ wheels = [
 
 [[package]]
 name = "comb-drift"
-version = "0.2.0"
-source = { editable = "../hive-edge/packages/comb-drift" }
+version = "0.8.0"
+source = { path = "vendor/wheels/comb_drift-0.8.0-py3-none-any.whl" }
 dependencies = [
     { name = "sqlglot" },
     { name = "tree-sitter" },
@@ -177,6 +174,9 @@ dependencies = [
     { name = "tree-sitter-javascript" },
     { name = "tree-sitter-rust" },
     { name = "tree-sitter-typescript" },
+]
+wheels = [
+    { filename = "comb_drift-0.8.0-py3-none-any.whl", hash = "sha256:96d60038b16d3f86f8dab8560ffb314e398a4ed803ebd8f92844e959d3bc9f38" },
 ]
 
 [package.metadata]
@@ -504,28 +504,34 @@ bench = [
     { name = "sentence-transformers" },
 ]
 dev = [
+    { name = "comb-drift" },
     { name = "defusedxml" },
     { name = "hive-edge" },
     { name = "jsonschema" },
+    { name = "matrix" },
     { name = "pytest" },
 ]
 embed = [
     { name = "sentence-transformers" },
 ]
 sync = [
+    { name = "comb-drift" },
     { name = "defusedxml" },
     { name = "hive-edge" },
     { name = "jsonschema" },
+    { name = "matrix" },
 ]
 
 [package.metadata]
 requires-dist = [
+    { name = "comb-drift", marker = "extra == 'sync'", path = "vendor/wheels/comb_drift-0.8.0-py3-none-any.whl" },
     { name = "defusedxml", marker = "extra == 'sync'", specifier = ">=0.7" },
     { name = "hive", extras = ["embed"], marker = "extra == 'bench'" },
     { name = "hive", extras = ["sync"], marker = "extra == 'dev'" },
-    { name = "hive-edge", marker = "extra == 'sync'", git = "file:///home/null/Desktop/work/hive-edge?rev=development" },
+    { name = "hive-edge", marker = "extra == 'sync'", path = "vendor/wheels/hive_edge-0.8.0-py3-none-any.whl" },
     { name = "huggingface-hub", marker = "extra == 'bench'", specifier = ">=0.20" },
     { name = "jsonschema", marker = "extra == 'sync'", specifier = ">=4.21,<5" },
+    { name = "matrix", marker = "extra == 'sync'", path = "vendor/wheels/matrix-0.8.0-py3-none-any.whl" },
     { name = "mem0ai", marker = "extra == 'bench'", specifier = "==2.0.7" },
     { name = "numpy", specifier = ">=1.24" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=7" },
@@ -534,33 +540,20 @@ requires-dist = [
 provides-extras = ["embed", "sync", "dev", "bench"]
 
 [[package]]
-name = "hive-census"
-version = "0.1.0"
-source = { git = "file:///home/null/Desktop/work/hive-edge?subdirectory=packages%2Fhive-census&rev=development#8be475624f386f42937a383d1719d057e9363c13" }
-dependencies = [
-    { name = "comb-drift" },
-    { name = "hive-verifier" },
-    { name = "jsonschema" },
-    { name = "matrix" },
-]
-
-[[package]]
 name = "hive-edge"
-version = "0.6.0"
-source = { git = "file:///home/null/Desktop/work/hive-edge?rev=development#8be475624f386f42937a383d1719d057e9363c13" }
+version = "0.8.0"
+source = { path = "vendor/wheels/hive_edge-0.8.0-py3-none-any.whl" }
 dependencies = [
     { name = "comb-drift" },
-    { name = "hive-census" },
-    { name = "hive-verifier" },
     { name = "matrix" },
 ]
+wheels = [
+    { filename = "hive_edge-0.8.0-py3-none-any.whl", hash = "sha256:5ff80b2cbe421f6b0ed886053ec3bd13599c2f41e19c5ae778d2f831f1e251bb" },
+]
 
-[[package]]
-name = "hive-verifier"
-version = "0.0.1"
-source = { git = "file:///home/null/Desktop/work/hive-edge?subdirectory=packages%2Fhive-verifier&rev=development#8be475624f386f42937a383d1719d057e9363c13" }
-dependencies = [
-    { name = "defusedxml" },
+[package.metadata]
+requires-dist = [
+    { name = "comb-drift" },
     { name = "matrix" },
 ]
 
@@ -875,8 +868,8 @@ wheels = [
 
 [[package]]
 name = "matrix"
-version = "0.4.0"
-source = { git = "file:///home/null/Desktop/work/hive-edge?subdirectory=packages%2Fmatrix&rev=development#8be475624f386f42937a383d1719d057e9363c13" }
+version = "0.8.0"
+source = { path = "vendor/wheels/matrix-0.8.0-py3-none-any.whl" }
 dependencies = [
     { name = "networkx" },
     { name = "tree-sitter" },
@@ -888,6 +881,25 @@ dependencies = [
     { name = "tree-sitter-rust" },
     { name = "tree-sitter-typescript" },
 ]
+wheels = [
+    { filename = "matrix-0.8.0-py3-none-any.whl", hash = "sha256:0bfa2d06975976b4fe50573f58138cf805532a404d46deff879e2dc313d7aeda" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "networkx", specifier = ">=3.4" },
+    { name = "pytest", marker = "extra == 'dev'", specifier = ">=8" },
+    { name = "tree-sitter", specifier = ">=0.25,<0.26" },
+    { name = "tree-sitter-c", specifier = ">=0.24" },
+    { name = "tree-sitter-cpp", specifier = ">=0.23" },
+    { name = "tree-sitter-go", specifier = ">=0.23" },
+    { name = "tree-sitter-javascript", specifier = ">=0.23" },
+    { name = "tree-sitter-python", specifier = ">=0.23" },
+    { name = "tree-sitter-rust", specifier = ">=0.24" },
+    { name = "tree-sitter-sql", marker = "extra == 'sql'", specifier = ">=0.3" },
+    { name = "tree-sitter-typescript", specifier = ">=0.23" },
+]
+provides-extras = ["dev", "sql"]
 
 [[package]]
 name = "mdurl"
