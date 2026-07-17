@@ -456,6 +456,24 @@ All notable changes to this project are documented here.
   old-format `episodes` table is refused at store construction.
 
 ## Fixed
+- The served onboarding procedure now creates an absent rules file in flight. `ONBOARDING_PROCEDURE`
+  step 1 (`hive/app/onboard_ref.py`) spelled out only the "a block is already present, REPLACE it in
+  place" case, leaving the DEFAULT first-onboard state — a fresh clone ships no rules file (the rules
+  file is gitignored) — to agent inference (BUG-046). Step 1 now names all three states explicitly:
+  CREATE when absent, APPEND the block when the file exists without one, REPLACE in place when a
+  block is present. Serving-side install text only, so no `CONTRACT_VERSION` bump — the keystone
+  (`bundle_digest`) hashes the rules block + hooks + allowlist, never the procedure; guarded by
+  `test_procedure_step1_directs_create_append_or_replace_of_the_rules_file`.
+- The contract-version pre-commit guard (`scripts/contract_version_guard.py`) bumps
+  `CONTRACT_VERSION` only when a staged edit actually changes the INSTALLED bundle (the rules block +
+  hooks + allowlist — `onboard_ref.bundle_digest`), not on any edit to a watched file. A
+  serving-side-text-only change — the install procedure, the mint/verify/census directives,
+  `REMEDIATION_NOTICE`, none of which are in the version-pinned bundle — no longer forces a version
+  bump and a fleet-wide re-onboard that reinstalls a byte-identical bundle (BUG-047). The guard
+  compares the live digest to HEAD's keystone golden while the tree is still at HEAD's version (so
+  the version stamp normalizes out); a bundle edit bumps + regenerates the golden as before, and a
+  hand-bump ahead of HEAD is kept. The digest subprocess runs under `-B` so the second import around
+  the same-size `v.NN`→`v.NN+1` bump can't reload a stale `.pyc`.
 - `skills/hive-bringup` no longer claims the store defaults to `:memory:` — the fifth surface of
   the containerized-default drift (the entrypoint injects `/data/shared.db` when the env is unset;
   only an explicit `:memory:` boots ephemeral), matching the corrected README / `HIVE-ADMIN.md` /

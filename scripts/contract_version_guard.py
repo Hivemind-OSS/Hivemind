@@ -1,14 +1,17 @@
-"""Pre-commit guard that keeps the agent-contract version monotonic across commits.
+"""Pre-commit guard that keeps the agent-contract version monotonic with the INSTALLED bundle.
 
-When a commit touches the served-contract source (``hive/app/onboard_ref.py`` — the
-``initialize`` instructions, the installable rules block, the claude hooks, the auto-approve
-allowlist, and ``CONTRACT_VERSION`` — or ``hive/domain/kinds.py``, whose taxonomy renders into
-the floor), this guard ensures ``CONTRACT_VERSION`` is greater than at HEAD. If it is not, it
-bumps it by one and ``git add``s the change so the bump rides *in* the commit being created.
+The version gates what agents install and hold a version-stamped copy of — the rules block, the
+claude hooks, and the auto-approve allowlist (``onboard_ref.bundle_digest``). When a commit
+changes those bytes this guard bumps ``CONTRACT_VERSION`` past HEAD (so a connected agent whose
+installed marker drifts re-onboards) and regenerates the ``_GOLDEN_BUNDLE_SHA256`` keystone golden
+in the same step (Law 1/7) — a bundle edit can't land at an equal/stale version.
 
-Because ``CONTRACT_VERSION`` is embedded in the rendered block, any bump changes the keystone
-bundle bytes — so the guard also regenerates the ``_GOLDEN_BUNDLE_SHA256`` golden (from the one
-owner, ``onboard_ref.bundle_digest()``) in the same step, keeping the Law-7 keystone test green.
+A staged edit that leaves the bundle byte-identical to HEAD is NOT a version event: serving-side
+text re-fetched fresh at onboard — the install procedure, ``REMEDIATION_NOTICE``, the
+mint/verify/census directives — can't drift on the agent side, so editing it leaves the version at
+HEAD's. The trigger is the bundle digest, not the mere fact that ``onboard_ref.py`` was touched;
+the compare reads HEAD's golden (== HEAD's ``bundle_digest``) so the version stamp normalizes away
+when the tree is still at HEAD's version (see ``main``).
 
 The guard never blocks: it mutates mechanically and exits 0. Install it by pointing git at the
 tracked hooks dir once::
@@ -37,6 +40,7 @@ _DIGEST_ONELINER = "from hive.app.onboard_ref import bundle_digest; print(bundle
 
 _VERSION_RE = re.compile(r'(CONTRACT_VERSION: str = ")v\.(\d+)(")')
 _GOLDEN_RE = re.compile(r'(_GOLDEN_BUNDLE_SHA256 = ")[0-9a-f]{64}(")')
+_GOLDEN_VALUE_RE = re.compile(r'_GOLDEN_BUNDLE_SHA256 = "([0-9a-f]{64})"')
 
 
 # ── pure helpers (no I/O — unit-testable without a repo) ──────────────────────────────────────
@@ -62,6 +66,15 @@ def decide(current: int, head: int) -> tuple[int, bool]:
     if current > head:
         return current, False
     return head + 1, True
+
+
+def needs_bump(*, bundle_changed: bool, current: int, head: int) -> tuple[int, bool]:
+    """Target version + whether to bump, GATED on a real bundle change. A staged edit that leaves
+    the installed bundle byte-identical (a serving-side-text-only edit) is never a version event —
+    keep the current version. Otherwise step per ``decide`` (a hand-bump ahead of HEAD is kept)."""
+    if not bundle_changed:
+        return current, False
+    return decide(current, head)
 
 
 def set_version_line(text: str, new_version: str) -> str:
@@ -110,13 +123,27 @@ def head_version(root: Path) -> int | None:
     return parse_version(out.stdout)
 
 
+def golden_at_head(root: Path) -> str | None:
+    """The ``_GOLDEN_BUNDLE_SHA256`` literal committed at HEAD — equal to HEAD's ``bundle_digest()``
+    since the keystone test is green there — or None when HEAD lacks the line. The guard compares
+    the live digest against this to tell a bundle change from a serving-side-text edit."""
+    out = _git(root, "show", f"HEAD:{GOLDEN_FILE}")
+    if out.returncode != 0:
+        return None
+    m = _GOLDEN_VALUE_RE.search(out.stdout)
+    return m.group(1) if m else None
+
+
 def compute_digest(root: Path) -> str:
     """The live keystone bundle hash, computed in a FRESH interpreter so it reflects the just-written
-    bytes on disk (an in-process import would read stale, already-cached module bytes)."""
+    bytes on disk (an in-process import would read stale, already-cached module bytes). Runs under
+    ``-B`` (no bytecode cache): the guard imports onboard_ref twice around a SAME-SIZE version bump
+    (``v.NN`` -> ``v.NN+1``), and a written ``.pyc`` would be reloaded stale when the two writes land
+    on one mtime tick, yielding the pre-bump digest."""
     existing = os.environ.get("PYTHONPATH", "")
     pythonpath = str(root) + (os.pathsep + existing if existing else "")
     env = {**os.environ, "PYTHONPATH": pythonpath}
-    out = subprocess.run([sys.executable, "-c", _DIGEST_ONELINER],
+    out = subprocess.run([sys.executable, "-B", "-c", _DIGEST_ONELINER],
                          cwd=root, capture_output=True, text=True, env=env)
     if out.returncode != 0:
         raise RuntimeError(f"could not compute bundle digest: {out.stderr.strip()}")
@@ -135,7 +162,16 @@ def main(argv: list[str] | None = None) -> int:
         version_path = root / VERSION_FILE
         original = version_path.read_text(encoding="utf-8")
         current_v = parse_version(original)
-        new_v, bumped = decide(current_v, head_v)
+        # Bump only on a real bundle change. HEAD's golden IS HEAD's bundle_digest; when the tree is
+        # still at HEAD's version the stamp is identical on both sides, so an equal live digest means
+        # a serving-side-text-only edit (procedure / directives / REMEDIATION_NOTICE) that must NOT
+        # bump. A missing golden or an already-hand-bumped version falls through to ``decide``.
+        head_golden = golden_at_head(root)
+        live_digest = compute_digest(root)
+        bundle_changed = (head_golden is None or current_v != head_v or live_digest != head_golden)
+        new_v, bumped = needs_bump(bundle_changed=bundle_changed, current=current_v, head=head_v)
+        if not bumped and not bundle_changed:
+            return 0  # serving-side-text-only edit — bundle unchanged, version stays at HEAD's
     except Exception as exc:  # never block a commit on a guard fault
         print(f"[contract-version] skipped (guard error: {exc})", file=sys.stderr)
         return 0
@@ -161,7 +197,7 @@ def main(argv: list[str] | None = None) -> int:
         _git(root, "add", *changed)
     if bumped:
         print(f"[contract-version] bumped from {format_version(current_v)} to {format_version(new_v)} "
-              f"(contract changed); keystone golden regenerated")
+              f"(bundle changed); keystone golden regenerated")
     elif golden_changed:
         print(f"[contract-version] already at {format_version(current_v)} (> HEAD "
               f"{format_version(head_v)}); keystone golden regenerated")
