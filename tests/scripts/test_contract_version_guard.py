@@ -1,9 +1,11 @@
 """Contract-version pre-commit guard: pure-helper units + hermetic temp-repo integration.
 
 The integration scenarios build a throwaway git repo with a STUB ``hive.app.onboard_ref`` whose
-``bundle_digest()`` depends on ``CONTRACT_VERSION`` (mirroring the real version-embedded-in-block
-property), so a version bump is observable as a golden change — exercising the guard end to end,
-including its fresh-interpreter digest subprocess, without touching the real package."""
+``bundle_digest()`` depends on a version-independent ``BLOCK_BODY`` AND ``CONTRACT_VERSION``
+(mirroring the real version-embedded-in-block property), plus a ``PROCEDURE`` constant that is
+served-side text the digest never reads — so the guard's BUNDLE-AWARE trigger is observable: a
+``BLOCK_BODY`` change bumps, while a ``PROCEDURE`` (serving-side) or kinds-only edit leaves the
+bundle byte-identical and does not, all without touching the real package."""
 from __future__ import annotations
 
 import hashlib
@@ -15,7 +17,8 @@ import pytest
 
 from scripts import contract_version_guard as guard
 from scripts.contract_version_guard import (
-    decide, format_version, parse_version, set_golden_line, set_version_line,
+    _GOLDEN_VALUE_RE, decide, format_version, needs_bump, parse_version,
+    set_golden_line, set_version_line,
 )
 
 GUARD = Path(guard.__file__).resolve()
@@ -51,6 +54,25 @@ def test_decide_keeps_when_ahead_else_steps_to_head_plus_one(current, head, expe
     assert decide(current, head) == expected
 
 
+@pytest.mark.parametrize("current,head", [(1, 1), (5, 1), (1, 5)])
+def test_needs_bump_never_bumps_when_the_bundle_is_unchanged(current, head):
+    # a serving-side-text-only edit -> keep the current version, whatever current/head are
+    assert needs_bump(bundle_changed=False, current=current, head=head) == (current, False)
+
+
+@pytest.mark.parametrize("current,head,expected", [
+    (1, 1, (2, True)),    # bundle changed at HEAD's version -> step
+    (1, 5, (6, True)),    # behind HEAD -> jump to head+1
+    (3, 1, (3, False)),   # hand-bump ahead -> kept
+])
+def test_needs_bump_steps_per_decide_on_a_bundle_change(current, head, expected):
+    assert needs_bump(bundle_changed=True, current=current, head=head) == expected
+
+
+def test_golden_value_regex_extracts_the_hash():
+    assert _GOLDEN_VALUE_RE.search('_GOLDEN_BUNDLE_SHA256 = "' + "a" * 64 + '"').group(1) == "a" * 64
+
+
 def test_set_version_line_rewrites_exactly_the_one_line():
     text = 'a\nCONTRACT_VERSION: str = "v.09"\nb\n'
     out = set_version_line(text, "v.10")
@@ -77,9 +99,9 @@ def test_set_golden_line_raises_when_absent():
 
 # ── hermetic integration ────────────────────────────────────────────────────────────────────
 
-def _stub_digest(version: str) -> str:
-    """The stub onboard_ref's bundle_digest() output for a given CONTRACT_VERSION."""
-    return hashlib.sha256(("block-" + version).encode("utf-8")).hexdigest()
+def _stub_digest(version: str, body: str = "hello") -> str:
+    """The stub onboard_ref's bundle_digest() for a given BLOCK_BODY + CONTRACT_VERSION."""
+    return hashlib.sha256((body + "@" + version).encode("utf-8")).hexdigest()
 
 
 def _write(repo: Path, rel: str, content: str) -> None:
@@ -88,17 +110,26 @@ def _write(repo: Path, rel: str, content: str) -> None:
     path.write_text(content, encoding="utf-8")
 
 
+def _onboard_ref(version: str, body: str = "hello", procedure: str = "install steps") -> str:
+    """A stub whose bundle_digest reads BLOCK_BODY + CONTRACT_VERSION (the real version-in-block
+    property); PROCEDURE is served-side text the digest never reads, so editing it is bundle-inert."""
+    return (
+        'import hashlib\n'
+        f'CONTRACT_VERSION: str = "{version}"\n'
+        f'BLOCK_BODY: str = "{body}"\n'
+        f'PROCEDURE: str = "{procedure}"\n'
+        'def bundle_digest() -> str:\n'
+        '    return hashlib.sha256((BLOCK_BODY + "@" + CONTRACT_VERSION).encode("utf-8")).hexdigest()\n'
+    )
+
+
 def _make_repo(tmp_path: Path) -> Path:
     """A baseline repo committed at CONTRACT_VERSION v.01 with a consistent keystone golden."""
     repo = tmp_path / "repo"
     repo.mkdir()
     _write(repo, "hive/__init__.py", "")
     _write(repo, "hive/app/__init__.py", "")
-    _write(repo, "hive/app/onboard_ref.py",
-           'import hashlib\n'
-           'CONTRACT_VERSION: str = "v.01"\n'
-           'def bundle_digest() -> str:\n'
-           '    return hashlib.sha256(("block-" + CONTRACT_VERSION).encode("utf-8")).hexdigest()\n')
+    _write(repo, "hive/app/onboard_ref.py", _onboard_ref("v.01"))
     _write(repo, "hive/domain/__init__.py", "")
     _write(repo, "hive/domain/kinds.py", "TAXONOMY = 'v1'\n")
     _write(repo, "tests/app/test_onboard_ref.py",
@@ -131,11 +162,10 @@ def _staged(repo: Path) -> set[str]:
     return {line for line in out.stdout.splitlines() if line}
 
 
-def test_bumps_and_regenerates_golden_when_contract_staged_without_a_bump(tmp_path):
+def test_bumps_and_regenerates_golden_when_the_bundle_content_changes(tmp_path):
     repo = _make_repo(tmp_path)
-    # an edit to the contract file, staged, with the version left at v.01
-    _write(repo, "hive/app/onboard_ref.py",
-           (repo / "hive/app/onboard_ref.py").read_text(encoding="utf-8") + "# tweak\n")
+    # a real bundle change (BLOCK_BODY), staged, with the version left at v.01
+    _write(repo, "hive/app/onboard_ref.py", _onboard_ref("v.01", body="world"))
     subprocess.run(["git", "add", "hive/app/onboard_ref.py"], cwd=repo, check=True)
 
     res = _run_guard(repo)
@@ -143,31 +173,42 @@ def test_bumps_and_regenerates_golden_when_contract_staged_without_a_bump(tmp_pa
     assert res.returncode == 0
     assert "bumped from v.01 to v.02" in res.stdout
     assert _version_on_disk(repo) == "v.02"
-    assert _golden_on_disk(repo) == _stub_digest("v.02")            # regenerated for the new version
+    assert _golden_on_disk(repo) == _stub_digest("v.02", "world")   # regenerated for the new bundle
     assert {"hive/app/onboard_ref.py", "tests/app/test_onboard_ref.py"} <= _staged(repo)
 
 
-def test_a_kinds_only_change_still_bumps_the_version(tmp_path):
+def test_a_serving_side_text_edit_does_not_bump(tmp_path):
     repo = _make_repo(tmp_path)
+    # PROCEDURE is served-side text the bundle digest never reads — editing it is not a version event
+    _write(repo, "hive/app/onboard_ref.py", _onboard_ref("v.01", procedure="new install steps"))
+    subprocess.run(["git", "add", "hive/app/onboard_ref.py"], cwd=repo, check=True)
+
+    res = _run_guard(repo)
+
+    assert res.returncode == 0
+    assert res.stdout.strip() == ""                                 # silent — no bump
+    assert _version_on_disk(repo) == "v.01"                          # untouched
+    assert "tests/app/test_onboard_ref.py" not in _staged(repo)     # golden not touched
+
+
+def test_a_kinds_only_change_does_not_bump_when_the_bundle_is_identical(tmp_path):
+    repo = _make_repo(tmp_path)
+    # kinds.py is watched, but the stub bundle does not read it -> the bundle is unchanged -> no bump
     _write(repo, "hive/domain/kinds.py", "TAXONOMY = 'v2'\n")
     subprocess.run(["git", "add", "hive/domain/kinds.py"], cwd=repo, check=True)
 
     res = _run_guard(repo)
 
     assert res.returncode == 0
-    assert _version_on_disk(repo) == "v.02"                          # bumped though dev never staged it
-    assert _golden_on_disk(repo) == _stub_digest("v.02")
-    assert {"hive/app/onboard_ref.py", "tests/app/test_onboard_ref.py"} <= _staged(repo)
+    assert res.stdout.strip() == ""
+    assert _version_on_disk(repo) == "v.01"                          # bundle unchanged -> untouched
+    assert "tests/app/test_onboard_ref.py" not in _staged(repo)
 
 
 def test_does_not_double_bump_when_already_ahead_but_regenerates_stale_golden(tmp_path):
     repo = _make_repo(tmp_path)
-    # developer hand-bumped to v.02 but left the golden stale at v.01's value
-    _write(repo, "hive/app/onboard_ref.py",
-           'import hashlib\n'
-           'CONTRACT_VERSION: str = "v.02"\n'
-           'def bundle_digest() -> str:\n'
-           '    return hashlib.sha256(("block-" + CONTRACT_VERSION).encode("utf-8")).hexdigest()\n')
+    # developer hand-bumped to v.02 (bundle otherwise unchanged) but left the golden stale at v.01
+    _write(repo, "hive/app/onboard_ref.py", _onboard_ref("v.02"))
     subprocess.run(["git", "add", "hive/app/onboard_ref.py"], cwd=repo, check=True)
 
     res = _run_guard(repo)
