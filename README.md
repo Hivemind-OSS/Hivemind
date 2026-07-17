@@ -1,6 +1,6 @@
 # Hivemind
 
-A stigmergic **episodic memory** for a fleet of coding agents working one codebase. Hivemind
+A stale-proof, stigmergic **episodic memory** for a fleet of coding agents working one codebase. Hivemind
 runs as a single self-hosted **MCP server** that every agent connects to; what one agent
 learns, the others can recall. It is built for **solo devs and small teams** — single-tenant,
 single-host, one SQLite store.
