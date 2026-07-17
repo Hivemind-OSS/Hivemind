@@ -2,7 +2,7 @@
 
 The administrator's reference for standing up a Hivemind server, connecting a fleet, tuning the
 safety/recall knobs, and running it day-2. Everything here goes through the `hive` CLI
-(`pip install -e .` provides the command; uninstalled, `python -m hive.tools.cli` is identical).
+(`pip install -e .` provides the command; uninstalled, `python3 -m hive.tools.cli` is identical).
 For *what Hivemind is* and the agent-facing memory contract, see `llms-full.txt` (the complete
 self-contained guide; `llms.txt` is the short link index); for the quickstart,
 `README.md`. Agent-runnable runbook-skills for the procedures below live in `skills/`
@@ -15,7 +15,7 @@ which drives Compose). Then:
 
 ```bash
 git clone https://github.com/Hivemind-OSS/Hivemind.git hivemind && cd hivemind
-pip install -e .            # installs the `hive` command
+pip install -e .            # installs the `hive` command (venv on PEP-668 systems; or skip — python3 -m hive.tools.cli is identical)
 cp .env.example .env        # persist the store across restarts (sets HIVE_STORE__DB_PATH)
 hive up                    # build + start; blocks until the daemon is healthy
 ```

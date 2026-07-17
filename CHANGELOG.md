@@ -338,6 +338,11 @@ All notable changes to this project are documented here.
   config it is resolved at boot — there is no live reload (tune via `.env` then `hive up`).
 
 ## Changed
+- The shipped operator skills resolve the `hive` CLI mechanically: each runbook opens with a
+  one-line probe (`command -v hive >/dev/null 2>&1 || hive() { python3 -m hive.tools.cli "$@"; }`)
+  so every literal `hive …` step runs on an uninstalled checkout — the CLI is stdlib-only — and
+  the install docs note the PEP-668 externally-managed-Python wrinkle (README, `HIVE-ADMIN.md`
+  §1, `skills/hive-bringup`).
 - PyPI is removed as an install/publish channel for our distributions (`hive-edge`, `matrix`,
   `comb-drift`) — system-wide, both repos (closes BUG-045). Agents install the edge CLI from the
   public git repository via uv: the served contract (now **v.14**) renders
@@ -451,6 +456,10 @@ All notable changes to this project are documented here.
   old-format `episodes` table is refused at store construction.
 
 ## Fixed
+- `skills/hive-bringup` no longer claims the store defaults to `:memory:` — the fifth surface of
+  the containerized-default drift (the entrypoint injects `/data/shared.db` when the env is unset;
+  only an explicit `:memory:` boots ephemeral), matching the corrected README / `HIVE-ADMIN.md` /
+  `.env.example` / boot-WARN wording.
 - The ephemeral-store messaging matches the containerized default: the boot WARN
   (`hive/app/container.py`) and the `.env.example` persistence comment no longer claim the store
   defaults to `:memory:` — the entrypoint injects `/data/shared.db` when the env is unset, so only

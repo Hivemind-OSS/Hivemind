@@ -38,7 +38,7 @@ A connected agent gets exactly eight tools:
 
 ```bash
 git clone https://github.com/Hivemind-OSS/Hivemind.git hivemind && cd hivemind
-pip install -e .          # installs the `hive` command (uninstalled: python -m hive.tools.cli)
+pip install -e .          # installs the `hive` command (venv on PEP-668 systems; uninstalled: python3 -m hive.tools.cli)
 cp .env.example .env      # persist the store across restarts (sets HIVE_STORE__DB_PATH)
 hive up                   # build + start; blocks until the daemon is healthy
 ```

@@ -8,6 +8,10 @@ description: "Connect agents and teammates to a running Hivemind server: pick th
 Register clients against a server that is already up (**hive-bringup**). Full reference:
 `HIVE-ADMIN.md` §2 & §3.
 
+**CLI resolve (once per shell):** `command -v hive >/dev/null 2>&1 || hive() { python3 -m hive.tools.cli "$@"; }`
+— makes every `hive …` line below run on an uninstalled checkout (the CLI is stdlib-only;
+Windows shells: `py -m hive.tools.cli <verb>`; prerequisites: **hive-bringup**).
+
 ## Pick the door
 
 | Who | Door | Token? |
