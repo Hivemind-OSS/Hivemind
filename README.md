@@ -148,16 +148,17 @@ Census change evidence does **not**: it is computed and fed server-side (`HIVE_S
 above), so there is nothing to wire per repo or per device.
 
 You don't need to install it yourself: a connected agent checks for it during onboarding and
-installs or upgrades it automatically. To install it manually instead:
+installs or updates it automatically. To install it manually instead — uv required (the CLI's
+workspace engines resolve from git subdirectories via uv sources, which pip/pipx cannot read):
 
 ```bash
-uv tool install hive-edge
+uv tool install git+https://github.com/Hivemind-OSS/Hive-edge@release
+uv tool update-shell   # once, so uv's tool directory is on your PATH
 ```
 
-Per-device edge state (the rollback-pin config, worktree-delta baselines, the per-checkout
-code-graph cache) lives under `~/.hive-edge/` (`HIVE_EDGE_HOME` overrides); it is safe to delete
-and regenerates. See **[HIVE-ADMIN.md §8](HIVE-ADMIN.md)** for the full install/upgrade/rollback
-flow.
+Per-device edge state (worktree-delta baselines, the per-checkout code-graph cache) lives under
+`~/.hive-edge/` (`HIVE_EDGE_HOME` overrides); it is safe to delete and regenerates. See
+**[HIVE-ADMIN.md §8](HIVE-ADMIN.md)** for the full install/update/rollback flow.
 
 ## Embedding model & attribution
 

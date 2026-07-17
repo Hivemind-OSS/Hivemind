@@ -60,29 +60,49 @@ METADATA_FIELD_LIMIT: int = 2048
 # The single owner of the bundle version. Bump it (and regenerate the keystone golden) on ANY
 # change to AGENT_RULES_BLOCK / CLAUDE_CODE_HOOKS / the rendered allowlist. The beacon stamps this
 # on every tool result; an agent whose installed marker differs re-onboards.
-CONTRACT_VERSION: str = "v.13"
+CONTRACT_VERSION: str = "v.14"
 
 # The minimum hive-edge CLI version this contract requires (mint / verify / hook capability).
 # Rendered into the EDGE_CLI floor text below. When the CLI's capability moves, bump
 # this in the SAME release as the hive-edge change (Hive-edge's version-coupling rule) so the
 # pre-commit guard bumps CONTRACT_VERSION and the new floor propagates to every connected edge. A
 # contract-only edit that does not change CLI capability leaves this untouched.
-MIN_EDGE_VERSION: str = "0.7.0"
+MIN_EDGE_VERSION: str = "0.9.0"
+
+# The public repository the per-workstation edge CLI installs from, and the release ref agents
+# track. SINGLE OWNERS: every served install/rollback line renders from these two constants —
+# never a second literal — so a repo move or ref-policy change is a one-line edit. The operator
+# moves the `release` tag to each shipped lockstep, so agent CLI version == the server's vendored
+# wheel version by construction. Our dists (hive-edge / matrix / comb-drift) are NEVER published
+# to or installed from PyPI (BUG-024; the `matrix` name is squatted there by an unrelated
+# project): agents install from this public git repo via uv, and the server ships hermetic
+# vendored wheels (vendor/wheels/).
+EDGE_REPO_URL: str = "https://github.com/Hivemind-OSS/Hive-edge"
+EDGE_REPO_REF: str = "release"
 
 # The edge-CLI tooling loop, served in the install payload: mint / verify ride ONE console
 # script so every harness runs identical code — the hooks only AUTOMATE these calls, they never
 # own the computation. (Census computation left the edge CLI in 0.7.0 — it is server-side now;
-# see CENSUS_DIRECTIVE.) Names the version check, the PyPI install line, the MIN_EDGE_VERSION
-# floor, and `hive-edge upgrade`, with the rollback-pin caveat so the routine below-floor nudge
-# can never silently re-apply a regression a human deliberately rolled back.
+# see CENSUS_DIRECTIVE.) Names the version check, the git install line (uv REQUIRED, from
+# EDGE_REPO_URL@EDGE_REPO_REF), the MIN_EDGE_VERSION floor, the uv-native update, the explicit
+# do-NOT-run warn-off for the retired `hive-edge upgrade` verb (removed in 0.9.0; on older
+# installs a dead PyPI path), and the reinstall-an-explicit-ref rollback with the defer-to-your-
+# human caveat so the routine below-floor nudge can never silently re-apply a regression a human
+# deliberately rolled back.
 EDGE_CLI: str = (
     "EDGE CLI (all runtimes): mint / verify ride the `hive-edge` console script, so every "
-    "harness runs identical code. Check `hive-edge --version`; if it is absent, install it "
-    "from PyPI: `uv tool install hive-edge`. If it is below MIN_EDGE_VERSION ("
-    + MIN_EDGE_VERSION + ") or your contract version is outdated, run `hive-edge upgrade` — UNLESS a "
-    "rollback pin is active, in which case `hive-edge upgrade` reports the pin and refuses to "
-    "auto-override it, so defer to your human instead. No `hive-edge` on PATH is not an error: mint "
-    "and verify simply no-op and capture / recall are unaffected until you install it."
+    "harness runs identical code. uv is REQUIRED to install it: the CLI's workspace engines "
+    "(comb-drift, matrix) resolve from git subdirectories via uv sources — pip/pipx read "
+    "[project.dependencies] alone and would resolve `matrix` against PyPI, where that name is "
+    "squatted by an unrelated project. Check `hive-edge --version`; if it is absent, install it "
+    "from the public repo: `uv tool install git+" + EDGE_REPO_URL + "@" + EDGE_REPO_REF + "`, "
+    "then `uv tool update-shell` so uv's tool directory is on your PATH. If it is below "
+    "MIN_EDGE_VERSION (" + MIN_EDGE_VERSION + ") or your contract version is outdated, run "
+    "`uv tool upgrade hive-edge`. Do NOT run `hive-edge upgrade` — that verb is removed in 0.9.0, "
+    "and on an older install it is a dead PyPI path. Rollback is your human's call: they pin by "
+    "reinstalling an explicit ref (`uv tool install --force git+" + EDGE_REPO_URL + "@<tag-or-sha>`); "
+    "if such a pin is active, defer to them instead of upgrading. No `hive-edge` on PATH is not an "
+    "error: mint and verify simply no-op and capture / recall are unaffected until you install it."
 )
 
 # Marker fences make the installed block a one-regex, idempotent replace (no clobber, no duplicate).
@@ -123,6 +143,23 @@ def render_allowlist(server: str = "hive") -> str:
     return "\n".join(f"mcp__{server}__{verb}" for verb in AUTO_APPROVE_TOOLS)
 
 
+# Claude-Code hook OWNERSHIP markers — the single owner of "is this hook command hivemind's?".
+# Every command the served CLAUDE_CODE_HOOKS ships matches one of these (the four engine commands
+# carry `hive-edge hook `, the two echo nudges carry `[hivemind]`), and the served step-2
+# reconcile text renders its marker list from this SAME tuple — so the remover and the served set
+# cannot drift apart (a served hook the predicate missed would be orphaned by its own re-onboard).
+HIVEMIND_HOOK_COMMAND_MARKERS: tuple[str, ...] = ("hive-edge hook ", "[hivemind]")
+
+
+def is_hivemind_owned_hook_command(command: str) -> bool:
+    """True iff a project-settings hook command is hivemind-owned — i.e. the served re-onboard
+    reconcile may remove/replace it. Marker-based (substring), deliberately narrow: an operator's
+    own hook matches neither marker and is never touched. The step-2 reconcile is remove-then-
+    insert keyed on THIS predicate (BUG-043: the old merge-only step accumulated duplicates and
+    orphaned retired hivemind hooks across re-onboards)."""
+    return any(marker in command for marker in HIVEMIND_HOOK_COMMAND_MARKERS)
+
+
 # The full, PROJECT-scoped install steps for the OPTIONAL persistence block — un-compressible
 # verbatim install detail, so it rides the UNCAPPED payload only (never a capped field). Every
 # write is project-scoped (the repo root, shared with the team) — NEVER a home/global file
@@ -139,20 +176,29 @@ ONBOARDING_PROCEDURE: str = (
     "1) Write the served HIVEMIND-RULES block into that file BETWEEN its markers. If a "
     "HIVEMIND-RULES:START..END block is already present, REPLACE it in place (one block — no "
     "duplicate, no clobber of the surrounding content).\n"
-    "2) [Claude Code only] Merge the lifecycle hooks AND the auto-approve allowlist into the PROJECT "
-    ".claude/settings.json (the repo's settings file, never your home-directory or machine-global "
-    "one). Auto-approve ONLY the read/surface verbs so they do not prompt per call:\n"
+    "2) [Claude Code only] RECONCILE the lifecycle hooks in the PROJECT .claude/settings.json (the "
+    "repo's settings file, never your home-directory or machine-global one) — deterministic "
+    "remove-then-insert, never a merge. FIRST remove every hook command that is hivemind-owned "
+    "(its command contains `" + HIVEMIND_HOOK_COMMAND_MARKERS[0] + "` or `"
+    + HIVEMIND_HOOK_COMMAND_MARKERS[1] + "`) wherever it sits — ANY event, ANY matcher group — "
+    "pruning matcher groups and events left empty; THEN insert the served hooks set verbatim. "
+    "Hooks matching neither marker are your operator's own: leave them untouched. Install the "
+    "auto-approve allowlist the same way: the hive entries become EXACTLY the served set below "
+    "(replace the prior hive entries — never merge-accumulate), auto-approving ONLY the "
+    "read/surface verbs so they do not prompt per call:\n"
     + render_allowlist() + "\n"
     "   The write / supersede / prune verbs are deliberately omitted — their approval prompt is the "
-    "human checkpoint that matches their approved_by vouch.\n"
+    "human checkpoint that matches their approved_by vouch. Then RESTART the session to activate: "
+    "Claude Code loads hooks and the allowlist at session start only.\n"
     "3) [ALL runtimes] Install the edge CLI so mint / verify run identically on every "
     "harness: " + EDGE_CLI + "\n"
     "4) The version stamp IS the START marker (contract-version=" + CONTRACT_VERSION + "). You MUST "
     "RE-ONBOARD when a hive_* tool result's contract_version differs from your installed marker (or no "
-    "block is installed): repeat steps 0-2 to reinstall the FULL contract — the HIVEMIND-RULES block, "
-    "plus on Claude Code the lifecycle hooks AND the auto-approve allowlist — from the freshly served "
-    "copies, and run `hive-edge upgrade` so the edge CLI meets the new MIN_EDGE_VERSION (unless a "
-    "rollback pin is active — see EDGE CLI)."
+    "block is installed): repeat steps 0-2 to reinstall the FULL contract from the freshly served "
+    "copies — the HIVEMIND-RULES block, plus on Claude Code the step-2 hook/allowlist RECONCILE "
+    "(remove-then-insert, orphans removed) — RESTART the session so the reconciled hooks load, and "
+    "run `uv tool upgrade hive-edge` so the edge CLI meets the new MIN_EDGE_VERSION (see EDGE CLI; "
+    "if your human pinned a rollback ref, defer to them)."
 )
 
 # The capture-time mint directive — the full mechanics (un-compressible verbatim detail), served
@@ -267,8 +313,10 @@ NOISE_FLOOR: str = (
 # capped field; the short kind GLOSS still rides the hive_write/hive_capture descriptions unchanged.
 CAPTURE_TAXONOMY: str = VALUE_RUBRIC + "\n\n" + render_taxonomy() + "\n\n" + NOISE_FLOOR
 
-# claude-code ONLY — OPTIONAL lifecycle hooks that give the nudges teeth. Merge into the PROJECT
-# .claude/settings.json (never ~/.claude) WITHOUT clobbering existing keys. Two static echo nudges
+# claude-code ONLY — OPTIONAL lifecycle hooks that give the nudges teeth. Installed into the
+# PROJECT .claude/settings.json (never ~/.claude) by the step-2 deterministic reconcile:
+# hivemind-owned commands (HIVEMIND_HOOK_COMMAND_MARKERS) are removed first, then this set is
+# inserted verbatim — operator hooks stay untouched, restart activates. Two static echo nudges
 # carry NO CLI dependency: UserPromptSubmit prints to STDOUT (claude-code injects it as context => a
 # recall nudge + the contract_version drift reminder — a static echo cannot read the beacon, so it
 # prompts the agent to compare live vs installed, model-driven self-heal, D5); SubagentStop prints a

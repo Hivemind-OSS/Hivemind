@@ -212,8 +212,9 @@ recall/safety tuning.
 
 ## Release runbook — a coupled hivemind + hive-edge release
 
-The current instance: hive-edge **0.8.0** + contract **v.13** (the contract that moved census
-computation server-side; 0.8.0 is the workspace-lockstep release). When a release moves the
+The current instance: hive-edge **0.9.0** + contract **v.14** (the PyPI-free release: agents
+install the CLI from the public git repo via uv; 0.9.0 is the workspace-lockstep release, and
+the served floor now equals it). When a release moves the
 served contract and the edge-CLI floor together (a `CONTRACT_VERSION` + `MIN_EDGE_VERSION`
 bump), the human lands it in this order — every step is safe to stop after, and the fleet is
 never directed at an artifact that does not exist yet:
@@ -225,18 +226,23 @@ never directed at an artifact that does not exist yet:
    rebuilds `vendor/wheels/` from that checkout, refuses a half-bumped workspace (the three
    wheel versions must be identical) or a hive_edge wheel below the floor the
    server will serve, rewrites the `[tool.uv.sources]` wheel pins, and re-locks. There is no
-   tag, package index, or publish step — the committed wheelhouse IS the release artifact, and
-   the server host receives only the hivemind repo (zero interaction with a hive-edge checkout).
-3. **Land hivemind** — the server change that serves the new contract (v.13) and pins the new
-   floor (`MIN_EDGE_VERSION = 0.7.0`), carrying the refreshed `vendor/wheels/` +
+   package index or publish step — the committed wheelhouse IS the server's release artifact,
+   and the server host receives only the hivemind repo (zero interaction with a hive-edge
+   checkout). The one tag duty is agent-side: move the `release` tag in the hive-edge repo to
+   the shipped lockstep commit BEFORE the fleet re-onboards, so `uv tool upgrade hive-edge`
+   resolves to the version the served floor names.
+3. **Land hivemind** — the server change that serves the new contract (v.14) and pins the new
+   floor (`MIN_EDGE_VERSION = 0.9.0`), carrying the refreshed `vendor/wheels/` +
    `pyproject.toml` + `uv.lock` in the same change.
 4. **Cut the live server over** — an in-place rebuild + restart of the running container from
    the landed tree, preserving the `hive-data` volume (this is not `hive upgrade`, which moves
    the checkout to a ref). **No compose change is required**: sync configuration rides `.env`
    (`HIVE_SYNC__*`) and the mirror lives inside the existing `hive-data` volume (`/data/sync/`).
 5. **The fleet re-onboards itself — no action**: each agent's next tool result beacons
-   `contract_version` v.13; the installed-marker mismatch triggers the served re-onboard
-   procedure, which also runs `hive-edge upgrade` to meet the new floor.
+   `contract_version` v.14; the installed-marker mismatch triggers the served re-onboard
+   procedure — the deterministic hook/allowlist reconcile, a session restart, and
+   `uv tool upgrade hive-edge` to meet the new floor (which is why the `release` tag moves in
+   step 2, before any agent re-onboards).
 6. **Archive what the release retired** — the retired `hive-census` + `hive-verifier` engine packages in the hive-edge workspace
    (their engines now live in the server as `hive/census/` + `hive/verifier/`) — after the fleet
    is over, never before.

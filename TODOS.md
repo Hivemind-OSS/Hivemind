@@ -262,7 +262,7 @@ unaffected.
 
 **Sequencing:** deliberately last in the sync/tagging series — purely additive advisory channels
 on settled semantics and the final tool layout. Start only after the hive-sync split's release
-tail (PyPI publish → pin flip → dogfood cutover → re-onboard) completes, since it edits the same
+tail (move the `release` tag → pin flip → dogfood cutover → re-onboard) completes, since it edits the same
 contract text, edge CLI, and doc surfaces. Two repos + a contract bump: this takes a full planning
 phase (where the candidate cut is decided), not an ad-hoc add.
 

@@ -56,21 +56,23 @@ Then the teammate uses the **local** loopback line above as-is — no ngrok, no 
 
 Every connected participant (local or remote) also installs the **`hive-edge` CLI** — anchor
 mint/verify, the worktree-delta tripwire, the per-checkout code graph, and the Claude-Code hook
-adapters. One install from PyPI, nothing to wire:
+adapters. One install from the public repo, nothing to wire — uv required (the CLI's workspace
+engines resolve from git subdirectories via uv sources, which pip/pipx cannot read):
 
 ```bash
-uv tool install hive-edge
+uv tool install git+https://github.com/Hivemind-OSS/Hive-edge@release
+uv tool update-shell   # once, so uv's tool directory is on PATH
 ```
 
 Census change evidence needs **no per-device setup**: it is computed and fed server-side (the
 operator arms `HIVE_SYNC__REPO_URL` on the server — `HIVE-ADMIN.md` §4), so there are no git
 hooks, no `census init`, and no signing key on workstations. A connected agent normally installs
-and upgrades the CLI itself during onboarding — the served contract pins the minimum version
-(`MIN_EDGE_VERSION`) and has it run `hive-edge upgrade` when below it.
+and updates the CLI itself during onboarding — the served contract pins the minimum version
+(`MIN_EDGE_VERSION`) and has it run `uv tool upgrade hive-edge` when below it.
 
-The full flow — `hive-edge upgrade`, rollback pins, the per-device state directory
-(`~/.hive-edge/`), and the server's own `hive upgrade` — is **`HIVE-ADMIN.md` §8** (the single
-source; not duplicated here).
+The full flow — `uv tool upgrade hive-edge`, rollback by reinstalling an explicit ref, the
+per-device state directory (`~/.hive-edge/`), and the server's own `hive upgrade` — is
+**`HIVE-ADMIN.md` §8** (the single source; not duplicated here).
 
 ## Seat hygiene & offboarding
 

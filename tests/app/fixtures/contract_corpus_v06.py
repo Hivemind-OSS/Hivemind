@@ -78,7 +78,11 @@ INVENTORY: list[dict] = [
     {'id': 37, 'unit': 'contract_version_beacon_and_reonboard_trigger', 'classification': 'NECESSARY', 'source_sections': ('SERVER_INSTRUCTIONS', 'ONBOARDING_REFERENCE'), 'probes': ('differs from the version in your installed HIVEMIND-RULES marker', 'differs from your installed marker')},
     {'id': 38, 'unit': 'degrades_safely_to_floor', 'classification': 'NECESSARY', 'source_sections': ('SERVER_INSTRUCTIONS', 'ONBOARDING_REFERENCE'), 'probes': ('degrades safely',)},
     {'id': 39, 'unit': 'edge_cli_install_check', 'classification': 'NECESSARY', 'source_sections': ('SERVER_INSTRUCTIONS', 'ONBOARDING_REFERENCE'), 'probes': ('hive-edge --version',)},
-    {'id': 40, 'unit': 'edge_cli_literal_install_command', 'classification': 'NECESSARY', 'source_sections': ('SERVER_INSTRUCTIONS', 'ONBOARDING_REFERENCE'), 'probes': ('uv tool install hive-edge',)},
+    # Probe pins the unit's MEANING (a literal edge-CLI install command is served), not the
+    # delivery wording (BUG-041 precedent): the frozen∩live intersection `git+<repo>` matches the
+    # frozen v.06 form (`uv tool install hive-edge --from git+…@release`) AND the live v.14 git
+    # form (`uv tool install git+…@release`) — the interim PyPI wording is dead (BUG-024).
+    {'id': 40, 'unit': 'edge_cli_literal_install_command', 'classification': 'NECESSARY', 'source_sections': ('SERVER_INSTRUCTIONS', 'ONBOARDING_REFERENCE'), 'probes': ('git+https://github.com/Hivemind-OSS/Hive-edge',)},
     # Version-agnostic probe: the unit is "the min-version floor is NAMED", not its literal value
     # (which legitimately moves with edge releases; it was 0.1.0 in the frozen corpus).
     {'id': 41, 'unit': 'edge_cli_min_version_floor', 'classification': 'NECESSARY', 'source_sections': ('SERVER_INSTRUCTIONS', 'ONBOARDING_REFERENCE'), 'probes': ('MIN_EDGE_VERSION (',)},
