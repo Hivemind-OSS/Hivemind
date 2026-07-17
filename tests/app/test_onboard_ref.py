@@ -451,6 +451,31 @@ def test_procedure_directs_remove_then_insert_reconcile_restart_and_allowlist_ex
     assert "reconcile" in step4.lower() and "restart" in step4.lower()
 
 
+def test_procedure_step1_directs_create_append_or_replace_of_the_rules_file():
+    """Step 1 as served TEXT must cover all three first-touch states of the runtime rules file,
+    not only the rarer already-installed case: CREATE it when absent (the DEFAULT state of a fresh
+    clone — no rules file is committed), APPEND the block when the file exists without one, and
+    REPLACE in place when a block is already present. Leaving create-if-absent to agent inference
+    was the BUG-046 gap."""
+    low = ONBOARDING_PROCEDURE.lower()
+    assert "creating the file if it does not exist" in low     # absent -> create
+    assert "append the block" in low                           # exists, no block -> append
+    assert "replace it in place" in low                        # block present -> replace
+
+
+def test_serving_side_text_is_excluded_from_the_version_pinned_bundle():
+    """The keystone bundle (bundle_digest) is the block + hooks + allowlist — what agents INSTALL and
+    hold a version-stamped copy of. Serving-side text re-fetched fresh at onboard (the install
+    procedure, REMEDIATION_NOTICE, the mint/verify/census directives) is NOT in it, so editing that
+    text changes no bundle byte and the bundle-aware contract-version guard leaves the version alone.
+    If a refactor pulls one of these into the block, this goes RED — the guard would start bumping on
+    serving-text edits again (the BUG-047 regression)."""
+    bundle = render_agent_rules_block() + CLAUDE_CODE_HOOKS + render_allowlist()
+    for text in (ONBOARDING_PROCEDURE, REMEDIATION_NOTICE, MINT_DIRECTIVE, VERIFY_DIRECTIVE,
+                 CENSUS_DIRECTIVE):
+        assert text not in bundle
+
+
 # ── the harness-agnostic edge-CLI contract: mint/verify/update + the serving rider ──
 def test_edge_cli_names_install_version_floor_and_upgrade():
     """EDGE_CLI teaches the tooling loop on EVERY runtime: the version check, the git install

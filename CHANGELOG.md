@@ -456,6 +456,14 @@ All notable changes to this project are documented here.
   old-format `episodes` table is refused at store construction.
 
 ## Fixed
+- The served onboarding procedure now creates an absent rules file in flight. `ONBOARDING_PROCEDURE`
+  step 1 (`hive/app/onboard_ref.py`) spelled out only the "a block is already present, REPLACE it in
+  place" case, leaving the DEFAULT first-onboard state — a fresh clone ships no rules file (the rules
+  file is gitignored) — to agent inference (BUG-046). Step 1 now names all three states explicitly:
+  CREATE when absent, APPEND the block when the file exists without one, REPLACE in place when a
+  block is present. Serving-side install text only, so no `CONTRACT_VERSION` bump — the keystone
+  (`bundle_digest`) hashes the rules block + hooks + allowlist, never the procedure; guarded by
+  `test_procedure_step1_directs_create_append_or_replace_of_the_rules_file`.
 - The contract-version pre-commit guard (`scripts/contract_version_guard.py`) bumps
   `CONTRACT_VERSION` only when a staged edit actually changes the INSTALLED bundle (the rules block +
   hooks + allowlist — `onboard_ref.bundle_digest`), not on any edit to a watched file. A
