@@ -10,7 +10,7 @@ from __future__ import annotations
 import json
 import logging
 import sqlite3
-from typing import Optional, Sequence
+from typing import Mapping, Optional, Sequence
 
 import numpy as np
 
@@ -25,6 +25,7 @@ from hive.domain.lifecycle import (
     DEPRECATED, ESTABLISHED, PROVISIONAL, QUARANTINED, TRUST_STATES,
     MissRow, decayed, is_servable,
 )
+from hive.domain.meta import meta_version_histogram, normalize_meta
 from hive.domain.models import Episode, content_hash
 from hive.domain.provenance import DEFAULT_PROVENANCE, PROVENANCE_NAMES
 
@@ -104,6 +105,11 @@ CREATE TABLE IF NOT EXISTS conflict_flags(
   status TEXT NOT NULL DEFAULT 'open' CHECK(status IN ('open','dismissed')));
 CREATE UNIQUE INDEX IF NOT EXISTS idx_conflict_flags_pair
   ON conflict_flags(a_id, b_id, kind);
+CREATE TABLE IF NOT EXISTS ingested_ranges(
+  repo TEXT NOT NULL,        -- "" = the legacy (pre-repo-key) receipt identity
+  base_sha TEXT NOT NULL, head_sha TEXT NOT NULL,
+  phase TEXT NOT NULL, ts INTEGER NOT NULL,
+  PRIMARY KEY(repo, base_sha, head_sha, phase));
 """.replace("__KIND_COLUMN__", _KIND_COLUMN_DDL).replace(
     "__PROVENANCE_COLUMN__", _PROVENANCE_COLUMN_DDL)
 
@@ -553,7 +559,8 @@ class SqliteEpisodeStore:
             f"WHERE kind=? AND episode_id IN ({placeholders})",
             [EK_OUTCOME_VERIFIED_HELPED, *ids])}
 
-    def last_verification(self, episode_ids: Sequence[int]
+    def last_verification(self, episode_ids: Sequence[int], *,
+                          canonical_ref: Optional[str] = None
                           ) -> dict[int, tuple[int, str, str]]:
         """LastVerificationReader: the newest ``verify_current``/``verify_stale``
         ledger row per requested id → ``{eid: (ts, head_sha, state)}``, state derived
@@ -561,7 +568,11 @@ class SqliteEpisodeStore:
         ``promotion_provenance`` idiom): a malformed payload or a missing
         ``stamp.head_sha`` SKIPS that row — an older parseable row may still answer;
         an id with nothing parseable is simply ABSENT (under-claim, never a raise).
-        // O(rows)."""
+        ``canonical_ref`` (None/"" ⇒ today's unscoped read) additionally SKIPS a row
+        whose payload ``ref`` names a DIFFERENT line — the same first-parseable-wins
+        loop lets an older canonical row answer instead; a legacy ref-LESS row always
+        counts (the absence rule: scoping filters foreign refs, never the pre-stamp
+        corpus). // O(rows)."""
         ids = [int(e) for e in episode_ids]
         if not ids:
             return {}
@@ -577,7 +588,14 @@ class SqliteEpisodeStore:
             if eid in out:
                 continue                              # already have the newest for this id
             try:
-                stamp = json.loads(r["payload"]).get("stamp")
+                payload = json.loads(r["payload"])    # stamp AND ref read from ONE parse
+                # marker: skipping legacy ref-less rows under a set canonical_ref is a
+                # mutation (the absence rule) — only a PRESENT, DIFFERENT ref is foreign.
+                row_ref = payload.get("ref")
+                if (canonical_ref and isinstance(row_ref, str) and row_ref
+                        and row_ref != canonical_ref):
+                    continue                          # measured a foreign line ⇒ skip
+                stamp = payload.get("stamp")
                 head_sha = stamp.get("head_sha") if isinstance(stamp, dict) else None
                 if not isinstance(head_sha, str) or not head_sha:
                     continue                          # stamp-less row ⇒ skip (under-claim)
@@ -646,6 +664,78 @@ class SqliteEpisodeStore:
                       len(inserted), skipped)
         return inserted, skipped
 
+    # ── RangeLedger port (the census feed's durable range-dedupe seam) ─────────
+    def already_ingested_range(self, repo: str, base_sha: str, head_sha: str,
+                               phase: str) -> bool:
+        """RangeLedger: has this EXACT ``(repo, base_sha, head_sha, phase)`` range
+        already been ingested? Exact-key equality only — no subsumption/overlap
+        reasoning (legacy A..B + B..C and a sync A..C are distinct keys; transition
+        noise all lands). Read-only, no DDL. // O(1) (PK probe)."""
+        return self.conn.execute(
+            "SELECT 1 FROM ingested_ranges "
+            "WHERE repo=? AND base_sha=? AND head_sha=? AND phase=? LIMIT 1",
+            (repo, base_sha, head_sha, phase)).fetchone() is not None
+
+    def record_ingested_range(self, repo: str, base_sha: str, head_sha: str,
+                              phase: str, ts: int) -> bool:
+        """RangeLedger: durably record one ingested range, idempotent on the exact key.
+        True iff a NEW row was written; a repeat is a no-op False (the first write
+        stands — its ts is never refreshed). Existence is checked explicitly (not
+        INSERT OR IGNORE) so any other IntegrityError still RAISES rather than being
+        silently swallowed (the record_conflict_flag idiom). ONE tx. // O(1)."""
+        with tx(self.conn):
+            if self.conn.execute(
+                    "SELECT 1 FROM ingested_ranges "
+                    "WHERE repo=? AND base_sha=? AND head_sha=? AND phase=?",
+                    (repo, base_sha, head_sha, phase)).fetchone() is not None:
+                return False
+            self.conn.execute(
+                "INSERT INTO ingested_ranges(repo, base_sha, head_sha, phase, ts) "
+                "VALUES(?,?,?,?,?)", (repo, base_sha, head_sha, phase, int(ts)))
+        return True
+
+    # ── the backfill-mint seam (duck-typed app reads/writes — no port) ─────────
+    def anchored_episodes_with_meta(self) -> list[tuple[int, str, str]]:
+        """``(id, anchor, meta)`` for approved rows with a non-empty anchor — the
+        fp-backfill sweep's candidate set (the ``anchored_episodes`` shape with the
+        serialized meta carrier riding along verbatim). ALL trust states included,
+        same as its twin — the consumer owns any further filtering. Duck-typed app
+        read, NOT a domain port. Read-only, no DDL. // O(rows)."""
+        return [(int(r["id"]), r["anchor"], r["meta"]) for r in self.conn.execute(
+            "SELECT id, anchor, meta FROM episodes "
+            "WHERE status='approved' AND anchor != '' ORDER BY id")]
+
+    def fill_absent_meta(self, episode_id: int, additions: Mapping[str, str]) -> int:
+        """Absent-only meta merge in ONE tx: parse the current carrier ('' ⇒ {}),
+        fold ``additions`` in UNDER it, write back canonical (``normalize_meta``
+        stays the one grammar gate — a non-conforming result refuses loudly and the
+        tx rolls back). Returns the count of keys added; 0 = no-op, nothing written
+        (unknown id, empty or all-present additions). Meta is a carried label: the
+        write touches ONLY the meta column — text / content_hash / value / version
+        stay byte-identical.
+
+        STRUCTURALLY absent-only: the merge spreads the CURRENT map last, so a
+        present key cannot be displaced — an overwrite is unconstructable, not
+        merely refused. // marker: swapping the spread order (additions last) is
+        the mutation — test_fill_absent_meta_never_overwrites and CT-7
+        test_never_overwrites red."""
+        with tx(self.conn):
+            row = self.conn.execute(
+                "SELECT meta FROM episodes WHERE id=?", (int(episode_id),)).fetchone()
+            if row is None:
+                return 0
+            current = json.loads(row["meta"]) if row["meta"] else {}
+            if not isinstance(current, dict):
+                raise ValueError(
+                    f"episode {episode_id} meta carrier is not a map — refusing to merge")
+            merged = {**dict(additions), **current}
+            added = len(merged) - len(current)
+            if added == 0:
+                return 0
+            self.conn.execute("UPDATE episodes SET meta=? WHERE id=?",
+                              (normalize_meta(merged), int(episode_id)))
+            return added
+
     def trust_counts(self) -> dict[str, int]:
         """Per-trust-state row counts for hive_health — ALL four states present
         (a zero is signal: quarantine pile-up must be visible, never silent)."""
@@ -655,6 +745,16 @@ class SqliteEpisodeStore:
             if r["trust"] in out:
                 out[r["trust"]] = int(r["c"])
         return out
+
+    def meta_version_counts(self) -> dict[str, dict]:
+        """Per-meta-key token-version histogram for hive_health, over the LIVE corpus
+        (status='approved' AND trust != 'deprecated' — servable + quarantined, retired
+        tombstones excluded). Pure fold lives in domain meta.meta_version_histogram; this
+        method only streams the rows (the ONE sanctioned prefix-only meta read — THEORY §5)."""
+        rows = self.conn.execute(
+            "SELECT meta FROM episodes WHERE status='approved' AND trust != ?",
+            (DEPRECATED,))
+        return meta_version_histogram(r["meta"] for r in rows)
 
     # ── ExposureLedger port (the recall side-channel writer) ──────────────────
     def record_exposure(self, trace_id: str, items: Sequence[tuple[int, float]],

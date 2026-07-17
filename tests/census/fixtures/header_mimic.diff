@@ -1,0 +1,11 @@
+diff --git a/evil.sql b/evil.sql
+index 151374e..f9b2c2e 100644
+--- a/evil.sql
++++ b/evil.sql
+@@ -2,4 +2,2 @@ SELECT 1;
+--- a/evil.sql
+--- setup comment
+---- header-lookalike
+-SELECT 2;
++SELECT 99;
++++ b/fake.sql

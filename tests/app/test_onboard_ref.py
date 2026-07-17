@@ -22,7 +22,7 @@ from hive.domain.kinds import render_taxonomy
 # Regenerate when the bundle legitimately changes (and bump CONTRACT_VERSION) — the pre-commit
 # contract-version guard does this automatically, or by hand:
 #   python -c "from hive.app.onboard_ref import bundle_digest; print(bundle_digest())"
-_GOLDEN_BUNDLE_SHA256 = "3124fdc384f5ff1b0ada1d56b98e404ea7078e1902f89f3156bacf02cfc7dc97"
+_GOLDEN_BUNDLE_SHA256 = "394c95b42b360477ff000d2ba158b1d7385f709635ddb4532536075b92fae0bb"
 
 
 def test_server_instructions_cover_the_verbs_and_search_first_timing():
@@ -353,11 +353,12 @@ def test_claude_code_hooks_is_valid_json_with_the_six_lifecycle_events():
 
 # ── the harness-agnostic edge-CLI contract: mint/verify/upgrade + the serving rider ──
 def test_edge_cli_names_install_version_floor_and_upgrade():
-    """EDGE_CLI teaches the tooling loop on EVERY runtime: the version check, the uv install
+    """EDGE_CLI teaches the tooling loop on EVERY runtime: the version check, the PyPI install
     line, the MIN_EDGE_VERSION floor, and `hive-edge upgrade` with the rollback-pin caveat."""
     e = EDGE_CLI
     assert "hive-edge --version" in e
-    assert "uv tool install hive-edge" in e            # the install line (repo link included)
+    assert "uv tool install hive-edge" in e            # the PyPI install line
+    assert "git+" not in e                             # 0.7.0 ships from PyPI, not a git ref
     assert MIN_EDGE_VERSION in e                        # the capability floor
     assert "hive-edge upgrade" in e
     assert "pin" in e.lower()                           # the rollback-pin refusal caveat
@@ -438,29 +439,25 @@ def test_edge_directives_carry_the_conditional_on_both_triggers():
     assert "installed and firing" in VERIFY_DIRECTIVE
 
 
-def test_procedure_wires_the_census_evidence_feed():
-    """BUG-030: the served contract must instruct the repo-level census wiring — the ONE command
-    that writes the post-merge + post-commit hooks and activates the change_outcome evidence
-    feed. It existed only in the human ops doc; a repo onboarded purely over MCP left the
-    corroborate/contradict loop silently dark. Repo-level install mechanics ride the uncapped
-    payload procedure (the same release-valve split as the mint/verify directives), with a
-    numbered step in the install flow before the re-onboard step."""
+def test_census_directive_teaches_the_server_automatic_feed():
+    """U1 (contract v.13): census ingestion is SERVER-AUTOMATIC — once the operator connects the
+    repo to the server-side sync, tracked-branch movement lands as change_outcome evidence with
+    NOTHING to wire per repo or per device. The deleted `hive-edge census init` verb must never
+    be served again (0.7.0 ships no census verb — an agent following it would hit a nonexistent
+    command), and the ONE manual path is the operator's existing `hive ingest` escape hatch — no
+    new verb is invented. The directive still rides the uncapped payload procedure so agents are
+    TOLD there is nothing to wire rather than left to invent wiring."""
     procedure = render_onboarding_payload()["procedure"]
     assert CENSUS_DIRECTIVE in procedure                # single-sourced into the payload
-    assert "hive-edge census init" in procedure
-    assert "--hive-url" in procedure
-    assert "once per repo" in procedure.lower()         # per-repo per-device idempotent wiring
-    assert "change_outcome" in procedure                # names WHAT the feed activates
-    assert "inert" in procedure and "fail-open" in procedure   # non-server devices still succeed
-    # census init wires BOTH hooks: merges AND direct commits land as change_outcome evidence,
-    # and the hooks keep the per-repo code graph current
-    assert "post-merge" in CENSUS_DIRECTIVE and "post-commit" in CENSUS_DIRECTIVE
-    assert "direct commits" in procedure
-    assert "code graph" in procedure
-    assert "hive-edge census init" in ONBOARDING_PROCEDURE     # the numbered install step
-    assert "post-commit" in ONBOARDING_PROCEDURE        # the numbered step names both hooks
-    # the wiring step precedes the re-onboard step (the flow ends on the version stamp)
-    assert ONBOARDING_PROCEDURE.index("census init") < ONBOARDING_PROCEDURE.index("version stamp")
+    low = CENSUS_DIRECTIVE.lower()
+    assert "server-automatic" in low                    # the U1 flip, named
+    assert "nothing to wire" in low                     # no per-repo / per-device step survives
+    assert "hive ingest" in CENSUS_DIRECTIVE            # the manual escape hatch, by name
+    assert "change_outcome" in CENSUS_DIRECTIVE         # names WHAT the feed lands
+    # the deleted edge verb is GONE from every served channel
+    assert "census init" not in procedure
+    assert "census init" not in ONBOARDING_PROCEDURE
+    assert "census" not in EDGE_CLI.lower()             # mint/verify only — census wording dropped
 
 
 def test_remediation_notice_names_the_option_vocabulary_without_hive_flag():
@@ -479,3 +476,40 @@ def test_remediation_notice_names_the_option_vocabulary_without_hive_flag():
 def test_write_vs_capture_and_bad_vs_stale_single_instance():
     assert SERVER_INSTRUCTIONS.count(WRITE_VS_CAPTURE) == 1
     assert SERVER_INSTRUCTIONS.count(BAD_VS_STALE) == 1
+
+
+# ── the branch-scope contract (mint opt-in + membership verify + the supersession flow) ──
+def test_mint_directive_teaches_branch_scope_opt_in():
+    """The capture-time opt-in: a memory true ONLY on specific branch(es) gets
+    `--branch-scope` (current branch) or explicit names — a set-valued RELEVANCE SCOPE,
+    never auto-attached, never required."""
+    m = MINT_DIRECTIVE
+    assert "--branch-scope" in m
+    low = m.lower()
+    assert "relevance scope" in low
+    assert "set-valued" in low
+    assert "never auto-attached" in low and "never required" in low
+    # the edge capability floor moves with the new CLI surface (the version-coupling rule);
+    # 0.7.0 = the U1 reduced agent CLI (census verb deleted, PyPI-published)
+    assert MIN_EDGE_VERSION == "0.7.0"
+
+
+def test_verify_directive_teaches_branch_scope_supersession():
+    """The recall-time membership semantics + the human-gated supersession flow: pass the
+    hit's git/branches token as --branches; branch_scoped = scoped to another line, likely
+    not relevant here, NOT stale, no retirement options; an off-set hit that verifies
+    CURRENT on your branch means the fact now holds here — propose a superseding memory
+    tagged with ALL relevant branches (RULE-2 target: dropping the supersession sentence
+    reds this test)."""
+    v = VERIFY_DIRECTIVE
+    assert "--branches" in v
+    assert "git/branches" in v                      # names the meta key the token comes from
+    assert "branch_scoped" in v
+    low = v.lower()
+    assert "scoped to another" in low               # the membership meaning
+    assert "not stale" in low
+    assert "no retirement options" in low or "carries no retirement" in low
+    # the supersession flow (taught, never mechanical): off-set + current-here ⇒ propose
+    assert "supersed" in low                        # supersede/superseding
+    assert "all relevant branches" in low
+    assert "hive_supersede" in v and "hive_write(replaces=" in v

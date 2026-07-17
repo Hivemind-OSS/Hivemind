@@ -18,9 +18,11 @@ recall path. Injection seams (`connect_fn` / `stdin` / `out` / `now`) keep the w
 unit-testable without a real DB file.
 
 STDOUT carries exactly ONE machine-readable JSON report line
-(inserted/already_recorded/matched/skipped_lines + the verified_helped/
+(inserted/already_recorded/matched/range_skipped/skipped_lines + the verified_helped/
 verified_hurt/verify_current/verify_stale/stale_suspects rider counters); human
-notes go to STDERR.
+notes go to STDERR. The store doubles as the durable range ledger (``ranges=store``):
+a receipt whose exact (repo, base, head, phase) range already ingested is skipped
+whole — ``range_skipped`` true, zero rows, still exit 0.
 Exit codes are the contract (an exit code cannot lie like a log can): 0 ok — including
 an honest matched=0; 65 EX_DATAERR — the receipt is refused (unreadable/not JSON/bad
 DSSE shape/digest mismatch/no decided evidence), ZERO rows written; 70 EX_SOFTWARE —
@@ -114,7 +116,8 @@ def main(argv: Optional[list[str]] = None, *, env: Optional[Mapping[str, str]] =
     # ── wire the kernel-side service and ingest (ONE atomic batch) ───────────────
     try:
         store = SqliteEpisodeStore(connect_fn(db_path), index=None)  # torch/embedder-free
-        service = ChangeEvidenceService(reader=store, appender=store, now=now)
+        service = ChangeEvidenceService(reader=store, appender=store, now=now,
+                                        ranges=store)
         report = service.ingest(
             envelope, phase="post_merge" if args.post_merge else "pre_merge",
             verdict=args.verdict, signal=args.signal)
@@ -129,6 +132,7 @@ def main(argv: Optional[list[str]] = None, *, env: Optional[Mapping[str, str]] =
     print(json.dumps({"already_recorded": report.already_recorded,
                       "inserted": list(report.inserted),
                       "matched": report.matched,
+                      "range_skipped": report.range_skipped,
                       "skipped_lines": report.skipped_lines,
                       "stale_suspects": report.stale_suspects,
                       "verified_helped": report.verified_helped,
@@ -138,6 +142,7 @@ def main(argv: Optional[list[str]] = None, *, env: Optional[Mapping[str, str]] =
                      sort_keys=True, separators=(",", ":")), file=out)
     print(f"censusctl: matched={report.matched} inserted={len(report.inserted)} "
           f"already_recorded={report.already_recorded} "
+          f"range_skipped={report.range_skipped} "
           f"skipped_lines={report.skipped_lines} "
           f"stale_suspects={report.stale_suspects} "
           f"verified_helped={report.verified_helped} "

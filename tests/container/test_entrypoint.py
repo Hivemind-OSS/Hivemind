@@ -106,7 +106,7 @@ def test_missing_tenant_defaults_and_boots(env):
     assert captured["tenant_id"] == "default"
 
 
-def test_config_validation_failure_exits_config():
+def test_config_validation_failure_exits_config(capsys):
     # a known-bad config field (tau_serve=0 disables the never-hallucinate floor) ⇒ 78,
     # and the booter is NEVER built (we fail before assembly).
     calls: list = []
@@ -120,6 +120,22 @@ def test_config_validation_failure_exits_config():
     rc = E.main(env=env, build_boot=build_boot, serve=_serve_recorder(calls))
     assert rc == E.EX_CONFIG
     assert assembled == [] and calls == []
+    # the stderr line carries the exception detail NAMING the offending field — an
+    # exit code alone cannot tell the operator WHICH variable to fix.
+    err = capsys.readouterr().err
+    assert "entrypoint.config_invalid" in err and "tau_serve" in err
+
+
+def test_config_invalid_detail_scrubs_credential_values():
+    # Defense in depth for the config-invalid detail: a configured credential VALUE is
+    # scrubbed at the escape path even if an upstream message regressed into echoing
+    # it; variable NAMES pass through untouched, and no secrets set is a no-op.
+    env = {"HIVE_SYNC__TOKEN": "sekrit-value", "HIVE_SYNC__WEBHOOK_SECRET": "hook-value"}
+    assert (E._scrub_secret_values("boom sekrit-value and hook-value end", env)
+            == "boom *** and *** end")
+    assert (E._scrub_secret_values("set HIVE_SYNC__REPO_URL or unset HIVE_SYNC__TOKEN", env)
+            == "set HIVE_SYNC__REPO_URL or unset HIVE_SYNC__TOKEN")
+    assert E._scrub_secret_values("unchanged", {}) == "unchanged"
 
 
 def test_empty_env_boot_does_not_pollute_stdout(capsys):
@@ -240,7 +256,7 @@ def test_make_http_serve_wires_run_http_dual_with_ports_and_verify():
     captured: dict = {}
 
     def fake_run_http_dual(server, *, host, loopback_port, tunnel_port, verify, lock,
-                           limiter, max_body_bytes):
+                           limiter, max_body_bytes, webhook_secret, webhook_nudge):
         captured.update(server=server, host=host, loopback_port=loopback_port,
                         tunnel_port=tunnel_port, verify=verify, lock=lock,
                         limiter=limiter, max_body_bytes=max_body_bytes)
@@ -266,7 +282,7 @@ def test_make_http_serve_threads_one_lock_and_one_limiter():
     seen: list = []
 
     def fake_run_http_dual(server, *, host, loopback_port, tunnel_port, verify, lock,
-                           limiter, max_body_bytes):
+                           limiter, max_body_bytes, webhook_secret, webhook_nudge):
         seen.append((lock, limiter))
 
     serve = E._make_http_serve(_RecordingBoot([]), 8765, 8766,
@@ -284,7 +300,7 @@ def test_make_http_serve_constructs_limiter_from_resolved_values():
     captured: dict = {}
 
     def fake_run_http_dual(server, *, host, loopback_port, tunnel_port, verify, lock,
-                           limiter, max_body_bytes):
+                           limiter, max_body_bytes, webhook_secret, webhook_nudge):
         captured.update(limiter=limiter, max_body_bytes=max_body_bytes)
 
     serve = E._make_http_serve(_RecordingBoot([]), 8765, 8766, rate_limit=5, rate_window_s=2.5,
@@ -295,6 +311,32 @@ def test_make_http_serve_constructs_limiter_from_resolved_values():
     assert isinstance(limiter, TokenBucketLimiter)
     assert all(limiter.check("dev").allowed for _ in range(5))
     assert not limiter.check("dev").allowed                # the 6th — limit=5 was wired in
+
+
+def test_make_http_serve_threads_webhook_kwargs_verbatim():
+    """The webhook wiring is pass-through: an explicit secret + nudge reach run_http_dual
+    verbatim, and an unmodified call site threads the inert defaults ('' / None) — the
+    tunnel door's webhook branch stays dead code unless the operator armed it."""
+    captured: dict = {}
+
+    def fake_run_http_dual(server, *, host, loopback_port, tunnel_port, verify, lock,
+                           limiter, max_body_bytes, webhook_secret, webhook_nudge):
+        captured.update(webhook_secret=webhook_secret, webhook_nudge=webhook_nudge)
+
+    def nudge() -> None:
+        pass
+
+    serve = E._make_http_serve(_RecordingBoot([]), 8765, 8766,
+                               run_http_dual=fake_run_http_dual,
+                               webhook_secret="hook-s", webhook_nudge=nudge)
+    serve(object())
+    assert captured["webhook_secret"] == "hook-s"
+    assert captured["webhook_nudge"] is nudge              # the callable, passed verbatim
+    serve = E._make_http_serve(_RecordingBoot([]), 8765, 8766,
+                               run_http_dual=fake_run_http_dual)
+    serve(object())
+    assert captured["webhook_secret"] == ""                # defaults stay inert
+    assert captured["webhook_nudge"] is None
 
 
 def test_main_default_serve_is_http_with_default_ports(monkeypatch):
@@ -383,3 +425,114 @@ def test_main_stale_auth_env_is_ignored_not_a_crash(monkeypatch):
                 build_boot=_boot_factory(_RecordingBoot([])))
     assert rc == E.EX_OK                               # a stale auth env never crashes boot
     assert captured["loopback_port"] == 8765 and captured["tunnel_port"] == 8766
+
+
+# ── the sync side-channel: ONE lock in main(), start after ready, fail-open ────
+def _sync_module():
+    import hive.app.sync as sync_mod
+    return sync_mod
+
+
+def test_main_shares_one_lock_across_serve_and_sync(monkeypatch):
+    """main() owns ONE threading.Lock: the SAME object reaches _make_http_serve (both
+    HTTP doors) AND start_sync — the single-writer invariant now spans the sync thread."""
+    import threading
+    captured: dict = {}
+
+    def fake_make_http_serve(boot, loopback_port, tunnel_port, **kw):
+        captured["serve_lock"] = kw.get("lock")
+        return lambda s: None
+
+    def fake_start_sync(cfg, store, evidence, lock):
+        captured["sync_lock"] = lock
+        return None
+
+    monkeypatch.setattr(E, "_make_http_serve", fake_make_http_serve)
+    monkeypatch.setattr(_sync_module(), "start_sync", fake_start_sync)
+    rc = E.main(env=_OK_ENV, build_boot=_boot_factory(_RecordingBoot([])))
+    assert rc == E.EX_OK
+    assert captured["serve_lock"] is not None
+    assert captured["serve_lock"] is captured["sync_lock"]      # ONE lock, every writer
+    assert isinstance(captured["sync_lock"], type(threading.Lock()))
+
+
+def test_sync_starts_after_ready_markers_and_before_serve(monkeypatch):
+    """start_sync runs strictly AFTER _mark_ready (markers already '1') and before
+    serve blocks; it receives boot.store and a wired ChangeEvidenceService."""
+    from hive.domain.change_evidence import ChangeEvidenceService
+    calls: list = []
+    store = _MetaStore()
+    boot = _RecordingBoot(calls, store=store)
+
+    def fake_start_sync(cfg, store_, evidence, lock):
+        calls.append("start_sync")
+        assert store.meta.get(E.MARK_EMBEDDER_LOADED) == "1"    # ready markers first
+        assert store_ is store
+        assert isinstance(evidence, ChangeEvidenceService)
+        return None
+
+    monkeypatch.setattr(_sync_module(), "start_sync", fake_start_sync)
+    rc = E.main(env=_OK_ENV, build_boot=_boot_factory(boot), serve=_serve_recorder(calls))
+    assert rc == E.EX_OK
+    assert calls == ["migrate", "build_index", "warm", "make_server",
+                     "start_sync", "serve"]
+
+
+def test_sync_start_failure_logs_and_serves_anyway(monkeypatch):
+    """The side-channel fails open: a start_sync explosion never blocks the serve
+    (rc stays EX_OK, the injected serve still runs)."""
+    def boom(cfg, store, evidence, lock):
+        raise RuntimeError("sync exploded")
+
+    monkeypatch.setattr(_sync_module(), "start_sync", boom)
+    served: list = []
+    rc = E.main(env=_OK_ENV, build_boot=_boot_factory(_RecordingBoot([])),
+                serve=lambda s: served.append(True))
+    assert rc == E.EX_OK and served == [True]
+
+
+# ── the webhook nudge wiring: main() hands the LIVE sync wake Event to the tunnel door ──
+def test_main_threads_webhook_secret_and_live_sync_nudge_into_default_serve(monkeypatch):
+    """With sync armed, main() builds the default serve with cfg.sync.webhook_secret and
+    the started sync thread's wake Event's `set` as webhook_nudge — calling the threaded
+    nudge sets THAT Event, so a webhook 204 wakes the real loop."""
+    import threading
+    captured: dict = {}
+    ev = threading.Event()
+
+    class _SyncThread:                      # the started daemon thread, attribute contract only
+        sync_nudge = ev
+
+    def fake_make_http_serve(boot, loopback_port, tunnel_port, **kw):
+        captured.update(kw)
+        return lambda s: None
+
+    monkeypatch.setattr(E, "_make_http_serve", fake_make_http_serve)
+    monkeypatch.setattr(_sync_module(), "start_sync",
+                        lambda cfg, store, evidence, lock: _SyncThread())
+    env = {"HIVE_TENANT_ID": "acme",
+           "HIVE_SYNC__REPO_URL": "https://example.invalid/repo.git",
+           "HIVE_SYNC__WEBHOOK_SECRET": "hook-secret"}
+    rc = E.main(env=env, build_boot=_boot_factory(_RecordingBoot([])))
+    assert rc == E.EX_OK
+    assert captured["webhook_secret"] == "hook-secret"     # cfg.sync.webhook_secret, verbatim
+    assert not ev.is_set()
+    captured["webhook_nudge"]()                            # the nudge IS the live Event's set
+    assert ev.is_set()
+
+
+def test_main_without_sync_thread_passes_inert_webhook_wiring(monkeypatch):
+    """Sync unarmed (no HIVE_SYNC__REPO_URL ⇒ real start_sync returns None): the default
+    serve gets webhook_secret='' and webhook_nudge=None — the tunnel door's webhook branch
+    is dead code, byte-identical to the pre-webhook build."""
+    captured: dict = {}
+
+    def fake_make_http_serve(boot, loopback_port, tunnel_port, **kw):
+        captured.update(kw)
+        return lambda s: None
+
+    monkeypatch.setattr(E, "_make_http_serve", fake_make_http_serve)
+    rc = E.main(env=_OK_ENV, build_boot=_boot_factory(_RecordingBoot([])))
+    assert rc == E.EX_OK
+    assert captured["webhook_secret"] == ""
+    assert captured["webhook_nudge"] is None

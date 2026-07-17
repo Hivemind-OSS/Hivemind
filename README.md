@@ -8,7 +8,7 @@ single-host, one SQLite store.
 Recall is deliberately conservative: a query is embedded, matched by dense cosine similarity,
 and passed through an **absolute-relevance abstention gate** — when the top match does not
 clear an absolute similarity floor, Hivemind returns nothing rather than guess. Memories enter **quarantined**
-via `hive_capture` and become servable only once independent fleet demand promotes them
+via `hive_capture` and become servable only once independent fleet demand or a verified change outcome promotes them
 (`provisional`); the trusted `established` tier is reached **only** by an explicit
 human-approved `hive_write`. Unused memories decay on a TTL. Nothing is auto-trusted, and the
 store never silently migrates across schema generations.
@@ -20,7 +20,7 @@ A connected agent gets exactly eight tools:
 | Tool | Purpose |
 |---|---|
 | `hive_recall(query)` | Dense recall behind the abstention gate. Returns reference context (or abstains) with each hit's `trust`, `ts`, `polarity`, `kind`, and `anchor`. |
-| `hive_capture(text)` | Record a durable insight. Lands quarantined; served only after fleet demand promotes it. |
+| `hive_capture(text)` | Record a durable insight. Lands quarantined; served only after fleet demand or a verified change outcome promotes it. |
 | `hive_write(text, approved_by=…)` | Human-vouched memory served immediately as `established`. `replaces=<id>` supersedes an existing one. |
 | `hive_supersede(loser, winner, approved_by=…)` | Human-vouched: retire one memory in favor of another. Nothing new is written. |
 | `hive_prune(episode_id, approved_by=…)` | Human-vouched: retire an incorrect or misleading memory with no replacement (it stays in the audit ledger). |
@@ -31,7 +31,7 @@ A connected agent gets exactly eight tools:
 ## Requirements
 
 - **Docker** + **Docker Compose v2** — the server, its store, and a baked offline embedder run
-  in one container (the image is hermetically offline; no network at runtime).
+  in one container (the image is hermetically offline; no network at runtime beyond the opt-in census sync's git fetches (`HIVE_SYNC__REPO_URL`)).
 - **Python 3.11+** on the host — to run the `hive` operator CLI (it drives `docker compose`).
 
 ## Quickstart (from a clone)
@@ -43,8 +43,8 @@ cp .env.example .env      # persist the store across restarts (sets HIVE_STORE__
 hive up                   # build + start; blocks until the daemon is healthy
 ```
 
-`hive up` is zero-config to boot, but **the store defaults to in-memory (`:memory:`) — ephemeral,
-so all memory is lost on restart.** Copy `.env.example` to `.env` (above) to persist into the
+`hive up` is zero-config to boot, but **the store defaults to `/data/shared.db` in the `hive-data` volume — persistent;
+only an explicit `HIVE_STORE__DB_PATH=:memory:` boots ephemeral, losing all memory on restart.** Copy `.env.example` to `.env` (above) to persist into the
 `hive-data` volume via `HIVE_STORE__DB_PATH=/data/shared.db`; an ephemeral boot WARNs loudly and
 `hive_health` reports `store_ephemeral`. **Agents should bring the server up with the runnable
 [`hive-bringup`](skills/hive-bringup/SKILL.md) skill** rather than the raw commands above — it
@@ -102,6 +102,13 @@ silently clamping.
 
 There is no `HIVE_AUTH__MODE` switch — delete any leftover one from `.env` (it is ignored).
 
+**Automatic census feed (optional).** Set `HIVE_SYNC__REPO_URL` (plus `HIVE_SYNC__TOKEN` for a
+private remote) and the server itself mirrors the repo and feeds every landing on the tracked
+branch into the change-outcome evidence ledger — detect-only, fail-open, byte-inert when unset;
+nothing is wired per repo or per device. Arm and test it with the runnable
+**[`hive-connect-repo`](skills/hive-connect-repo/SKILL.md)** skill; knob table + details:
+**[HIVE-ADMIN.md §4](HIVE-ADMIN.md)**.
+
 ## Remote teammates
 
 Loopback never leaves the host, so open exactly one door:
@@ -120,7 +127,8 @@ Never publish `0.0.0.0:8765` — a bearer token over plain LAN HTTP is cleartext
 non-blocking start/stop, tunnel activate/deactivate, restore from an in-volume backup behind a
 typed confirm, log tail; no reset) / `hive status` / `logs` / `tokens` / `revoke <seat>` /
 `backup` (manual snapshot) / `ingest
-<receipt.json>` (feed an unsigned census receipt's change outcome into the evidence ledger) / `down`
+<receipt.json>` (manually feed an unsigned census receipt's change outcome into the evidence
+ledger — the escape hatch; with `HIVE_SYNC__REPO_URL` set the server feeds itself) / `down`
 (stop, keep data) / `reset` (snapshot the store out of the volume, then destroy + recreate it
 empty — recoverable; typed confirm) / `restore` (replace the live store from a snapshot) / `upgrade
 [--ref release]` (move the server to a vetted release ref — backup-gated, auto-rollback on failure).
@@ -132,25 +140,24 @@ KPIs).
 
 ## Edge tooling
 
-Anchor mint/verify (recall freshness, including the dependency-neighborhood `radius` advisory), a
-persistent per-repo code graph (`hive-edge graph`), and the census evidence hooks (post-merge +
-post-commit) ride a companion, per-workstation CLI,
-**[`hive-edge`](https://github.com/Hivemind-OSS/Hive-edge)** — it is not baked
-into the server image. It is not required for the core recall/capture/write loop (absent, mint and
-verify simply no-op; nothing else is affected), but the trust-lifecycle verify step and the census
-evidence flow depend on it.
+Anchor mint/verify (recall freshness, including the dependency-neighborhood `radius` advisory) and
+a persistent per-repo code graph (`hive-edge graph`) ride a companion, per-workstation CLI,
+**[`hive-edge`](https://github.com/Hivemind-OSS/Hive-edge)** — the server image bakes its own copy for the server-side census leg; each workstation installs its own. It is not required for the core recall/capture/write loop (absent, mint and
+verify simply no-op; nothing else is affected), but the trust-lifecycle verify step depends on it.
+Census change evidence does **not**: it is computed and fed server-side (`HIVE_SYNC__REPO_URL`,
+above), so there is nothing to wire per repo or per device.
 
 You don't need to install it yourself: a connected agent checks for it during onboarding and
 installs or upgrades it automatically. To install it manually instead:
 
 ```bash
-uv tool install hive-edge --from git+https://github.com/Hivemind-OSS/Hive-edge@release
+uv tool install hive-edge
 ```
 
-Per-device edge state (config, release cache, logs, the per-checkout code-graph cache) lives under
-`~/.hive-edge/` (`HIVE_EDGE_HOME` overrides); it is safe to delete and regenerates. See
-**[HIVE-ADMIN.md §8](HIVE-ADMIN.md)** for the full install/upgrade/rollback flow and the
-census hooks (post-merge + post-commit) it wires.
+Per-device edge state (the rollback-pin config, worktree-delta baselines, the per-checkout
+code-graph cache) lives under `~/.hive-edge/` (`HIVE_EDGE_HOME` overrides); it is safe to delete
+and regenerates. See **[HIVE-ADMIN.md §8](HIVE-ADMIN.md)** for the full install/upgrade/rollback
+flow.
 
 ## Embedding model & attribution
 
@@ -173,7 +180,7 @@ llms.txt              link index to the project docs (llmstxt.org convention)
 llms-full.txt         the complete, self-contained operating guide for agents & integrators
 HIVE-ADMIN.md         admin & operator guide
 OPERATIONS.md         long-form operations reference & the tuning evidence behind the knobs
-skills/               operator runbook-skills (bringup, connect, backup/restore, operate)
+skills/               operator runbook-skills (bringup, connect-team, connect-repo, backup/restore, operate)
 LICENSE               this project's license (Apache-2.0)
 THIRD_PARTY_NOTICES.md / LICENSES/   embedding-model attribution + license (the embedder)
 ```

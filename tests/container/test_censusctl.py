@@ -147,15 +147,97 @@ def test_real_receipt_lands_change_outcome_and_verify_rows_with_the_receipt_shas
     assert (report["verify_current"], report["verify_stale"]) == (0, 1)
 
 
+SINGLEROOT_RECEIPT = _DATA / "receipt.singleroot.json"
+SINGLEROOT_ANCHOR = "pkg/mod.py:fn"                  # the agent-dialect anchor spelling
+
+
+def test_single_source_root_receipt_joins_a_repo_relative_anchor():
+    """BUG-038's ingest leg: a receipt built by the REAL hive-census on a checkout
+    whose parsed source ALL lives under one top-level dir (pkg/) must spell its
+    subjects repo-root-relative, so an episode anchored ``pkg/mod.py:fn`` joins and
+    earns its change_outcome + verify evidence. Pre-fix, such receipts carried ZERO
+    existence/contract lines (the graph's flattened dialect never met the diff's
+    repo dialect) and this join matched nothing, silently."""
+    cf = RecordingConnect()
+    eid = _seed_anchored(cf.conn, "fn arity gotcha", SINGLEROOT_ANCHOR)
+    _seed_anchored(cf.conn, "unrelated memory", "other/place.py::Elsewhere")
+    rc, out, _ = _run(["ingest", str(SINGLEROOT_RECEIPT)], connect_fn=cf)
+    assert rc == censusctl.EX_OK
+
+    report = json.loads(out)
+    assert report["matched"] == 1, report            # the repo-relative subject joined
+    rows = _rows(cf.conn)
+    assert [r["episode_id"] for r in rows] == [eid, eid]
+    outcome = json.loads(rows[0]["payload"])
+    assert rows[0]["kind"] == EK_CHANGE_OUTCOME
+    assert outcome["matched"] == {"path": "pkg/mod.py", "symbol": "fn",
+                                  "level": "symbol"}
+    # fn was NARROWED at head (drift=breaking, still exists) ⇒ one verify_stale row.
+    assert rows[1]["kind"] == EK_VERIFY_STALE
+    vbody = json.loads(rows[1]["payload"])
+    assert (vbody["exists_after"], vbody["drift"]) == (True, "breaking")
+
+
 def test_reingest_of_the_same_receipt_is_idempotent():
+    # layered dedupe: the range ledger absorbs a duplicate range first; on a store
+    # whose rows landed BEFORE the ledger existed (range row absent — the legacy
+    # transition case), content-keyed dedupe still absorbs every row, and the range
+    # gets recorded for next time.
     cf = RecordingConnect()
     _seed_anchored(cf.conn, "LanguageConfig gotcha", REAL_ANCHOR)
     rc1, _, _ = _run(["ingest", str(REAL_RECEIPT)], connect_fn=cf)
+    cf.conn.execute("DELETE FROM ingested_ranges")   # simulate a pre-ledger store
     rc2, out2, _ = _run(["ingest", str(REAL_RECEIPT)], connect_fn=cf)
     assert rc1 == rc2 == censusctl.EX_OK
     assert len(_rows(cf.conn)) == 2                  # still the same two rows
     report = json.loads(out2)
     assert report["already_recorded"] == 2 and report["inserted"] == []
+    assert report["range_skipped"] is False          # content dedupe absorbed, not the ledger
+    assert cf.conn.execute(
+        "SELECT COUNT(*) AS c FROM ingested_ranges").fetchone()["c"] == 1
+
+
+# ── the range ledger: manual ingest obeys the same durable dedupe ──────────────
+
+
+def test_range_dedupe_skips():
+    # the same receipt twice against ONE store: the second ingest is absorbed by the
+    # durable range ledger (zero rows, range_skipped) yet still exits 0. The real
+    # receipt carries no provenance.repo ⇒ this is the legacy "" repo identity.
+    cf = RecordingConnect()
+    _seed_anchored(cf.conn, "LanguageConfig gotcha", REAL_ANCHOR)
+    rc1, out1, _ = _run(["ingest", str(REAL_RECEIPT)], connect_fn=cf)
+    assert rc1 == censusctl.EX_OK
+    assert json.loads(out1)["range_skipped"] is False
+    rc2, out2, _ = _run(["ingest", str(REAL_RECEIPT)], connect_fn=cf)
+    assert rc2 == censusctl.EX_OK
+    report = json.loads(out2)
+    assert report["range_skipped"] is True
+    assert report["inserted"] == [] and report["matched"] == 0
+    assert len(_rows(cf.conn)) == 2                  # nothing new landed
+    ledger = cf.conn.execute(
+        "SELECT repo, phase FROM ingested_ranges").fetchall()
+    assert [(r["repo"], r["phase"]) for r in ledger] == [("", "pre_merge")]
+
+
+def test_phase_distinguishes_ff_merge():
+    # an FF merge yields the SAME (base, head) range pre- AND post-merge — phase in
+    # the ledger key lets both receipts land instead of the post-merge one being
+    # absorbed as a duplicate.
+    cf = RecordingConnect()
+    _seed_anchored(cf.conn, "LanguageConfig gotcha", REAL_ANCHOR)
+    rc1, _, _ = _run(["ingest", str(REAL_RECEIPT)], connect_fn=cf)
+    rc2, out2, _ = _run(["ingest", str(REAL_RECEIPT), "--post-merge",
+                         "--verdict", "pass", "--signal", "canary"], connect_fn=cf)
+    assert rc1 == rc2 == censusctl.EX_OK
+    r2 = json.loads(out2)
+    assert r2["range_skipped"] is False and len(r2["inserted"]) == 1
+    phases = {json.loads(r["payload"])["phase"] for r in _rows(cf.conn)
+              if json.loads(r["payload"]).get("schema") == "change_outcome/v1"}
+    assert phases == {"pre_merge", "post_merge"}
+    ledger_phases = [r["phase"] for r in cf.conn.execute(
+        "SELECT phase FROM ingested_ranges ORDER BY phase DESC")]
+    assert ledger_phases == ["pre_merge", "post_merge"]
 
 
 # ── refusal semantics: exit 65, reason on stderr, ZERO rows, no report ─────────
@@ -258,12 +340,12 @@ def test_report_golden_one_json_line_on_stdout():
     assert len(lines) == 1                           # stdout is the report, nothing else
     report = json.loads(lines[0])
     assert set(report) == {"inserted", "already_recorded", "matched",
-                           "skipped_lines", "verified_helped",
+                           "range_skipped", "skipped_lines", "verified_helped",
                            "verified_hurt", "verify_current", "verify_stale",
                            "stale_suspects"}
     assert lines[0] == json.dumps(
         {"already_recorded": 0, "inserted": report["inserted"],
-         "matched": 1,
+         "matched": 1, "range_skipped": False,
          "skipped_lines": 0, "stale_suspects": 0, "verified_helped": 0,
          "verified_hurt": 0, "verify_current": 0, "verify_stale": 1},
         sort_keys=True, separators=(",", ":"))

@@ -3,6 +3,101 @@
 All notable changes to this project are documented here.
 
 ## Added
+- `hive-connect-repo` operator skill (`skills/hive-connect-repo/SKILL.md`): a guided runbook that
+  arms and tests the server-side census feed against a GitHub repo — it checks the prerequisites
+  (repo URL, a read-only token for a private remote, a sync-capable server image), auto-detects the
+  tracked branch with `git ls-remote --symref`, writes `HIVE_SYNC__REPO_URL` / `HIVE_SYNC__TOKEN` /
+  `HIVE_CENSUS__CANONICAL_REF` to `.env`, restarts to load it, and verifies the connection through
+  the `sync` block of `hive_health(include_census_health=true)` (with a failure-mode table). Indexed
+  in `skills/README.md`, `llms.txt`, and cross-referenced from `HIVE-ADMIN.md` §4.
+- Server-automatic census (contract v.13, `MIN_EDGE_VERSION` 0.6.0 → 0.7.0 alongside the hive-edge
+  0.7.0 release): the change-outcome evidence feed no longer needs per-repo/per-device git hooks —
+  the server feeds itself. Armed by `HIVE_SYNC__REPO_URL` (unset ⇒ byte-inert: no thread, no
+  clone, no census import; a token/webhook-secret without a repo URL fails boot EX_CONFIG), an
+  in-process daemon thread (`hive/app/sync.py`, started by the entrypoint only after serve-ready,
+  sharing THE one global write lock — held only for store access, never across git/subprocess
+  work) keeps a local mirror (`/data/sync/mirror`, a rebuildable cache) and runs three fail-open
+  legs per tick. (1) LEDGER: ONE unsigned receipt per contiguous watermark..tip range on the
+  tracked branch (`HIVE_CENSUS__CANONICAL_REF`, else the origin default), built by
+  `python -m hive.census.cli build` in a subprocess and ingested in-proc as
+  post_merge/pass/none, the watermark (`sync:last_tip`) advanced in the same critical section;
+  first connect baselines at the remote tip (no historical receipt); a force-push logs a
+  discontinuity and records a defensive merge-base..tip receipt. (2) CANDIDATES
+  (`HIVE_SYNC__VERIFY_CANDIDATES`, default on): changed PR heads (`refs/pull/*/head` fetched as
+  `refs/sync/pr/*`, diffed against the `sync:pr_heads` baseline — first connect baselines without
+  evaluating) get merge-base..head pre_merge receipts stamped `--ref refs/pull/<N>/head`, ≤5 per
+  tick, built in a STRIPPED env (no HIVE_*, the token never rides env; `uv sync --frozen`
+  provisioning iff the head carries uv.lock, else the verifier abstains) under a 600 s bound; a
+  nothing-decided receipt is refused (logged + counted), and an exact already-ingested range skips
+  before any build. (3) BACKFILL: approved code-anchored episodes lacking `combdrift/fp` are
+  minted server-side through the real `hive-edge mint` subprocess against the tracked tip
+  (absent-only merge — a present key cannot be displaced; provenance
+  `hive-sync/minted: hive-sync-minted/1:server@<tip> <ref>`; ≤50 per tick). Alongside: a durable
+  RANGE LEDGER — `ingested_ranges` PK `(repo, base, head, phase)`, the
+  `already_ingested_range`/`record_ingested_range` port pair, `IngestReport.range_skipped`, and
+  `ChangeOutcome.repo` — dedupes whole ranges across the daemon and a manual `hive ingest`
+  (censusctl wires `ranges=store`; the report line gains `"range_skipped"`); a
+  `POST /census-webhook` nudge on the TUNNEL door only (live iff `HIVE_SYNC__WEBHOOK_SECRET`;
+  constant-time HMAC-SHA256 vs `X-Hub-Signature-256`, resolved pre-bearer after the
+  body-drain + Origin guard; 204 + wake on match, 401 on mismatch; the payload is never parsed —
+  a wake-up, never a data channel, the poll interval stays the correctness floor); and
+  `hive_health(include_census_health=true)` gains a `sync` block (present iff `sync:*` meta
+  exists: configured/tracked_ref/last_tip/last_sync_ts/last_error/candidates_evaluated/
+  backfilled_total, with `status: "sync stalled"` only when configured yet dark). The census +
+  verifier engines moved INTO the server (`hive/census/` — its CLI reduced to `build`, gaining
+  `--ref`/`--repo-id` — and `hive/verifier/`; suites under `tests/census/` + `tests/verifier/`)
+  behind a `sync` extra (currently a git pin to the hive-edge v0.7.0 tag with a dev-time uv
+  source override to the local clone; it flips to the PyPI `hive-edge==0.7.0` pin after publish)
+  and a Dockerfile that adds git + uv, installs `.[embed,sync]` (bringing the hive-edge CLI +
+  engines into the image), and pre-creates `/data/sync/` — NO compose change (sync config rides
+  `.env`; the mirror lives in the existing hive-data volume). The served contract rewrites
+  `CENSUS_DIRECTIVE` server-automatic (`hive ingest` = the manual escape hatch; nothing to wire
+  per repo or device), points `EDGE_CLI` at the PyPI install (`uv tool install hive-edge`), and
+  drops the census-init wiring step from `ONBOARDING_PROCEDURE`. Operator docs and runbooks
+  (README, HIVE-ADMIN §4/§5/§6/§8, OPERATIONS, llms.txt, the bringup/connect-team/operate skills)
+  reconciled to the server-automatic feed + the reduced 0.7.0 edge CLI; OPERATIONS.md gains the
+  coupled hivemind + hive-edge release runbook.
+- Branch-scope tagging + the census ref stamp (contract v.12, `MIN_EDGE_VERSION` 0.5.0 → 0.6.0
+  alongside the hive-edge 0.6.0 release). Four pieces, each byte-inert when unused:
+  (1) the edge mints an OPT-IN, set-valued `git/branches` relevance tag (`hive-edge mint
+  --branch-scope [NAME…]`, token `git-branches/1:<sorted space-joined names>`, registered in the
+  hive-edge meta-key registry; never auto-attached — the pre-capture hook adds only the two
+  fingerprint cores) and `hive-edge verify --branches <token>` routes by set membership: an
+  off-set consumer whose anchor would read stale gets the advisory `branch_scoped` verdict —
+  no remediation, no delta, radius suppressed — while member/untagged/unreadable-token/detached
+  runs stay byte-identical; the post-recall hook relays it as ONE off-branch notice line.
+  (2) `census build` stamps the measured checkout's branch as `provenance.ref` (resolved inside
+  the build; detached ⇒ omitted; receipt schema v0 unchanged — the key is optional).
+  (3) ingest threads that `ref` into every `change_outcome` / `verify_*` / `outcome_verified`
+  payload as a conditional key, so legacy (ref-less) receipts render byte-identical payloads and
+  their content-keyed dedup never moves.
+  (4) a new `CensusConfig` group (`HIVE_CENSUS__CANONICAL_REF`, default "" = byte-identical
+  unscoped build) scopes the recall rider: when set, `last_verified` + the stale `remediation`
+  derive only from verify rows measured on that line — a newest foreign-line row is skipped and
+  an older canonical row answers; legacy ref-less rows always count (the absence rule).
+  The served contract teaches the flow: `MINT_DIRECTIVE` gains the opt-in clause (a relevance
+  scope, never required), `VERIFY_DIRECTIVE` gains the membership semantics plus the human-gated
+  supersession flow (an off-set hit verifying `current` on your branch ⇒ propose a superseding
+  memory tagged with ALL relevant branches via `hive_write(replaces=…)`/`hive_supersede`).
+  Non-goals held: no auto-minting, no serve-side branch filtering, no `git/head_sha`, promotion
+  fuel (`verified_wins`) and the conflict worklist stay branch-unaware. Rides along: the
+  single-source-root receipt join (BUG-038, fixed in hive-edge's matrix 0.3.4) is pinned on the
+  ingest leg by a regression test + fixture (`tests/container/test_censusctl.py::
+  test_single_source_root_receipt_joins_a_repo_relative_anchor`, `tests/data/receipt.singleroot.json`).
+- `hive_health(include_meta_versions=true)` — the corpus token-version histogram, the meta
+  envelope law's no-migration observability. Per episode-meta key over the LIVE corpus
+  (`status='approved' AND trust != 'deprecated'` — servable + quarantined, retired tombstones
+  excluded): counts per token-version prefix, an `absent` count (live rows carrying no value for
+  that key), and a `malformed` bucket (values with no parseable version prefix, present only when
+  nonzero) — so an operator can watch old token formats age out instead of migrating them. The
+  fold is a pure domain function (`hive/domain/meta.py:meta_version_histogram` over
+  `token_version`), the ONE sanctioned read of meta content server-side, and it reads only the
+  `<engine>-<kind>/<N>:` version PREFIX — never the body, never per-episode behavior.
+  `SqliteEpisodeStore.meta_version_counts` streams the rows; the flag joins its `include_*`
+  siblings in the tool schema and description behind the same sole-request-flag gate (byte-inert
+  when omitted). The meta-key catalog itself is committed in hive-edge
+  (`hive_edge/meta_registry.py`, test-enforced coverage/agreement/retention ratchets); no contract
+  bump, no `MIN_EDGE_VERSION` change.
 - The served contract teaches the dependency-neighborhood fingerprint and the commit-lined-up
   census feed (contract v.10): `MINT_DIRECTIVE`'s printed map now names both fingerprint keys
   (`combdrift/fp` + `matrix/subgraph_fp` — passing the printed map verbatim as capture meta is
@@ -243,6 +338,21 @@ All notable changes to this project are documented here.
   config it is resolved at boot — there is no live reload (tune via `.env` then `hive up`).
 
 ## Changed
+- The server ships self-contained from this repository alone: the `[sync]` extra's engines
+  (comb-drift, matrix — now declared as the direct dependencies they are; `hive/census/join.py`,
+  `receipt.py`, and `hive/app/sync.py` import them by name) and the in-image `hive-edge` mint CLI
+  install from the committed `vendor/wheels/` wheelhouse. The image build pre-installs it before
+  the extra resolves and dev/uv pins the exact wheel paths in `[tool.uv.sources]`, replacing the
+  remote git pin a production host — which receives only this repo: no package index, no sibling
+  checkout — could never resolve (the `matrix` name on PyPI belongs to an unrelated project).
+  `scripts/vendor_edge.py` is the single refresh seam: it rebuilds the three wheels from a
+  hive-edge checkout, refuses a half-bumped workspace (the hive-edge distributions ship one
+  lockstep version, currently 0.8.0) or a wheel below the served `MIN_EDGE_VERSION` floor,
+  rewrites the pyproject wheel pins, and re-locks — wheelhouse, `pyproject.toml`, and `uv.lock`
+  land as one unit. The build-context secret scan
+  (`tests/container/test_dockerignore_no_secret.py`) now covers `vendor/` as part of the layered
+  COPY set, and the `OPERATIONS.md` release runbook drops its tag/publish/pin-flip steps for the
+  wheelhouse refresh.
 - `AgiConfig`'s docstring (`hive/app/config.py`) adds a scope note: `HIVE_AGI__MODE` today only
   gates the `AGI_OVERRIDE` sentinel check on `hive_write`/`hive_supersede`/`hive_prune` — it is not
   yet a fully autonomous mode. `HIVE-ADMIN.md` and `OPERATIONS.md` already documented this narrow
@@ -318,6 +428,15 @@ All notable changes to this project are documented here.
   old-format `episodes` table is refused at store construction.
 
 ## Fixed
+- A `SUBGRAPH_FP_VERSION` bump would have emitted a false `radius: "changed"` advisory on every
+  memory minted under the old version (BUG-037). `hive-edge`'s `_verify_core` compared the stored
+  `matrix/subgraph_fp` token against the recompute as whole-token raw `!=`, so any version bump
+  made every old token compare unequal — a false re-verify alarm fleet-wide, with no way to
+  distinguish it from a genuinely moved neighborhood. Fixed in `hive-edge` 0.5.1: a
+  `_subgraph_fp_version` envelope parse gates the compare — same version ⇒ body compare exactly as
+  before (current-version corpora byte-identical); different/unknown/malformed ⇒ the `radius` key
+  is OMITTED (silence, the meta envelope law's failure direction) and the graph recompute is never
+  attempted; the post-recall hook's once-per-recall graph load is gated the same way.
 - Post-merge census hook built zero receipts on every real merge (BUG-034). git populates a hook
   subprocess's environment with `GIT_DIR`/`GIT_WORK_TREE` pointing at the invoking repo; an absolute
   `GIT_DIR` silently overrides `git -C <path>` targeting, so the census pipeline read the base/head

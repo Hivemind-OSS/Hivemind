@@ -26,10 +26,29 @@ COPY hive/__init__.py ./hive/__init__.py
 COPY hive/tools/__init__.py ./hive/tools/__init__.py
 COPY hive/tools/bake_model.py ./hive/tools/bake_model.py
 RUN python -m hive.tools.bake_model --model Qwen/Qwen3-Embedding-0.6B --dest /opt/hf-cache/hub
+# Vendored hive-edge wheelhouse: the census/sync engines (comb-drift, matrix) + the
+# in-image `hive-edge` mint CLI. The server host receives ONLY this repo — these names
+# are never resolved from an index or a sibling checkout; scripts/vendor_edge.py (dev-side)
+# refreshes the committed wheels. Installed after the model layer (a wheel refresh never
+# re-bakes weights) and before the volatile hive/ COPY (a source edit never re-installs
+# engines). Their third-party deps (tree-sitter, networkx) resolve from PyPI as usual.
+COPY vendor/wheels/ /wheels/
+RUN pip install --no-cache-dir /wheels/*.whl
 # Volatile source — copied AFTER the model layer so editing it never re-bakes the weights.
+# [sync]'s bare `hive-edge` is already satisfied by the wheelhouse above; jsonschema/
+# defusedxml ride the extra, pytest rides along for the candidate-eval verifier tier.
+# Byte-inert at runtime until HIVE_SYNC__* is configured.
 COPY hive/ ./hive/
-RUN pip install --no-cache-dir ".[embed]" \
+RUN pip install --no-cache-dir ".[embed,sync]" pytest \
  && python -m compileall -q hive
+# Best-effort pyright bake: pyright's wrapper fetches node + the npm bundle into
+# ~/.cache on first run — warm it here so the offline runtime can typecheck. Guarded
+# fail-open (`|| true`): if the fetch flakes, the image ships WITHOUT it and the
+# verifier's typecheck line abstains honestly. mkdir keeps the later COPY satisfiable
+# even when the warm-up produced nothing.
+RUN pip install --no-cache-dir pyright \
+ && (timeout 300 pyright --version || true) \
+ && mkdir -p /root/.cache
 
 # ---------- runtime ----------
 FROM python:3.12-slim AS runtime
@@ -41,10 +60,18 @@ ENV PATH="/opt/venv/bin:$PATH" \
     PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1
 RUN groupadd --system hive && useradd --system --gid hive --home /home/hive --create-home hive
+# git: the sync mirror + the census diff/worktree engine shell to it at runtime.
+# (Deliberately the ONLY runtime apt package — the build toolchain stays out.)
+RUN apt-get update && apt-get install -y --no-install-recommends git \
+ && rm -rf /var/lib/apt/lists/*
+# uv: provisions candidate-eval test envs (`uv sync --frozen`) inside the container.
+COPY --from=ghcr.io/astral-sh/uv:latest /uv /usr/local/bin/uv
 COPY --from=builder /opt/venv /opt/venv
 COPY --from=builder /opt/hf-cache /opt/hf-cache
 COPY --from=builder /build/hive /opt/venv/lib/python3.12/site-packages/hive
-RUN mkdir -p /data && chown -R hive:hive /data /opt/hf-cache
+# The baked pyright node cache (possibly empty — the bake is best-effort).
+COPY --from=builder /root/.cache /home/hive/.cache
+RUN mkdir -p /data/sync && chown -R hive:hive /data /opt/hf-cache /home/hive/.cache
 VOLUME ["/data"]
 # Healthy IFF the embedder is resident (not merely importable).
 HEALTHCHECK --interval=15s --timeout=10s --start-period=120s --retries=10 \

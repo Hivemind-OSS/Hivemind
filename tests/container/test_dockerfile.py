@@ -92,12 +92,56 @@ def test_runtime_is_hard_offline():
 
 
 def test_runtime_excludes_build_toolchain():
-    # build-essential / git / apt installs belong ONLY to the builder stage (no bloat,
-    # smaller attack surface in the runtime image).
+    # build-essential belongs ONLY to the builder stage (no bloat, smaller attack
+    # surface). The runtime deliberately carries git — the sync mirror and the census
+    # diff/worktree engine shell to it — and NOTHING else from apt: every runtime
+    # apt-get install line must name exactly {git}.
     builder, runtime = _stages()["builder"], _stages()["runtime"]
     assert "build-essential" in builder
     assert "build-essential" not in runtime
-    assert "apt-get install" not in runtime
+    installs = re.findall(r"apt-get install\s+((?:-\S+\s+)*)([^&\n]+)", runtime)
+    assert installs, "runtime must apt-get install git (the sync subsystem shells to it)"
+    for _flags, packages in installs:
+        names = [token for token in packages.split() if token != "\\"]
+        assert names == ["git"], f"runtime apt installs must be exactly ['git'], got {names}"
+
+
+def test_runtime_has_git_and_uv_for_sync():
+    # The sync subsystem's runtime tools: git (mirror + census worktrees) and the uv
+    # binary (candidate-eval `uv sync --frozen`), copied from the official uv image.
+    runtime = _stages()["runtime"]
+    assert re.search(r"apt-get install[^\n]*\bgit\b", runtime)
+    assert re.search(
+        r"(?im)^COPY\s+--from=ghcr\.io/astral-sh/uv:\S+\s+/uv\s+/usr/local/bin/uv\s*$",
+        runtime,
+    )
+
+
+def test_builder_installs_sync_extra_and_pytest():
+    # The server-side census engines ride `.[sync]` (hive-edge CLI + comb-drift +
+    # matrix) and the candidate-eval tier needs pytest in the venv the runtime copies.
+    builder = _stages()["builder"]
+    assert re.search(r"pip install[^\n]*\.\[embed,sync\][^\n]*\bpytest\b", builder)
+
+
+def test_pyright_bake_is_best_effort_only():
+    # pyright's node fetch may flake: the bake must be fail-open (`|| true`) so a
+    # flaky fetch NEVER fails the image build — the typecheck line abstains honestly
+    # instead. The cache dir is created unconditionally so the runtime COPY of it
+    # cannot break, and the runtime copies it into the hive user's home.
+    builder, runtime = _stages()["builder"], _stages()["runtime"]
+    bake = re.search(r"pyright --version\s*\|\|\s*true", builder)
+    assert bake, "the pyright warm-up must be guarded fail-open (`|| true`)"
+    assert re.search(r"pip install[^\n]*\bpyright\b", builder)
+    assert re.search(r"mkdir -p /root/\.cache", builder)
+    assert re.search(r"(?im)^COPY\s+--from=builder\s+/root/\.cache\s+/home/hive/\.cache\s*$", runtime)
+
+
+def test_sync_state_dir_created_and_owned_by_hive():
+    runtime = _stages()["runtime"]
+    assert re.search(r"mkdir -p[^\n]*/data/sync\b", runtime)
+    assert re.search(r"chown -R hive:hive[^\n]*/data\b", runtime)
+    assert re.search(r"chown -R hive:hive[^\n]*/home/hive/\.cache", runtime)
 
 
 def test_runtime_does_not_copy_source_tree_wholesale():

@@ -33,6 +33,7 @@ import logging
 import os
 import sys
 import threading
+import time
 from typing import Any, Callable, Mapping, Optional, Protocol
 
 from hive.app.config import Config
@@ -133,26 +134,35 @@ def _make_http_serve(boot: Boot, loopback_port: int, tunnel_port: int, *,
                      rate_limit: int = _DEFAULT_RATE_LIMIT,
                      rate_window_s: float = _DEFAULT_RATE_WINDOW_S,
                      max_body_bytes: int = _DEFAULT_MAX_BODY_BYTES,
-                     run_http_dual: Optional[Callable[..., None]] = None) -> Callable[[Any], None]:
+                     run_http_dual: Optional[Callable[..., None]] = None,
+                     lock: Optional[threading.Lock] = None,
+                     webhook_secret: str = "",
+                     webhook_nudge: Optional[Callable[[], None]] = None) -> Callable[[Any], None]:
     """The DEFAULT serve step (replacing stdio): a warm HTTP daemon binding BOTH doors — the
     tokenless LOOPBACK door (host-published `loopback_port`) and the token-required TUNNEL door
     (compose-internal `tunnel_port`, ngrok-forwarded). Auth is a property of the listening
     socket, not a config mode. The tunnel door's bearer gate depends on a `verify` CALLABLE
-    (`boot.token_store.verify`) — never the concrete SQLite class. ONE `threading.Lock` + ONE
-    `TokenBucketLimiter` are created HERE and threaded into BOTH listeners, so the single-writer
-    serialization invariant (the shared conn + embedder are not thread-safe) holds ACROSS the
-    two doors. `run_http_dual` is injectable ONLY so this default path is unit-testable; the
-    real one is lazy-imported (torch-free) so module import stays light."""
+    (`boot.token_store.verify`) — never the concrete SQLite class. ONE `threading.Lock` (passed
+    by `main()`, which shares the SAME lock with the sync daemon thread; created here only for
+    a standalone caller) + ONE `TokenBucketLimiter` are threaded into BOTH listeners, so the
+    single-writer serialization invariant (the shared conn + embedder are not thread-safe)
+    holds ACROSS the two doors AND the sync side-channel. `webhook_secret`/`webhook_nudge`
+    (default inert: "" ⇒ dead branch, byte-identical door) pass through verbatim and arm the
+    census-webhook nudge on the TUNNEL door only — the nudge is the sync loop's wake Event's
+    `set`, never a store/server handle. `run_http_dual` is injectable ONLY so this default
+    path is unit-testable; the real one is lazy-imported (torch-free) so module import stays
+    light."""
     if run_http_dual is None:
         from hive.app.http_server import run_http_dual as impl  # noqa: PLC0415 — lazy, torch-free
         run_http_dual = impl
-    lock = threading.Lock()                                              # ONE lock, both doors
+    lock = lock if lock is not None else threading.Lock()                # ONE lock, both doors
     limiter = TokenBucketLimiter(limit=rate_limit, window_s=rate_window_s)  # ONE limiter, both doors
 
     def serve(server: Any) -> None:
         run_http_dual(server, host="0.0.0.0", loopback_port=loopback_port,
                       tunnel_port=tunnel_port, verify=boot.token_store.verify,
-                      lock=lock, limiter=limiter, max_body_bytes=max_body_bytes)
+                      lock=lock, limiter=limiter, max_body_bytes=max_body_bytes,
+                      webhook_secret=webhook_secret, webhook_nudge=webhook_nudge)
     return serve
 
 
@@ -172,6 +182,23 @@ def _resolve_max_body(env: Mapping[str, str]) -> Optional[int]:
         _log.error("entrypoint.invalid_max_body var=HIVE_HTTP_MAX_BODY_BYTES code=%d", EX_CONFIG)
         return None
     return max_body
+
+
+# The env vars whose VALUES are credentials: a value must never ride any log line
+# (the config-invalid detail included). Variable NAMES may appear; values never.
+_SECRET_ENV_VARS = ("HIVE_SYNC__TOKEN", "HIVE_SYNC__WEBHOOK_SECRET")
+
+
+def _scrub_secret_values(text: str, env: Mapping[str, str]) -> str:
+    """Replace any configured credential VALUE with ``***`` in an outbound message.
+    Config's own error messages are name-only by construction — this belt makes the
+    never-echo-a-secret invariant MECHANICAL at the escape path (the same direction
+    as sync's ``_redact``), surviving any upstream message regression. // O(#secrets)."""
+    for var in _SECRET_ENV_VARS:
+        value = env.get(var) or ""
+        if value:
+            text = text.replace(value, "***")
+    return text
 
 
 def _resolve_env(env: Mapping[str, str]) -> tuple[str, str, str]:
@@ -242,7 +269,11 @@ def main(argv: Optional[list[str]] = None, *, env: Optional[Mapping[str, str]] =
     try:
         cfg = Config.load(db_path=db_path, env=env, runtime={"tenant_id": tenant_id})
     except Exception as exc:                            # noqa: BLE001 — bad config is EX_CONFIG
-        _log.error("entrypoint.config_invalid kind=%s code=%d", type(exc).__name__, EX_CONFIG)
+        # detail carries the exception message, which NAMES the offending variable —
+        # an operator staring at exit 78 must know which var to fix; the scrub belt
+        # guarantees no credential VALUE can ride the line.
+        _log.error("entrypoint.config_invalid kind=%s code=%d detail=%s",
+                   type(exc).__name__, EX_CONFIG, _scrub_secret_values(str(exc), env))
         return EX_CONFIG
     _configure_logging(int(getattr(cfg.obs, "log_level", _DEFAULT_LOG_LEVEL)))  # operator level now live
     _log.info("entrypoint.config_loaded tenant_id=%s db_path=%s", tenant_id, db_path)
@@ -253,14 +284,9 @@ def main(argv: Optional[list[str]] = None, *, env: Optional[Mapping[str, str]] =
         _log.error("entrypoint.assemble_failed kind=%s code=%d", type(exc).__name__, EX_SOFTWARE)
         return EX_SOFTWARE
 
-    # Default the serve step to the warm HTTP daemon binding BOTH doors (needs
-    # boot.token_store.verify, so it is built only after assembly). The ports are fixed: the
-    # loopback door at 8765 (the compose host map + `hive connect` assume it) and the tunnel
-    # door at 8766 (the compose-internal port ngrok forwards to). Auth is a property of the
-    # socket — no posture to resolve. The rate-limit belt uses its fixed defaults. An injected
-    # `serve` (every unit test) takes precedence.
-    serve = serve or _make_http_serve(boot, _DEFAULT_HTTP_PORT, _DEFAULT_TUNNEL_PORT,
-                                      max_body_bytes=max_body_bytes)
+    # THE global write lock, owned by main(): the two HTTP doors and the sync daemon
+    # thread all serialize store/embedder access through this ONE object.
+    lock = threading.Lock()
 
     # Invalidate any STALE ready marker from a prior boot BEFORE migrate — a restarted
     # container (persistent volume + reused PID 1) must start red until THIS boot warms.
@@ -305,6 +331,37 @@ def main(argv: Optional[list[str]] = None, *, env: Optional[Mapping[str, str]] =
     # ── serve.ready: stamp the readiness markers, THEN serve (run_stdio blocks) ──
     _mark_ready(boot, pid=pid)
     _log.info("entrypoint.serve_ready tenant_id=%s pid=%d", tenant_id, pid)
+
+    # The sync side-channel (armed only when HIVE_SYNC__REPO_URL is set; unarmed ⇒
+    # start_sync returns None — no thread). Started strictly AFTER the ready markers
+    # so sync can never delay readiness, and guarded whole: a start failure is logged
+    # and the daemon serves anyway — the side-channel fails open, the serve never does.
+    sync_thread = None
+    try:
+        from hive.app.sync import start_sync                            # noqa: PLC0415 — lazy
+        from hive.domain.change_evidence import ChangeEvidenceService   # noqa: PLC0415 — lazy
+        evidence = ChangeEvidenceService(reader=boot.store, appender=boot.store,
+                                         now=lambda: int(time.time()), ranges=boot.store)
+        sync_thread = start_sync(cfg, boot.store, evidence, lock)
+    except Exception as exc:  # noqa: BLE001 — side-channel start must never abort serve
+        _log.warning("entrypoint.sync_start_failed kind=%s (serving without sync)",
+                     type(exc).__name__)
+
+    # Default the serve step to the warm HTTP daemon binding BOTH doors. Built only now —
+    # after assembly (it needs boot.token_store.verify) and after start_sync, so the tunnel
+    # door's webhook nudge is the LIVE sync thread's wake Event's `set` (no thread ⇒ nudge
+    # None: a webhook 204, armed by cfg.sync.webhook_secret, degrades to a no-op wake).
+    # The ports are fixed: the loopback door at 8765 (the compose host map + `hive connect`
+    # assume it) and the tunnel door at 8766 (the compose-internal port ngrok forwards to).
+    # Auth is a property of the socket — no posture to resolve. The rate-limit belt uses its
+    # fixed defaults. An injected `serve` (every unit test) takes precedence.
+    if serve is None:
+        nudge = getattr(sync_thread, "sync_nudge", None)
+        serve = _make_http_serve(boot, _DEFAULT_HTTP_PORT, _DEFAULT_TUNNEL_PORT,
+                                 max_body_bytes=max_body_bytes, lock=lock,
+                                 webhook_secret=cfg.sync.webhook_secret,
+                                 webhook_nudge=(nudge.set if nudge is not None else None))
+
     serve(server)
     return EX_OK
 

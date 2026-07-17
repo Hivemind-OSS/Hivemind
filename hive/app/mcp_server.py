@@ -217,7 +217,8 @@ class HiveMCPServer:
                  identity: ServerIdentity, now: Callable[[], int],
                  started_ts: int = 0, db_path: str = "", autonomy=None,
                  conflict=None, flag_service=None, suspect_consensus=None,
-                 agi_mode: bool = False, secret_scan_enabled: bool = True) -> None:
+                 agi_mode: bool = False, secret_scan_enabled: bool = True,
+                 canonical_ref: str = "") -> None:
         self.admission = admission          # AdmissionService: write + capture
         self.recall = recall                # RecallPipeline: recall(query, *, agent_id)
         self.store = store                  # the store adapter: get_episode (belt) / counts
@@ -265,6 +266,10 @@ class HiveMCPServer:
         # surface the loosened posture in hive_health (a disabled floor must never be silent — it
         # is also WARN-logged at boot). Default True ⇒ no health key ⇒ byte-identical envelope.
         self.secret_scan_enabled = bool(secret_scan_enabled)
+        # The census canonical-ref rider scoping (HIVE_CENSUS__CANONICAL_REF). "" (the
+        # default) keeps the unscoped read — the recall rider then derives from the
+        # newest verify row regardless of which line it measured (byte-identical build).
+        self.canonical_ref = canonical_ref
         self._tool_handlers: dict[str, Callable[[dict, ServerIdentity], dict]] = {
             "hive_write": self._handle_write,
             "hive_capture": self._handle_capture,
@@ -456,7 +461,9 @@ class HiveMCPServer:
         # the kernel never judges churn — the stamp is carried, the edge decides.
         if hits:
             try:
-                lv = self.store.last_verification([h["episode_id"] for h in hits])
+                lv = self.store.last_verification(
+                    [h["episode_id"] for h in hits],
+                    canonical_ref=self.canonical_ref or None)
                 for hit in hits:
                     stamp = lv.get(hit["episode_id"])
                     if stamp is not None:            # absent ⇒ no key, never null
@@ -648,6 +655,12 @@ class HiveMCPServer:
             # wrapper method); dropping the request flag ⇒ always-emits mutation.
             if args.get("include_census_health"):
                 snap["census_health"] = census_health_report(self.store.conn)
+            # the corpus token-version histogram (the meta envelope law's no-migration
+            # observability): same sole-request-flag gate, no config knob; the ONE sanctioned
+            # server-side read of meta content is the version PREFIX, in domain meta.py —
+            # dropping the request flag ⇒ always-emits mutation.
+            if args.get("include_meta_versions"):
+                snap["meta_versions"] = self.store.meta_version_counts()
             # the full install payload — the uncapped-channel answer to BUG-023: same
             # sole-request-flag gate (byte-inert when off ⇒ dropping the flag ⇒
             # always-emits mutation), no config knob.

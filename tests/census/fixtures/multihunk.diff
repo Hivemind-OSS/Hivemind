@@ -1,0 +1,13 @@
+diff --git a/many.txt b/many.txt
+index 01f84f8..c870f38 100644
+--- a/many.txt
++++ b/many.txt
+@@ -2 +2 @@ l1
+-l2
++L2-NEW
+@@ -5,2 +4,0 @@ l4
+-l5
+-l6
+@@ -9 +7 @@ l8
+-l9
++L9-NEW

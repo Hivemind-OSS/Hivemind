@@ -342,3 +342,65 @@ def test_build_provider_sources_native_dim():
     from hive.adapters.embedding.factory import build_provider, native_dim_for
     cfg = Config.load(db_path=":memory:")
     assert build_provider(cfg).d == native_dim_for(cfg.embedding.model) == 1024
+
+# ── CensusConfig group (canonical-ref rider scoping; default "" = byte-inert) ─────
+def test_census_canonical_ref_defaults_off():
+    cfg = Config.load(db_path=":memory:")
+    assert cfg.census.canonical_ref == ""            # "" = unscoped, byte-identical
+
+
+def test_census_canonical_ref_via_env_and_override():
+    cfg = Config.load(db_path=":memory:", env={"HIVE_CENSUS__CANONICAL_REF": "master"})
+    assert cfg.census.canonical_ref == "master"
+    assert Config.load(db_path=":memory:",
+                       census={"canonical_ref": "main"}).census.canonical_ref == "main"
+
+
+def test_census_group_is_frozen():
+    cfg = Config.load(db_path=":memory:")
+    with pytest.raises(dataclasses.FrozenInstanceError):
+        cfg.census.canonical_ref = "x"   # type: ignore[misc]
+
+
+# ── SyncConfig group (server-side census sync; repo_url "" = unarmed/byte-inert) ─
+def test_sync_defaults_unarmed():
+    cfg = Config.load(db_path=":memory:")
+    assert cfg.sync.repo_url == "" and cfg.sync.token == ""
+    assert cfg.sync.interval_s == 60
+    assert cfg.sync.webhook_secret == ""
+    assert cfg.sync.verify_candidates is True
+    assert cfg.sync.mirror_dir == ""             # "" ⇒ /data/sync/mirror at the service
+
+
+def test_sync_env_and_override():
+    env = {"HIVE_SYNC__REPO_URL": "https://example.com/o/r.git",
+           "HIVE_SYNC__INTERVAL_S": "30",
+           "HIVE_SYNC__VERIFY_CANDIDATES": "false"}
+    cfg = Config.load(db_path=":memory:", env=env)
+    assert cfg.sync.repo_url == "https://example.com/o/r.git"
+    assert cfg.sync.interval_s == 30
+    assert cfg.sync.verify_candidates is False
+    assert Config.load(db_path=":memory:",
+                       sync={"repo_url": "x", "mirror_dir": "/m"}).sync.mirror_dir == "/m"
+
+
+def test_sync_interval_floor():
+    with pytest.raises(ValueError):
+        Config.load(db_path=":memory:", sync={"repo_url": "x", "interval_s": 4})
+    assert Config.load(db_path=":memory:",
+                       sync={"repo_url": "x", "interval_s": 5}).sync.interval_s == 5
+
+
+def test_sync_partial_credential_without_repo_url_raises():
+    # fail-fast partial config: a credential with no repo is refused, NAMING the
+    # missing var and never echoing the credential value
+    for half in ({"token": "tok-value"}, {"webhook_secret": "hook-value"}):
+        with pytest.raises(ValueError, match="HIVE_SYNC__REPO_URL") as ei:
+            Config.load(db_path=":memory:", sync=half)
+        assert "tok-value" not in str(ei.value) and "hook-value" not in str(ei.value)
+
+
+def test_sync_group_is_frozen():
+    cfg = Config.load(db_path=":memory:")
+    with pytest.raises(dataclasses.FrozenInstanceError):
+        cfg.sync.repo_url = "x"   # type: ignore[misc]

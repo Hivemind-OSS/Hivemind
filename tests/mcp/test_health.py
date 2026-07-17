@@ -86,6 +86,51 @@ def test_health_has_no_contested():
     assert not hasattr(server, "_contested_report")
 
 
+def test_health_meta_versions_absent_by_default():
+    # the meta envelope law's observability channel is byte-inert until requested:
+    # dropping the request gate ⇒ the always-emits mutation this pins against.
+    server, _ = build_real_server()
+    write_text(server, "a memory", meta={"matrix/subgraph_fp": "matrix-subgraph-fp/1:aaa"})
+    snap = content(tool_call(server, "hive_health", {}))
+    assert snap["ok"] is True
+    assert "meta_versions" not in snap
+
+
+def test_health_meta_versions_histogram_end_to_end():
+    # Seed through the REAL capture/write path: mixed versions, a malformed value, bare
+    # rows, and a deprecated (retired) carrier — the histogram counts the LIVE corpus
+    # (servable + quarantined), buckets per version prefix, and never reads a body.
+    server, _ = build_real_server()
+    write_text(server, "established v1 carrier",
+               meta={"matrix/subgraph_fp": "matrix-subgraph-fp/1:aaa"})
+    content(tool_call(server, "hive_capture", {                       # quarantined counts too
+        "text": "quarantined v1 carrier",
+        "meta": {"matrix/subgraph_fp": "matrix-subgraph-fp/1:aaa"}}))
+    write_text(server, "future v2 carrier",
+               meta={"matrix/subgraph_fp": "matrix-subgraph-fp/2:bbb"})
+    write_text(server, "malformed carrier", meta={"matrix/subgraph_fp": "garbage"})
+    write_text(server, "bare row, no meta")
+    winner = write_text(server, "the superseding successor")["id"]
+    loser = write_text(server, "retired v1 carrier",
+                       meta={"matrix/subgraph_fp": "matrix-subgraph-fp/1:zzz"})["id"]
+    content(tool_call(server, "hive_supersede",
+                      {"loser": loser, "winner": winner, "approved_by": "user"}))
+    snap = content(tool_call(server, "hive_health", {"include_meta_versions": True}))
+    assert snap["ok"] is True
+    # deprecated excluded (else "1" would read 3); absent counts the two bare live rows;
+    # malformed is present because nonzero.
+    assert snap["meta_versions"] == {
+        "matrix/subgraph_fp": {"versions": {"1": 2, "2": 1}, "absent": 2,
+                               "malformed": 1}}
+
+
+def test_health_meta_versions_empty_corpus():
+    server, _ = build_real_server()
+    snap = content(tool_call(server, "hive_health", {"include_meta_versions": True}))
+    assert snap["ok"] is True
+    assert snap["meta_versions"] == {}
+
+
 def test_health_onboarding_absent_by_default_present_on_flag():
     # BUG-023's uncapped escape channel: byte-inert by default (dropping the flag ⇒ the
     # always-emits mutation this guards against), a complete install payload when requested.

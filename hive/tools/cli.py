@@ -494,9 +494,10 @@ def _connect(args, *, run: Run, out: TextIO, env: Mapping[str, str], ask) -> int
               "harness/CI header per agent, ${env:VAR} on Cursor/Windsurf/Cline, ${input:..} "
               "on VS Code, or env_http_headers on Codex.", file=sys.stderr)
     # edge-tools breadcrumb (transport-only boundary preserved — this is a cross-reference, not a
-    # merged verb): the teammate also installs the census bundle + wires the post-merge hook.
-    print("hive: edge tools — install `hive-edge` (see HIVE-ADMIN.md §8), then run `hive-edge "
-          "census init` to wire the post-merge census hook.", file=sys.stderr)
+    # merged verb): the teammate also installs the edge CLI; census evidence is server-side (sync).
+    print("hive: edge tools — install `hive-edge` (see HIVE-ADMIN.md §8); census evidence is "
+          "computed server-side once sync is configured (HIVE_SYNC__REPO_URL, HIVE-ADMIN.md §4) "
+          "— nothing to wire per device.", file=sys.stderr)
     return EX_OK
 
 

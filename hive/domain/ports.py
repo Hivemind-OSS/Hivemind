@@ -106,8 +106,13 @@ class LastVerificationReader(Protocol):
     A SEPARATE narrow port (not a widening of an existing one) so existing narrow fakes
     stay conformant; the SqliteEpisodeStore satisfies it with one read method. A
     never-verified id is simply ABSENT (under-claim — the boundary then emits no key);
-    the kernel never judges churn — the stamp is carried, the edge decides."""
-    def last_verification(self, episode_ids: Sequence[int]
+    the kernel never judges churn — the stamp is carried, the edge decides.
+    ``canonical_ref`` (a DEFAULTED kwarg — the one conscious, minimal refinement of
+    this port; None/"" keeps today's read, so every legacy caller compiles unchanged)
+    scopes the read to rows whose payload ``ref`` names that line; a legacy ref-less
+    row always counts (the absence rule)."""
+    def last_verification(self, episode_ids: Sequence[int], *,
+                          canonical_ref: Optional[str] = None
                           ) -> dict[int, tuple[int, str, str]]: ...
 
 
@@ -133,6 +138,23 @@ class ChangeEvidenceAppender(Protocol):
     DELETE evidence rows."""
     def append_evidence(self, rows: Sequence[tuple[int, str, str, int, str]]
                         ) -> tuple[list[int], int]: ...
+
+
+@runtime_checkable
+class RangeLedger(Protocol):
+    """The census feed's durable range-dedupe seam: has this EXACT
+    ``(repo, base_sha, head_sha, phase)`` range already been ingested, and record that it
+    now has. Exact-key equality only — NO subsumption/overlap reasoning (a legacy A..B +
+    B..C alongside a sync A..C are three distinct keys that all land; transition noise is
+    tolerated, never interpreted). ``repo`` "" is the legacy receipt identity (pre-repo-key
+    receipts dedupe among themselves). ``record_ingested_range`` is idempotent-bool: True
+    iff a NEW row was written; a repeat of the same key is a no-op False (the first write
+    stands). A SEPARATE narrow port (not a widening) so existing narrow fakes stay
+    conformant; the SqliteEpisodeStore satisfies it with one table."""
+    def already_ingested_range(self, repo: str, base_sha: str, head_sha: str,
+                               phase: str) -> bool: ...
+    def record_ingested_range(self, repo: str, base_sha: str, head_sha: str,
+                              phase: str, ts: int) -> bool: ...
 
 
 @runtime_checkable

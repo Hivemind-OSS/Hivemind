@@ -60,25 +60,25 @@ METADATA_FIELD_LIMIT: int = 2048
 # The single owner of the bundle version. Bump it (and regenerate the keystone golden) on ANY
 # change to AGENT_RULES_BLOCK / CLAUDE_CODE_HOOKS / the rendered allowlist. The beacon stamps this
 # on every tool result; an agent whose installed marker differs re-onboards.
-CONTRACT_VERSION: str = "v.11"
+CONTRACT_VERSION: str = "v.13"
 
-# The minimum hive-edge CLI version this contract requires (mint / verify / census / hook
-# capability). Rendered into the EDGE_CLI floor text below. When the CLI's capability moves, bump
+# The minimum hive-edge CLI version this contract requires (mint / verify / hook capability).
+# Rendered into the EDGE_CLI floor text below. When the CLI's capability moves, bump
 # this in the SAME release as the hive-edge change (Hive-edge's version-coupling rule) so the
 # pre-commit guard bumps CONTRACT_VERSION and the new floor propagates to every connected edge. A
 # contract-only edit that does not change CLI capability leaves this untouched.
-MIN_EDGE_VERSION: str = "0.5.0"
+MIN_EDGE_VERSION: str = "0.7.0"
 
-# The edge-CLI tooling loop, served in the install payload: mint / verify / census computation
-# rides ONE console script so every harness runs identical code — the hooks only AUTOMATE these
-# calls, they never own the computation. Names the version check, the uv install line, the
-# MIN_EDGE_VERSION floor, and `hive-edge upgrade`, with the rollback-pin caveat so the routine
-# below-floor nudge can never silently re-apply a regression a human deliberately rolled back.
+# The edge-CLI tooling loop, served in the install payload: mint / verify ride ONE console
+# script so every harness runs identical code — the hooks only AUTOMATE these calls, they never
+# own the computation. (Census computation left the edge CLI in 0.7.0 — it is server-side now;
+# see CENSUS_DIRECTIVE.) Names the version check, the PyPI install line, the MIN_EDGE_VERSION
+# floor, and `hive-edge upgrade`, with the rollback-pin caveat so the routine below-floor nudge
+# can never silently re-apply a regression a human deliberately rolled back.
 EDGE_CLI: str = (
-    "EDGE CLI (all runtimes): mint / verify / census computation rides the `hive-edge` console "
-    "script, so every harness runs identical code. Check `hive-edge --version`; if it is absent, "
-    "install it: `uv tool install hive-edge --from "
-    "git+https://github.com/Hivemind-OSS/Hive-edge@release`. If it is below MIN_EDGE_VERSION ("
+    "EDGE CLI (all runtimes): mint / verify ride the `hive-edge` console script, so every "
+    "harness runs identical code. Check `hive-edge --version`; if it is absent, install it "
+    "from PyPI: `uv tool install hive-edge`. If it is below MIN_EDGE_VERSION ("
     + MIN_EDGE_VERSION + ") or your contract version is outdated, run `hive-edge upgrade` — UNLESS a "
     "rollback pin is active, in which case `hive-edge upgrade` reports the pin and refuses to "
     "auto-override it, so defer to your human instead. No `hive-edge` on PATH is not an error: mint "
@@ -145,15 +145,9 @@ ONBOARDING_PROCEDURE: str = (
     + render_allowlist() + "\n"
     "   The write / supersede / prune verbs are deliberately omitted — their approval prompt is the "
     "human checkpoint that matches their approved_by vouch.\n"
-    "3) [ALL runtimes] Install the edge CLI so mint / verify / census run identically on every "
+    "3) [ALL runtimes] Install the edge CLI so mint / verify run identically on every "
     "harness: " + EDGE_CLI + "\n"
-    "4) [ALL runtimes, once per repo per device] Wire the census evidence feed — post-merge + "
-    "post-commit hooks: `hive-edge census init --repo <repo-root> --hive-url <the URL you "
-    "registered this server at>` (idempotent; succeeds even where the `hive` server CLI is "
-    "absent — the census ingest stays inert there, fail-open). This turns merges AND direct "
-    "commits into `change_outcome` evidence for this repo and keeps the per-repo code graph "
-    "current.\n"
-    "5) The version stamp IS the START marker (contract-version=" + CONTRACT_VERSION + "). You MUST "
+    "4) The version stamp IS the START marker (contract-version=" + CONTRACT_VERSION + "). You MUST "
     "RE-ONBOARD when a hive_* tool result's contract_version differs from your installed marker (or no "
     "block is installed): repeat steps 0-2 to reinstall the FULL contract — the HIVEMIND-RULES block, "
     "plus on Claude Code the lifecycle hooks AND the auto-approve allowlist — from the freshly served "
@@ -176,24 +170,31 @@ MINT_DIRECTIVE: str = (
     "(0-false-stale). "
     "Where the served Claude-Code pre-capture hook is installed and firing it mints for you; run it "
     "yourself on every other harness, or if the hook is disabled or failed. No `hive-edge` on PATH -> "
-    "install per EDGE CLI; still absent -> omit meta (capture is unaffected)."
+    "install per EDGE CLI; still absent -> omit meta (capture is unaffected). "
+    "When a memory is true ONLY on specific branch(es), add `--branch-scope` (tags the current "
+    "branch) or `--branch-scope <names…>` (an explicit set) to the mint call: the resulting "
+    "git/branches tag is a set-valued RELEVANCE SCOPE — it marks which lines the memory applies "
+    "to, it is never auto-attached (no hook mints it) and never required (most memories are "
+    "branch-agnostic; leave them untagged)."
 )
 
-# The repo-level census wiring directive — the ONE command that writes the post-merge +
-# post-commit hooks and activates the change_outcome evidence feed (BUG-030: it existed only in
-# the human ops doc, never in the served contract, so a repo onboarded purely over MCP left the
-# corroborate/contradict loop silently dark). Same release-valve split as MINT/VERIFY: the full
-# call shape and semantics ride the install payload; ONBOARDING_PROCEDURE carries the numbered step.
+# The census-feed explainer — census ingestion is SERVER-AUTOMATIC (U1): the operator connects
+# the repo to the server-side sync daemon once, and tracked-branch movement lands as
+# change_outcome evidence with nothing to wire per repo or per device. The directive still rides
+# the install payload so agents are TOLD there is nothing to wire — the `hive-edge census init`
+# verb this text used to command is DELETED from the edge CLI (0.7.0), and an untold agent would
+# hunt for a wiring step or invent one. It also names the one manual path (the operator's
+# existing `hive ingest` escape hatch) so nobody improvises a new verb.
 CENSUS_DIRECTIVE: str = (
-    "Wire the census evidence feed ONCE PER REPO PER DEVICE: `hive-edge census init --repo "
-    "<repo-root> --hive-url <the exact URL you registered this hive MCP server at>`. This writes "
-    "the repo's post-merge + post-commit hooks — the feed that turns merges AND direct commits "
-    "into `change_outcome` evidence (corroborate/contradict) for served memories and keeps the "
-    "per-repo code graph current; without it that loop stays dark for the repo. Idempotent — a "
-    "re-run rewrites the identical wiring. The hooks resolve binaries and config at RUN time, so "
-    "on a device without the `hive` server CLI the wiring still succeeds and the census ingest "
-    "simply stays inert (fail-open; the graph still refreshes) — normal for a non-server device: "
-    "a wired operator clone that pulls the shared repo receipts everyone's merges."
+    "CENSUS: the change_outcome evidence feed is SERVER-AUTOMATIC. Once your operator connects "
+    "this repo to the hive's server-side sync, merges AND direct commits on the tracked line "
+    "land as `change_outcome` evidence (corroborate/contradict) for served memories and keep "
+    "the per-repo code graph current — there is NOTHING to wire per repo or per device: no "
+    "hooks to install, and no census verb exists in the edge CLI. The one manual path is the "
+    "operator's escape hatch for one-off receipts: `hive ingest` (the `hive` server CLI, run "
+    "on the hive host) feeds a census receipt into the same append-only ledger. If the feed "
+    "looks dark, tell your operator — hive_health(include_census_health=true) carries the sync "
+    "state — never attempt to wire census yourself."
 )
 
 # The recall-time verify directive — the full mechanics, served in the install payload (same
@@ -218,7 +219,14 @@ VERIFY_DIRECTIVE: str = (
     "rider and your own verify disagrees, YOUR point-local verdict wins — a local `current` overrides "
     "the server rider; treat the server tier strictly as the fallback for anchors you could not "
     "verify yourself, never a second vote on ones you could. Where the served post-recall hook is "
-    "installed and firing the verify notice arrives annotated; verify manually on every other harness."
+    "installed and firing the verify notice arrives annotated; verify manually on every other harness. "
+    "When the hit's meta carries a git/branches tag, pass it as `--branches <the token>`: a "
+    "`branch_scoped` verdict means the memory is scoped to another line — likely not relevant on "
+    "your branch, NOT stale, and it carries no retirement options (disregard it unless you are "
+    "working that line). And when an off-set hit verifies `current` on YOUR branch, the fact now "
+    "holds here too: propose to your human a SUPERSEDING memory tagged with ALL relevant branches "
+    "(`hive_write(replaces=…)` or `hive_supersede` — the human-gated flow; never retire the "
+    "scoped original on your own judgment)."
 )
 
 # The per-hit remediation rider the SERVER attaches to a recall hit it already knows is stale

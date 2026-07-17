@@ -1,0 +1,7 @@
+# Conformance-leg runtime artifacts: the harness provisions each fixture repo with its
+# own toolchain state (npm ci, cmake configure+build, cargo target) as test setup.
+# These are re-derivable per-machine litter, never tracked content.
+node_modules/
+build/
+target/
+*.out

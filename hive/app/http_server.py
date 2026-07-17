@@ -29,9 +29,20 @@ a body cap that 413s on the DECLARED Content-Length before any body byte is read
 cheapest flood dies first, pre-auth), and a per-token limiter that 429s a single verified
 label post-auth (D3 — keyed on identity, never a forwarded IP) with ``Retry-After``.
 Both are HTTP-status outcomes, consistent with the 401/403/405/202 channel doctrine.
+
+The census-webhook nudge (D6) is the one path resolved before the bearer gate: with
+``webhook_secret`` set — ``run_http_dual`` threads it to the TUNNEL door alone —
+``POST /census-webhook`` is authenticated by a constant-time HMAC-SHA256 of the raw body
+vs ``X-Hub-Signature-256`` (``sha256=<hex>``): 204 + ``webhook_nudge()`` on match, 401 on
+mismatch. A wake-up, never a data channel: the payload is NEVER parsed and the branch
+holds no server/store handle, so the route is structurally incapable of mutation — a
+forged webhook buys at worst one extra fetch of true remote state. Unset secret ⇒ the
+branch is dead code and the door is byte-identical to the pre-webhook build.
 """
 from __future__ import annotations
 
+import hashlib
+import hmac
 import json
 import logging
 import threading
@@ -102,14 +113,24 @@ def _build_handler(server: HiveMCPServer,
                    lock: threading.Lock, *,
                    limiter: Optional[TokenBucketLimiter] = None,
                    max_body_bytes: int = _DEFAULT_MAX_BODY,
-                   auth_required: bool = True) -> type:
+                   auth_required: bool = True,
+                   webhook_secret: str = "",
+                   webhook_nudge: Optional[Callable[[], None]] = None) -> type:
     """Build the ``BaseHTTPRequestHandler`` subclass that enforces the endpoint contract.
     Factored out of ``run_http_dual`` so the contract is unit-testable against a real loopback
     ``ThreadingHTTPServer`` on an ephemeral port (``run_http_dual`` only binds + serve_forever).
     The Part S belts are keyword-only and defaulted OFF/generous (``limiter=None`` ⇒ no
     429 path exists; AC6). ``limiter.check`` runs under the SAME global lock as ``verify``
     — the limiter has no internal locking by contract. The deliberate mutations (skip the
-    ``verify``-None → 401 guard; drop the 413/429 guards) live in ``do_POST``.
+    ``verify``-None → 401 guard; drop the 413/429 guards; invert the webhook HMAC gate)
+    live in ``do_POST``.
+
+    ``webhook_secret`` (default "" ⇒ the branch is dead code, the door byte-identical)
+    arms the D6 census-webhook nudge: ``POST /census-webhook`` is resolved after
+    body-drain + the Origin guard and BEFORE the bearer gate by a constant-time
+    HMAC-SHA256 of the raw body vs ``X-Hub-Signature-256`` — 204 + ``webhook_nudge()``
+    on match (the sync loop's wake ``Event.set``; ``None`` ⇒ the wake is a no-op), 401
+    on mismatch. The payload is never parsed.
 
     ``auth_required`` picks the DOOR (auth is a property of the listening socket, not a config
     mode). ``True`` (default — the TUNNEL door): the Bearer is verified, an absent/unknown
@@ -172,7 +193,27 @@ def _build_handler(server: HiveMCPServer,
                 # (1) Origin guard (spec MUST, DNS-rebinding): a browser is never legitimate.
                 if self.headers.get("Origin") is not None:     # INV-4
                     return self._json(403, {"error": "forbidden_origin"})
-                # (2) AUTH gate (per-door) vs IDENTITY (shared, per-agent-session) — orthogonal.
+                # (2) census-webhook nudge (D6; tunnel door only — run_http_dual threads the
+                # secret there alone), resolved BEFORE the bearer gate so a forwarder needs
+                # no hive token, but never ungated: constant-time HMAC-SHA256 of the raw
+                # body vs X-Hub-Signature-256 (INV-1 — auth still precedes any action). A
+                # wake-up, never a data channel: the body is never parsed (its bytes exist
+                # only as HMAC input) and the branch holds no server/store handle — only
+                # the sync loop's wake callable — so a forged signature buys a 401 and a
+                # replayed valid one at most one extra fetch of true remote state. Unset
+                # secret ⇒ dead branch (the door is byte-identical).
+                if self.path == "/census-webhook" and webhook_secret:
+                    provided = self.headers.get("X-Hub-Signature-256") or ""
+                    expected = "sha256=" + hmac.new(webhook_secret.encode("utf-8"),
+                                                    body, hashlib.sha256).hexdigest()
+                    if not hmac.compare_digest(                # ← inverting/skipping this
+                            expected.encode("utf-8"),          #   gate is a deliberate mutation
+                            provided.encode("utf-8")):
+                        return self._json(401, {"error": "unauthorized"})
+                    if webhook_nudge is not None:
+                        webhook_nudge()
+                    return self._send(204, b"")
+                # (3) AUTH gate (per-door) vs IDENTITY (shared, per-agent-session) — orthogonal.
                 # The token GATES the tunnel door; it is NEVER the identity (else token/engineer
                 # count would leak into promotion, breaking solo≡team). Identity resolves the
                 # SAME way on both doors: X-Hive-Agent-Id → echoed Mcp-Session-Id → "local"
@@ -196,7 +237,7 @@ def _build_handler(server: HiveMCPServer,
                 if rl is not None and not rl.allowed:
                     return self._json(429, {"error": "rate_limited"},
                                       extra={"Retry-After": str(rl.retry_after_s)})
-                # (3) parse JSON-RPC with the SAME guards as run_stdio
+                # (4) parse JSON-RPC with the SAME guards as run_stdio
                 try:
                     payload = json.loads(body)
                 except json.JSONDecodeError as e:
@@ -206,10 +247,10 @@ def _build_handler(server: HiveMCPServer,
                     return self._json(200, {"jsonrpc": "2.0", "id": None, "error":
                                             {"code": -32600,
                                              "message": "invalid request: expected a JSON object"}})
-                # (4) notification / response (no id) → 202 Accepted, no body (spec MUST)
+                # (5) notification / response (no id) → 202 Accepted, no body (spec MUST)
                 if "id" not in payload:
                     return self._send(202, b"")
-                # (5) request → handle under the VERIFIED identity; single JSON response
+                # (6) request → handle under the VERIFIED identity; single JSON response
                 raw_params = payload.get("params")
                 params = raw_params if isinstance(raw_params, dict) else {}
                 req = MCPRequest(id=payload.get("id"), method=payload.get("method", ""),
@@ -248,18 +289,23 @@ def run_http_dual(server: HiveMCPServer, *, host: str,
                   verify: Callable[[str], Optional[str]],
                   lock: threading.Lock,
                   limiter: Optional[TokenBucketLimiter] = None,
-                  max_body_bytes: int = _DEFAULT_MAX_BODY) -> None:  # pragma: no cover — blocking serve
+                  max_body_bytes: int = _DEFAULT_MAX_BODY,
+                  webhook_secret: str = "",
+                  webhook_nudge: Optional[Callable[[], None]] = None) -> None:  # pragma: no cover — blocking serve
     """Bind BOTH doors on ONE server / ONE lock / ONE limiter: the tokenless LOOPBACK door
     (``auth_required=False``, the host-published port) and the token-required TUNNEL door
     (``auth_required=True``, the compose-internal port ngrok forwards to). The tunnel door
     serves on a daemon thread; the loopback door serves on THIS thread (blocking). Passing the
     SAME ``lock`` + SAME ``limiter`` into both ``_build_handler`` calls is what keeps the
     single-writer serialization invariant (THEORY §5) holding across two listeners — no path
-    constructs a per-listener lock, so ``check_same_thread=False`` stays safe."""
+    constructs a per-listener lock, so ``check_same_thread=False`` stays safe. The webhook
+    nudge (D6) is threaded to the TUNNEL door ALONE — ngrok forwards one port, so that is the
+    only door a forge can reach; the loopback door never serves the route."""
     tunnel = ThreadingHTTPServer(
         (host, tunnel_port),
         _build_handler(server, verify, lock, limiter=limiter,
-                       max_body_bytes=max_body_bytes, auth_required=True))
+                       max_body_bytes=max_body_bytes, auth_required=True,
+                       webhook_secret=webhook_secret, webhook_nudge=webhook_nudge))
     th = threading.Thread(target=tunnel.serve_forever, daemon=True)
     th.start()
     _log.info("http.serving host=%s tunnel_port=%d auth_required=True", host, tunnel_port)

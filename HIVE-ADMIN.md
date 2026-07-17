@@ -151,6 +151,25 @@ and query distribution.
 | `HIVE_SECRET_SCAN__ENABLED` | `true` | the credential secret floor; `false` **loosens a safety gate** (bypasses the scan — raw secrets get stored) — see below |
 | `HIVE_AGI__MODE` | `false` | **loosens a safety gate** — see below. Leave OFF unless you mean it |
 
+**Server-side census sync — the automatic change-outcome feed**
+
+| Env var | Default | Controls |
+|---|---|---|
+| `HIVE_SYNC__REPO_URL` | *(unset)* | arms the feed: the server mirrors this repo and ingests every landing on the tracked branch (`HIVE_CENSUS__CANONICAL_REF`, else the origin default) as `change_outcome` evidence. Unset ⇒ byte-inert (no thread, no clone) |
+| `HIVE_SYNC__TOKEN` | *(unset)* | read-only token for a private remote — never logged, never in a receipt; it lives only in the mirror's git remote config |
+| `HIVE_SYNC__INTERVAL_S` | `60` | poll cadence in seconds (floor 5) |
+| `HIVE_SYNC__WEBHOOK_SECRET` | *(unset)* | arms `POST /census-webhook` on the tunnel door (constant-time HMAC-SHA256 vs `X-Hub-Signature-256`) — a push wakes the poll early; the interval stays the correctness floor |
+| `HIVE_SYNC__VERIFY_CANDIDATES` | `true` | the pre-merge candidate leg: changed PR heads are built + verified in sandboxed, time-bounded subprocesses (capped per tick) |
+| `HIVE_SYNC__MIRROR_DIR` | `/data/sync/mirror` | mirror location (a rebuildable cache inside the `hive-data` volume) |
+
+Setting `TOKEN` or `WEBHOOK_SECRET` without `REPO_URL` is a half-installed sync and **fails boot
+loudly** (`EX_CONFIG`, naming the missing var). The feed is detect-only (never a trust mutation)
+and every leg is fail-open — an unreachable remote or a broken build skips a tick and the next
+tick retries. It needs no compose change: configuration rides `.env` and the mirror lives in the
+existing volume. Watch it via `hive_health(include_census_health=true)` (§6). Arm and test this
+feed with the runnable **`hive-connect-repo`** skill (`skills/hive-connect-repo/SKILL.md`), which
+walks the prerequisites, auto-detects the tracked branch, and verifies the connection.
+
 **Fixed by the image (not runtime knobs).** The embedder is **Qwen3-Embedding-0.6B**, baked in at
 build and run fully offline (`HF_HUB_OFFLINE=1`) — it emits a native 1024-dim vector and there is no
 dimension knob; changing the model means rebuilding the image. The in-container store path is
@@ -184,7 +203,7 @@ Everything runs through the `hive` CLI (it drives Docker Compose for you):
 | `hive token <seat>` | mint a per-seat token (printed once) |
 | `hive revoke <seat>` | offboard a seat (next request → 401) |
 | `hive backup` | snapshot the store now — manual (no scheduler); keeps the `backup_keep` most-recent |
-| `hive ingest <receipt.json>` | feed an unsigned census receipt's change outcome into the append-only evidence ledger (idempotent; refused receipts write zero rows; `--post-merge --verdict pass\|fail --signal randomized\|canary\|none` for rollout outcomes) |
+| `hive ingest <receipt.json>` | feed an unsigned census receipt's change outcome into the append-only evidence ledger — the MANUAL escape hatch (with `HIVE_SYNC__REPO_URL` set the server feeds the ledger itself, §4); idempotent (an already-ingested `(repo, base, head, phase)` range is skipped whole, reported `range_skipped`); refused receipts write zero rows; `--post-merge --verdict pass\|fail --signal randomized\|canary\|none` for rollout outcomes |
 | `hive down` | stop the stack, preserve the `hive-data` volume |
 | `hive reset` | snapshot the store out to the host, then destroy + recreate it empty (recoverable; typed confirm) |
 | `hive restore <snap>` | replace the live store from a snapshot (the inverse of reset; typed confirm) |
@@ -202,6 +221,7 @@ fail-open rot:
 | `hive_health(include_gaps=true)` | topics wanted but uncovered (clustered demand gaps) | `hive_write` the answers |
 | `hive_health(include_conflicts=true)` | near-duplicate / contradicting memories + agent advisories | `hive_supersede` |
 | `hive_health(include_suspect_consensus=true)` | provisionals promoted on thin effective independence | human audit / retire |
+| `hive_health(include_census_health=true)` | days since the last `change_outcome`, plus the `sync` block when the server-side feed has run (`last_tip`, `last_error`, counters; `status: "sync stalled"` only when configured yet dark) | check the `HIVE_SYNC__*` config / remote reachability (§4) |
 
 Highest-leverage operator moves: run agents as **distinct sessions** (that diversity is what
 promotes good captures); **keep the store small** — let unused memory expire rather than lengthening
@@ -220,55 +240,42 @@ TTLs to hoard; and spend human review on the **established tier** (`hive_write` 
 
 ## 8. Staying current — edge tools & server upgrades
 
-The fleet has two install targets that track one shared **`release` git ref** (the maintainer's
-vetted pin): the per-workstation **edge tools** auto-nudge toward it, while the single **server**
-moves to it deliberately and backup-gated.
+The fleet has two install targets: the per-workstation **edge tools** install from **PyPI** and
+follow the served contract's minimum-version floor, while the single **server** moves to a vetted
+git ref deliberately and backup-gated.
 
 **Edge tools (every participant, local or remote).** After connecting (§2/§3), install the
-`hive-edge` CLI once — one command pulls the comb-drift + matrix + census + verifier engines behind
-a single console script — and wire the fail-open census hooks:
+`hive-edge` CLI once from PyPI:
 
 ```bash
-uv tool install hive-edge --from git+https://github.com/Hivemind-OSS/Hive-edge@release
-hive-edge census init --repo . --hive-url <the /mcp URL `hive connect` printed>
+uv tool install hive-edge
 ```
 
-`hive-edge census init` writes a portable **post-merge + post-commit** hook pair whose bytes are
-**constant** — binaries resolve at run time (`command -v` plus well-known fallbacks) and the
-hive-url / auto-upgrade posture are read from the device's own config, so the same hook files work
-from any clone on any device and never bake in another machine's paths. The two hooks split git's
-disjoint landing paths: post-merge fires after a clean in-process merge, post-commit after a direct
-commit or a conflict-resolved merge completed via `git commit` (it skips only the parentless
-initial commit) — so every landing is receipted exactly once and nothing double-fires. Wiring
-succeeds even on a device without the `hive` server CLI: the census feed simply stays inert there
-(fail-open) — normal for a teammate device, since ingest runs on the operator host and a wired
-operator clone that pulls the shared repo receipts everyone's merges. After a merge or commit each
-hook first refreshes the persistent per-repo code graph (`hive-edge graph update` — this runs even
-where `hive` is absent), then builds an **unsigned** change receipt and feeds its outcome to the
-server over the hive-url. Everything is entirely fail-open — a missing binary, nothing landed, or
-an unreachable server skips silently and a merge or commit is never delayed or failed. No signing
-key is generated; receipts are unsigned by policy (the ingest-door trust boundary is
-transport/auth, not a signature). When both `hive-edge` and `hive` resolve on PATH, `census init`
-runs a wiring self-test — a zero-diff receipt build under the same `GIT_DIR`/`GIT_WORK_TREE`
-environment git hands the hooks — and prints `self-test PASSED`/`FAILED` immediately, so a broken
-build environment surfaces at wiring time instead of only in `~/.hive-edge/last-postmerge.log` /
-`last-postcommit.log` after the first real merge or commit (the self-test never changes
-`census init`'s own exit code).
+It is the per-workstation anchor toolchain — `mint` (fingerprint an anchor at capture), `verify`
+(check a recalled anchor against the working tree, incl. the `radius` advisory and branch-scope
+routing), `worktree-delta` (the task-end capture tripwire), `graph` (the persistent per-checkout
+code graph), `hook` (the Claude-Code lifecycle adapters), and `upgrade`. **There is nothing to
+wire per repo or per device**: census evidence is computed and fed server-side (§4's
+`HIVE_SYNC__*` — the census + verifier engines live in the server image), so no git hooks, no
+`census init`, and no signing key exist on workstations. A connected agent installs or upgrades
+the CLI itself during onboarding; where it is absent, mint and verify simply no-op (fail-open —
+capture and recall are unaffected).
 
-**Edge tools stay current.** The post-merge hook checks the published `release` tip at most once a
-day and, on drift, nudges you to run `hive-edge upgrade` (which re-installs the bundle at `release`
-and re-wires both hooks in every recorded repo). Wire `hive-edge census init --auto-upgrade` to
-apply it automatically instead of nudging. Roll back to a known-good tag with
-`hive-edge upgrade --ref <old-tag>`.
+**Edge tools stay current.** The served contract pins a minimum CLI version (`MIN_EDGE_VERSION`);
+when an agent's CLI is below it — or the contract version moves — the served re-onboard procedure
+has it run `hive-edge upgrade`: a PyPI self-upgrade that, after a successful install, also runs a
+one-time UNWIRE pass deleting any retired census hooks a pre-0.7.0 release recorded on the device
+(matched strictly by the generated-by marker the rendered hooks carried — a hook a human wrote
+themselves is never touched) and dropping the retired config keys. Roll back with
+`hive-edge upgrade --version <X.Y.Z>` — an explicit older version writes a persistent rollback
+pin that a bare `hive-edge upgrade` refuses to auto-override; `hive-edge upgrade --version latest`
+clears the pin and moves to the newest release.
 
-**State directory.** All per-device edge state lives under `~/.hive-edge/` (`HIVE_EDGE_HOME`
-overrides; the hooks honor the same variable): `config` (hive_url, wired repos, auto-upgrade
-posture, rollback pin), `release.sha` (the cached release tip the nudge compares against),
-`last-nudge`, `last-error.log`, `last-postmerge.log`, `last-postcommit.log`, and `state/` —
-worktree-delta baselines plus `state/matrix/<digest>/`, the persistent per-checkout code-graph
-cache the hooks and `hive-edge graph update` refresh (the digest keys the checkout's real path, so
-two checkouts of one project never share a cache; the cache never lives inside the repo).
-Safe to delete — everything regenerates; re-run `hive-edge census init` to restore the config.
+**State directory.** Per-device edge state lives under `~/.hive-edge/` (`HIVE_EDGE_HOME`
+overrides): the config (rollback pin), worktree-delta baselines, and `state/matrix/<digest>/` —
+the persistent per-checkout code-graph cache `hive-edge graph update` refreshes (the digest keys
+the checkout's real path, so two checkouts of one project never share a cache; the cache never
+lives inside the repo). Safe to delete — everything regenerates.
 
 **Server upgrade / rollback.** Move the server to a vetted ref:
 

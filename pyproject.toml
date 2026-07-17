@@ -35,7 +35,23 @@ hive = "hive.tools.cli:main"
 # Real embedder adapter (Phase 1); the pure domain + slice need none of these.
 # Qwen3-Embedding needs sentence-transformers 5.x.
 embed = ["sentence-transformers>=5.0"]
-dev = ["pytest>=7"]
+# Server-side census/verifier engines (hive.census + hive.verifier) and the sync
+# subsystem's mint shell-out. comb-drift + matrix are DIRECT deps (hive/census/join.py,
+# receipt.py, and hive/app/sync.py import them by name), hive-edge carries the in-image
+# mint CLI; jsonschema/defusedxml are the moved engines' own third-party deps (the
+# reduced hive-edge 0.7.0 does not carry them). The three engine names are DELIBERATELY
+# bare and never resolve from a package index: the server host receives ONLY this repo,
+# so the image build pre-installs the committed vendor/wheels/ wheelhouse (refreshed by
+# scripts/vendor_edge.py) before this extra resolves, and dev/uv pins the names to the
+# same wheelhouse via [tool.uv.sources] below (BUG-023).
+sync = [
+    "hive-edge",
+    "comb-drift",
+    "matrix",
+    "jsonschema>=4.21,<5",
+    "defusedxml>=0.7",
+]
+dev = ["pytest>=7", "hive[sync]"]
 # Dev-time benchmark harness (hive/research/bench): the LongMemEval head-to-head vs mem0.
 # mem0 is run offline (local embedder, infer=False) — never a runtime dependency of the server.
 bench = ["hive[embed]", "mem0ai==2.0.7", "huggingface-hub>=0.20"]
@@ -47,6 +63,26 @@ bench = ["hive[embed]", "mem0ai==2.0.7", "huggingface-hub>=0.20"]
 # repo for editable checkouts but is NOT shipped in the built wheel an operator installs.
 include = ["hive*", "tests*"]
 exclude = ["hive.research*"]
+
+[tool.setuptools.package-data]
+# The versioned receipt schema is hive.census's write-boundary contract; without this
+# declaration a wheel build silently drops the .json and load_schema() dies at runtime.
+"hive.census" = ["receipt.v0.schema.json"]
+
+# Dev-time resolution of the vendored engine names: uv resolves hive-edge / comb-drift /
+# matrix from the SAME committed wheels the image installs (vendor/wheels/) — never from
+# a package index (`matrix` on PyPI is an unrelated, name-squatted project) and never
+# from a sibling checkout: the hivemind system has ZERO interaction with the hive-edge
+# workspace; the wheelhouse IS the distribution channel (BUG-023). Exact-wheel paths
+# (not a flat index: uv serializes index URLs into uv.lock as machine-absolute file://
+# paths, breaking the committed lock across checkouts; path sources stay relative).
+# scripts/vendor_edge.py rewrites these three lines on every refresh — never hand-edit.
+# pip (the image build) ignores this table and is satisfied by the pre-installed
+# wheelhouse instead.
+[tool.uv.sources]
+hive-edge = { path = "vendor/wheels/hive_edge-0.8.0-py3-none-any.whl" }
+comb-drift = { path = "vendor/wheels/comb_drift-0.8.0-py3-none-any.whl" }
+matrix = { path = "vendor/wheels/matrix-0.8.0-py3-none-any.whl" }
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

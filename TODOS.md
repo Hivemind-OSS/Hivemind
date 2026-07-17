@@ -218,3 +218,55 @@ deferred — net-new combdrift work, Law-1-orthogonal (existence already covers 
 
 **Verification:** with SQL Layer-B, a column whose TYPE changes under an unchanged name reads
 `breaking → stale` (today: `found`, unchanged), and the existing SQL existence + cone tests stay green.
+
+## TODO 17 — Staleness-direct meta expansion (U4): validator tags beyond code symbols
+
+**File:** `../hive-edge/hive_edge/` (`meta_registry.py`, mint/verify, the anchor grammar),
+`hive/app/sync.py` (backfill + change-time recompute), `hive/domain/change_evidence.py` (census
+ingest seam), `hive/app/onboard_ref.py` (directive wording + contract bump), `CONTEXT/INTERACTIONS.md`,
+upgrade-simulation tests in both repos.
+
+The meta/tag system today verifies code-symbol anchors; whole classes of memory claims still have
+no mechanical staleness check — library-version claims, config-key claims, doc/runbook claims,
+runtime-conditional lessons. Extend the tagging system with a SMALL set of additional
+machine-checkable tags that directly improve memory-staleness validation — nothing else qualifies.
+Every tool computes and checks them: the edge CLI (mint/verify), hive-sync (backfill +
+change-time recompute), and the census machinery where the tag's referent lives in the repo.
+
+**Admission rubric (all five required):** deterministic to recompute from the consumer's world;
+fail-open (unresolvable ⇒ omit the tag); directional compare where possible (breaking vs benign —
+no naive-equality false stales); cheap at capture; and it must directly detect that a memory's
+claim context went stale.
+
+**Candidates (final cut happens in this update's own planning phase):**
+1. `dep/<package>` — resolved version of packages the anchor's file actually imports; detects
+   library-claim staleness via semver-directional compare (major ⇒ stale-advisory; patch ⇒ quiet).
+2. Config-keypath anchors — extend the anchor grammar to declarative files
+   (`file.toml:section.key` + a presence/type shape token), making config claims mechanically
+   checkable. The largest single item: it changes load-bearing anchor parsing everywhere.
+3. `doc/<file>#<heading>` — section content hash for documentation anchors, so prose/runbook
+   claims get real staleness detection (today unverifiable).
+4. `env/<runtime>` — runtime/toolchain version stamps for env-conditional lessons ("breaks on
+   py3.12"), semver-directional; admit only if review agrees it is staleness-direct rather than
+   general context.
+
+**Rejected by rubric (recorded so they stay rejected):** live-network probes (non-hermetic ⇒ at
+best a separate advisory-only tier, a different discussion), anything secret-bearing, machine-local
+paths, memory-conclusion assertions, expensive-at-capture computation.
+
+**Every admitted tag lands with the full slice:** its registry row + versioned token format,
+mint-side computation in the edge CLI and the hive-sync backfill, verify-side directional check +
+relay wording, census/change-time recompute where applicable, contract directive wording (a
+contract version bump), and upgrade-simulation coverage proving pre-existing memories serve
+unaffected.
+
+**Sequencing:** deliberately last in the sync/tagging series — purely additive advisory channels
+on settled semantics and the final tool layout. Start only after the hive-sync split's release
+tail (PyPI publish → pin flip → dogfood cutover → re-onboard) completes, since it edits the same
+contract text, edge CLI, and doc surfaces. Two repos + a contract bump: this takes a full planning
+phase (where the candidate cut is decided), not an ad-hoc add.
+
+**Verification (per admitted tag):** one end-to-end scenario where a real staleness event
+(dependency major bump / config key removed / doc section rewritten / runtime jump) is detected
+and relayed as designed, plus the negative case (a benign change ⇒ silence); and the full
+pre-existing corpus serves byte-identically before/after the update.

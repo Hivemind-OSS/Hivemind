@@ -13,11 +13,11 @@ load only one file, read `llms-full.txt` — it is the complete guide and assume
 
 - [llms-full.txt](llms-full.txt): The complete, self-contained operating guide — idea, architecture, trust lifecycle, recall, the eight MCP tools, identity, setup (solo → remote team), KPIs, configuration, and agent working procedure.
 - [README.md](README.md): Quickstart from a clone — requirements, `hive up`, connecting local and remote agents, the two-door auth model, configuration, and repository layout.
-- [HIVE-ADMIN.md](HIVE-ADMIN.md): Admin & operator guide — first-time setup, tunneling, tuning the recall/safety knobs, KPIs, day-2 operations (incl. `hive ingest` for census change-outcome receipts), and staying current (edge-tool install + the `hive upgrade` / `hive-edge upgrade` release flow).
+- [HIVE-ADMIN.md](HIVE-ADMIN.md): Admin & operator guide — first-time setup, tunneling, tuning the recall/safety knobs (incl. the server-side automatic census feed, `HIVE_SYNC__*`), KPIs, day-2 operations (incl. `hive ingest`, the manual census escape hatch), and staying current (edge-tool install from PyPI + the `hive upgrade` / `hive-edge upgrade` release flow).
 
 ## Operator runbooks
 
-- [skills/README.md](skills/README.md): Index of the runnable operator skills (bringup, connect-team, backup-restore, operate) for the load-bearing `hive` operations.
+- [skills/README.md](skills/README.md): Index of the runnable operator skills (bringup, connect-team, connect-repo, backup-restore, operate) for the load-bearing `hive` operations.
 - [OPERATIONS.md](OPERATIONS.md): Long-form operations reference and the tuning evidence behind the KPI thresholds.
 
 ## Attribution

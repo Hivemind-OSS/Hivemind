@@ -1,0 +1,5 @@
+cmake_minimum_required(VERSION 3.21)
+project(fx_red CXX)
+enable_testing()
+add_executable(test_calc test_calc.cpp calc.cpp)
+add_test(NAME calc_adds COMMAND test_calc)

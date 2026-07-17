@@ -4,8 +4,12 @@
 that rides an episode and is served back verbatim on recall hits. It is
 carried-not-interpreted — the exact ``anchor``/``kind`` idiom: the kernel enforces
 the grammar ONCE here at the write boundary, stores the canonical serialized string,
-and never parses it again. Values are compact handles (fingerprints, digests, ids),
-never payloads, and never embedding input.
+and never parses it again — with ONE sanctioned exception: ``token_version`` /
+``meta_version_histogram`` below read the value's ``<engine>-<kind>/<N>:`` VERSION
+PREFIX (never the body) for aggregate observability
+(``hive_health(include_meta_versions)``), so an operator can watch old token formats
+age out (the meta envelope law's no-migration counterpart). Values are compact
+handles (fingerprints, digests, ids), never payloads, and never embedding input.
 
 Grammar (each violation raises ``BadMeta`` naming the reason — loud refusal, never a
 silent drop): keys are namespaced lowercase ``tool/attr``; values are strings up to
@@ -21,6 +25,8 @@ from __future__ import annotations
 
 import json
 import re
+from collections import Counter
+from collections.abc import Iterable
 
 
 class BadMeta(ValueError):
@@ -60,4 +66,53 @@ def normalize_meta(raw: object) -> str:
     n_bytes = len(out.encode("utf-8"))
     if n_bytes > META_MAX_SERIALIZED:
         raise BadMeta(f"serialized meta is {n_bytes} bytes (max {META_MAX_SERIALIZED})")
+    return out
+
+
+def token_version(value: str) -> str | None:
+    """The `<N>` of a `<engine>-<kind>/<N>:<body>` token value — prefix-only read, never the
+    body (the ONE opacity carve-out). None for a value with no ':' separator, no '/' before
+    it, or a non-digit version segment — the caller buckets those as malformed."""
+    head, sep, _body = value.partition(":")
+    if not sep:
+        return None
+    _prefix, slash, version = head.rpartition("/")
+    return version if (slash and version.isdigit()) else None
+
+
+def meta_version_histogram(serialized_metas: Iterable[str]) -> dict[str, dict]:
+    """Fold serialized meta carriers into the per-key token-version histogram:
+    `{key: {"versions": {"<N>": n}, "absent": a[, "malformed": m]}}` over the rows given
+    (the caller supplies the live corpus). `absent` = rows carrying no value for that key
+    (always present); `malformed` = values with no parseable version prefix (present only
+    when nonzero); a key appears only once >=1 row carries it. Total over any input: an
+    unparseable serialized row contributes no keys (it cannot name one) — never raises."""
+    total = 0
+    versions: dict[str, Counter] = {}
+    carriers: dict[str, int] = {}
+    malformed: dict[str, int] = {}
+    for serialized in serialized_metas:
+        total += 1                                   # every row counts, carrier or not
+        if not isinstance(serialized, str) or not serialized:
+            continue
+        try:
+            parsed = json.loads(serialized)
+        except Exception:
+            continue                                 # a corrupt carrier names no key
+        if not isinstance(parsed, dict):
+            continue
+        for key, value in parsed.items():
+            carriers[key] = carriers.get(key, 0) + 1
+            version = token_version(value) if isinstance(value, str) else None
+            if version is None:
+                malformed[key] = malformed.get(key, 0) + 1
+            else:
+                versions.setdefault(key, Counter())[version] += 1
+    out: dict[str, dict] = {}
+    for key, carried in carriers.items():
+        entry: dict = {"versions": dict(versions.get(key, Counter())),
+                       "absent": total - carried}
+        if malformed.get(key, 0):
+            entry["malformed"] = malformed[key]
+        out[key] = entry
     return out

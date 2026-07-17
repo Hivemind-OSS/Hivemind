@@ -66,15 +66,11 @@ matrix-out/
 .claude/
 CLAUDE.md
 
-# ── Local design/plan docs (OPERATIONS.md ships from the repo root) ──
-docs/PLANS/
 
 # local context files and agent artifacts
 CONTEXT/
 
-# ── Server Admin Agent (in development)──
-/queen/
-
 # ── /looper agent-loop scratch state (local only; never shipped) ──
 .looper/
 
+.daisy-chain-build/

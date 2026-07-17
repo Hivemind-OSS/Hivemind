@@ -104,3 +104,58 @@ def test_nothing_parseable_means_absent_never_a_raise():
 
 def test_empty_ids_returns_empty_dict():
     assert _store().last_verification([]) == {}
+
+
+# ── canonical-ref scoping (the read-time rider filter; None/"" = today's read) ────
+
+
+def _reffed_payload(head_sha: str, ref: str | None) -> str:
+    body = json.loads(_verify_payload(head_sha))
+    if ref is not None:
+        body["ref"] = ref
+    return json.dumps(body, sort_keys=True, separators=(",", ":"))
+
+
+def test_canonical_ref_none_is_todays_read():
+    s = _store()
+    eid = _seed(s, "unscoped read")
+    s.insert_audit(eid, EK_VERIFY_STALE, "census", 200, _reffed_payload("2" * 40, "feat-y"))
+    assert s.last_verification([eid], canonical_ref=None) == \
+        s.last_verification([eid]) == {eid: (200, "2" * 40, "stale")}
+
+
+def test_canonical_ref_skips_newest_foreign_row_older_canonical_answers():
+    # The newest row measured a foreign line: skipped; the older canonical row wins.
+    s = _store()
+    eid = _seed(s, "foreign-newest ledger")
+    s.insert_audit(eid, EK_VERIFY_CURRENT, "census", 100, _reffed_payload("1" * 40, "master"))
+    s.insert_audit(eid, EK_VERIFY_STALE, "census", 200, _reffed_payload("2" * 40, "feat-y"))
+    assert s.last_verification([eid], canonical_ref="master") == \
+        {eid: (100, "1" * 40, "current")}
+
+
+def test_canonical_ref_keeps_canonical_row():
+    s = _store()
+    eid = _seed(s, "canonical ledger")
+    s.insert_audit(eid, EK_VERIFY_STALE, "census", 200, _reffed_payload("2" * 40, "master"))
+    assert s.last_verification([eid], canonical_ref="master") == \
+        {eid: (200, "2" * 40, "stale")}
+
+
+def test_canonical_ref_keeps_legacy_refless_row():
+    # marker target: a legacy row carries NO ref — the ABSENCE RULE keeps it counting
+    # under a set canonical_ref (skipping it would silently blind the rider on every
+    # pre-stamp ledger).
+    s = _store()
+    eid = _seed(s, "legacy ledger")
+    s.insert_audit(eid, EK_VERIFY_STALE, "census", 200, _reffed_payload("2" * 40, None))
+    assert s.last_verification([eid], canonical_ref="master") == \
+        {eid: (200, "2" * 40, "stale")}
+
+
+def test_canonical_ref_all_foreign_rows_means_absent():
+    s = _store()
+    eid = _seed(s, "all-foreign ledger")
+    s.insert_audit(eid, EK_VERIFY_STALE, "census", 100, _reffed_payload("1" * 40, "feat-a"))
+    s.insert_audit(eid, EK_VERIFY_STALE, "census", 200, _reffed_payload("2" * 40, "feat-b"))
+    assert s.last_verification([eid], canonical_ref="master") == {}
