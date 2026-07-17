@@ -166,7 +166,9 @@ Setting `TOKEN` or `WEBHOOK_SECRET` without `REPO_URL` is a half-installed sync 
 loudly** (`EX_CONFIG`, naming the missing var). The feed is detect-only (never a trust mutation)
 and every leg is fail-open — an unreachable remote or a broken build skips a tick and the next
 tick retries. It needs no compose change: configuration rides `.env` and the mirror lives in the
-existing volume. Watch it via `hive_health(include_census_health=true)` (§6).
+existing volume. Watch it via `hive_health(include_census_health=true)` (§6). Arm and test this
+feed with the runnable **`hive-connect-repo`** skill (`skills/hive-connect-repo/SKILL.md`), which
+walks the prerequisites, auto-detects the tracked branch, and verifies the connection.
 
 **Fixed by the image (not runtime knobs).** The embedder is **Qwen3-Embedding-0.6B**, baked in at
 build and run fully offline (`HF_HUB_OFFLINE=1`) — it emits a native 1024-dim vector and there is no

@@ -3,6 +3,13 @@
 All notable changes to this project are documented here.
 
 ## Added
+- `hive-connect-repo` operator skill (`skills/hive-connect-repo/SKILL.md`): a guided runbook that
+  arms and tests the server-side census feed against a GitHub repo — it checks the prerequisites
+  (repo URL, a read-only token for a private remote, a sync-capable server image), auto-detects the
+  tracked branch with `git ls-remote --symref`, writes `HIVE_SYNC__REPO_URL` / `HIVE_SYNC__TOKEN` /
+  `HIVE_CENSUS__CANONICAL_REF` to `.env`, restarts to load it, and verifies the connection through
+  the `sync` block of `hive_health(include_census_health=true)` (with a failure-mode table). Indexed
+  in `skills/README.md`, `llms.txt`, and cross-referenced from `HIVE-ADMIN.md` §4.
 - Server-automatic census (contract v.13, `MIN_EDGE_VERSION` 0.6.0 → 0.7.0 alongside the hive-edge
   0.7.0 release): the change-outcome evidence feed no longer needs per-repo/per-device git hooks —
   the server feeds itself. Armed by `HIVE_SYNC__REPO_URL` (unset ⇒ byte-inert: no thread, no

@@ -105,7 +105,9 @@ There is no `HIVE_AUTH__MODE` switch — delete any leftover one from `.env` (it
 **Automatic census feed (optional).** Set `HIVE_SYNC__REPO_URL` (plus `HIVE_SYNC__TOKEN` for a
 private remote) and the server itself mirrors the repo and feeds every landing on the tracked
 branch into the change-outcome evidence ledger — detect-only, fail-open, byte-inert when unset;
-nothing is wired per repo or per device. Knob table + details: **[HIVE-ADMIN.md §4](HIVE-ADMIN.md)**.
+nothing is wired per repo or per device. Arm and test it with the runnable
+**[`hive-connect-repo`](skills/hive-connect-repo/SKILL.md)** skill; knob table + details:
+**[HIVE-ADMIN.md §4](HIVE-ADMIN.md)**.
 
 ## Remote teammates
 
@@ -179,7 +181,7 @@ llms.txt              link index to the project docs (llmstxt.org convention)
 llms-full.txt         the complete, self-contained operating guide for agents & integrators
 HIVE-ADMIN.md         admin & operator guide
 OPERATIONS.md         long-form operations reference & the tuning evidence behind the knobs
-skills/               operator runbook-skills (bringup, connect, backup/restore, operate)
+skills/               operator runbook-skills (bringup, connect-team, connect-repo, backup/restore, operate)
 LICENSE               this project's license (Apache-2.0)
 THIRD_PARTY_NOTICES.md / LICENSES/   embedding-model attribution + license (the embedder)
 ```
