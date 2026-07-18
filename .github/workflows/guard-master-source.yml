@@ -1,0 +1,28 @@
+name: guard-master-source
+
+# master only ever advances through a pull request from `development`. Direct
+# pushes are rejected by branch protection; this required check additionally
+# guarantees the pull request originates from this repository's development branch.
+on:
+  pull_request:
+    branches: [master]
+
+permissions:
+  contents: read
+
+jobs:
+  guard-master-source:
+    name: guard-master-source
+    runs-on: ubuntu-latest
+    steps:
+      - name: Require this repository's development branch as the only source for master
+        env:
+          HEAD_REF: ${{ github.head_ref }}
+          HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name }}
+          BASE_REPO: ${{ github.repository }}
+        run: |
+          if [ "$HEAD_REPO" != "$BASE_REPO" ] || [ "$HEAD_REF" != "development" ]; then
+            echo "::error::master accepts pull requests only from ${BASE_REPO}:development (got ${HEAD_REPO}:${HEAD_REF}). Merge your change into development and open the master PR from there."
+            exit 1
+          fi
+          echo "Source is ${BASE_REPO}:development — allowed to target master."
