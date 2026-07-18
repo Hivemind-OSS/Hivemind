@@ -454,6 +454,14 @@ All notable changes to this project are documented here.
   pytest argv assertion.
 - No migration/backfill path ships (clean-store start, human decision): an
   old-format `episodes` table is refused at store construction.
+- `hive/research/` — the dev-time benchmark harness (the LongMemEval head-to-head vs mem0, the
+  poison-substrate trust bench, and the L4 empirical-gate runs recorded under `bench/runs/`) and
+  its mirrored `tests/research/bench/` suite. `tests/test_purity.py` drops the now-obsolete
+  `test_research_not_imported_by_runtime` purity-fence test and the dead `research`-path scan
+  filter it required elsewhere in the file; `pyproject.toml` drops the `bench` optional-dependency
+  extra (`mem0ai`, `huggingface-hub`) and the `hive.research*` wheel-exclude (nothing left to
+  exclude); `.dockerignore` drops the matching line. `uv.lock` regenerated, dropping 25 now-orphaned
+  transitive packages.
 
 ## Fixed
 - The served onboarding procedure now creates an absent rules file in flight. `ONBOARDING_PROCEDURE`

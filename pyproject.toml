@@ -52,17 +52,11 @@ sync = [
     "defusedxml>=0.7",
 ]
 dev = ["pytest>=7", "hive[sync]"]
-# Dev-time benchmark harness (hive/research/bench): the LongMemEval head-to-head vs mem0.
-# mem0 is run offline (local embedder, infer=False) — never a runtime dependency of the server.
-bench = ["hive[embed]", "mem0ai==2.0.7", "huggingface-hub>=0.20"]
 
 [tool.setuptools.packages.find]
 # Ship the hive package (+ tests for editable checkouts). The repo-root scripts/ utilities are
 # intentionally excluded from the built wheel — they are dev/eval helpers, not runtime code.
-# hive.research is the dev-time benchmark harness (heavy optional deps); it stays in the
-# repo for editable checkouts but is NOT shipped in the built wheel an operator installs.
 include = ["hive*", "tests*"]
-exclude = ["hive.research*"]
 
 [tool.setuptools.package-data]
 # The versioned receipt schema is hive.census's write-boundary contract; without this

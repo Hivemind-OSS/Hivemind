@@ -1,7 +1,6 @@
 """AST import-linter (P0.0). A blocking gate:
   - hive/domain/** may not import any I/O module (sqlite3|torch|subprocess|os|git|time).
   - hive/domain|adapters|app/** may not import the build-excluded scripts/ utilities.
-  - hive/domain|adapters|app/** may not import hive.research (dev-time only).
   - hive/domain/** may not import the moved-in engines (hive.census|hive.verifier);
     the engines stay standalone — they never import hive.domain or hive.app.
   - nothing on the hivemind side imports the pre-move top-level names
@@ -141,7 +140,7 @@ def test_no_module_imports_the_premove_engine_names() -> None:
     # test suites alike must name only hive.census / hive.verifier.
     offenders: dict[str, set[str]] = {}
     scan_roots = [
-        *(path for path in ROOT.rglob("*.py") if "research" not in path.parts),
+        *ROOT.rglob("*.py"),
         *(ROOT.parent / "tests" / "census").rglob("*.py"),
         *(ROOT.parent / "tests" / "verifier").rglob("*.py"),
     ]
@@ -150,25 +149,3 @@ def test_no_module_imports_the_premove_engine_names() -> None:
         if bad:
             offenders[str(path)] = bad
     assert not offenders, f"pre-move engine names must not be imported: {offenders}"
-
-
-def test_research_not_imported_by_runtime() -> None:
-    # hive/research is the dev-time benchmark harness: wheel-excluded (pyproject
-    # ``packages.find`` excludes ``hive.research*``) and .dockerignore'd out of the image.
-    # It sits ON TOP of the runtime and may import it; the reverse direction would crash an
-    # operator's installed package at import time, so it is forbidden by AST.
-    offenders: dict[str, set[str]] = {}
-    for path in _full_module_paths("domain", "adapters", "app"):
-        # detect `import hive.research...` / `from hive.research import ...`
-        tree = ast.parse(path.read_text(), filename=str(path))
-        hits = set()
-        for node in ast.walk(tree):
-            if isinstance(node, ast.ImportFrom) and node.module and node.module.startswith("hive.research"):
-                hits.add(node.module)
-            if isinstance(node, ast.Import):
-                for alias in node.names:
-                    if alias.name.startswith("hive.research"):
-                        hits.add(alias.name)
-        if hits:
-            offenders[str(path.relative_to(ROOT))] = hits
-    assert not offenders, f"runtime must not import hive.research: {offenders}"
