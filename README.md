@@ -182,6 +182,14 @@ llms-full.txt         the complete, self-contained operating guide for agents & 
 HIVE-ADMIN.md         admin & operator guide
 OPERATIONS.md         long-form operations reference & the tuning evidence behind the knobs
 skills/               operator runbook-skills (bringup, connect-team, connect-repo, backup/restore, operate)
+CONTRIBUTING.md       how to contribute: the development-first branch flow and running the tests
 LICENSE               this project's license (Apache-2.0)
 THIRD_PARTY_NOTICES.md / LICENSES/   embedding-model attribution + license (the embedder)
 ```
+
+## Contributing
+
+Contributions are welcome. All work lands on the `development` branch; `master` is updated
+only through a `development → master` pull request — a required check enforces that source,
+and direct pushes to `master` are rejected. See **[CONTRIBUTING.md](CONTRIBUTING.md)** for the
+full workflow and how to run the tests.
