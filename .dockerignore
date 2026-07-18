@@ -26,10 +26,9 @@ env/
 .pytest_cache/
 .ruff_cache/
 
-# the test + docs + dev-benchmark trees are NOT runtime artifacts
+# the test + docs trees are NOT runtime artifacts
 tests/
 docs/
-hive/research/
 
 # secrets / local env — never in the context, never in a layer. Each pattern has a
 # top-level form AND a **/ form: a bare `*.key` / `.env` matches only the context ROOT, so
