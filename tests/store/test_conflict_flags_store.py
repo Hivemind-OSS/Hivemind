@@ -1,7 +1,8 @@
 """C6 — the conflict_flags durable write seam: DDL (kind/status CHECK + UNIQUE pair),
 record_conflict_flag (idempotent on the canonical (a_id,b_id,kind), returns bool),
-open_conflict_flags (status='open' read), the ConflictFlagStore port conformance, and
-the required-table registration.
+open_conflict_flags (status='open' read), and the ConflictFlagStore port conformance.
+The container-level required-table registration is the container suite's pin — a
+store-level test never imports the app layer.
 
 A flag stores IDS, not hashes (hash derivable on read); status keeps only 'open'/'dismissed'
 — 'resolved' is implicit (the report hides a flag once either episode is non-servable)."""
@@ -11,7 +12,6 @@ import pytest
 
 from hive.adapters.sqlite_db import connect
 from hive.adapters.store_sqlite import SqliteEpisodeStore
-from hive.app.container import _REQUIRED_TABLES
 from hive.domain.ports import ConflictFlagStore
 
 
@@ -102,12 +102,8 @@ def test_winner_id_roundtrips():
     assert row["winner_id"] == 9 and row["resolution"] == "9 is the corrected version"
 
 
-# ── the ONE new narrow port + the required-table registration ──────────────────
+# ── the ONE new narrow port ────────────────────────────────────────────────────
 def test_real_store_satisfies_conflict_flag_store_port():
     # conformance against the REAL adapter, not just a fake (runtime_checkable checks
     # name-presence only — a port green with fake-only tests can leave the real adapter short).
     assert isinstance(_store(), ConflictFlagStore)
-
-
-def test_conflict_flags_is_a_required_table():
-    assert "conflict_flags" in _REQUIRED_TABLES

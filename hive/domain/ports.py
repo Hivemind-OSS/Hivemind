@@ -118,13 +118,33 @@ class LastVerificationReader(Protocol):
 
 @runtime_checkable
 class AnchoredEpisodeReader(Protocol):
-    """The change→episode join's candidate read: ``(id, anchor, polarity)`` for approved
-    rows with a non-empty anchor — ALL trust states (mirrors ``hive_outcome``'s known-id
-    rule: evidence on a deprecated row is honest ledger history). ``polarity`` is read
-    for the verified-outcome classification only — the join itself stays anchor-driven.
+    """The change→episode join's candidate read: ``(id, repo, anchor, polarity)`` rows —
+    one per non-empty anchor binding of an approved episode (v3 ``episode_anchors``; an
+    episode may carry several rows) — ALL trust states (mirrors ``hive_outcome``'s
+    known-id rule: evidence on a deprecated row is honest ledger history). ``repo`` is
+    the binding's partition — the census ingest filters rows to the receipt's repo, so
+    one repo's change can never join another repo's memory. ``polarity`` is read for
+    the verified-outcome classification only — the join itself stays anchor-driven.
     A SEPARATE narrow port (not a widening) so existing narrow fakes stay conformant;
     the SqliteEpisodeStore satisfies it with one read method."""
-    def anchored_episodes(self) -> list[tuple[int, str, str]]: ...
+    def anchored_episodes(self) -> list[tuple[int, str, str, str]]: ...
+
+
+@runtime_checkable
+class RepoScopeReader(Protocol):
+    """The servable-field partition map (v3 §3.6): every SERVABLE episode id →
+    ``(repo scope, anchor pairs)`` — the read recall's partition filter and the
+    lifecycle's partition-scoped competitor search consume. ``repo scope`` is the
+    frozenset union of the episode's anchor repos and declared scope-only
+    memberships (empty = a GENERAL memory, which matches every partition); ``anchor
+    pairs`` are its ``(repo, anchor)`` code bindings. Servability is decided by the
+    ONE ``lifecycle.is_servable`` rule, so this map and the vector index can never
+    disagree about the field. A SEPARATE narrow port (not a widening of an existing
+    one) so existing narrow fakes stay conformant; the SqliteEpisodeStore satisfies
+    it with one read method."""
+    def servable_scopes(self, *, now: int, provisional_ttl_s: int,
+                        ) -> dict[int, tuple[frozenset[str],
+                                             tuple[tuple[str, str], ...]]]: ...
 
 
 @runtime_checkable
@@ -184,12 +204,16 @@ class ExposureLedger(Protocol):
     """The recall side-channel writer: WHO was served WHAT (exposure, refreshing the
     served rows' liveness clocks in the same tx) and which queries got NO answer
     (misses — the demand signal). ``query_vector`` is raw float32 bytes or None
-    (secret-refused misses persist no content). Implemented by the episode store;
-    the recall pipeline depends only on this port."""
+    (secret-refused misses persist no content). ``repos_json`` is the miss's repo
+    scope as a serialized JSON array (v3 §3.6) — a DEFAULTED kwarg whose '' reading
+    is the GLOBAL miss, so every scope-less caller under-claims into
+    matches-everything, never a crash. Implemented by the episode store; the recall
+    pipeline depends only on this port."""
     def record_exposure(self, trace_id: str, items: Sequence[tuple[int, float]],
                         *, agent_id: str, ts: int) -> None: ...
     def record_miss(self, query_text: str, query_vector: Optional[bytes],
-                    agent_id: str, miss_type: str, *, ts: int) -> None: ...
+                    agent_id: str, miss_type: str, *, ts: int,
+                    repos_json: str = "") -> None: ...
 
 
 @runtime_checkable

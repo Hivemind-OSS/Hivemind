@@ -48,10 +48,11 @@ def test_no_update_or_delete_targets_evidence_events_anywhere_in_hive():
 DIM = 4
 
 
-def _approved(s: SqliteEpisodeStore, text: str, *, anchor: str = "") -> int:
-    eid, _ = s.stage(text=text, weight=1.0, tags="", proposed_by="w", ts=10, anchor=anchor)
+def _approved(s: SqliteEpisodeStore, text: str, *, anchors=()) -> int:
+    eid, _ = s.stage(text=text, weight=1.0, proposed_by="w", ts=10,
+                     anchors=list(anchors))
     assert s.complete(eid, np.eye(DIM, dtype=np.float32)[0], expected_version=0,
-                      trust="established", approver="h", approved_ts=10, last_active_ts=10)
+                      trust="established", last_active_ts=10)
     return eid
 
 
@@ -64,9 +65,9 @@ def test_retirements_and_reingest_never_touch_prior_evidence_rows():
     # extends test_deprecate's retention pin: supersede + deprecate + append_evidence
     # + re-ingest only ever ADD rows; every prior row survives byte-identically.
     s = SqliteEpisodeStore(connect(":memory:"))
-    old = _approved(s, "old fact", anchor="a.py::f")
-    new = _approved(s, "corrected fact", anchor="a.py::f")
-    bad = _approved(s, "bad fact", anchor="b.py::g")
+    old = _approved(s, "old fact", anchors=[("r", "a.py::f")])
+    new = _approved(s, "corrected fact", anchors=[("r", "a.py::f")])
+    bad = _approved(s, "bad fact", anchors=[("r", "b.py::g")])
     assert s.supersede(old, new, actor="h", ts=20)           # 'supersede' audit
     assert s.deprecate(bad, actor="h", ts=21)                # 'prune' audit
     before = _all_evidence_rows(s)

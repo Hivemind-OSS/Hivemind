@@ -1,6 +1,14 @@
 """SqliteEpisodeStore — the durable episode store + meta watermark in ONE WAL DB.
 ``sqlite_db.tx()`` is the single BEGIN IMMEDIATE lane, used directly by each mutating method.
 
+Schema v3 (repo-partitioned memory): ``episode_anchors`` is the ONE owner of repo scope +
+code bindings (+ per-anchor fingerprint carriers); ``repos`` is the durable operational
+repo registry (the authctl-seat pattern); ``anchor_drift`` is the materialized drift-verdict
+cache (rebuildable, Law 5) keyed ``(repo, tip_sha, anchor)``; ``ref_requests`` records
+recall-touched refs wanting on-demand materialization. There is NO approver concept —
+``complete`` lands an explicit trust label and nothing on this surface accepts an
+approver identity or vouch timestamp.
+
 The ``exposure`` table is the recall side-channel (``record_exposure`` / ``record_miss``):
 WHO was served WHAT and which queries got no answer — the demand signal that drives
 promotion. Episode-CRUD / admission is below.
@@ -9,7 +17,9 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import sqlite3
+from dataclasses import dataclass
 from typing import Mapping, Optional, Sequence
 
 import numpy as np
@@ -26,8 +36,7 @@ from hive.domain.lifecycle import (
     MissRow, decayed, is_servable,
 )
 from hive.domain.meta import meta_version_histogram, normalize_meta
-from hive.domain.models import Episode, content_hash
-from hive.domain.provenance import DEFAULT_PROVENANCE, PROVENANCE_NAMES
+from hive.domain.models import AnchorRef, Episode, content_hash
 
 _log = logging.getLogger("hive.store")
 
@@ -48,12 +57,6 @@ _FAR_FUTURE = 1 << 62
 _KIND_COLUMN_DDL = ("kind TEXT NOT NULL DEFAULT '%s' CHECK(kind IN (%s))" % (
     DEFAULT_KIND, ", ".join(f"'{k}'" for k in sorted(KIND_NAMES))))
 
-# The provenance column DDL is built from the registry the same way (sorted for a stable
-# CHECK) so the stored origin vocabulary cannot drift from hive.domain.provenance.
-_PROVENANCE_COLUMN_DDL = (
-    "provenance TEXT NOT NULL DEFAULT '%s' CHECK(provenance IN (%s))" % (
-        DEFAULT_PROVENANCE, ", ".join(f"'{p}'" for p in sorted(PROVENANCE_NAMES))))
-
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS blobs(
   content_hash TEXT PRIMARY KEY, text TEXT NOT NULL);
@@ -61,21 +64,37 @@ CREATE TABLE IF NOT EXISTS episodes(
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   tenant_id TEXT NOT NULL,   -- constant label, never a query filter (single-tenant)
   text TEXT NOT NULL, value BLOB,
-  weight REAL NOT NULL, ts INTEGER NOT NULL, __PROVENANCE_COLUMN__, tags TEXT,
+  weight REAL NOT NULL, ts INTEGER NOT NULL,
   content_hash TEXT NOT NULL,
   status TEXT NOT NULL CHECK(status IN ('pending','approved')),
-  proposed_by TEXT, approved_by TEXT, approved_ts INTEGER,
+  proposed_by TEXT,
   version INTEGER NOT NULL DEFAULT 0,
   trust TEXT NOT NULL DEFAULT 'quarantined',
   superseded_by INTEGER,
   last_active_ts INTEGER NOT NULL DEFAULT 0,
   polarity TEXT NOT NULL DEFAULT 'neutral' CHECK(polarity IN ('do','dont','neutral')),
   __KIND_COLUMN__,
-  anchor TEXT NOT NULL DEFAULT '',
   meta TEXT NOT NULL DEFAULT '');
 CREATE INDEX IF NOT EXISTS idx_episodes_status ON episodes(status);
 CREATE INDEX IF NOT EXISTS idx_episodes_hash ON episodes(content_hash);
 CREATE INDEX IF NOT EXISTS idx_episodes_trust ON episodes(trust);
+CREATE TABLE IF NOT EXISTS episode_anchors(
+  episode_id INTEGER NOT NULL, repo TEXT NOT NULL,
+  anchor TEXT NOT NULL DEFAULT '',
+  fp_meta TEXT NOT NULL DEFAULT '',
+  PRIMARY KEY(episode_id, repo, anchor));
+CREATE TABLE IF NOT EXISTS repos(
+  name TEXT PRIMARY KEY,
+  url TEXT NOT NULL, canonical_ref TEXT NOT NULL DEFAULT '',
+  token_env TEXT NOT NULL DEFAULT '',
+  added_ts INTEGER NOT NULL);
+CREATE TABLE IF NOT EXISTS anchor_drift(
+  repo TEXT NOT NULL, tip_sha TEXT NOT NULL, anchor TEXT NOT NULL,
+  verdict TEXT NOT NULL, detail TEXT NOT NULL DEFAULT '{}', ts INTEGER NOT NULL,
+  PRIMARY KEY(repo, tip_sha, anchor));
+CREATE TABLE IF NOT EXISTS ref_requests(
+  repo TEXT NOT NULL, ref TEXT NOT NULL, last_requested_ts INTEGER NOT NULL,
+  PRIMARY KEY(repo, ref));
 CREATE TABLE IF NOT EXISTS exposure(
   trace_id TEXT NOT NULL, episode_id INTEGER NOT NULL, recall_margin REAL NOT NULL,
   task_ref TEXT, injected_ts INTEGER NOT NULL, agent_id TEXT,
@@ -87,7 +106,8 @@ CREATE TABLE IF NOT EXISTS recall_misses(
   query_vector BLOB,
   agent_id TEXT NOT NULL,
   miss_type TEXT NOT NULL CHECK(miss_type IN ('no_match','abstained','secret_refused')),
-  ts INTEGER NOT NULL);
+  ts INTEGER NOT NULL,
+  repos TEXT NOT NULL DEFAULT '');
 CREATE INDEX IF NOT EXISTS idx_misses_ts ON recall_misses(ts);
 CREATE TABLE IF NOT EXISTS evidence_events(
   id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -110,57 +130,81 @@ CREATE TABLE IF NOT EXISTS ingested_ranges(
   base_sha TEXT NOT NULL, head_sha TEXT NOT NULL,
   phase TEXT NOT NULL, ts INTEGER NOT NULL,
   PRIMARY KEY(repo, base_sha, head_sha, phase));
-""".replace("__KIND_COLUMN__", _KIND_COLUMN_DDL).replace(
-    "__PROVENANCE_COLUMN__", _PROVENANCE_COLUMN_DDL)
+""".replace("__KIND_COLUMN__", _KIND_COLUMN_DDL)
+
+# Legacy episodes columns whose PRESENCE marks a pre-v3 store; and the v3 columns whose
+# ABSENCE marks an even older one. Either way the answer is the same: no in-place
+# migration exists — the operator starts from a clean store/volume.
+_LEGACY_EPISODE_COLUMNS = ("anchor", "approved_by", "approved_ts", "provenance", "tags")
+_V3_EPISODE_COLUMNS = ("trust", "polarity", "kind", "meta")
+_NO_MIGRATION_HINT = ("this build has no migration — start from a clean store/volume")
+
+# Registry names ride filesystem paths (mirror dirs) and scope labels — slug only.
+_REPO_NAME_RE = re.compile(r"^[a-z0-9._-]+$")
+
+
+@dataclass(frozen=True, slots=True)
+class RepoRow:
+    """One durable repo-registry row (operational data, the authctl-seat pattern).
+    ``token_env`` is the NAME of the env var holding the git token ('' ⇒ the
+    ``HIVE_SYNC__TOKEN`` default) — NEVER a secret byte."""
+    name: str
+    url: str
+    canonical_ref: str
+    token_env: str
+    added_ts: int
 
 
 class SqliteEpisodeStore:
     def __init__(self, conn: sqlite3.Connection, index=None) -> None:
         self.conn = conn
         self.index = index            # MutableVectorIndex (warm cache); None in ledger-only tests
-        # No in-place migration path exists — this build starts from a clean, empty
+        # No in-place migration path exists — schema v3 starts from a clean, empty
         # store (prior-format memories are not carried over). CREATE IF NOT EXISTS
-        # would leave an old-format episodes table untouched (and the trust-index DDL
-        # would then crash cryptically), so refuse it BEFORE the script runs, with a
-        # clear message. An absent table is fine — the script creates the v2 shape.
+        # would leave an old-format episodes table untouched and limp to a cryptic
+        # mid-query crash, so refuse BEFORE the script runs, with a clear message.
+        # An absent episodes table is fine — the script creates the v3 shape.
         cols = {r["name"] for r in conn.execute("PRAGMA table_info(episodes)")}
-        missing = next(
-            (c for c in ("trust", "polarity", "kind", "anchor", "provenance")
-             if c not in cols), None)
-        if cols and missing:
-            _log.error("store.schema_predates_lifecycle missing_column=%s", missing)
-            raise RuntimeError(
-                f"episodes table predates the current schema (no {missing} column); "
-                "this build has no migration — start from a clean store/volume")
-        # The ONE explicit additive migration: a lifecycle-current table that merely
-        # predates `meta` gains the column in place — additive + defaulted (provably
-        # lossless), loud, one column, one direction. Refuse-and-reset here would
-        # brick `hive restore` of any pre-meta backup (the restored file would
-        # re-trigger the refusal); genuinely pre-lifecycle tables still refuse above.
-        if cols and "meta" not in cols:
-            _log.warning(
-                "store.migrate_add_meta adding episodes.meta TEXT NOT NULL DEFAULT '' "
-                "(one-way additive column migration; existing rows read back '')")
-            conn.execute(
-                "ALTER TABLE episodes ADD COLUMN meta TEXT NOT NULL DEFAULT ''")
+        if cols:
+            legacy = sorted(c for c in _LEGACY_EPISODE_COLUMNS if c in cols)
+            if legacy:
+                _log.error("store.schema_pre_v3 legacy_columns=%s", ",".join(legacy))
+                raise RuntimeError(
+                    f"episodes table carries the retired column(s) "
+                    f"{', '.join(legacy)}; {_NO_MIGRATION_HINT}")
+            missing = next((c for c in _V3_EPISODE_COLUMNS if c not in cols), None)
+            if missing:
+                _log.error("store.schema_predates_v3 missing_column=%s", missing)
+                raise RuntimeError(
+                    f"episodes table predates schema v3 (no {missing} column); "
+                    f"{_NO_MIGRATION_HINT}")
+            if conn.execute(
+                    "SELECT 1 FROM sqlite_master WHERE type='table' "
+                    "AND name='episode_anchors'").fetchone() is None:
+                _log.error("store.schema_missing_episode_anchors")
+                raise RuntimeError(
+                    "store carries an episodes table but no episode_anchors table; "
+                    f"{_NO_MIGRATION_HINT}")
         conn.executescript(_SCHEMA)
 
     # ── episodes / blob group (admission CAS state machine) ───────────────────
-    def stage(self, *, text: str, weight: float, tags: str,
-              proposed_by: str, tenant_id: str = "default", ts: int = 0,
-              provenance: str = DEFAULT_PROVENANCE,
-              polarity: str = "neutral", kind: str = DEFAULT_KIND,
-              anchor: str = "", meta: str = "") -> tuple[int, bool]:
-        """Insert a PENDING row (value NULL — not recallable, not indexed) + its blob.
-        Dedup by content_hash: a repeat of identical text returns the existing id,
-        deduped=True, no second row. ``provenance`` (the ORIGIN — provenance.py),
-        ``polarity`` (do|dont|neutral), ``kind`` (registry vocabulary), ``anchor``
-        (the WHERE — file/module/symbol), and ``meta`` (the serialized opaque map —
-        meta.py owns the grammar) are the carried-not-interpreted consumer labels,
-        never embedded; they default fail-safe (agent_reasoned / neutral / note / empty).
-        ``provenance`` and ``kind`` are CHECK-constrained by the DDL; ``anchor`` is free
-        text. On dedup the existing row's labels are preserved — including ``meta``,
-        which is never merged/overwritten (identity is the text hash alone)."""
+    def stage(self, *, text: str, weight: float, proposed_by: str,
+              tenant_id: str = "default", ts: int = 0,
+              polarity: str = "neutral", kind: str = DEFAULT_KIND, meta: str = "",
+              anchors: Sequence[tuple[str, str]] = (),
+              repos: Sequence[str] = ()) -> tuple[int, bool]:
+        """Insert a PENDING row (value NULL — not recallable, not indexed) + its blob
+        + its ``episode_anchors`` rows, all in the SAME tx. Dedup by content_hash: a
+        repeat of identical text returns the existing id, deduped=True, no second row
+        AND no touch of the existing row's labels or anchor rows (identity is the text
+        hash alone). ``polarity`` (do|dont|neutral), ``kind`` (registry vocabulary) and
+        ``meta`` (the serialized opaque map — meta.py owns the grammar) are the
+        carried-not-interpreted consumer labels, never embedded; they default fail-safe
+        (neutral / note / empty). ``anchors`` is the ``(repo, anchor)`` code-binding
+        pairs (fingerprints are server-minted later, never staged); ``repos`` the
+        declared scope-only memberships — a repo already covered by an anchor pair
+        gains no extra row (one canonical encoding: scope-only = an ``anchor=''`` row,
+        general = zero rows)."""
         h = content_hash(text)
         with tx(self.conn):
             existing = self.conn.execute(
@@ -170,22 +214,40 @@ class SqliteEpisodeStore:
             self.conn.execute(
                 "INSERT OR IGNORE INTO blobs(content_hash, text) VALUES(?,?)", (h, text))
             cur = self.conn.execute(
-                "INSERT INTO episodes(tenant_id, text, value, weight, ts, provenance, tags, "
-                "content_hash, status, proposed_by, version, polarity, kind, anchor, meta) "
-                "VALUES(?,?,NULL,?,?,?,?,?,'pending',?,0,?,?,?,?)",
-                (tenant_id, text, weight, ts, provenance, tags, h, proposed_by, polarity,
-                 kind, anchor, meta))
-            return int(cur.lastrowid), False
+                "INSERT INTO episodes(tenant_id, text, value, weight, ts, "
+                "content_hash, status, proposed_by, version, polarity, kind, meta) "
+                "VALUES(?,?,NULL,?,?,?,'pending',?,0,?,?,?)",
+                (tenant_id, text, weight, ts, h, proposed_by, polarity, kind, meta))
+            eid = int(cur.lastrowid)
+            pairs: list[tuple[str, str]] = []
+            seen: set[tuple[str, str]] = set()
+            for repo, anchor in anchors:
+                key = (str(repo), str(anchor))
+                if key not in seen:
+                    seen.add(key)
+                    pairs.append(key)
+            for repo, anchor in pairs:
+                self.conn.execute(
+                    "INSERT INTO episode_anchors(episode_id, repo, anchor) "
+                    "VALUES(?,?,?)", (eid, repo, anchor))
+            covered = {repo for repo, _anchor in pairs}
+            for repo in dict.fromkeys(str(r) for r in repos):
+                if repo in covered:
+                    continue
+                self.conn.execute(
+                    "INSERT INTO episode_anchors(episode_id, repo, anchor) "
+                    "VALUES(?,?,'')", (eid, repo))
+            return eid, False
 
     def complete(self, episode_id: int, value: "np.ndarray", *, expected_version: int,
-                 trust: str, approver: Optional[str] = None, approved_ts: int = 0,
-                 last_active_ts: int = 0) -> bool:
+                 trust: str, last_active_ts: int = 0) -> bool:
         """CAS-flip pending→approved (materialized: value written) with an explicit
         trust state, THEN best-effort index sync after commit [B3] — the index add
         happens IFF the row lands in a servable trust state (established/provisional;
         freshness at the stamp instant is definitional). A quarantined complete is
         embedded but absent from the index. Idempotent (already-approved ⇒ no-op True);
         a stale expected_version ⇒ no flip (lost-update / double-admission blocked).
+        There is no approver anywhere — trust is the ONLY standing label (v3).
         Durable truth is the row; boot rebuild recovers warm-cache divergence."""
         if trust not in TRUST_STATES:
             raise ValueError(f"bad trust {trust!r}")
@@ -196,11 +258,10 @@ class SqliteEpisodeStore:
             if row is not None and row["status"] == "approved":
                 return True   # idempotent
             n = self.conn.execute(
-                "UPDATE episodes SET status='approved', approved_by=?, approved_ts=?, "
+                "UPDATE episodes SET status='approved', "
                 "value=?, trust=?, last_active_ts=?, version=version+1 "
                 "WHERE id=? AND version=? AND status='pending'",
-                (approver, approved_ts, vbytes, trust, last_active_ts,
-                 episode_id, expected_version)).rowcount
+                (vbytes, trust, last_active_ts, episode_id, expected_version)).rowcount
         if n == 1 and trust in (ESTABLISHED, PROVISIONAL) and self.index is not None:
             try:
                 self.index.sync_approved(episode_id, np.asarray(value, dtype=np.float32))
@@ -210,21 +271,18 @@ class SqliteEpisodeStore:
                 pass
         return n == 1
 
-    def approve(self, episode_id: int, approver: str, value: "np.ndarray",
-                expected_version: int, approved_ts: int = 0) -> bool:
-        """The human-vouched flip — thin wrapper over ``complete(trust='established')``
-        (served immediately; liveness clock starts at the approval stamp)."""
-        return self.complete(episode_id, value, expected_version=expected_version,
-                             trust=ESTABLISHED, approver=approver,
-                             approved_ts=approved_ts, last_active_ts=approved_ts)
-
     def reject(self, episode_id: int, *, keep: bool = False) -> None:
-        """Drop a pending row (default). keep_rejected retains it as non-recallable
-        (never approved ⇒ never indexed)."""
+        """Drop a pending row (default) AND its anchor rows in the same tx — a staged
+        binding must never outlive its episode. keep_rejected retains the row as
+        non-recallable (never approved ⇒ never indexed)."""
         if keep:
             return
         with tx(self.conn):
-            self.conn.execute("DELETE FROM episodes WHERE id=? AND status='pending'", (episode_id,))
+            cur = self.conn.execute(
+                "DELETE FROM episodes WHERE id=? AND status='pending'", (episode_id,))
+            if cur.rowcount:
+                self.conn.execute(
+                    "DELETE FROM episode_anchors WHERE episode_id=?", (episode_id,))
 
     def scan_servable(self, *, now: int,
                       provisional_ttl_s: int) -> list[tuple[int, "np.ndarray"]]:
@@ -249,17 +307,24 @@ class SqliteEpisodeStore:
         detector classifies by — ``(id, value, polarity, anchor, ts, trust)``. Same SQL
         prefilter + ONE ``lifecycle.is_servable`` decision as ``scan_servable`` (so a
         deprecated / quarantined / stale-provisional row is NEVER surfaced for a
-        conflict — a superseded row already retired can't reappear).  // O(N) time."""
+        conflict — a superseded row already retired can't reappear). ``anchor`` is the
+        v3 representative binding — the FIRST ``episode_anchors`` row by (repo, anchor)
+        order, '' for a general/scope-only row (episodes no longer carry a single
+        anchor column; the label survives for single-anchor rows, the dominant case).
+        // O(N) time."""
         out: list[tuple[int, np.ndarray, str, str, int, str]] = []
         for r in self.conn.execute(
-                f"SELECT id, value, status, trust, last_active_ts, polarity, anchor, ts "
+                f"SELECT id, value, status, trust, last_active_ts, polarity, ts, "
+                f"(SELECT ea.anchor FROM episode_anchors ea "
+                f" WHERE ea.episode_id = episodes.id AND ea.anchor != '' "
+                f" ORDER BY ea.repo, ea.anchor LIMIT 1) AS anchor "
                 f"FROM episodes WHERE {_RECALL_PREDICATE}"):
             if is_servable(status=r["status"], trust=r["trust"],
                            last_active_ts=r["last_active_ts"], now=now,
                            provisional_ttl_s=provisional_ttl_s):
                 out.append((r["id"],
                             np.frombuffer(r["value"], dtype=np.float32).copy(),
-                            r["polarity"], r["anchor"], int(r["ts"]), r["trust"]))
+                            r["polarity"], r["anchor"] or "", int(r["ts"]), r["trust"]))
         return out
 
     def scan_approved(self) -> list[tuple[int, "np.ndarray"]]:
@@ -287,15 +352,23 @@ class SqliteEpisodeStore:
         if r is None:
             return None
         value = np.frombuffer(r["value"], dtype=np.float32).copy() if r["value"] is not None else None
+        arows = self.conn.execute(
+            "SELECT repo, anchor, fp_meta FROM episode_anchors WHERE episode_id=? "
+            "ORDER BY repo, anchor", (episode_id,)).fetchall()
+        # the carrier projection: repos = sorted unique union of every row's repo
+        # (anchor + scope-only rows); anchors = the non-empty-anchor rows only.
+        repos = tuple(sorted({a["repo"] for a in arows}))
+        anchors = tuple(
+            AnchorRef(repo=a["repo"], anchor=a["anchor"], fp_meta=a["fp_meta"])
+            for a in arows if a["anchor"])
         return Episode(
             id=r["id"], tenant_id=r["tenant_id"], text=r["text"], value=value,
-            weight=r["weight"], ts=r["ts"], tags=r["tags"] or "",
-            content_hash=r["content_hash"], status=r["status"], proposed_by=r["proposed_by"] or "",
-            approved_by=r["approved_by"], approved_ts=r["approved_ts"], version=r["version"],
+            weight=r["weight"], ts=r["ts"],
+            content_hash=r["content_hash"], status=r["status"],
+            proposed_by=r["proposed_by"] or "", version=r["version"],
             trust=r["trust"], superseded_by=r["superseded_by"],
             last_active_ts=r["last_active_ts"], polarity=r["polarity"],
-            kind=r["kind"], anchor=r["anchor"], provenance=r["provenance"],
-            meta=r["meta"])
+            kind=r["kind"], meta=r["meta"], repos=repos, anchors=anchors)
 
     def counts(self) -> tuple[int, int]:
         """(n_approved, n_pending) for hive_health — one grouped scan.  // O(N) time."""
@@ -308,18 +381,58 @@ class SqliteEpisodeStore:
                 pending = int(r["c"])
         return approved, pending
 
+    # ── repo scope reads (RepoScopeReader + the promotion rung's id feed) ──────
+    def servable_scopes(self, *, now: int, provisional_ttl_s: int,
+                        ) -> dict[int, tuple[frozenset[str], tuple[tuple[str, str], ...]]]:
+        """RepoScopeReader: every SERVABLE episode id → ``(repo scope, anchor pairs)``
+        — the partition map recall filtering and the partition-scoped competitor read
+        consume. Servability is the SAME two-step decision as ``scan_servable`` (SQL
+        prefilter + ``lifecycle.is_servable``), so this map and the index can never
+        disagree about who is in the field. Every servable id gets an entry: a general
+        memory reads ``(frozenset(), ())`` explicitly (absent-means-general lives at
+        the consumer; here absence only ever means non-servable). Anchor pairs are
+        ``(repo, anchor)`` in (repo, anchor) order.  // O(N + rows)."""
+        out: dict[int, tuple[frozenset[str], tuple[tuple[str, str], ...]]] = {}
+        for r in self.conn.execute(
+                f"SELECT id, status, trust, last_active_ts "
+                f"FROM episodes WHERE {_RECALL_PREDICATE}"):
+            if is_servable(status=r["status"], trust=r["trust"],
+                           last_active_ts=r["last_active_ts"], now=now,
+                           provisional_ttl_s=provisional_ttl_s):
+                out[int(r["id"])] = (frozenset(), ())
+        if not out:
+            return out
+        scopes: dict[int, set[str]] = {}
+        pairs: dict[int, list[tuple[str, str]]] = {}
+        for r in self.conn.execute(
+                "SELECT episode_id, repo, anchor FROM episode_anchors "
+                "ORDER BY episode_id, repo, anchor"):
+            eid = int(r["episode_id"])
+            if eid not in out:
+                continue
+            scopes.setdefault(eid, set()).add(r["repo"])
+            if r["anchor"]:
+                pairs.setdefault(eid, []).append((r["repo"], r["anchor"]))
+        for eid, repo_set in scopes.items():
+            out[eid] = (frozenset(repo_set), tuple(pairs.get(eid, ())))
+        return out
+
+    def provisional_ids(self) -> list[int]:
+        """The established rung's candidate feed (lifecycle.promote_established):
+        every materialized PROVISIONAL row id, ascending. Read-only, no DDL."""
+        return [int(r["id"]) for r in self.conn.execute(
+            "SELECT id FROM episodes WHERE status='approved' AND trust=? ORDER BY id",
+            (PROVISIONAL,))]
+
     # ── trust lifecycle (promotion / supersession / decay) ────────────────────
-    def set_trust(self, episode_id: int, new_trust: str, *, now: int,
-                  approver: Optional[str] = None, approved_ts: int = 0) -> bool:
+    def set_trust(self, episode_id: int, new_trust: str, *, now: int) -> bool:
         """Transactional trust transition on a MATERIALIZED row. Promotion into a
         servable state stamps ``last_active_ts=now`` (a fresh promotion is never
-        instantly dead); demotion leaves the clock untouched. ``approver`` is set only
-        when a human vouch establishes an already-materialized row (BUG-001): it also
-        records ``approved_by``/``approved_ts``. Mechanical promotion passes none and
-        leaves the approver untouched. Index sync after commit is best-effort [B3] —
-        add on entering a servable trust state, remove on leaving (boot rebuild
-        recovers divergence). False on unknown/unflipped rows; raises on an unknown
-        trust label (caller bug, not data)."""
+        instantly dead); demotion leaves the clock untouched. Every transition is
+        mechanical — there is no vouch identity to record (v3). Index sync after
+        commit is best-effort [B3] — add on entering a servable trust state, remove
+        on leaving (boot rebuild recovers divergence). False on unknown/unflipped
+        rows; raises on an unknown trust label (caller bug, not data)."""
         if new_trust not in TRUST_STATES:
             raise ValueError(f"bad trust {new_trust!r}")
         servable_states = (ESTABLISHED, PROVISIONAL)
@@ -331,15 +444,9 @@ class SqliteEpisodeStore:
                 return False
             old_trust = r["trust"]
             if new_trust in servable_states:
-                if approver is not None:
-                    self.conn.execute(
-                        "UPDATE episodes SET trust=?, last_active_ts=?, approved_by=?, "
-                        "approved_ts=? WHERE id=?",
-                        (new_trust, now, approver, approved_ts, episode_id))
-                else:
-                    self.conn.execute(
-                        "UPDATE episodes SET trust=?, last_active_ts=? WHERE id=?",
-                        (new_trust, now, episode_id))
+                self.conn.execute(
+                    "UPDATE episodes SET trust=?, last_active_ts=? WHERE id=?",
+                    (new_trust, now, episode_id))
             else:
                 self.conn.execute(
                     "UPDATE episodes SET trust=? WHERE id=?", (new_trust, episode_id))
@@ -425,7 +532,6 @@ class SqliteEpisodeStore:
         _log.info("store.deprecated episode_id=%s actor=%s from=%s",
                   episode_id, actor, old_trust)
         return True
-
 
     def sweep_decayed(self, *, now: int, q_ttl_s: int, p_ttl_s: int) -> dict:
         """Materialize the lazy ``lifecycle.decayed`` rule: TTL-lapsed quarantined/
@@ -624,15 +730,36 @@ class SqliteEpisodeStore:
             out.append((eid, int(r["ts"]), r["payload"]))
         return out
 
-    def anchored_episodes(self) -> list[tuple[int, str, str]]:
-        """AnchoredEpisodeReader: ``(id, anchor, polarity)`` for approved rows with a
-        non-empty anchor — the change→episode join's candidate set. ALL trust states
-        included (mirrors hive_outcome's known-id rule: evidence on a deprecated row is
-        honest ledger history); polarity rides for the verified-outcome classification
-        only. Read-only, no DDL. // O(rows)."""
-        return [(int(r["id"]), r["anchor"], r["polarity"]) for r in self.conn.execute(
-            "SELECT id, anchor, polarity FROM episodes "
-            "WHERE status='approved' AND anchor != '' ORDER BY id")]
+    def anchored_episodes(self) -> list[tuple[int, str, str, str]]:
+        """AnchoredEpisodeReader: ``(id, repo, anchor, polarity)`` for approved rows'
+        non-empty anchor bindings — the change→episode join's candidate set (the
+        census ingest filters ``repo == receipt repo``, so one repo's change can never
+        join another repo's memory). One row per binding (an episode may carry
+        several). ALL trust states included (mirrors hive_outcome's known-id rule:
+        evidence on a deprecated row is honest ledger history); polarity rides for the
+        verified-outcome classification only. Read-only, no DDL. // O(rows)."""
+        return [(int(r["episode_id"]), r["repo"], r["anchor"], r["polarity"])
+                for r in self.conn.execute(
+                    "SELECT ea.episode_id, ea.repo, ea.anchor, e.polarity "
+                    "FROM episode_anchors ea JOIN episodes e ON e.id = ea.episode_id "
+                    "WHERE e.status='approved' AND ea.anchor != '' "
+                    "ORDER BY ea.episode_id, ea.repo, ea.anchor")]
+
+    def evidence_rows_for(self, episode_id: int,
+                          kinds: Sequence[str]) -> list[tuple[str, str, int]]:
+        """The retirement gate's ledger feed: the target's ``(kind, actor, ts)`` rows
+        restricted to ``kinds``, in insertion order — exactly the 3-sequence shape
+        ``retirement.retirement_evidence`` consumes. Empty ``kinds`` → [] (the caller
+        names what qualifies; an unfiltered read here would hand the gate foreign
+        kinds to ignore). Read-only, no DDL. // O(rows)."""
+        ks = [str(k) for k in kinds]
+        if not ks:
+            return []
+        placeholders = ",".join("?" for _ in ks)
+        return [(r["kind"], r["actor"], int(r["ts"])) for r in self.conn.execute(
+            f"SELECT kind, actor, ts FROM evidence_events "
+            f"WHERE episode_id=? AND kind IN ({placeholders}) ORDER BY id",
+            [int(episode_id), *ks])]
 
     def append_evidence(self, rows: Sequence[tuple[int, str, str, int, str]]
                         ) -> tuple[list[int], int]:
@@ -695,47 +822,176 @@ class SqliteEpisodeStore:
         return True
 
     # ── the backfill-mint seam (duck-typed app reads/writes — no port) ─────────
-    def anchored_episodes_with_meta(self) -> list[tuple[int, str, str]]:
-        """``(id, anchor, meta)`` for approved rows with a non-empty anchor — the
-        fp-backfill sweep's candidate set (the ``anchored_episodes`` shape with the
-        serialized meta carrier riding along verbatim). ALL trust states included,
-        same as its twin — the consumer owns any further filtering. Duck-typed app
-        read, NOT a domain port. Read-only, no DDL. // O(rows)."""
-        return [(int(r["id"]), r["anchor"], r["meta"]) for r in self.conn.execute(
-            "SELECT id, anchor, meta FROM episodes "
-            "WHERE status='approved' AND anchor != '' ORDER BY id")]
+    def anchors_lacking_fp(self, repo: str) -> list[tuple[int, str]]:
+        """The mint sweep's candidate read: ``(episode_id, anchor)`` for every
+        approved row's non-empty anchor binding in ``repo`` whose ``fp_meta`` carrier
+        is EMPTY (never minted, never pinned). Presence-only — the store never parses
+        a non-empty carrier's body (meta-envelope law); a row with ANY carrier is
+        out of the sweep, so a human/edge pin structurally cannot be revisited. ALL
+        trust states included (the anchored_episodes twin — the consumer owns any
+        further filtering). Read-only, no DDL. // O(rows)."""
+        return [(int(r["episode_id"]), r["anchor"]) for r in self.conn.execute(
+            "SELECT ea.episode_id, ea.anchor FROM episode_anchors ea "
+            "JOIN episodes e ON e.id = ea.episode_id "
+            "WHERE ea.repo=? AND ea.anchor != '' AND ea.fp_meta='' "
+            "AND e.status='approved' "
+            "ORDER BY ea.episode_id, ea.anchor", (repo,))]
 
-    def fill_absent_meta(self, episode_id: int, additions: Mapping[str, str]) -> int:
-        """Absent-only meta merge in ONE tx: parse the current carrier ('' ⇒ {}),
-        fold ``additions`` in UNDER it, write back canonical (``normalize_meta``
-        stays the one grammar gate — a non-conforming result refuses loudly and the
-        tx rolls back). Returns the count of keys added; 0 = no-op, nothing written
-        (unknown id, empty or all-present additions). Meta is a carried label: the
-        write touches ONLY the meta column — text / content_hash / value / version
-        stay byte-identical.
+    def fill_anchor_fp(self, episode_id: int, repo: str, anchor: str,
+                       additions: Mapping[str, str]) -> int:
+        """Absent-only fingerprint merge into ONE ``episode_anchors.fp_meta`` carrier,
+        in ONE tx: parse the current carrier ('' ⇒ {}), fold ``additions`` in UNDER
+        it, write back canonical (``normalize_meta`` stays the one grammar gate — a
+        non-conforming result refuses loudly and the tx rolls back). Returns the count
+        of keys added; 0 = no-op, nothing written (unknown row, empty or all-present
+        additions). The write touches ONLY the fp_meta column of ONLY this
+        ``(episode_id, repo, anchor)`` row — the episode row stays byte-identical.
 
         STRUCTURALLY absent-only: the merge spreads the CURRENT map last, so a
         present key cannot be displaced — an overwrite is unconstructable, not
         merely refused. // marker: swapping the spread order (additions last) is
-        the mutation — test_fill_absent_meta_never_overwrites and CT-7
-        test_never_overwrites red."""
+        the mutation — test_fill_anchor_fp_never_overwrites and CT-5
+        test_absent_only_present_keys_never_displaced red."""
         with tx(self.conn):
             row = self.conn.execute(
-                "SELECT meta FROM episodes WHERE id=?", (int(episode_id),)).fetchone()
+                "SELECT fp_meta FROM episode_anchors "
+                "WHERE episode_id=? AND repo=? AND anchor=?",
+                (int(episode_id), repo, anchor)).fetchone()
             if row is None:
                 return 0
-            current = json.loads(row["meta"]) if row["meta"] else {}
+            current = json.loads(row["fp_meta"]) if row["fp_meta"] else {}
             if not isinstance(current, dict):
                 raise ValueError(
-                    f"episode {episode_id} meta carrier is not a map — refusing to merge")
+                    f"anchor ({episode_id}, {repo!r}, {anchor!r}) fp_meta carrier "
+                    "is not a map — refusing to merge")
             merged = {**dict(additions), **current}
             added = len(merged) - len(current)
             if added == 0:
                 return 0
-            self.conn.execute("UPDATE episodes SET meta=? WHERE id=?",
-                              (normalize_meta(merged), int(episode_id)))
+            self.conn.execute(
+                "UPDATE episode_anchors SET fp_meta=? "
+                "WHERE episode_id=? AND repo=? AND anchor=?",
+                (normalize_meta(merged), int(episode_id), repo, anchor))
             return added
 
+    # ── the repo registry (operational data — the authctl-seat pattern) ────────
+    def repo_registry(self) -> list[RepoRow]:
+        """Every registered repo, name-ordered. The sync daemon re-reads this each
+        tick (registering a repo needs no restart). Read-only, no DDL. // O(n)."""
+        return [RepoRow(name=r["name"], url=r["url"],
+                        canonical_ref=r["canonical_ref"],
+                        token_env=r["token_env"], added_ts=int(r["added_ts"]))
+                for r in self.conn.execute("SELECT * FROM repos ORDER BY name")]
+
+    def repo_add(self, *, name: str, url: str, canonical_ref: str = "",
+                 token_env: str = "", added_ts: int) -> None:
+        """Register one repo. ``name`` is slug-checked ([a-z0-9._-]+ — it rides mirror
+        paths and scope labels); a bad slug, empty url, or duplicate name RAISES
+        ValueError with the reason (nothing written — repoctl maps it to a non-zero
+        exit). ``token_env`` stores the NAME of the env var holding the git token
+        ('' ⇒ the HIVE_SYNC__TOKEN default) — indirection, never a secret byte. ONE
+        tx. // O(1)."""
+        if not isinstance(name, str) or _REPO_NAME_RE.match(name) is None:
+            raise ValueError(
+                f"bad repo name {name!r} — want a [a-z0-9._-]+ slug "
+                "(it rides mirror paths and scope labels)")
+        if not url:
+            raise ValueError("repo url must be non-empty")
+        with tx(self.conn):
+            if self.conn.execute(
+                    "SELECT 1 FROM repos WHERE name=?", (name,)).fetchone() is not None:
+                raise ValueError(f"repo {name!r} is already registered")
+            self.conn.execute(
+                "INSERT INTO repos(name, url, canonical_ref, token_env, added_ts) "
+                "VALUES(?,?,?,?,?)",
+                (name, url, canonical_ref, token_env, int(added_ts)))
+        _log.info("store.repo_added name=%s token_env=%s", name, token_env or "-")
+
+    def repo_remove(self, name: str) -> bool:
+        """Deregister one repo. True iff a row was deleted (False ⇒ no such name —
+        idempotent-bool, the repo_record convention). The sync daemon prunes the
+        mirror on its next tick; episode scope rows are UNTOUCHED — memories keep
+        their partition (a re-registered repo picks them straight back up). // O(1)."""
+        with tx(self.conn):
+            cur = self.conn.execute("DELETE FROM repos WHERE name=?", (name,))
+        if cur.rowcount:
+            _log.info("store.repo_removed name=%s", name)
+        return cur.rowcount > 0
+
+    # ── the materialized drift cache (rebuildable, Law 5) ──────────────────────
+    def drift_get(self, repo: str, tip_sha: str,
+                  anchors: Sequence[str]) -> dict[str, tuple[str, str]]:
+        """The recall-side drift read: the materialized ``(verdict, detail)`` per
+        requested anchor at EXACTLY ``(repo, tip_sha)``. An un-materialized anchor is
+        simply ABSENT — the caller reads absence as ``unverifiable`` (fail-safe: never
+        false-fresh, never false-stale). Verdict strings ride verbatim (the §3.4 wire
+        vocabulary is stamped upstream — this cache never interprets). Read-only,
+        no DDL. // O(k)."""
+        names = [str(a) for a in anchors]
+        if not names:
+            return {}
+        placeholders = ",".join("?" for _ in names)
+        return {r["anchor"]: (r["verdict"], r["detail"]) for r in self.conn.execute(
+            f"SELECT anchor, verdict, detail FROM anchor_drift "
+            f"WHERE repo=? AND tip_sha=? AND anchor IN ({placeholders})",
+            [repo, tip_sha, *names])}
+
+    def drift_put(self, rows: Sequence[tuple[str, str, str, str, str, int]]) -> None:
+        """Materialize drift verdicts — ``(repo, tip_sha, anchor, verdict,
+        detail_json, ts)`` rows in §3.5 DDL column order, ONE tx, last-write-wins on
+        the ``(repo, tip_sha, anchor)`` key (a re-materialization refreshes the cache
+        row; the cache is rebuildable state, not a ledger). // O(batch)."""
+        if not rows:
+            return
+        with tx(self.conn):
+            for repo, tip_sha, anchor, verdict, detail, ts in rows:
+                self.conn.execute(
+                    "INSERT INTO anchor_drift(repo, tip_sha, anchor, verdict, detail, ts) "
+                    "VALUES(?,?,?,?,?,?) "
+                    "ON CONFLICT(repo, tip_sha, anchor) DO UPDATE SET "
+                    "verdict=excluded.verdict, detail=excluded.detail, ts=excluded.ts",
+                    (repo, tip_sha, anchor, verdict, detail, int(ts)))
+
+    def drift_prune(self, repo: str, keep_tips: Sequence[str]) -> int:
+        """Drop a repo's materialized verdicts for every tip NOT in ``keep_tips``
+        (empty ⇒ drop the repo's whole cache) — bounded growth for a rebuildable
+        cache (a pruned tip re-materializes on demand). Other repos untouched.
+        Returns the rows deleted. ONE tx. // O(rows)."""
+        keep = [str(t) for t in keep_tips]
+        with tx(self.conn):
+            if keep:
+                placeholders = ",".join("?" for _ in keep)
+                cur = self.conn.execute(
+                    f"DELETE FROM anchor_drift "
+                    f"WHERE repo=? AND tip_sha NOT IN ({placeholders})",
+                    [repo, *keep])
+            else:
+                cur = self.conn.execute(
+                    "DELETE FROM anchor_drift WHERE repo=?", (repo,))
+        return int(cur.rowcount)
+
+    # ── ref requests (recall-touched refs wanting materialization) ─────────────
+    def touch_ref_request(self, repo: str, ref: str, ts: int) -> None:
+        """Record that recall wanted drift for ``(repo, ref)`` — the demand signal the
+        materializer reads to cover non-canonical branch tips. Upsert keeping the
+        NEWEST request stamp (monotonic — an out-of-order touch never rewinds the
+        clock). ONE tx. // O(1)."""
+        with tx(self.conn):
+            self.conn.execute(
+                "INSERT INTO ref_requests(repo, ref, last_requested_ts) VALUES(?,?,?) "
+                "ON CONFLICT(repo, ref) DO UPDATE SET "
+                "last_requested_ts=MAX(last_requested_ts, excluded.last_requested_ts)",
+                (repo, ref, int(ts)))
+
+    def requested_refs(self, repo: str, since_ts: int) -> list[str]:
+        """The refs of ``repo`` touched STRICTLY after ``since_ts`` (the miss-window
+        convention), ref-ordered — the materializer's per-tick work list. Read-only,
+        no DDL. // O(n)."""
+        return [r["ref"] for r in self.conn.execute(
+            "SELECT ref FROM ref_requests WHERE repo=? AND last_requested_ts>? "
+            "ORDER BY ref", (repo, int(since_ts)))]
+
+    # ── health reads ───────────────────────────────────────────────────────────
     def trust_counts(self) -> dict[str, int]:
         """Per-trust-state row counts for hive_health — ALL four states present
         (a zero is signal: quarantine pile-up must be visible, never silent)."""
@@ -773,17 +1029,20 @@ class SqliteEpisodeStore:
                     "UPDATE episodes SET last_active_ts=? WHERE id=?", (ts, int(eid)))
 
     def record_miss(self, query_text: str, query_vector: Optional[bytes],
-                    agent_id: str, miss_type: str, *, ts: int) -> None:
+                    agent_id: str, miss_type: str, *, ts: int,
+                    repos_json: str = "") -> None:
         """Persist one non-answer (the demand signal). The CALLER owns the secret
         floor — a refused query arrives here already stripped (empty text, None
         vector); a redacted one arrives masked with a vector re-encoded from the
-        masked text. miss_type is CHECK-constrained by the DDL."""
+        masked text. ``repos_json`` is the query's repo scope as a serialized JSON
+        array ('' = a GLOBAL miss, the §3.6 match-everything scope — also the
+        fail-safe default for a scope-less caller); the boundary owns the grammar,
+        the store round-trips it. miss_type is CHECK-constrained by the DDL."""
         with tx(self.conn):
             self.conn.execute(
                 "INSERT INTO recall_misses(query_text, query_vector, agent_id, "
-                "miss_type, ts) VALUES(?,?,?,?,?)",
-                (query_text, query_vector, agent_id, miss_type, ts))
-
+                "miss_type, ts, repos) VALUES(?,?,?,?,?,?)",
+                (query_text, query_vector, agent_id, miss_type, ts, repos_json))
 
     def miss_count_since(self, since_ts: int) -> int:
         """Misses recorded strictly after ``since_ts`` (hive_health telemetry)."""
@@ -805,13 +1064,31 @@ class SqliteEpisodeStore:
                         "miss_type": r["miss_type"], "ts": int(r["ts"])})
         return out
 
+    @staticmethod
+    def _parse_miss_repos(raw: str) -> tuple[str, ...]:
+        """The stored ``repos`` JSON array → the MissRow scope tuple. '' (the global
+        miss / pre-scope default) and anything unparseable read as ``()`` — the
+        legacy GLOBAL reading, identical to the column default (the writer owns the
+        grammar; a corrupt scope never crashes the demand read)."""
+        if not raw:
+            return ()
+        try:
+            parsed = json.loads(raw)
+        except ValueError:
+            return ()
+        if not isinstance(parsed, list):
+            return ()
+        return tuple(x for x in parsed if isinstance(x, str) and x)
+
     def misses_window(self, since_ts: int) -> list[MissRow]:
         """The demand-window slice: misses STRICTLY after ``since_ts`` that carry a
-        vector (secret-refused rows persist none and can never drive promotion)."""
+        vector (secret-refused rows persist none and can never drive promotion).
+        Each row carries its repo scope (v3 §3.6) — ``()`` = a global miss."""
         return [MissRow(vector=np.frombuffer(r["query_vector"], dtype=np.float32).copy(),
-                        agent_id=r["agent_id"], ts=int(r["ts"]))
+                        agent_id=r["agent_id"], ts=int(r["ts"]),
+                        repos=self._parse_miss_repos(r["repos"]))
                 for r in self.conn.execute(
-                    "SELECT query_vector, agent_id, ts FROM recall_misses "
+                    "SELECT query_vector, agent_id, ts, repos FROM recall_misses "
                     "WHERE ts>? AND query_vector IS NOT NULL ORDER BY id", (since_ts,))]
 
     # ── advisory conflict flags (ConflictFlagStore port + the worklist read) ──

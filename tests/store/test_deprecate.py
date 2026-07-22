@@ -19,9 +19,9 @@ def _store() -> SqliteEpisodeStore:
 
 
 def _established(s: SqliteEpisodeStore, text: str, *, ts: int = 10) -> int:
-    eid, _ = s.stage(text=text, weight=1.0, tags="", proposed_by="writer", ts=ts)
-    assert s.approve(eid, "human", np.eye(DIM, dtype=np.float32)[0],
-                     expected_version=0, approved_ts=ts)
+    eid, _ = s.stage(text=text, weight=1.0, proposed_by="writer", ts=ts)
+    assert s.complete(eid, np.eye(DIM, dtype=np.float32)[0], expected_version=0,
+                      trust="established", last_active_ts=ts)
     return eid
 
 
@@ -68,9 +68,9 @@ def test_deprecate_is_idempotent_no_duplicate_audit():
 def test_deprecate_a_quarantined_row_kills_it_before_promotion():
     # a malicious capture can be pruned while still quarantined (status='approved', never indexed).
     s = _store()
-    eid, _ = s.stage(text="poison candidate", weight=1.0, tags="", proposed_by="attacker", ts=10)
+    eid, _ = s.stage(text="poison candidate", weight=1.0, proposed_by="attacker", ts=10)
     assert s.complete(eid, np.eye(DIM, dtype=np.float32)[0], expected_version=0,
-                      trust="quarantined", approver=None, approved_ts=0, last_active_ts=10)
+                      trust="quarantined", last_active_ts=10)
     assert s.deprecate(eid, actor="human", ts=20) is True
     assert s.get_episode(eid).trust == "deprecated"
     # it can never become a promotion candidate now

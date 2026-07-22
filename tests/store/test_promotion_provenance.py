@@ -20,9 +20,9 @@ def _store() -> SqliteEpisodeStore:
 
 
 def _seed_episode(s: SqliteEpisodeStore, text: str, *, ts: int = 10) -> int:
-    eid, _ = s.stage(text=text, weight=1.0, tags="", proposed_by="writer", ts=ts)
+    eid, _ = s.stage(text=text, weight=1.0, proposed_by="writer", ts=ts)
     ok = s.complete(eid, np.eye(DIM, dtype=np.float32)[0], expected_version=0,
-                    trust="provisional", approver=None, approved_ts=ts, last_active_ts=ts)
+                    trust="provisional", last_active_ts=ts)
     assert ok
     return eid
 

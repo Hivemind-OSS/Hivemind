@@ -1,9 +1,9 @@
 """Store lifecycle methods: complete (trust-aware materialization), set_trust
-(promotion/demotion + index sync), supersede (the ONE retirement-with-replacement
-owner), the ExposureLedger write side
-(exposure bumps liveness in the same tx; misses persist secret-safely), the decay
-sweep, the quarantine candidate scan, and the servable scan (the single predicate
-source — ``scan_approved`` is its no-clock FAIL-CLOSED alias)."""
+(promotion/demotion + index sync — mechanical only, no vouch identity in v3),
+supersede (the ONE retirement-with-replacement owner), the ExposureLedger write side
+(exposure bumps liveness in the same tx; misses persist secret-safely and carry their
+repo scope), the decay sweep, the quarantine candidate scan, and the servable scan
+(the single predicate source — ``scan_approved`` is its no-clock FAIL-CLOSED alias)."""
 from __future__ import annotations
 
 import numpy as np
@@ -36,11 +36,12 @@ def _store() -> SqliteEpisodeStore:
 
 
 def _materialize(s: SqliteEpisodeStore, text: str, *, trust: str, vec=None,
-                 approver=None, ts: int = 10, last_active=None) -> int:
+                 ts: int = 10, last_active=None, anchors=(), repos=()) -> int:
     """stage → complete with an explicit trust (the generalized admission flip)."""
-    eid, _ = s.stage(text=text, weight=1.0, tags="", proposed_by="writer", ts=ts)
+    eid, _ = s.stage(text=text, weight=1.0, proposed_by="writer", ts=ts,
+                     anchors=list(anchors), repos=list(repos))
     ok = s.complete(eid, vec if vec is not None else _VECS[0], expected_version=0,
-                    trust=trust, approver=approver, approved_ts=ts,
+                    trust=trust,
                     last_active_ts=ts if last_active is None else last_active)
     assert ok
     return eid
@@ -62,26 +63,22 @@ def test_complete_quarantined_is_unindexed():
     eid = _materialize(s, "auto-captured insight", trust=QUARANTINED)
     ep = s.get_episode(eid)
     assert ep.status == "approved" and ep.trust == QUARANTINED   # materialized, unvouched
-    assert ep.approved_by is None and ep.value is not None        # embedded
+    assert ep.value is not None                                   # embedded
     assert s.index.size() == 0                                    # NOT in the warm index
     assert s.scan_servable(now=NOW, provisional_ttl_s=P_TTL) == []  # NOT scannable
 
 
-def test_approve_delegates_to_established():
-    # approve() stays byte-compatible AND now stamps trust + liveness.
+def test_complete_established_serves_immediately():
     s = _store()
-    eid, _ = s.stage(text="human approved", weight=1.0, tags="",
-                     proposed_by="a", ts=5)
-    assert s.approve(eid, "human", _VECS[0], expected_version=0, approved_ts=7) is True
+    eid = _materialize(s, "outcome-verified fact", trust=ESTABLISHED, ts=7)
     ep = s.get_episode(eid)
-    assert ep.trust == ESTABLISHED and ep.approved_by == "human"
-    assert ep.last_active_ts == 7
+    assert ep.trust == ESTABLISHED and ep.last_active_ts == 7
     assert s.index.search(_VECS[0], k=1)[0][0] == eid             # served immediately
 
 
 def test_complete_rejects_unknown_trust():
     s = _store()
-    eid, _ = s.stage(text="x", weight=1.0, tags="", proposed_by="a")
+    eid, _ = s.stage(text="x", weight=1.0, proposed_by="a")
     with pytest.raises(ValueError):
         s.complete(eid, _VECS[0], expected_version=0, trust="bogus")
 
@@ -100,30 +97,22 @@ def test_set_trust_promote_adds_demote_removes():
     assert s.get_episode(eid).last_active_ts == 50                # demotion does NOT re-stamp
 
 
-# ── set_trust: human-vouched establishment records the approver (B0/BUG-001) ────
-def test_set_trust_establish_records_approver():
+def test_set_trust_establish_is_mechanical():
+    # the v3 top tier is reached mechanically (canonical-line outcome verification —
+    # the lifecycle drives it); there is no vouch identity to record anywhere.
     s = _store()
-    eid = _materialize(s, "captured then vouched", trust=QUARANTINED, vec=_VECS[2])
-    assert s.get_episode(eid).approved_by is None                 # capture left it unvouched
-    assert s.set_trust(eid, ESTABLISHED, now=70, approver="alice", approved_ts=70) is True
+    eid = _materialize(s, "verified on the canonical line", trust=PROVISIONAL,
+                       vec=_VECS[2])
+    assert s.set_trust(eid, ESTABLISHED, now=70) is True
     ep = s.get_episode(eid)
-    assert ep.trust == ESTABLISHED and ep.approved_by == "alice"  # the vouch is recorded
-    assert ep.last_active_ts == 70                                # liveness stamped
-    assert s.index.search(_VECS[2], k=1)[0][0] == eid             # entered the index
-
-
-def test_set_trust_without_approver_leaves_approved_by_untouched():
-    # mechanical promotion (lifecycle) passes no approver → approved_by stays as-is
-    s = _store()
-    eid = _materialize(s, "mechanically promoted", trust=QUARANTINED, vec=_VECS[3])
-    assert s.set_trust(eid, PROVISIONAL, now=50) is True
-    assert s.get_episode(eid).approved_by is None                 # untouched by promotion
+    assert ep.trust == ESTABLISHED and ep.last_active_ts == 70    # liveness stamped
+    assert s.index.search(_VECS[2], k=1)[0][0] == eid             # (still) indexed
 
 
 def test_set_trust_guards():
     s = _store()
     assert s.set_trust(404, PROVISIONAL, now=1) is False          # unknown row
-    pend, _ = s.stage(text="pending", weight=1.0, tags="", proposed_by="a")
+    pend, _ = s.stage(text="pending", weight=1.0, proposed_by="a")
     assert s.set_trust(pend, PROVISIONAL, now=1) is False         # not materialized
     eid = _materialize(s, "ok", trust=QUARANTINED)
     with pytest.raises(ValueError):
@@ -133,13 +122,13 @@ def test_set_trust_guards():
 # ── the servable scan: ONE predicate source ────────────────────────────────────
 def _mixed_fixture(s: SqliteEpisodeStore):
     e_est = _materialize(s, "established, stale liveness", trust=ESTABLISHED,
-                         approver="h", vec=_VECS[0], last_active=0)
+                         vec=_VECS[0], last_active=0)
     e_fresh = _materialize(s, "fresh provisional", trust=QUARANTINED, vec=_VECS[1])
     s.set_trust(e_fresh, PROVISIONAL, now=NOW - 1)
     e_lapsed = _materialize(s, "lapsed provisional", trust=QUARANTINED, vec=_VECS[2])
     s.set_trust(e_lapsed, PROVISIONAL, now=NOW - P_TTL - 1)
     e_q = _materialize(s, "quarantined", trust=QUARANTINED, vec=_VECS[3])
-    e_dep = _materialize(s, "deprecated", trust=ESTABLISHED, approver="h", vec=_VECS[3])
+    e_dep = _materialize(s, "deprecated", trust=ESTABLISHED, vec=_VECS[3])
     s.set_trust(e_dep, DEPRECATED, now=NOW)
     return e_est, e_fresh, e_lapsed, e_q, e_dep
 
@@ -179,13 +168,24 @@ def test_scan_servable_labeled_is_exactly_the_servable_set():
 
 
 def test_scan_servable_labeled_carries_polarity_anchor_ts():
+    # ``anchor`` is the v3 representative binding: the FIRST episode_anchors row by
+    # (repo, anchor) order — '' for a general/scope-only row.
     s = _store()
-    eid, _ = s.stage(text="dont run as root", weight=1.0, tags="",
-                     proposed_by="w", ts=7, polarity="dont", anchor="Dockerfile")
-    s.approve(eid, "human", _VECS[0], expected_version=0, approved_ts=7)
+    eid, _ = s.stage(text="dont run as root", weight=1.0, proposed_by="w", ts=7,
+                     polarity="dont", anchors=[("infra", "Dockerfile")])
+    s.complete(eid, _VECS[0], expected_version=0, trust=ESTABLISHED,
+               last_active_ts=7)
     (rid, _val, pol, anc, ts, trust), = s.scan_servable_labeled(
         now=NOW, provisional_ttl_s=P_TTL)
     assert (rid, pol, anc, ts, trust) == (eid, "dont", "Dockerfile", 7, ESTABLISHED)
+
+
+def test_scan_servable_labeled_general_row_reads_empty_anchor():
+    s = _store()
+    _materialize(s, "a general servable fact", trust=ESTABLISHED, repos=["alpha"])
+    (_rid, _val, _pol, anc, _ts, _trust), = s.scan_servable_labeled(
+        now=NOW, provisional_ttl_s=P_TTL)
+    assert anc == ""                                   # scope-only ⇒ no anchor label
 
 
 # ── ExposureLedger write side ──────────────────────────────────────────────────
@@ -195,7 +195,7 @@ def test_store_conforms_to_exposure_ledger():
 
 def test_exposure_bumps_last_active_same_tx():
     s = _store()
-    eid = _materialize(s, "served row", trust=ESTABLISHED, approver="h", ts=10)
+    eid = _materialize(s, "served row", trust=ESTABLISHED, ts=10)
     s.record_exposure("trace-1", [(eid, 0.7)], agent_id="agent-A", ts=99)
     row = s.conn.execute("SELECT * FROM exposure WHERE trace_id='trace-1'").fetchone()
     assert row["episode_id"] == eid and row["agent_id"] == "agent-A"
@@ -231,23 +231,45 @@ def test_record_miss_types_and_secret_handling():
         s.record_miss("q", None, "a", "bogus_type", ts=9)         # CHECK-constrained
 
 
-def test_misses_window_vectors_only_and_windowed():
+def test_record_miss_roundtrips_repo_scope():
+    s = _store()
+    s.record_miss("scoped ask", _VECS[0].tobytes(), "agent-A", "no_match",
+                  ts=5, repos_json='["alpha","beta"]')
+    s.record_miss("global ask", _VECS[1].tobytes(), "agent-B", "no_match", ts=6)
+    rows = [dict(r) for r in s.conn.execute(
+        "SELECT repos FROM recall_misses ORDER BY id")]
+    assert rows[0]["repos"] == '["alpha","beta"]'
+    assert rows[1]["repos"] == ""                     # scope-less caller ⇒ global miss
+
+
+def test_misses_window_vectors_only_windowed_and_scope_carrying():
     s = _store()
     s.record_miss("early", _VECS[0].tobytes(), "agent-A", "no_match", ts=5)
-    s.record_miss("late", _VECS[1].tobytes(), "agent-B", "abstained", ts=50)
+    s.record_miss("late", _VECS[1].tobytes(), "agent-B", "abstained", ts=50,
+                  repos_json='["alpha"]')
     s.record_miss("", None, "agent-C", "secret_refused", ts=60)   # NULL vector: excluded
     out = s.misses_window(since_ts=5)                             # STRICT: ts > since
     assert [m.agent_id for m in out] == ["agent-B"]
     m = out[0]
     assert isinstance(m, MissRow) and m.ts == 50
     assert np.allclose(m.vector, _VECS[1])
+    assert m.repos == ("alpha",)                                  # the §3.6 scope rides
+
+
+def test_misses_window_global_and_malformed_scope_read_as_global():
+    s = _store()
+    s.record_miss("global", _VECS[0].tobytes(), "a", "no_match", ts=10)
+    s.record_miss("corrupt", _VECS[1].tobytes(), "b", "no_match", ts=11,
+                  repos_json="not json {{")
+    scopes = [m.repos for m in s.misses_window(since_ts=0)]
+    assert scopes == [(), ()]                          # '' and unparseable both = global
 
 
 # ── supersession: the one retirement-with-replacement owner ────────────────────
 def test_supersede_atomic_idempotent_self_refused():
     s = _store()
-    old = _materialize(s, "old fact", trust=ESTABLISHED, approver="h", vec=_VECS[0])
-    new = _materialize(s, "corrected fact", trust=ESTABLISHED, approver="h", vec=_VECS[1])
+    old = _materialize(s, "old fact", trust=ESTABLISHED, vec=_VECS[0])
+    new = _materialize(s, "corrected fact", trust=ESTABLISHED, vec=_VECS[1])
     assert s.supersede(old, new, actor="h", ts=100) is True
     ep = s.get_episode(old)
     assert ep.trust == DEPRECATED and ep.superseded_by == new     # retired + stamped
@@ -265,9 +287,9 @@ def test_supersede_atomic_idempotent_self_refused():
 
 def test_re_supersede_last_write_wins_history_in_ledger():
     s = _store()
-    old = _materialize(s, "v1", trust=ESTABLISHED, approver="h", vec=_VECS[0])
-    b = _materialize(s, "v2", trust=ESTABLISHED, approver="h", vec=_VECS[1])
-    c = _materialize(s, "v3", trust=ESTABLISHED, approver="h", vec=_VECS[2])
+    old = _materialize(s, "v1", trust=ESTABLISHED, vec=_VECS[0])
+    b = _materialize(s, "v2", trust=ESTABLISHED, vec=_VECS[1])
+    c = _materialize(s, "v3", trust=ESTABLISHED, vec=_VECS[2])
     s.supersede(old, b, actor="h", ts=10)
     assert s.supersede(old, c, actor="h", ts=20) is True          # last-write-wins
     assert s.get_episode(old).superseded_by == c
@@ -284,7 +306,7 @@ def _decay_fixture(s: SqliteEpisodeStore):
     s.set_trust(dead_p, PROVISIONAL, now=NOW - P_TTL - 1)
     live_p = _materialize(s, "fresh provisional", trust=QUARANTINED, vec=_VECS[3])
     s.set_trust(live_p, PROVISIONAL, now=NOW - 1)
-    est = _materialize(s, "established forever", trust=ESTABLISHED, approver="h",
+    est = _materialize(s, "established forever", trust=ESTABLISHED,
                        vec=_VECS[0], ts=0, last_active=0)
     return dead_q, live_q, dead_p, live_p, est
 
@@ -346,33 +368,16 @@ def test_meta_version_counts_live_predicate():
     s = _store()
     v1 = '{"matrix/subgraph_fp":"matrix-subgraph-fp/1:aaa"}'
     for i, trust in enumerate((QUARANTINED, PROVISIONAL, ESTABLISHED)):
-        eid, _ = s.stage(text=f"live {trust} carrier", weight=1.0, tags="",
+        eid, _ = s.stage(text=f"live {trust} carrier", weight=1.0,
                          proposed_by="w", ts=10, meta=v1)
         assert s.complete(eid, _VECS[i], expected_version=0, trust=trust,
-                          approved_ts=10, last_active_ts=10)
-    s.stage(text="pending carrier", weight=1.0, tags="", proposed_by="w",
+                          last_active_ts=10)
+    s.stage(text="pending carrier", weight=1.0, proposed_by="w",
             ts=10, meta=v1)                                    # never completed
-    dep_eid, _ = s.stage(text="retired carrier", weight=1.0, tags="",
+    dep_eid, _ = s.stage(text="retired carrier", weight=1.0,
                          proposed_by="w", ts=10, meta=v1)
     assert s.complete(dep_eid, _VECS[3], expected_version=0, trust=QUARANTINED,
-                      approved_ts=10, last_active_ts=10)
+                      last_active_ts=10)
     s.set_trust(dep_eid, DEPRECATED, now=20)
     assert s.meta_version_counts() == {
         "matrix/subgraph_fp": {"versions": {"1": 3}, "absent": 0}}
-
-
-# ── kind / anchor carried labels: stage → get_episode round-trip ───────────────
-def test_stage_roundtrips_kind_and_anchor():
-    s = _store()
-    eid, _ = s.stage(text="a known bug", weight=1.0, tags="",
-                     proposed_by="w", kind="bug", anchor="hive/domain/recall.py")
-    ep = s.get_episode(eid)
-    assert ep.kind == "bug" and ep.anchor == "hive/domain/recall.py"
-
-
-def test_stage_defaults_kind_note_and_anchor_empty():
-    # a write-site that names no kind/anchor under-claims (generic note, no WHERE)
-    s = _store()
-    eid, _ = s.stage(text="unlabelled", weight=1.0, tags="", proposed_by="w")
-    ep = s.get_episode(eid)
-    assert ep.kind == "note" and ep.anchor == ""

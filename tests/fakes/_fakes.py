@@ -262,6 +262,7 @@ class FakeLedger:
                                "agent_id": agent_id, "ts": int(ts)})
 
     def record_miss(self, query_text: str, query_vector, agent_id: str,
-                    miss_type: str, *, ts: int) -> None:
+                    miss_type: str, *, ts: int, repos_json: str = "") -> None:
         self.misses.append({"query_text": query_text, "query_vector": query_vector,
-                            "agent_id": agent_id, "miss_type": miss_type, "ts": int(ts)})
+                            "agent_id": agent_id, "miss_type": miss_type, "ts": int(ts),
+                            "repos_json": repos_json})
