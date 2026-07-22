@@ -197,23 +197,6 @@ class ObservabilityConfig:
 
 
 @dataclass(frozen=True)
-class AgiConfig:
-    """The AGI-MODE operator opt-in (``HIVE_AGI__MODE``). When ON, the boundary HONORS the
-    reserved ``approved_by="AGI_OVERRIDE"`` sentinel so an agent may self-authorize the
-    currently human-gated trust actions (establish / supersede / prune); when OFF (default),
-    that sentinel is REJECTED fail-closed and every existing envelope is byte-identical. It
-    LOOSENS a safety gate, so default-OFF is strict and non-negotiable (THEORY §9.9): unlike
-    the two sanctioned default-ON exceptions, an operator must explicitly opt in. The flag is a
-    transport concern — the pure domain reacts to the sentinel VALUE only (Law 4); this group
-    carries the one bool the boundary reads.
-
-    Scope note: today this switch is mostly decorative — it gates one narrow check (whether the
-    AGI_OVERRIDE sentinel is honored on write/supersede/prune) and does not actually enforce a
-    fully autonomous mode. It will be made rigorous in later updates."""
-    mode: bool = False
-
-
-@dataclass(frozen=True)
 class SecretScanConfig:
     """The credential secret-floor operator opt-OUT (``HIVE_SECRET_SCAN__ENABLED``). The
     deterministic scan that runs BEFORE any persistence is ON by default (``enabled=True`` —
@@ -228,52 +211,34 @@ class SecretScanConfig:
 
 
 @dataclass(frozen=True)
-class CensusConfig:
-    """Census/ledger scoping (HIVE_CENSUS__*). canonical_ref names the repo's canonical
-    line (e.g. "master"): when set, the stale remediation / last_verified rider derives
-    only from receipts stamped with that ref (legacy ref-less rows still count — the
-    absence rule). "" (default) ⇒ byte-identical to the unscoped build (§9.9)."""
-    canonical_ref: str = ""
-
-
-@dataclass(frozen=True)
 class SyncConfig:
-    """Server-side census sync (HIVE_SYNC__*). ``repo_url`` set ⇒ the server mirrors
-    that repo and feeds tracked-branch movement into the change-outcome ledger
-    automatically (detect-only — never a trust mutation). Unset (the default) is
-    byte-inert (§9.9): no thread, no clone, no census import. ``token`` and
-    ``webhook_secret`` are credentials that only mean anything riding a configured
-    repo, so either set WITHOUT ``repo_url`` is a half-installed sync — refused
-    fail-fast (EX_CONFIG at boot, the refusal naming the missing var) rather than
-    silently ignored. ``mirror_dir`` "" ⇒ /data/sync/mirror (resolved by the sync
-    service, the volume-local default); ``interval_s`` (floor 5) is the poll cadence;
-    ``verify_candidates`` gates the candidate-PR verification leg."""
-    repo_url: str = ""
-    token: str = ""
+    """Server-side census sync (HIVE_SYNC__*). WHICH repos the daemon feeds is OPERATIONAL
+    data, not boot config: it lives in the store's durable repo registry (``hive repo add``,
+    re-read every tick — registering a repo needs no restart). This group carries only the
+    loop's own knobs. ``interval_s`` (floor 5) is the poll cadence. ``webhook_secret`` arms
+    the ``POST /census-webhook`` nudge and is standalone-valid — one nudge wakes the loop for
+    ALL registered repos, so it rides no per-repo setting (per-repo git credentials resolve
+    via each registry row's ``token_env`` indirection at tick time, never from config).
+    ``mirror_dir`` "" ⇒ /data/sync/mirror (resolved by the sync service, the volume-local
+    default)."""
     interval_s: int = 60
     webhook_secret: str = ""
-    verify_candidates: bool = True
     mirror_dir: str = ""
 
     def __post_init__(self) -> None:
         if int(self.interval_s) < 5:
             raise ValueError(f"sync.interval_s must be >= 5 (got {self.interval_s})")
-        if not self.repo_url:
-            # marker: dropping this partial-config raise fails
-            # test_sync_partial_credential_without_repo_url_raises / CT-1 partial.
-            # NEVER echo the credential value — name the fields/vars only.
-            for field_name, env_var in (("token", "HIVE_SYNC__TOKEN"),
-                                        ("webhook_secret", "HIVE_SYNC__WEBHOOK_SECRET")):
-                if getattr(self, field_name):
-                    raise ValueError(
-                        f"sync.{field_name} is set but sync.repo_url is unset — partial "
-                        f"sync config; set HIVE_SYNC__REPO_URL or unset {env_var}")
 
 
 # ── the root ──────────────────────────────────────────────────────────────────
 # Auth is NOT a config group: it is a property of the listening socket (a tokenless
 # loopback door + a token-required tunnel door, bound by the entrypoint), so there is no
 # HIVE_AUTH__MODE switch to resolve here.
+# The v3 deletions are structural: the ``agi`` and ``census`` groups no longer exist, and
+# ``sync`` lost repo_url/token/verify_candidates (the repo registry replaced them) — a
+# leftover HIVE_AGI__* / HIVE_CENSUS__* env var degrades to the existing unknown-group
+# WARN, and a leftover HIVE_SYNC__REPO_URL/TOKEN/VERIFY_CANDIDATES to the unknown-field
+# WARN: ignored, never a live switch, never a crash.
 _GROUP_TYPES: dict[str, type] = {
     "runtime": RuntimeConfig,
     "embedding": EmbeddingConfig,
@@ -283,9 +248,7 @@ _GROUP_TYPES: dict[str, type] = {
     "suspect_consensus": SuspectConsensusConfig,
     "retention": RetentionConfig,
     "obs": ObservabilityConfig,
-    "agi": AgiConfig,
     "secret_scan": SecretScanConfig,
-    "census": CensusConfig,
     "sync": SyncConfig,
 }
 # field-groups constructed (and thus validated) BEFORE runtime, so a field-level error
@@ -304,9 +267,7 @@ class Config:
     suspect_consensus: SuspectConsensusConfig
     retention: RetentionConfig
     obs: ObservabilityConfig
-    agi: AgiConfig
     secret_scan: SecretScanConfig
-    census: CensusConfig
     sync: SyncConfig
 
     @property

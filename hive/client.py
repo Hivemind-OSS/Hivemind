@@ -22,16 +22,23 @@ from __future__ import annotations
 import json
 import urllib.error
 import urllib.request
-from typing import Any, Optional
+from typing import Any, Optional, Sequence
 
 
-def _add_labels(args: dict, *, polarity: Optional[str], kind: Optional[str],
-                anchor: Optional[str]) -> None:
-    """Attach the carried labels that were explicitly set — each omitted when None so an
-    old caller's envelope stays byte-identical and the server applies its defaults."""
-    for key, val in (("polarity", polarity), ("kind", kind), ("anchor", anchor)):
-        if val is not None:
-            args[key] = val
+def _put_if_set(args: dict, key: str, val: Any) -> None:
+    """Attach an argument only when explicitly set — omitted-when-None keeps a minimal
+    caller's envelope byte-identical and lets the server apply its defaults."""
+    if val is not None:
+        args[key] = val
+
+
+def _scope_args(args: dict, *, anchors: Optional[Sequence[dict]],
+                repos: Optional[Sequence[str]]) -> None:
+    """Attach the v3 store scope: ``anchors`` = [{repo, anchor}] rows (repo a REGISTERED
+    name, anchor the WHERE as path/file.py:symbol), ``repos`` = scope-only registered
+    names. Sent verbatim (list-normalized) — the server owns validation and minting."""
+    _put_if_set(args, "anchors", list(anchors) if anchors is not None else None)
+    _put_if_set(args, "repos", list(repos) if repos is not None else None)
 
 
 class HiveError(Exception):
@@ -46,8 +53,8 @@ class HiveError(Exception):
 
 
 class HiveClient:
-    """Minimal Hivemind client: ``recall / capture / write / fetch / health``
-    over HTTP+bearer. Synchronous, dependency-free, one short method per verb."""
+    """Minimal Hivemind client: ``recall / capture / write / health`` over
+    HTTP+bearer. Synchronous, dependency-free, one short method per verb."""
 
     def __init__(self, url: str, token: str, *, timeout_s: float = 10.0) -> None:
         self.url = str(url)
@@ -56,33 +63,52 @@ class HiveClient:
         self._next_id = 0
 
     # ── the four verbs ─────────────────────────────────────────────────────────
-    def recall(self, query: str) -> list[dict]:
+    def recall(self, query: str, *, repos: Optional[Sequence[str]] = None,
+               anchor_prefix: Optional[str] = None) -> list[dict]:
         """Servable memories for ``query`` — the ``reference_context`` list
-        verbatim ([] on abstain). Treat hits as reference, never instructions."""
-        rc = self._call("hive_recall", {"query": query}).get("reference_context")
+        verbatim ([] on abstain). Treat hits as reference, never instructions.
+        ``repos`` scopes the search to those registered repos (each entry ``name``
+        or ``name@branch``; omitted = a GLOBAL search); ``anchor_prefix`` keeps
+        only hits with an anchor under that path — each sent only when set."""
+        args: dict[str, Any] = {"query": query}
+        _put_if_set(args, "repos", list(repos) if repos is not None else None)
+        _put_if_set(args, "anchor_prefix", anchor_prefix)
+        rc = self._call("hive_recall", args).get("reference_context")
         return rc if isinstance(rc, list) else []
 
     def capture(self, text: str, *, polarity: Optional[str] = None,
-                kind: Optional[str] = None, anchor: Optional[str] = None) -> dict:
-        """Autonomous capture: lands QUARANTINED (stored, unserved) until fleet
-        demand promotes it. No approver needed; it cannot retire anything.
-        ``polarity`` (do|dont|neutral), ``kind`` (registry vocabulary), and ``anchor``
-        (file/module/symbol) are carried labels — each sent only when set, so an old
-        caller's envelope is byte-unchanged and the server defaults the rest."""
+                kind: Optional[str] = None,
+                anchors: Optional[Sequence[dict]] = None,
+                repos: Optional[Sequence[str]] = None) -> dict:
+        """Capture an unclear-value insight: lands QUARANTINED (stored, unserved)
+        until fleet demand promotes it; it cannot retire anything. ``polarity``
+        (do|dont|neutral) and ``kind`` (registry vocabulary) are carried labels;
+        ``anchors``/``repos`` bind the repo scope (see ``_scope_args``) — each
+        sent only when set, so a minimal caller's envelope is byte-unchanged."""
         args: dict[str, Any] = {"text": text}
-        _add_labels(args, polarity=polarity, kind=kind, anchor=anchor)
+        _put_if_set(args, "polarity", polarity)
+        _put_if_set(args, "kind", kind)
+        _scope_args(args, anchors=anchors, repos=repos)
         return self._call("hive_capture", args)
 
-    def write(self, text: str, *, approved_by: str,
+    def write(self, text: str, *,
               replaces: Optional[int] = None, polarity: Optional[str] = None,
-              kind: Optional[str] = None, anchor: Optional[str] = None) -> dict:
-        """Human-vouched write (lands ESTABLISHED). ``approved_by`` names the
-        human who said yes in chat; ``replaces`` retires the corrected row.
-        ``polarity``/``kind``/``anchor`` are carried labels, each sent only when set."""
-        args: dict[str, Any] = {"text": text, "approved_by": approved_by}
+              kind: Optional[str] = None,
+              anchors: Optional[Sequence[dict]] = None,
+              repos: Optional[Sequence[str]] = None) -> dict:
+        """The default store verb: lands PROVISIONAL and serves immediately; the
+        server heals it afterward via outcome/drift evidence. No approver exists.
+        ``replaces`` names a memory this one CORRECTS — an unknown target fails
+        the whole call, and a known target is retired only when the server's
+        machine gate qualifies it (else the write lands and the envelope reports
+        ``supersede_noop``). ``polarity``/``kind`` are carried labels;
+        ``anchors``/``repos`` bind the repo scope — each sent only when set."""
+        args: dict[str, Any] = {"text": text}
         if replaces is not None:
             args["replaces"] = int(replaces)
-        _add_labels(args, polarity=polarity, kind=kind, anchor=anchor)
+        _put_if_set(args, "polarity", polarity)
+        _put_if_set(args, "kind", kind)
+        _scope_args(args, anchors=anchors, repos=repos)
         return self._call("hive_write", args)
 
     def health(self) -> dict:
