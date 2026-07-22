@@ -51,7 +51,7 @@ sync = [
     "jsonschema>=4.21,<5",
     "defusedxml>=0.7",
 ]
-dev = ["pytest>=7", "hive[sync]"]
+dev = ["pytest>=7", "hypothesis>=6.100", "hive[sync]"]
 
 [tool.setuptools.packages.find]
 # Ship the hive package (+ tests for editable checkouts). The repo-root scripts/ utilities are
