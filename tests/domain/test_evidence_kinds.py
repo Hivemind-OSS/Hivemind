@@ -38,7 +38,7 @@ def test_membership_set_is_exactly_the_twelve_constants():
 
 
 def test_pure_data_module_imports_nothing():
-    # the provenance.py precedent: a pure-data sibling registry — only __future__ imports
+    # a pure-data registry (the hive.domain.kinds pattern) — only __future__ imports
     tree = ast.parse(inspect.getsource(ek))
     imports = [n for n in ast.walk(tree)
                if isinstance(n, (ast.Import, ast.ImportFrom))]

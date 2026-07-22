@@ -8,9 +8,6 @@ import inspect
 
 import pytest
 
-from hive.adapters.index_exhaustive import ExhaustiveCosineIndex
-from hive.adapters.sqlite_db import connect
-from hive.adapters.store_sqlite import SqliteEpisodeStore
 from hive.domain import lifecycle as lifecycle_mod
 from hive.domain.lifecycle import (
     DEPRECATED, ESTABLISHED, PROVISIONAL, QUARANTINED, TRUST_STATES,
@@ -121,17 +118,14 @@ def _svc(store) -> LifecycleService:
 
 
 def test_sweep_is_decay_only():
-    # sweep() returns EXACTLY sweep_decayed's verdict — no 'established' key, because
-    # the mechanical provisional→established rung no longer exists.
+    # sweep() returns EXACTLY sweep_decayed's verdict — no 'established' key: the
+    # decay sweep never establishes (that is promote_established's job, driven by
+    # canonical-line outcome verification, not by TTL bookkeeping).
     out = _svc(_DecayOnlyStore()).sweep()
     assert out == {QUARANTINED: 0, PROVISIONAL: 1}
     assert "established" not in out
     # the survival ctor seam is gone from the service…
     assert "survival_rule" not in inspect.signature(LifecycleService.__init__).parameters
-    # …the SurvivalRule type is gone from the domain module…
+    # …and the SurvivalRule type is gone from the domain module.
     assert not hasattr(lifecycle_mod, "SurvivalRule")
     assert not hasattr(lifecycle_mod, "ExposureRow")
-    # …and the store's survival prefilter surface is gone.
-    store = SqliteEpisodeStore(connect(":memory:"), index=ExhaustiveCosineIndex(4))
-    assert not hasattr(store, "survival_candidates")
-    assert not hasattr(store, "exposures_for")

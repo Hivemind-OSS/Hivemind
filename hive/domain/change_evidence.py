@@ -5,14 +5,16 @@ what a verifier could prove about ONE change (base_sha → head_sha). This modul
 ids-only ledger rows: parse + validate the envelope shape (D8), derive the verdict/tag
 SERVER-SIDE (the caller can never assert them — the INV-2 analog; the post-merge canary
 rule is structurally unconstructable to violate), join the receipt's touched
-``path::Symbol`` subjects against episode anchors (deterministic, precision-first), and
-render ONE canonical-JSON payload per matched episode (byte-stable — the idempotency key).
+``path::Symbol`` subjects against the target repo's STRUCTURED episode anchors
+(exact-path + symbol tier, repo-filtered — v3 §3.6), and render ONE canonical-JSON
+payload per matched episode (byte-stable — the idempotency key).
 
 The same batch also carries the verified-outcome rider (Flow A): for each matched
-episode — pre-merge only, and only under a full ``ModelVersion ⊕ VerifierVersion ⊕ SHA``
-version stamp — a mechanical ``outcome_verified_helped``/``_hurt`` row when the
-polarity-aware three-way regression clause decides (drift at the anchor ∧ a DECIDED
-failing test run ∧ blast-radius reach; abstention is the default), plus a
+episode — ANY phase, gated ONLY on a full ``ModelVersion ⊕ VerifierVersion ⊕ SHA``
+version stamp (v3: the canonical ``post_merge`` ingest is the rider's normal carrier) —
+a mechanical ``outcome_verified_helped``/``_hurt`` row when the polarity-aware
+three-way regression clause decides (drift at the anchor ∧ a DECIDED failing test run
+∧ blast-radius reach; abstention is the default), plus a
 ``verify_current``/``verify_stale`` row recording what the verifier proved about the
 anchor itself at head SHA — and, when the receipt carries the optional census
 ``propagation`` block, an advisory ``stale_suspect`` row per episode whose anchor sits
@@ -37,7 +39,6 @@ from __future__ import annotations
 import base64
 import hashlib
 import json
-import re
 from dataclasses import dataclass
 from typing import Callable, Optional, Sequence
 
@@ -76,12 +77,6 @@ _CURRENT_DRIFTS = frozenset({"unchanged", "additive", ""})
 # the machine reason enum riding the verified payload (never receipt prose)
 _VERIFIED_REASONS = {EK_OUTCOME_VERIFIED_HELPED: "corroborated",
                      EK_OUTCOME_VERIFIED_HURT: "contradicted"}
-
-# §3.4 boundary sets: where a path may start/end inside a free-text anchor.
-_PRE_BOUNDARY = frozenset({" ", "(", "`", "'", '"'})           # or string start
-_POST_BOUNDARY = frozenset({":", " ", ")", "`", "'", '"', "#"})  # or string end
-_IDENT = re.compile(r"[A-Za-z_]\w*")
-
 
 class ReceiptRefused(ValueError):
     """The loud-refusal error (D8): the message IS the reason; zero rows follow."""
@@ -338,6 +333,29 @@ def derive_post_merge_tag(signal: str) -> str:
     return "machine-checked" if signal in _SIGNALS_MACHINE else "unverified-judgment"
 
 
+def derive_post_merge(lines: list, *, verdict: str, signal: str) -> tuple[str, str]:
+    """(verdict, tag) for a post-merge ingest (v3 §3.6): when DECIDED execution
+    lines exist (class ∈ {typecheck, tests}, state ∈ {passed, failed}) they DERIVE
+    the verdict — any failed ⇒ ``fail`` — with the tag capped at
+    ``bounded-estimate`` (post-merge execution lines never self-certify
+    machine-checked; that claim needs a randomized/canary SIGNAL, the §6.2.5
+    canary rule the ``ChangeOutcome`` carrier still enforces structurally).
+    Nothing decided ⇒ the CALLER's verdict with the signal-derived tag (the
+    landed-line parity fallback). Total, never raises; ``errored``/``not_run``
+    is "tooling broke", never decided."""
+    decided: list[str] = []
+    for line in lines if isinstance(lines, list) else []:
+        if not isinstance(line, dict) or line.get("class") not in _EXECUTION_CLASSES:
+            continue
+        detail = line.get("detail")
+        state = detail.get("state") if isinstance(detail, dict) else None
+        if state in _DECIDED_STATES:
+            decided.append(state)
+    if not decided:
+        return verdict, derive_post_merge_tag(signal)
+    return ("fail" if "failed" in decided else "pass"), "bounded-estimate"
+
+
 # ── Flow A: the verified/verify distillation + classifiers (mechanical, D8) ────
 
 
@@ -461,80 +479,74 @@ def version_stamp(provenance: object) -> Optional[dict]:
             "combdrift": combdrift, "matrix_head": matrix_head}
 
 
-# ── the change→episode join (§3.4 — deterministic, pure, precision-first) ─────
+# ── the change→episode join (v3 §3.6 — structured, repo-scoped, exact) ────────
 
 
-def _find_path_span(anchor: str, path: str) -> Optional[tuple[int, int]]:
-    """The path gate: the first occurrence of ``path`` in ``anchor`` at a boundary
-    (preceding char ∈ start/space/(/`/'/" and following ∈ end/:/space/)/`/'/"/#),
-    else the ``anchor endswith /path`` arm. None ⇒ no path hit ⇒ no match."""
-    if not path:
-        return None
-    start = 0
-    while True:
-        i = anchor.find(path, start)
-        if i < 0:
-            break
-        j = i + len(path)
-        pre_ok = i == 0 or anchor[i - 1] in _PRE_BOUNDARY
-        post_ok = j == len(anchor) or anchor[j] in _POST_BOUNDARY
-        if pre_ok and post_ok:
-            return (i, j)
-        start = i + 1
-    if anchor.endswith("/" + path):
-        return (len(anchor) - len(path), len(anchor))
-    return None
-
-
-def _names_symbol(anchor: str, symbol: str) -> bool:
-    """True iff ``symbol`` occurs in ``anchor`` with identifier boundaries (the chars
-    around it are non-[A-Za-z0-9_])."""
-    if not symbol:
-        return False
-    start = 0
-    while True:
-        i = anchor.find(symbol, start)
-        if i < 0:
-            return False
-        j = i + len(symbol)
-        pre = anchor[i - 1] if i > 0 else ""
-        post = anchor[j] if j < len(anchor) else ""
-        pre_ident = bool(pre) and (pre.isalnum() or pre == "_")
-        post_ident = bool(post) and (post.isalnum() or post == "_")
-        if not pre_ident and not post_ident:
-            return True
-        start = i + 1
+def _anchor_match_level(anchors: Sequence[str],
+                        subject: TouchedSubject) -> Optional[str]:
+    """The tier of ``subject`` against one episode's structured anchors:
+    ``symbol`` when any anchor is exactly ``path::Symbol`` for the subject
+    (the most precise tier wins); ``file`` when an anchor names exactly the
+    subject's path (file-scoped — the path alone matches); None otherwise.
+    A symbol-scoped anchor naming a DIFFERENT symbol never matches
+    (precision-first under-claim, unchanged from the free-text era)."""
+    best: Optional[str] = None
+    for anchor in anchors:
+        path, sep, symbol = anchor.partition("::")
+        if path != subject.path:
+            continue
+        if sep and symbol:
+            if symbol == subject.symbol:
+                return "symbol"
+            continue                               # names a different symbol: no match
+        best = "file"                              # exact-path, file-scoped anchor
+    return best
 
 
 def match_anchors(subjects: Sequence[TouchedSubject],
-                  episodes: Sequence[tuple[int, str]],
-                  ) -> dict[int, tuple[TouchedSubject, str]]:
-    """{episode_id: (subject, level)} — the §3.4 rule. Per episode, subjects are tried
-    in sorted (path, symbol) order and the FIRST match wins (one row per episode per
-    receipt: the outcome is per-change, not per-line). Path gate first; then the
-    symbol tier: a residue (anchor minus the matched path span) containing any
-    identifier token makes the anchor symbol-scoped — the subject's symbol must then
-    ALSO be named (a symbol-scoped anchor naming a different symbol does NOT match);
-    an identifier-free residue is file-scoped and the path hit alone matches. An
-    empty/unparseable anchor simply never matches (under-claim, never a crash).
-    Insertion order follows the episode input order (deterministic, order-stable)."""
+                  episodes: Sequence[tuple[int, str, str, str]],
+                  *, repo: str) -> dict[int, tuple[TouchedSubject, str]]:
+    """{episode_id: (subject, level)} — the v3 structured join. ``episodes`` rows
+    are ``(episode_id, repo, anchor, polarity)`` (an episode may carry several
+    anchor rows; ``polarity`` rides for the caller's verified classification and
+    is ignored here). Anchors are STRUCTURED (``path`` or ``path::Symbol``), so
+    the old free-text boundary-scan heuristics collapse to exact comparison:
+    exact-path gate, then the symbol tier (see ``_anchor_match_level``).
+
+    Per episode, subjects are tried in sorted (path, symbol) order and the FIRST
+    matching subject wins (one row per episode per receipt: the outcome is
+    per-change, not per-line). A malformed row / empty anchor simply never
+    matches (under-claim, never a crash). Insertion order follows the episode
+    input order (deterministic, order-stable)."""
     ordered = sorted(set(subjects), key=lambda s: (s.path, s.symbol))
-    out: dict[int, tuple[TouchedSubject, str]] = {}
-    for episode_id, anchor in episodes:
+    anchors_by_eid: dict[int, list[str]] = {}
+    order: list[int] = []
+    for row in episodes:
+        try:
+            episode_id, row_repo, anchor = int(row[0]), row[1], row[2]
+        except (TypeError, ValueError, IndexError):
+            continue                               # malformed row ⇒ under-claim
+        # marker: the cross-repo join guard — only anchor rows of THE RECEIPT'S
+        # repo enter the join, so one repo's change can never write evidence
+        # onto another repo's memory. Dropping this filter is the named
+        # mutation: CT-9's cross-repo join test (tests/contract/
+        # test_multirepo_sync.py) and its unit twin (tests/domain/
+        # test_change_evidence.py::test_join_filters_rows_to_the_receipt_repo) red.
+        if row_repo != repo:
+            continue
         if not isinstance(anchor, str) or not anchor:
             continue
+        if episode_id not in anchors_by_eid:
+            anchors_by_eid[episode_id] = []
+            order.append(episode_id)
+        anchors_by_eid[episode_id].append(anchor)
+    out: dict[int, tuple[TouchedSubject, str]] = {}
+    for episode_id in order:
         for subject in ordered:
-            span = _find_path_span(anchor, subject.path)
-            if span is None:
-                continue
-            residue = anchor[:span[0]] + anchor[span[1]:]
-            if _IDENT.search(residue):
-                if _names_symbol(anchor, subject.symbol):
-                    out[int(episode_id)] = (subject, "symbol")
-                    break
-                continue                           # names a different symbol: no match
-            out[int(episode_id)] = (subject, "file")
-            break
+            level = _anchor_match_level(anchors_by_eid[episode_id], subject)
+            if level is not None:
+                out[episode_id] = (subject, level)
+                break
     return out
 
 
@@ -649,8 +661,10 @@ class ChangeEvidenceService:
                verdict: Optional[str] = None, signal: str = "none") -> IngestReport:
         """One receipt in, one atomic batch out. pre_merge derives the verdict from
         the receipt (a caller-passed verdict is IGNORED — never caller-asserted);
-        post_merge requires the operator's verdict and derives the tag from the
-        signal. Zero matches ⇒ a report only (the store is never touched)."""
+        post_merge requires the caller's verdict as the nothing-decided FALLBACK
+        and otherwise derives verdict/tag from the receipt's decided execution
+        lines (``derive_post_merge``, capped at bounded-estimate). Zero matches ⇒
+        a report only (the store is never touched)."""
         statement = parse_receipt(envelope)
         predicate = statement["predicate"]           # shape vouched by parse_receipt
         provenance = predicate.get("provenance") or {}
@@ -662,7 +676,8 @@ class ChangeEvidenceService:
             if verdict not in _VERDICTS:
                 raise ValueError(
                     "post_merge ingest requires an explicit verdict ('pass'|'fail')")
-            derived_verdict, tag = verdict, derive_post_merge_tag(signal)
+            derived_verdict, tag = derive_post_merge(lines, verdict=verdict,
+                                                     signal=signal)
         else:
             raise ValueError(f"unknown phase {phase!r}")
         subjects, skipped_lines = touched_subjects(lines)
@@ -689,15 +704,19 @@ class ChangeEvidenceService:
                 outcome.repo, outcome.base_sha, outcome.head_sha, phase):
             return IngestReport(inserted=(), already_recorded=0, matched=0,
                                 skipped_lines=0, range_skipped=True)
-        anchored = self._reader.anchored_episodes()
-        polarity_by_id = {int(eid): pol for eid, _anchor, pol in anchored}
-        matches = match_anchors(
-            subjects, [(eid, anchor) for eid, anchor, _pol in anchored])
+        anchored = self._reader.anchored_episodes()   # v3: (id, repo, anchor, polarity)
+        polarity_by_id = {int(row[0]): row[3] for row in anchored}
+        matches = match_anchors(subjects, anchored, repo=outcome.repo)
         ts = int(self._now())
-        # Flow A rider: pre-merge only, and ONLY under a full version stamp (L7) — a
-        # post-merge assertion carries no per-subject machine evidence, and a
+        # Flow A rider: gated ONLY on the full version stamp (L7) — ANY phase; the
+        # canonical post_merge ingest is the rider's normal carrier in v3, and a
         # stamp-less receipt still lands its plain change_outcome rows unchanged.
-        stamp = version_stamp(provenance) if phase == "pre_merge" else None
+        # marker: restoring the old `phase == "pre_merge"` condition here is the
+        # named rider mutation: CT-9's rider test (tests/contract/
+        # test_multirepo_sync.py — riders land from the canonical post_merge
+        # ingest) and its unit twin (tests/domain/test_change_evidence.py::
+        # test_post_merge_stamped_ingest_writes_rider_rows) red.
+        stamp = version_stamp(provenance)
         ev_by_subject = subject_evidence(lines) if stamp is not None else {}
         tests_state = decided_tests_state(lines) if stamp is not None else None
         counts = {EK_OUTCOME_VERIFIED_HELPED: 0, EK_OUTCOME_VERIFIED_HURT: 0,
@@ -725,8 +744,8 @@ class ChangeEvidenceService:
                 counts[verify_kind] += 1
         # T2 rider: graph-propagated staleness — join the receipt's OPTIONAL propagation
         # neighbours with the SAME anchor rule, in the same atomic batch. Stamp-gated like
-        # the verified/verify rows (the payload carries the version stamp, so pre-merge
-        # only); an episode already carrying a POINT row this ingest gets no suspect row
+        # the verified/verify rows (the payload carries the version stamp — any phase);
+        # an episode already carrying a POINT row this ingest gets no suspect row
         # (point evidence dominates neighbourhood suspicion). Detection fuel only — the
         # worklist proposes re-verification, nothing here retires anything.
         stale_suspects = 0
@@ -738,8 +757,7 @@ class ChangeEvidenceService:
                 for subject, seed, drift in triples:
                     seed_drift_by_subject.setdefault(subject, (seed, drift))
                 neighbour_matches = match_anchors(
-                    list(seed_drift_by_subject),
-                    [(eid, anchor) for eid, anchor, _pol in anchored])
+                    list(seed_drift_by_subject), anchored, repo=outcome.repo)
                 for episode_id, (subject, _level) in neighbour_matches.items():
                     if episode_id in matches:
                         continue               # point evidence dominates suspicion

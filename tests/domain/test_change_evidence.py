@@ -1,8 +1,12 @@
 """hive.domain.change_evidence — the pure change-outcome feed: DSSE receipt parsing (D8:
 refuse the receipt, under-claim the line), verdict/tag derivation (server-derived, never
-caller-asserted — the INV-2 analog; the §6.2.5 canary rule is unconstructable to violate),
-the deterministic precision-first change→episode join, the canonical payload renderer
-(the idempotency key), and the ports-driven ChangeEvidenceService (fake-port, ms-fast).
+caller-asserted — the INV-2 analog; the §6.2.5 canary rule is unconstructable to violate;
+v3: ``derive_post_merge`` derives from decided execution lines, capped at bounded-estimate),
+the v3 STRUCTURED repo-scoped change→episode join (exact-path + symbol tier, repo-filtered),
+the canonical payload renderer (the idempotency key), and the ports-driven
+ChangeEvidenceService (fake-port, ms-fast). The verified/verify/suspect riders are gated
+ONLY on the full version stamp — ANY phase; the canonical post_merge ingest is their
+normal carrier.
 """
 from __future__ import annotations
 
@@ -18,9 +22,9 @@ from hive.domain import change_evidence as ce
 from hive.domain.change_evidence import (
     ChangeEvidenceService, ChangeOutcome, IngestReport, ReceiptRefused, SubjectEvidence,
     TouchedSubject, classify_verified, classify_verify, decided_tests_state,
-    derive_post_merge_tag, derive_pre_merge, match_anchors, parse_receipt,
-    propagation_subjects, render_payload, subject_evidence, touched_subjects,
-    version_stamp,
+    derive_post_merge, derive_post_merge_tag, derive_pre_merge, match_anchors,
+    parse_receipt, propagation_subjects, render_payload, subject_evidence,
+    touched_subjects, version_stamp,
 )
 from hive.domain.evidence_kinds import (
     EK_CHANGE_OUTCOME, EK_OUTCOME_VERIFIED_HELPED, EK_OUTCOME_VERIFIED_HURT,
@@ -70,7 +74,7 @@ def _subj_line(cls, subject, tag="machine-checked"):
 
 
 class FakeReader:
-    """Honors the evolved AnchoredEpisodeReader contract: (id, anchor, polarity)."""
+    """Honors the v3 AnchoredEpisodeReader contract: (id, repo, anchor, polarity)."""
 
     def __init__(self, rows):
         self.rows = list(rows)
@@ -101,10 +105,23 @@ class FakeAppender:
         return inserted, skipped
 
 
+def _reader_rows(reader_rows):
+    """(id, anchor) / (id, anchor, polarity) rows default to the legacy ``""`` repo
+    identity (joining legacy repo-less receipts, whose ``outcome.repo`` is ``""`` —
+    the exact-match rule holds on the empty identity too); 4-tuples pass through."""
+    rows = []
+    for r in reader_rows:
+        if len(r) == 2:
+            rows.append((r[0], "", r[1], "neutral"))
+        elif len(r) == 3:
+            rows.append((r[0], "", r[1], r[2]))
+        else:
+            rows.append(tuple(r))
+    return rows
+
+
 def _service(reader_rows=(), *, now=lambda: 12_345):
-    """reader_rows: (id, anchor) pairs default to neutral polarity; triples pass through."""
-    rows = [r if len(r) == 3 else (*r, "neutral") for r in reader_rows]
-    reader, appender = FakeReader(rows), FakeAppender()
+    reader, appender = FakeReader(_reader_rows(reader_rows)), FakeAppender()
     return ChangeEvidenceService(reader=reader, appender=appender, now=now), appender
 
 
@@ -243,6 +260,42 @@ def test_post_merge_tag_follows_the_canary_rule():
     assert derive_post_merge_tag("gut-feel") == "unverified-judgment"
 
 
+# ── derive_post_merge (v3): decided lines derive; else landed-line parity ──────
+
+
+def test_derive_post_merge_decided_fail_wins():
+    # a decided failing execution line derives the verdict — the caller's "pass"
+    # never overrides machine evidence.
+    assert derive_post_merge([_exec_line("typecheck", "passed"),
+                              _exec_line("tests", "failed")],
+                             verdict="pass", signal="canary") == \
+        ("fail", "bounded-estimate")
+
+
+def test_derive_post_merge_decided_pass_caps_at_bounded_estimate():
+    # post-merge execution lines never self-certify machine-checked — that claim
+    # still needs a randomized/canary SIGNAL (the §6.2.5 canary rule the carrier
+    # enforces structurally).
+    assert derive_post_merge([_exec_line("tests", "passed")],
+                             verdict="fail", signal="none") == \
+        ("pass", "bounded-estimate")
+    assert derive_post_merge([_exec_line("tests", "passed", tag="machine-checked")],
+                             verdict="pass", signal="canary") == \
+        ("pass", "bounded-estimate")
+
+
+def test_derive_post_merge_nothing_decided_falls_back_to_caller_and_signal():
+    # landed-line parity: not_run/errored is "tooling broke", never decided — the
+    # caller's verdict lands with the signal-derived tag.
+    lines = [_exec_line("tests", "not_run"), _exec_line("typecheck", "errored")]
+    assert derive_post_merge(lines, verdict="pass", signal="canary") == \
+        ("pass", "machine-checked")
+    assert derive_post_merge(lines, verdict="fail", signal="none") == \
+        ("fail", "unverified-judgment")
+    assert derive_post_merge("not-a-list", verdict="pass", signal="none") == \
+        ("pass", "unverified-judgment")
+
+
 # ── ChangeOutcome carrier: illegal states unconstructable (Law 2) ─────────────
 
 
@@ -323,69 +376,93 @@ def test_touched_subjects_malformed_lines_skipped_and_counted():
     assert skipped == 4
 
 
-# ── match_anchors: the §3.4 precision-first join truth-table ──────────────────
+# ── match_anchors: the v3 structured, repo-scoped join truth-table ─────────────
 
 SUB = TouchedSubject(path="matrix/x.py", symbol="LanguageConfig")
+JREPO = "widgets"
+
+
+def _rows(*pairs, repo=JREPO, polarity="neutral"):
+    """(id, anchor) pairs → v3 (id, repo, anchor, polarity) reader rows."""
+    return [(eid, repo, anchor, polarity) for eid, anchor in pairs]
 
 
 def test_join_path_plus_symbol_hit_is_symbol_level():
-    got = match_anchors([SUB], [(7, "matrix/x.py::LanguageConfig")])
+    got = match_anchors([SUB], _rows((7, "matrix/x.py::LanguageConfig")), repo=JREPO)
     assert got == {7: (SUB, "symbol")}
 
 
 def test_join_file_scoped_anchor_is_file_level():
-    assert match_anchors([SUB], [(7, "matrix/x.py")]) == {7: (SUB, "file")}
+    got = match_anchors([SUB], _rows((7, "matrix/x.py")), repo=JREPO)
+    assert got == {7: (SUB, "file")}
+
+
+def test_join_filters_rows_to_the_receipt_repo():
+    # THE named-mutation twin (CT-9 cross-repo join): an IDENTICAL anchor row
+    # recorded under ANOTHER repo never joins — one repo's change can never write
+    # evidence onto another repo's memory. Dropping the repo filter reds here.
+    foreign = _rows((7, "matrix/x.py::LanguageConfig"), repo="other-repo")
+    assert match_anchors([SUB], foreign, repo=JREPO) == {}
+    both = foreign + _rows((9, "matrix/x.py::LanguageConfig"))
+    assert match_anchors([SUB], both, repo=JREPO) == {9: (SUB, "symbol")}
 
 
 def test_join_same_symbol_in_a_different_file_never_matches():
-    assert match_anchors([SUB], [(7, "other/z.py::LanguageConfig")]) == {}
+    got = match_anchors([SUB], _rows((7, "other/z.py::LanguageConfig")), repo=JREPO)
+    assert got == {}
 
 
 def test_join_symbol_scoped_anchor_naming_a_different_symbol_never_matches():
-    assert match_anchors([SUB], [(7, "matrix/x.py::OtherSymbol")]) == {}
+    # the symbol tier is EXACT comparison — near-miss identifiers never match
+    # (precision-first under-claim, stricter than the free-text era).
+    got = match_anchors([SUB], _rows((7, "matrix/x.py::OtherSymbol"),
+                                     (8, "matrix/x.py::XLanguageConfigY"),
+                                     (9, "matrix/x.py::LanguageConfig2")), repo=JREPO)
+    assert got == {}
 
 
-def test_join_empty_or_unparseable_anchor_never_matches():
-    assert match_anchors([SUB], [(7, ""), (8, "   ::"), (9, "!!!")]) == {}
+def test_join_empty_or_degenerate_anchor_never_matches():
+    got = match_anchors([SUB], _rows((7, ""), (8, "   ::"), (9, "!!!")), repo=JREPO)
+    assert got == {}
 
 
-def test_join_path_needs_a_boundary_not_a_substring():
-    # 'amatrix/x.py' contains the path only mid-token — precision-first: no match.
-    assert match_anchors([SUB], [(7, "amatrix/x.pyx"), (8, "amatrix/x.py")]) == {}
+def test_join_path_is_exact_no_substring_or_prose_arms():
+    # structured anchors collapse the old free-text boundary-scan heuristics to
+    # exact comparison: substrings, suffix paths, and prose anchors all read as
+    # DIFFERENT paths — no match.
+    rows = _rows((7, "amatrix/x.pyx"), (8, "amatrix/x.py"), (9, "src/matrix/x.py"),
+                 (10, "the `matrix/x.py` loader: LanguageConfig defaults"))
+    assert match_anchors([SUB], rows, repo=JREPO) == {}
 
 
-def test_join_anchor_ending_with_slash_path_hits():
-    # the `A ends with /P` arm; the prefix residue makes it symbol-scoped, so the
-    # symbol must also appear for a match (precision-first under-claim otherwise).
-    assert match_anchors([SUB], [(7, "src/matrix/x.py")]) == {}
-    got = match_anchors([SUB], [(7, "LanguageConfig in src/matrix/x.py")])
-    assert got == {7: (SUB, "symbol")}
-
-
-def test_join_symbol_needs_identifier_boundaries():
-    # 'XLanguageConfigY' does not name the symbol; 'LanguageConfig2' neither.
-    assert match_anchors([SUB], [(7, "matrix/x.py::XLanguageConfigY"),
-                                 (8, "matrix/x.py::LanguageConfig2")]) == {}
-
-
-def test_join_prose_anchor_with_backticks_and_quotes_matches():
-    got = match_anchors([SUB], [(7, "the `matrix/x.py` loader: LanguageConfig defaults")])
-    assert got == {7: (SUB, "symbol")}
+def test_join_symbol_tier_wins_over_file_tier_per_episode():
+    rows = _rows((7, "matrix/x.py"), (7, "matrix/x.py::LanguageConfig"))
+    assert match_anchors([SUB], rows, repo=JREPO) == {7: (SUB, "symbol")}
 
 
 def test_join_records_first_subject_sorted_match_only():
     # one row per episode per receipt: the outcome is per-change, not per-line.
     a = TouchedSubject(path="matrix/a.py", symbol="Alpha")
     z = TouchedSubject(path="matrix/z.py", symbol="Zeta")
-    got = match_anchors([z, a], [(7, "matrix/z.py Zeta and matrix/a.py Alpha")])
+    rows = _rows((7, "matrix/z.py::Zeta"), (7, "matrix/a.py::Alpha"))
+    got = match_anchors([z, a], rows, repo=JREPO)
     assert got == {7: (a, "symbol")}                           # subject-sorted first
 
 
 def test_join_is_deterministic_and_order_stable():
     subs = [TouchedSubject(path="matrix/x.py", symbol="F")]
-    eps = [(3, "matrix/x.py"), (1, "matrix/x.py"), (2, "no match here")]
-    got = match_anchors(subs, eps)
+    rows = _rows((3, "matrix/x.py"), (1, "matrix/x.py"), (2, "no/match.py"))
+    got = match_anchors(subs, rows, repo=JREPO)
     assert list(got.keys()) == [3, 1]                          # episode input order kept
+
+
+def test_join_malformed_rows_under_claim_never_crash():
+    rows = [("seven", JREPO, "matrix/x.py", "neutral"),        # non-int id
+            (7, JREPO),                                        # short row
+            None,                                              # not a row at all
+            (8, JREPO, 42, "neutral"),                         # non-str anchor
+            (9, JREPO, "matrix/x.py", "neutral")]              # the survivor
+    assert match_anchors([SUB], rows, repo=JREPO) == {9: (SUB, "file")}
 
 
 # ── render_payload: THE canonical-JSON single owner (the idempotency key) ─────
@@ -471,14 +548,37 @@ def test_service_re_ingest_is_idempotent_through_the_appender_contract():
     assert second.matched == 1
 
 
-def test_service_post_merge_flags_thread_to_verdict_and_tag():
+def test_service_post_merge_decided_lines_derive_the_verdict():
+    # v3 §3.6: the canonical post_merge ingest derives verdict/tag from the
+    # receipt's decided execution lines — the caller's verdict never overrides.
     svc, appender = _service([(7, _ANCHOR)])
-    report = svc.ingest(_receipt(_LINES), phase="post_merge", verdict="fail",
+    lines = [_subj_line("existence", _ANCHOR), _subj_line("contract", _ANCHOR),
+             _exec_line("typecheck", "passed"), _exec_line("tests", "failed")]
+    report = svc.ingest(_receipt(lines), phase="post_merge", verdict="pass",
                         signal="canary")
     assert report.matched == 1
     body = json.loads(appender.batches[0][0][4])
     assert body["phase"] == "post_merge" and body["verdict"] == "fail"
-    assert body["tag"] == "machine-checked" and body["signal"] == "canary"
+    assert body["tag"] == "bounded-estimate" and body["signal"] == "canary"
+
+
+def test_service_post_merge_nothing_decided_lands_caller_verdict():
+    # landed-line parity: no decided execution lines ⇒ the caller's verdict with
+    # the signal-derived tag.
+    subject_only = [_subj_line("existence", _ANCHOR), _subj_line("contract", _ANCHOR)]
+    svc, appender = _service([(7, _ANCHOR)])
+    svc.ingest(_receipt(subject_only), phase="post_merge", verdict="pass",
+               signal="canary")
+    body = json.loads(appender.batches[0][0][4])
+    assert body["verdict"] == "pass" and body["tag"] == "machine-checked"
+
+
+def test_service_post_merge_unsignaled_fallback_is_unverified_judgment():
+    subject_only = [_subj_line("existence", _ANCHOR)]
+    svc, appender = _service([(7, _ANCHOR)])
+    svc.ingest(_receipt(subject_only), phase="post_merge", verdict="pass",
+               signal="none")
+    assert json.loads(appender.batches[0][0][4])["tag"] == "unverified-judgment"
 
 
 def test_service_post_merge_without_a_verdict_is_an_internal_error_not_a_refusal():
@@ -486,12 +586,6 @@ def test_service_post_merge_without_a_verdict_is_an_internal_error_not_a_refusal
     with pytest.raises(ValueError, match="verdict") as exc:
         svc.ingest(_receipt(_LINES), phase="post_merge")
     assert not isinstance(exc.value, ReceiptRefused)           # caller bug, not receipt fault
-
-
-def test_service_post_merge_unsignaled_is_unverified_judgment():
-    svc, appender = _service([(7, _ANCHOR)])
-    svc.ingest(_receipt(_LINES), phase="post_merge", verdict="pass", signal="none")
-    assert json.loads(appender.batches[0][0][4])["tag"] == "unverified-judgment"
 
 
 def test_service_pre_merge_verdict_arg_never_overrides_the_derivation():
@@ -723,10 +817,26 @@ def test_neutral_polarity_abstains_from_verified_but_still_verifies():
     assert report.verified_helped == 0 and report.verify_stale == 1
 
 
-def test_post_merge_ingest_writes_no_verified_or_verify_rows():
-    # no per-subject machine evidence rides a post-merge assertion (v1 ruling)
+def test_post_merge_stamped_ingest_writes_rider_rows():
+    # THE named-mutation twin (CT-9 rider): the verified/verify riders are gated
+    # ONLY on the full version stamp — ANY phase; the canonical post_merge ingest
+    # is their normal carrier in v3. Restoring the old `phase == "pre_merge"`
+    # rider condition reds here.
     svc, appender = _service([(7, _ANCHOR, "dont")])
     report = svc.ingest(_stamped_receipt(_verified_lines()), phase="post_merge",
+                        verdict="fail", signal="canary")
+    kinds = [row[1] for row in appender.batches[0]]
+    assert kinds == [EK_CHANGE_OUTCOME, EK_OUTCOME_VERIFIED_HELPED, EK_VERIFY_STALE]
+    assert (report.verified_helped, report.verify_stale) == (1, 1)
+    # the decided failing tests line derived the outcome verdict
+    assert json.loads(appender.batches[0][0][4])["verdict"] == "fail"
+
+
+def test_stampless_post_merge_ingest_writes_no_riders():
+    # the gate is the STAMP, not the phase: a stamp-less post_merge receipt still
+    # lands its plain change_outcome row and nothing else.
+    svc, appender = _service([(7, _ANCHOR, "dont")])
+    report = svc.ingest(_receipt(_verified_lines()), phase="post_merge",
                         verdict="fail", signal="canary")
     assert [row[1] for row in appender.batches[0]] == [EK_CHANGE_OUTCOME]
     assert (report.verified_helped, report.verified_hurt,
@@ -919,12 +1029,15 @@ def test_suspect_rows_require_full_version_stamp():
     assert report.stale_suspects == 0
 
 
-def test_post_merge_ingest_writes_no_suspect_rows():
+def test_post_merge_stamped_ingest_writes_suspect_rows():
+    # the suspect rider follows the same stamp-only gate — the canonical
+    # post_merge ingest carries it too (the phase gate is gone).
     svc, appender = _service([(7, _NEIGHBOR_ANCHOR, "neutral"), (9, _ANCHOR, "dont")])
     report = svc.ingest(_prop_receipt(_verified_lines(), [_prop_entry()]),
                         phase="post_merge", verdict="fail", signal="canary")
-    assert all(row[1] != EK_STALE_SUSPECT for row in appender.batches[0])
-    assert report.stale_suspects == 0
+    suspect_rows = [row for row in appender.batches[0] if row[1] == EK_STALE_SUSPECT]
+    assert len(suspect_rows) == 1 and suspect_rows[0][0] == 7
+    assert report.stale_suspects == 1
 
 
 def test_suspect_payload_is_ids_enums_and_stamps_only_and_byte_stable():
@@ -1022,15 +1135,19 @@ def test_legacy_stamped_receipt_rider_payloads_carry_no_ref_key():
         "schema", "matched", "exists_after", "drift", "stamp"}
 
 
-# ═══ U1: the repo identity key + the range-ledger dedupe seam ════════════════════
+# ═══ U1: the repo identity key + the repo-scoped join + the range ledger ═════════
 
-_REPO = "https://github.com/acme/widgets"
+_REPO = "widgets"
 
 
 def _repo_receipt(lines, repo=_REPO):
     prov = {"base_sha": BASE, "head_sha": HEAD, "hive_census_version": "0.1.0",
             "repo": repo}
     return _receipt(lines, provenance=prov)
+
+
+def _repo_rows(*pairs, polarity="neutral"):
+    return [(eid, _REPO, anchor, polarity) for eid, anchor in pairs]
 
 
 class FakeRangeLedger:
@@ -1053,15 +1170,14 @@ class FakeRangeLedger:
 
 
 def _ranged_service(reader_rows=(), *, known=(), now=lambda: 12_345):
-    rows = [r if len(r) == 3 else (*r, "neutral") for r in reader_rows]
-    reader, appender = FakeReader(rows), FakeAppender()
+    reader, appender = FakeReader(_reader_rows(reader_rows)), FakeAppender()
     ranges = FakeRangeLedger(known)
     svc = ChangeEvidenceService(reader=reader, appender=appender, now=now,
                                 ranges=ranges)
     return svc, appender, ranges
 
 
-# ── the repo provenance key: parsed like ref, rides only when present ──────────
+# ── the repo provenance key: parsed like ref, scopes the join, rides the payload ─
 
 
 def test_change_outcome_repo_defaults_empty_and_carries():
@@ -1069,12 +1185,22 @@ def test_change_outcome_repo_defaults_empty_and_carries():
     assert _outcome(repo=_REPO).repo == _REPO
 
 
+def test_service_cross_repo_anchor_rows_never_receive_evidence():
+    # the ingest-level twin of the join filter: the SAME anchor recorded under
+    # another repo gets no row from this repo's receipt.
+    svc, appender = _service(_repo_rows((7, _ANCHOR))
+                             + [(9, "other-repo", _ANCHOR, "neutral")])
+    report = svc.ingest(_repo_receipt(_LINES))
+    assert report.matched == 1
+    assert [row[0] for row in appender.batches[0]] == [7]
+
+
 def test_ingest_threads_repo_into_the_change_outcome_payload_only():
     # repo rides the change_outcome payload; the verified/verify riders keep their
     # exact key sets (ref is their only conditional key).
     prov = json.loads(json.dumps(_STAMPED_PROV))
     prov["repo"] = _REPO
-    svc, appender = _service([(7, _ANCHOR, "dont")])
+    svc, appender = _service(_repo_rows((7, _ANCHOR), polarity="dont"))
     svc.ingest(_receipt(_verified_lines(), provenance=prov))
     by_kind = {row[1]: json.loads(row[4]) for row in appender.batches[0]}
     assert by_kind[EK_CHANGE_OUTCOME]["repo"] == _REPO
@@ -1083,7 +1209,8 @@ def test_ingest_threads_repo_into_the_change_outcome_payload_only():
 
 
 def test_ingest_non_string_repo_is_ignored():
-    # D8 at the boundary: a non-string provenance repo coerces to "" ⇒ no key rides.
+    # D8 at the boundary: a non-string provenance repo coerces to "" ⇒ no key
+    # rides — and the join scopes to the legacy "" identity.
     svc, appender = _service([(7, _ANCHOR)])
     svc.ingest(_repo_receipt(_LINES, repo=7))
     assert "repo" not in json.loads(appender.batches[0][0][4])
@@ -1128,7 +1255,7 @@ def test_ingest_skips_an_already_ingested_range_with_zero_rows():
 
 
 def test_ingest_records_the_range_after_a_successful_append():
-    svc, appender, ranges = _ranged_service([(7, _ANCHOR)])
+    svc, appender, ranges = _ranged_service(_repo_rows((7, _ANCHOR)))
     report = svc.ingest(_repo_receipt(_LINES))
     assert report.range_skipped is False and len(report.inserted) == 1
     assert ranges.recorded == [(_REPO, BASE, HEAD, "pre_merge", 12_345)]
@@ -1141,7 +1268,7 @@ def test_ingest_records_the_range_after_a_successful_append():
 def test_ingest_zero_match_never_records_the_range():
     # no batch appended ⇒ no range recorded: a re-ingest AFTER an anchored memory
     # lands still gets its rows (the ledger marks ingested WORK, not seen receipts).
-    svc, appender, ranges = _ranged_service([(8, "unrelated/other.py::Thing")])
+    svc, appender, ranges = _ranged_service(_repo_rows((8, "unrelated/other.py::Thing")))
     report = svc.ingest(_repo_receipt(_LINES))
     assert report.matched == 0 and report.range_skipped is False
     assert appender.batches == [] and ranges.recorded == []
@@ -1150,7 +1277,7 @@ def test_ingest_zero_match_never_records_the_range():
 def test_ingest_phase_rides_the_range_key_so_ff_merge_lands_twice():
     # an FF merge yields the same (base, head) pre- and post-merge — phase in the key
     # lets both receipts land.
-    svc, _appender, ranges = _ranged_service([(7, _ANCHOR)])
+    svc, _appender, ranges = _ranged_service(_repo_rows((7, _ANCHOR)))
     svc.ingest(_repo_receipt(_LINES))
     report = svc.ingest(_repo_receipt(_LINES), phase="post_merge", verdict="pass")
     assert report.range_skipped is False and len(report.inserted) == 1
@@ -1170,9 +1297,9 @@ def test_ingest_without_a_ledger_is_byte_identical_to_today():
     # ranges=None (every legacy construction): the ledger leg is absent — batch bytes
     # and the report match a ledger-wired first ingest exactly, and a re-ingest is
     # absorbed by content-keyed dedupe alone (never range-skipped).
-    plain_svc, plain_appender = _service([(7, _ANCHOR)])
+    plain_svc, plain_appender = _service(_repo_rows((7, _ANCHOR)))
     plain = plain_svc.ingest(_repo_receipt(_LINES))
-    ranged_svc, ranged_appender, _ranges = _ranged_service([(7, _ANCHOR)])
+    ranged_svc, ranged_appender, _ranges = _ranged_service(_repo_rows((7, _ANCHOR)))
     ranged = ranged_svc.ingest(_repo_receipt(_LINES))
     assert plain_appender.batches == ranged_appender.batches   # identical payload bytes
     assert plain == ranged

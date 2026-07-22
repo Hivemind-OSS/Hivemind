@@ -9,8 +9,7 @@ from typing import Optional, Sequence
 import numpy as np
 
 from hive.domain.kinds import DEFAULT_KIND
-from hive.domain.models import Episode, content_hash
-from hive.domain.provenance import DEFAULT_PROVENANCE
+from hive.domain.models import AnchorRef, Episode, content_hash
 from hive.domain.secret_scan import REFUSE, ScanVerdict
 from hive.domain.secret_scan import scan as _scan
 
@@ -162,25 +161,32 @@ def make_episode(episode_id: int, text: str, weight: float = 1.0,
                  *, status: str = "approved", trust: Optional[str] = None,
                  last_active_ts: int = 0, ts: int = 0,
                  value: Optional[np.ndarray] = None,
-                 kind: str = DEFAULT_KIND, anchor: str = "",
-                 provenance: str = DEFAULT_PROVENANCE) -> Episode:
-    """A valid (self-asserting) Episode for resolve-seam tests — content_hash binds
-    text. An approved episode defaults to trust='established' (mirroring the real
-    store, where the human-vouched flip stamps established); pass ``trust`` to model
-    provisional/quarantined rows. ``value`` defaults to None (margin/surface tests
-    read only text + weight + labels) but can be supplied — the real store's
+                 kind: str = DEFAULT_KIND, polarity: str = "neutral",
+                 repos: Sequence[str] = (), anchors: Sequence = (),
+                 meta: str = "") -> Episode:
+    """A valid (self-asserting) v3 Episode for resolve-seam tests — content_hash
+    binds text. An approved episode defaults to trust='provisional' (mirroring the
+    real store, where a write lands provisional; there is no approver concept in
+    v3); pass ``trust`` to model established/quarantined rows. ``anchors`` accepts
+    ``AnchorRef``s or ``(repo, anchor)`` pairs; ``repos`` is unioned with the
+    anchor repos and canonicalized (sorted, deduplicated) exactly as the real
+    store's projection does. ``value`` defaults to None (margin/surface tests read
+    only text + weight + labels) but can be supplied — the real store's
     get_episode always populates it."""
     approved = status == "approved"
     if trust is None:
-        trust = "established" if approved else "quarantined"
+        trust = "provisional" if approved else "quarantined"
+    anchor_refs = tuple(
+        a if isinstance(a, AnchorRef) else AnchorRef(repo=a[0], anchor=a[1])
+        for a in anchors)
+    all_repos = tuple(sorted(set(repos) | {a.repo for a in anchor_refs}))
     return Episode(
         id=int(episode_id), tenant_id="default", text=text, weight=float(weight),
-        ts=int(ts), tags="", content_hash=content_hash(text),
-        status=status, proposed_by="tester",
-        approved_by="approver" if approved else None,
-        approved_ts=0 if approved else None, version=0,
+        ts=int(ts), content_hash=content_hash(text),
+        status=status, proposed_by="tester", version=0,
         trust=trust, last_active_ts=int(last_active_ts),
-        kind=kind, anchor=anchor, provenance=provenance,
+        kind=kind, polarity=polarity, meta=meta,
+        repos=all_repos, anchors=anchor_refs,
         value=None if value is None else np.asarray(value, dtype=np.float32),
     )
 

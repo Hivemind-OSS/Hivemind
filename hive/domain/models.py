@@ -14,12 +14,41 @@ import numpy as np
 
 from hive.domain.kinds import DEFAULT_KIND, KIND_NAMES
 from hive.domain.lifecycle import ESTABLISHED, PROVISIONAL, QUARANTINED, TRUST_STATES
-from hive.domain.provenance import DEFAULT_PROVENANCE, PROVENANCE_NAMES
 
 
 def content_hash(text: str) -> str:
     """sha256(text) hex — the dedup/PK key that binds a memory to its text."""
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
+# ── repo scope / code binding (schema v3) ────────────────────────────────────
+
+@dataclass(frozen=True, slots=True)
+class AnchorRef:
+    """One ``(repo, anchor)`` code binding of a memory — a row of the v3
+    ``episode_anchors`` table projected into the carrier layer. ``repo`` is a
+    registered repo NAME (never a URL/path); ``anchor`` is the code location the
+    memory binds to (``path`` or ``path::Symbol``); ``fp_meta`` carries the
+    per-anchor fingerprint tokens (serialized, carried-not-interpreted — the
+    meta-envelope law).
+
+    Both ``repo`` and ``anchor`` are required non-empty: a repo-scope-only
+    membership is NOT an AnchorRef — it is carried by ``Episode.repos`` alone
+    (the store encodes it as an ``anchor=''`` row, which the carrier projection
+    folds into ``repos`` rather than surfacing as a degenerate anchor)."""
+    repo: str
+    anchor: str
+    fp_meta: str = ""
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.repo, str) or not self.repo:
+            raise ValueError("AnchorRef.repo must be a non-empty repo name")
+        if not isinstance(self.anchor, str) or not self.anchor:
+            raise ValueError(
+                "AnchorRef.anchor must be non-empty (scope-only membership "
+                "rides Episode.repos, never a degenerate anchor)")
+        if not isinstance(self.fp_meta, str):
+            raise ValueError("AnchorRef.fp_meta must be a str (serialized carrier)")
 
 
 # ── recall-side carriers ─────────────────────────────────────────────────────
@@ -57,9 +86,11 @@ class RecallHit:
     content and order coexisting versions (immutable rows + dedup mean an "update"
     always coexists as a second row). ``polarity`` (do|dont|neutral) is a third
     carried-not-interpreted label so a recalled prohibition is never pattern-matched
-    as a ``do``. ``provenance`` carries the memory's ORIGIN (provenance.py), orthogonal
-    to trust. Defaults are FAIL-SAFE: a construction site that forgets to wire them
-    under-claims (quarantined/epoch-0/neutral/agent_reasoned), never over-claims."""
+    as a ``do``. ``repos`` / ``anchors`` carry the memory's repo partition and code
+    bindings (v3 §3.4): ``repos == ()`` reads as a GENERAL memory, ``anchors == ()``
+    as general / scope-only. Defaults are FAIL-SAFE: a construction site that
+    forgets to wire them under-claims (quarantined/epoch-0/neutral/general), never
+    over-claims."""
     episode_id: int
     text: str
     sim: float
@@ -67,8 +98,8 @@ class RecallHit:
     ts: int = 0
     polarity: str = "neutral"
     kind: str = DEFAULT_KIND
-    anchor: str = ""
-    provenance: str = DEFAULT_PROVENANCE
+    repos: tuple[str, ...] = ()        # the repo partition; () = general
+    anchors: tuple[AnchorRef, ...] = ()  # code bindings; () = general / scope-only
     meta: str = ""                     # serialized opaque map (meta.py); carried, never parsed
 
 
@@ -119,35 +150,36 @@ class RecallResult:
 class Episode:
     """A captured insight. Self-asserting: an inconsistent Episode is
     UNCONSTRUCTABLE — content_hash binds text, value is unit-norm float32[d] (or
-    None while pending), and the trust/status/approver invariants hold.
+    None while pending), and the trust/status/scope invariants hold.
 
-    v2 (trust lifecycle): ``status`` now reads as *materialized* (scanned +
-    embedded + blob complete); ``trust`` carries trust. The old biconditional
-    ``approved ⇔ approved_by`` relaxes to implications so the autonomous-capture
-    shape (approved + no approver + quarantined) is constructable while a lying
-    row still is not."""
+    v3 (repo-partitioned memory): ``status`` reads as *materialized* (scanned +
+    embedded + blob complete); ``trust`` carries trust — there is no approver
+    concept (the human vouch is deleted; ``established`` means outcome-verified
+    on the canonical line). ``repos``/``anchors`` carry the per-memory repo
+    partition and code bindings (the v3 ``episode_anchors`` projection):
+    ``repos`` is the FULL scope — the sorted, deduplicated union of every
+    anchor's repo and any declared scope-only membership — and every anchor's
+    repo must appear in it (an episode claiming an anchor outside its own scope
+    is unconstructable)."""
     id: int
     tenant_id: str
     text: str
     weight: float
     ts: int
-    tags: str
     content_hash: str
     status: str                        # 'pending' | 'approved'  (materialization)
     proposed_by: str
     value: Optional["np.ndarray"] = None
-    approved_by: Optional[str] = None
-    approved_ts: Optional[int] = None
     version: int = 0
-    trust: str = QUARANTINED           # fail-safe default: unserved until vouched/promoted
+    trust: str = QUARANTINED           # fail-safe default: unserved until promoted
     superseded_by: Optional[int] = None   # latest applied successor (None = live)
     last_active_ts: int = 0            # liveness clock: capture/write, promotion, exposure
     polarity: str = "neutral"         # do|dont|neutral — carried-not-interpreted consumer label
     kind: str = DEFAULT_KIND          # category label (kinds.py); carried-not-interpreted, never embedded
-    anchor: str = ""                  # the WHERE: file/module/symbol; carried, never embedded
-    provenance: str = DEFAULT_PROVENANCE  # the ORIGIN (provenance.py); orthogonal to trust, never embedded
     meta: str = ""                    # serialized opaque map — grammar lives at the boundary
                                       # (meta.normalize_meta); carried-not-interpreted, never embedded
+    repos: tuple[str, ...] = ()       # sorted unique repo scope; () = general (fail-safe default)
+    anchors: tuple[AnchorRef, ...] = ()  # code bindings; every anchor repo ∈ repos
 
     def __post_init__(self) -> None:
         if self.content_hash != content_hash(self.text):
@@ -158,14 +190,10 @@ class Episode:
             raise ValueError(f"bad polarity {self.polarity!r}")
         if self.kind not in KIND_NAMES:
             raise ValueError(f"bad kind {self.kind!r}")
-        if self.provenance not in PROVENANCE_NAMES:
-            raise ValueError(f"bad provenance {self.provenance!r}")
         if self.status not in ("pending", "approved"):
             raise ValueError(f"bad status {self.status!r}")
         if self.trust not in TRUST_STATES:
             raise ValueError(f"bad trust {self.trust!r}")
-        if self.approved_by is not None and self.status != "approved":
-            raise ValueError("invariant: approved_by set requires status='approved'")
         if self.trust in (ESTABLISHED, PROVISIONAL) and self.status != "approved":
             raise ValueError(
                 "invariant: a servable-trust episode must be status='approved'")
@@ -173,6 +201,20 @@ class Episode:
             raise ValueError(
                 "invariant: superseded_by requires trust='deprecated' "
                 "(a live row cannot point at a successor)")
+        # v3 scope invariants: repos is the sorted unique union of anchor repos and
+        # declared scope — a scope that under- or over-states its anchors, or an
+        # unsorted/duplicated encoding, is unconstructable (one canonical form).
+        if not all(isinstance(r, str) and r for r in self.repos):
+            raise ValueError("repos entries must be non-empty repo names")
+        if list(self.repos) != sorted(set(self.repos)):
+            raise ValueError("repos must be sorted and duplicate-free (canonical form)")
+        if not all(isinstance(a, AnchorRef) for a in self.anchors):
+            raise ValueError("anchors entries must be AnchorRef carriers")
+        anchor_repos = {a.repo for a in self.anchors}
+        if not anchor_repos.issubset(set(self.repos)):
+            raise ValueError(
+                "invariant: repos == sorted(anchor repos ∪ declared scope) — "
+                "an anchor's repo must appear in the episode's repo scope")
         if self.value is not None:
             v = self.value
             if getattr(v, "dtype", None) != np.float32:

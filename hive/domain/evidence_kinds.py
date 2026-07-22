@@ -5,13 +5,13 @@ os|git|time anywhere in hive/domain/; pure constants are fine). Every ``evidence
 write/read site PROJECTS from here — the lifecycle stamps promotions, the store stamps
 supersede/prune/ttl_expired and filters its evidence reads, the MCP outcome verb stamps
 helped/hurt, the censusctl change feed stamps change_outcome — so the written and queried
-copies cannot drift (mirrors hive.domain.provenance).
+copies cannot drift (mirrors hive.domain.kinds).
 
 DISTINCT from ``hive.domain.kinds``: that is the MEMORY-kind taxonomy (episodes.kind,
-DDL-CHECK-enforced, projected into the served fleet contract and contract-guard WATCHED).
-This registry names the append-only ``evidence_events.kind`` vocabulary, which has NO DDL
-CHECK — these exact strings ARE the stored schema, so existing ledgers keep matching only
-while the values stay byte-identical (pinned by tests/domain/test_evidence_kinds.py).
+DDL-CHECK-enforced, projected into the served fleet contract). This registry names the
+append-only ``evidence_events.kind`` vocabulary, which has NO DDL CHECK — these exact
+strings ARE the stored schema, so existing ledgers keep matching only while the values
+stay byte-identical (pinned by tests/domain/test_evidence_kinds.py).
 """
 from __future__ import annotations
 
