@@ -3,15 +3,15 @@
 One stdlib file that ORCHESTRATES the landed substrate and reimplements none of it:
 lifecycle rides `docker compose`, provisioning shells to the in-container
 `hive.tools.authctl` (token crypto + the access_tokens schema stay single-sourced in
-the adapter), the tunnel is the compose `tunnel` profile. Exposed as `hive` via
-[project.scripts]; `python -m hive.tools.cli` works uninstalled. Imports no brain
-runtime — it runs on a host with nothing but the repo + Docker.
+the adapter), the repo registry shells to the in-container `hive.tools.repoctl` (slug
+validation + the repos schema stay single-sourced in the store), the tunnel is the
+compose `tunnel` profile. Exposed as `hive` via [project.scripts]; `python -m
+hive.tools.cli` works uninstalled. Imports no brain runtime — it runs on a host with
+nothing but the repo + Docker.
 
 Boundary (M11/M12): this CLI wires lifecycle + transport ONLY. `hive connect` prints
-the MCP registration line; per-repo onboarding is served over MCP (the usage contract
-reaches every agent via the always-on `initialize` instructions — the CLI installs nothing,
-and the optional versioned rules block an agent MAY install is the agent's own act over MCP,
-never the CLI's) and never happens here.
+the MCP registration line and nothing else — the usage contract reaches every agent
+over MCP itself (the always-on `initialize` instructions), never through this CLI.
 
 Injection seams (`run` / `out` / `env` / `ask`) keep every verb unit-testable without
 Docker — authctl's `connect_fn`/`out` idiom. `run` receives the FULL argv (program
@@ -36,6 +36,7 @@ IMAGE = "hive:vmin"               # the built image tag (mirrors compose.yaml `i
 HTTP_PORT = 8765                  # the daemon's loopback HTTP port (mirrors compose.yaml)
 AUTHCTL = ("python", "-m", "hive.tools.authctl")    # the in-container admin tool
 CENSUSCTL = ("python", "-m", "hive.tools.censusctl")  # the in-container ingest tool
+REPOCTL = ("python", "-m", "hive.tools.repoctl")    # the in-container repo-registry tool
 TUNNEL_PROFILE = "tunnel"         # mirrors the compose `profiles: ["tunnel"]` gate
 
 # sysexits.h — mirror authctl/entrypoint (an exit code cannot lie like a log can)
@@ -462,21 +463,61 @@ def _tokens(args, *, run: Run, out: TextIO, env: Mapping[str, str], ask) -> int:
     return EX_OK
 
 
-def _connect(args, *, run: Run, out: TextIO, env: Mapping[str, str], ask) -> int:
-    """Print the teammate's transport-registration one-liner. Transport ONLY:
-    per-repo onboarding is agent-driven over MCP (the rules block in hive_health).
+def _exec_repoctl(run: Run, env: Mapping[str, str], *args: str) -> subprocess.CompletedProcess:
+    """All repo-registry verbs ride the in-container repoctl — slug validation + the
+    repos schema stay single-sourced in the store (the authctl shell-through pattern).
+    Every arg is its own argv element, never a joined shell string (the BUG-020
+    quoting discipline: an operator-supplied name/url can carry no shell metacharacter
+    into a child). `-T` (no TTY) keeps the child's stdout a clean pipe."""
+    return run(_compose("exec", "-T", SERVICE, *REPOCTL, *args), env)
 
-    Identity is per-agent-SESSION — the server-minted ``Mcp-Session-Id`` any conforming client
-    echoes, or an explicit ``X-Hive-Agent-Id`` for readable provenance — so ``connect`` bakes no
-    static id. The remote (tunnel) door is token-gated; the bearer only AUTHENTICATES, it is
-    never the identity. The local (loopback) door is tokenless."""
+
+def _repo(args, *, run: Run, out: TextIO, env: Mapping[str, str], ask) -> int:
+    """`hive repo add|remove` — registry mutations shelled to the in-container repoctl.
+    Rows are OPERATIONAL data in the store (the authctl-seat pattern, D2): the sync
+    daemon re-reads the registry every tick, so neither verb needs a restart. The row
+    stores the NAME of a token env var, never a secret byte."""
+    if args.repo_cmd == "add":
+        child_args = ["add", args.url]
+        if args.name:
+            child_args += ["--name", args.name]
+        if args.branch:
+            child_args += ["--branch", args.branch]
+        if args.token_env:
+            child_args += ["--token-env", args.token_env]
+        child = _exec_repoctl(run, env, *child_args)
+    else:                                              # remove (argparse-required choice)
+        child = _exec_repoctl(run, env, "remove", args.name)
+    sys.stderr.write(child.stderr or "")               # repoctl's human confirmation / refusal
+    return child.returncode if child.returncode != 0 else EX_OK
+
+
+def _repos(args, *, run: Run, out: TextIO, env: Mapping[str, str], ask) -> int:
+    child = _exec_repoctl(run, env, "list")
+    if child.returncode != 0:
+        sys.stderr.write(child.stderr or "")
+        return child.returncode
+    out.write(child.stdout or "")                      # name url branch token-env, verbatim
+    return EX_OK
+
+
+def _connect(args, *, run: Run, out: TextIO, env: Mapping[str, str], ask) -> int:
+    """Print the teammate's MCP registration one-liner — and nothing else. Transport
+    ONLY: agents are thin, repo-agnostic MCP clients; the usage contract reaches them
+    over MCP itself at connect (the always-on ``initialize`` instructions), and census
+    evidence is computed server-side by the sync daemon off the repo registry
+    (``hive repo add``) — nothing to install or fetch per device.
+
+    Identity is per-agent-SESSION — the server-minted ``Mcp-Session-Id`` any conforming
+    client echoes (or an explicit ``X-Hive-Agent-Id`` header) — so the line bakes no
+    static id. The remote (tunnel) door is token-gated; the bearer only AUTHENTICATES,
+    it is never the identity. The local (loopback) door is tokenless."""
     domain = (env.get("NGROK_DOMAIN") or "").strip()
     if domain:
-        # remote: the token-required tunnel door. The Bearer AUTHENTICATES; identity is still
-        # the agent's per-session Mcp-Session-Id (or an explicit X-Hive-Agent-Id), same as local.
-        # This line is copy-pasted by a teammate on an unknown OS/shell and `claude mcp add` bakes
-        # the header at add-time, so print a literal placeholder — never shell-expansion syntax
-        # (bash ${VAR} / PowerShell $env:VAR / cmd %VAR% would each be wrong on the other two).
+        # remote: the token-required tunnel door. This line is copy-pasted by a teammate on
+        # an unknown OS/shell and `claude mcp add` bakes the header at add-time, so print a
+        # literal placeholder — never shell-expansion syntax (bash ${VAR} / PowerShell
+        # $env:VAR / cmd %VAR% would each be wrong on the other two).
         print(f'claude mcp add --transport http hive https://{domain}/mcp '
               '--header "Authorization: Bearer <seat-token>"', file=out)
         print(f"hive: replace <seat-token> with the seat's token; {_SEAT_HINT}", file=sys.stderr)
@@ -488,16 +529,6 @@ def _connect(args, *, run: Run, out: TextIO, env: Mapping[str, str], ask) -> int
         print("hive: NGROK_DOMAIN not set — printed the tokenless local-loopback line "
               "(`hive up --tunnel` + NGROK_DOMAIN gives the token-gated public one).",
               file=sys.stderr)
-        print("hive: identity is per-agent-session (the server-minted Mcp-Session-Id a "
-              "conforming client echoes). For a readable/controlled id set a per-session "
-              "X-Hive-Agent-Id — Claude Code's headersHelper (fresh UUID per session), a "
-              "harness/CI header per agent, ${env:VAR} on Cursor/Windsurf/Cline, ${input:..} "
-              "on VS Code, or env_http_headers on Codex.", file=sys.stderr)
-    # edge-tools breadcrumb (transport-only boundary preserved — this is a cross-reference, not a
-    # merged verb): the teammate also installs the edge CLI; census evidence is server-side (sync).
-    print("hive: edge tools — install `hive-edge` (see HIVE-ADMIN.md §8); census evidence is "
-          "computed server-side once sync is configured (HIVE_SYNC__REPO_URL, HIVE-ADMIN.md §4) "
-          "— nothing to wire per device.", file=sys.stderr)
     return EX_OK
 
 
@@ -573,6 +604,8 @@ _HANDLERS: dict[str, Callable[..., int]] = {
     "token": _token,
     "revoke": _revoke,
     "tokens": _tokens,
+    "repo": _repo,
+    "repos": _repos,
     "connect": _connect,
     "ingest": _ingest,
     "ui": _ui,
@@ -635,6 +668,23 @@ def main(argv: Optional[list[str]] = None, *, run: Optional[Run] = None,
     p_revoke = sub.add_parser("revoke", help="revoke a seat's token (next request → 401)")
     p_revoke.add_argument("seat", help="the seat label to revoke")
     sub.add_parser("tokens", help="list provisioned seat labels (never the tokens)")
+    p_repo = sub.add_parser(
+        "repo", help="manage the synced-repo registry (add/remove; list with `hive repos`)")
+    repo_sub = p_repo.add_subparsers(dest="repo_cmd", required=True)
+    p_radd = repo_sub.add_parser(
+        "add", help="register a repo for server-side census sync (picked up next tick)")
+    p_radd.add_argument("url", help="the git remote URL (https for token auth)")
+    p_radd.add_argument("--name", default=None,
+                        help="registry slug [a-z0-9._-]+ (default: the URL basename)")
+    p_radd.add_argument("--branch", default=None,
+                        help="canonical branch (default: the origin default branch)")
+    p_radd.add_argument("--token-env", dest="token_env", default=None,
+                        help="NAME of the env var holding this repo's git token — the name "
+                             "is stored, never the token (default: HIVE_SYNC__TOKEN)")
+    p_rremove = repo_sub.add_parser(
+        "remove", help="deregister a repo (stops feeding; the mirror is pruned next tick)")
+    p_rremove.add_argument("name", help="the registry slug to remove")
+    sub.add_parser("repos", help="list registered repos (names + urls; never a secret)")
     sub.add_parser("connect", help="print the teammate's `claude mcp add` line (transport only)")
     p_ui = sub.add_parser(
         "ui", help="serve the loopback operator dashboard and open it in your browser")

@@ -39,10 +39,12 @@ _MEMORY_DB = ":memory:"
 _DAY_S = 86_400
 
 # The tables migrate() asserts are present — a missing one is a botched migration (EX_SOFTWARE),
-# caught at boot rather than at first recall.
+# caught at boot rather than at first recall. Includes the v3 repo-partition set: the anchor
+# bindings, the durable repo registry, the materialized drift cache, and the branch-demand list.
 _REQUIRED_TABLES = frozenset({
     "blobs", "episodes", "exposure", "meta",
     "recall_misses", "evidence_events", "conflict_flags", "ingested_ranges",
+    "episode_anchors", "repos", "anchor_drift", "ref_requests",
 })
 
 
@@ -132,6 +134,11 @@ class Container:
         return self.embedder
 
     def make_server(self) -> HiveMCPServer:
+        # The v3 store IS the server's retirement-gate evidence feed (evidence_rows_for +
+        # insert_audit), scope reader (repo_registry + scan_servable_labeled), and drift
+        # source (drift_get for attach_drift) — one handle wires all three. No AGI sentinel
+        # exists, and no global canonical_ref is passed: per-repo canonical refs live in the
+        # repo registry, so the last_verified rider keeps its unscoped default read.
         db_path = "" if self.cfg.db_path == _MEMORY_DB else self.cfg.db_path
         return HiveMCPServer(
             admission=self.admission, recall=self.recall, store=self.store,
@@ -140,9 +147,7 @@ class Container:
             db_path=db_path, autonomy=self.cfg.autonomy,
             conflict=self.cfg.conflict, flag_service=self.flag_service,
             suspect_consensus=self.cfg.suspect_consensus,
-            agi_mode=self.cfg.agi.mode,
-            secret_scan_enabled=self.cfg.secret_scan.enabled,
-            canonical_ref=self.cfg.census.canonical_ref)
+            secret_scan_enabled=self.cfg.secret_scan.enabled)
 
     # ── convenience surface (clean shutdown) ──────────────────────────────────────
     def close(self) -> None:

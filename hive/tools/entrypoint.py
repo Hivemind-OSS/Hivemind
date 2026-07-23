@@ -115,7 +115,7 @@ class Boot(Protocol):
 
 
 def _default_build_boot(cfg: Config, *, tenant_id: str, agent_id: str) -> Boot:
-    """The REAL assembler is the P1.14 keystone (`hive.app.container.build_container`).
+    """The REAL assembler is P1.14's composition root (`hive.app.container.build_container`).
     Lazy-imported so this module imports torch-free and `--help` never pulls the adapter
     stack. Until P1.14 lands, invoking the container at runtime raises a CLEAR error
     rather than a cryptic ImportError — unit tests never reach this path (they inject)."""
@@ -212,6 +212,32 @@ def _resolve_env(env: Mapping[str, str]) -> tuple[str, str, str]:
     return tenant_id, db_path, agent_id
 
 
+def _probe_token_env(boot: Boot, env: Mapping[str, str]) -> list[str]:
+    """The §5 secrets-row boot probe: every env var NAME a repo-registry row's
+    ``token_env`` declares must be PRESENT in ``env`` — the names of the absent ones
+    are returned so ``main()`` can fail fast EX_CONFIG NAMING them (no silent
+    default). Presence is the bar (the sync tick resolves ``os.environ[var]``, so an
+    absent var would KeyError there every tick); rows with an UNSET ``token_env``
+    fall to the fleet-default var at tick time and may run anonymous — never probed.
+    A store without a registry surface (minimal fakes) or an unreadable registry
+    probes clean: the probe only ever reports a genuinely registered, genuinely
+    absent var — real store faults surface at migrate. NEVER reads or echoes an env
+    *value* (secret-safe). // O(rows)."""
+    registry = getattr(getattr(boot, "store", None), "repo_registry", None)
+    if registry is None:
+        return []
+    try:
+        rows = registry()
+    except Exception:                       # noqa: BLE001 — the probe never invents a config fault
+        return []
+    missing: list[str] = []
+    for row in rows:
+        var = str(getattr(row, "token_env", "") or "")
+        if var and var not in env and var not in missing:
+            missing.append(var)
+    return missing
+
+
 def _invalidate_ready(boot: Boot) -> None:
     """Clear the embedder-ready marker at boot START — BEFORE migrate/index/warm — so a
     restarted container (which reuses the persistent /data volume AND reuses PID 1) starts
@@ -292,6 +318,17 @@ def main(argv: Optional[list[str]] = None, *, env: Optional[Mapping[str, str]] =
     # container (persistent volume + reused PID 1) must start red until THIS boot warms.
     _invalidate_ready(boot)
 
+    # ── token_env probe (EX_CONFIG): every REGISTERED credential var must exist ──
+    # A repo-registry row stores the NAME of its git-token env var (D2 indirection —
+    # never a secret byte); a row-named var absent from the boot env would fail that
+    # repo's sync leg every tick, so it fails fast HERE, naming the var(s).
+    missing_vars = _probe_token_env(boot, env)
+    if missing_vars:
+        _log.error("entrypoint.token_env_missing vars=%s code=%d (a repo-registry row "
+                   "names this env var — set it, or re-register the repo without "
+                   "--token-env)", ",".join(missing_vars), EX_CONFIG)
+        return EX_CONFIG
+
     # ── migrate.done (EX_SOFTWARE; the guard below makes serve UNREACHABLE on failure) ──
     try:
         boot.migrate()
@@ -332,17 +369,22 @@ def main(argv: Optional[list[str]] = None, *, env: Optional[Mapping[str, str]] =
     _mark_ready(boot, pid=pid)
     _log.info("entrypoint.serve_ready tenant_id=%s pid=%d", tenant_id, pid)
 
-    # The sync side-channel (armed only when HIVE_SYNC__REPO_URL is set; unarmed ⇒
-    # start_sync returns None — no thread). Started strictly AFTER the ready markers
-    # so sync can never delay readiness, and guarded whole: a start failure is logged
-    # and the daemon serves anyway — the side-channel fails open, the serve never does.
+    # The sync side-channel — ALWAYS started: WHICH repos to feed is the store's
+    # durable registry, re-read every tick (an empty registry is an inert tick, never
+    # an unarmed daemon, so registering the first repo needs no restart). Started
+    # strictly AFTER the ready markers so sync can never delay readiness, and guarded
+    # whole: a start failure is logged and the daemon serves anyway — the side-channel
+    # fails open, the serve never does. The Container's own LifecycleService rides
+    # through as the post-ingest promotion sweep (the established rung runs behind a
+    # canonical ingest); a minimal boot without one degrades to no sweep, not a crash.
     sync_thread = None
     try:
         from hive.app.sync import start_sync                            # noqa: PLC0415 — lazy
         from hive.domain.change_evidence import ChangeEvidenceService   # noqa: PLC0415 — lazy
         evidence = ChangeEvidenceService(reader=boot.store, appender=boot.store,
                                          now=lambda: int(time.time()), ranges=boot.store)
-        sync_thread = start_sync(cfg, boot.store, evidence, lock)
+        sync_thread = start_sync(cfg, boot.store, evidence, lock,
+                                 lifecycle=getattr(boot, "lifecycle", None))
     except Exception as exc:  # noqa: BLE001 — side-channel start must never abort serve
         _log.warning("entrypoint.sync_start_failed kind=%s (serving without sync)",
                      type(exc).__name__)

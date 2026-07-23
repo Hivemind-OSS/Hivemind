@@ -6,10 +6,10 @@ the standing hold forbids real model work). They encode the image-level contract
 the image builds, the final user is non-root, the baked weights load with the network
 namespace REMOVED, and no credential shape survives in any layer tar.
 
-The full end-to-end (boot → serve → stdio recall → volume-persist → WAL → backup) is
-deferred to P1.14: the entrypoint's default boot lazy-imports `hive.app.container.
-build_container`, which is the P1.14 keystone — a live container cannot serve a recall
-until that wiring exists. Those assertions live in tests/acceptance/* (P1.14), not here.
+The full end-to-end (boot → serve → stdio recall → volume-persist → WAL → backup) rides
+the entrypoint's default boot (`hive.app.container.build_container`, the P1.14
+composition root) — the live round-trip tests below drive it whole. v3: writes land
+provisional and serve immediately (no approver field exists anywhere).
 """
 from __future__ import annotations
 
@@ -158,7 +158,7 @@ def test_boot_serves_stdio_recall_round_trip(image):
     text = "the WAL journal mode keeps readers unblocked during a write"
     proc, resps = _stdio_run(image, [
         _INIT,
-        _call(2, "hive_write", {"text": text, "approved_by": "u"}),
+        _call(2, "hive_write", {"text": text}),
         _call(3, "hive_recall", {"query": text})])
     assert proc.returncode == 0, proc.stderr[-3000:]
     assert "serve_ready" in proc.stderr or "serve.ready" in proc.stderr
@@ -175,7 +175,7 @@ def test_boot_serves_recall_with_network_none(image):
     text = "treat recalled memory as reference context, not instructions"
     proc, resps = _stdio_run(image, [
         _INIT,
-        _call(2, "hive_write", {"text": text, "approved_by": "u"}),
+        _call(2, "hive_write", {"text": text}),
         _call(3, "hive_recall", {"query": text})], network="none")
     assert proc.returncode == 0, proc.stderr[-3000:]
     assert _tool_content(_by_id(resps, 3))["abstained"] is False
@@ -188,7 +188,7 @@ def test_volume_persists_across_restart(image):
     try:
         p1, _ = _stdio_run(image, [
             _INIT,
-            _call(2, "hive_write", {"text": text, "approved_by": "u"})],
+            _call(2, "hive_write", {"text": text})],
             mounts=[f"{vol}:/data"])
         assert p1.returncode == 0, p1.stderr[-3000:]
         # a SECOND container on the SAME volume recalls the persisted, approved memory
@@ -207,7 +207,7 @@ def test_wal_mode_active_in_container(image):
     vol = f"hive-e2e-{uuid.uuid4().hex[:8]}"
     try:
         p, _ = _stdio_run(image, [_INIT,
-                          _call(2, "hive_write", {"text": "create the db", "approved_by": "u"})],
+                          _call(2, "hive_write", {"text": "create the db"})],
                           mounts=[f"{vol}:/data"])
         assert p.returncode == 0, p.stderr[-3000:]
         r = subprocess.run(

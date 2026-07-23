@@ -40,11 +40,14 @@ class RecordingConnect:
 
 
 def _seed_anchored(conn, text: str, anchor: str) -> int:
+    """One approved episode anchored under the LEGACY '' repo identity — the real
+    receipt fixtures carry no provenance.repo, and the §3.6 join is repo-exact, so
+    only ''-scoped anchor rows can meet them (v3 stage(anchors=)+complete(trust=))."""
     store = SqliteEpisodeStore(conn)                 # creates the schema (IF NOT EXISTS)
-    eid, _ = store.stage(text=text, weight=1.0, tags="", proposed_by="w", ts=10,
-                         anchor=anchor)
-    assert store.approve(eid, "h", np.eye(DIM, dtype=np.float32)[0],
-                         expected_version=0, approved_ts=10)
+    eid, _ = store.stage(text=text, weight=1.0, proposed_by="w", ts=10,
+                         anchors=[("", anchor)])
+    assert store.complete(eid, np.eye(DIM, dtype=np.float32)[0],
+                          expected_version=0, trust="provisional", last_active_ts=10)
     return eid
 
 
@@ -148,16 +151,17 @@ def test_real_receipt_lands_change_outcome_and_verify_rows_with_the_receipt_shas
 
 
 SINGLEROOT_RECEIPT = _DATA / "receipt.singleroot.json"
-SINGLEROOT_ANCHOR = "pkg/mod.py:fn"                  # the agent-dialect anchor spelling
+SINGLEROOT_ANCHOR = "pkg/mod.py::fn"                 # the v3 canonical path::Symbol spelling
 
 
 def test_single_source_root_receipt_joins_a_repo_relative_anchor():
     """BUG-038's ingest leg: a receipt built by the REAL hive-census on a checkout
     whose parsed source ALL lives under one top-level dir (pkg/) must spell its
-    subjects repo-root-relative, so an episode anchored ``pkg/mod.py:fn`` joins and
-    earns its change_outcome + verify evidence. Pre-fix, such receipts carried ZERO
-    existence/contract lines (the graph's flattened dialect never met the diff's
-    repo dialect) and this join matched nothing, silently."""
+    subjects repo-root-relative, so an episode anchored ``pkg/mod.py::fn`` (the v3
+    canonical ``path::Symbol`` grammar — the old single-colon agent dialect died
+    with v2) joins and earns its change_outcome + verify evidence. Pre-fix, such
+    receipts carried ZERO existence/contract lines (the graph's flattened dialect
+    never met the diff's repo dialect) and this join matched nothing, silently."""
     cf = RecordingConnect()
     eid = _seed_anchored(cf.conn, "fn arity gotcha", SINGLEROOT_ANCHOR)
     _seed_anchored(cf.conn, "unrelated memory", "other/place.py::Elsewhere")
@@ -300,23 +304,59 @@ def test_nothing_decided_receipt_refuses(tmp_path, capsys):
 # ── post-merge flags thread through to the derived tag ─────────────────────────
 
 
-def test_post_merge_flags_thread_to_the_payload():
+def test_post_merge_decided_lines_derive_the_verdict_never_the_caller():
+    # v3 §3.3: DECIDED execution lines derive the verdict even post-merge — the real
+    # S3 receipt's typecheck decided-FAILED, so the caller's asserted `pass` never
+    # rides, and the tag caps at bounded-estimate (post-merge execution lines never
+    # self-certify machine-checked; that claim needs a randomized/canary signal on an
+    # UNDECIDED receipt). The signal still threads verbatim.
     cf = RecordingConnect()
     _seed_anchored(cf.conn, "LanguageConfig gotcha", REAL_ANCHOR)
     rc, out, _ = _run(["ingest", str(REAL_RECEIPT), "--post-merge",
                        "--verdict", "pass", "--signal", "canary"], connect_fn=cf)
     assert rc == censusctl.EX_OK
     body = json.loads(_rows(cf.conn)[0]["payload"])
-    assert body["phase"] == "post_merge" and body["verdict"] == "pass"
-    assert body["tag"] == "machine-checked" and body["signal"] == "canary"
+    assert body["phase"] == "post_merge" and body["verdict"] == "fail"
+    assert body["tag"] == "bounded-estimate" and body["signal"] == "canary"
 
 
-def test_post_merge_unsignaled_is_unverified_judgment():
+def _undecided_envelope() -> dict:
+    """A shape-valid receipt whose only execution evidence is not_run — nothing
+    decided, so pre-merge REFUSES it and post-merge falls to the caller's verdict.
+    Carries ONE joinable existence line so a matched episode earns the row."""
+    predicate = {"schema_version": "v0",
+                 "lines": [{"class": "tests", "subject": "tests", "tag": "unverified",
+                            "detail": {"state": "not_run"}, "reason": ""},
+                           {"class": "existence", "subject": REAL_ANCHOR,
+                            "detail": {"existed_before": True, "exists_after": True},
+                            "reason": "", "tag": "machine-checked"}],
+                 "provenance": {"base_sha": "a" * 40, "head_sha": "b" * 40}}
+    canon = json.dumps(predicate, sort_keys=True, separators=(",", ":"),
+                       ensure_ascii=False).encode()
+    import hashlib
+    statement = {"_type": "https://in-toto.io/Statement/v1",
+                 "subject": [{"name": "hive-census-receipt",
+                              "digest": {"sha256": hashlib.sha256(canon).hexdigest()}}],
+                 "predicateType": "urn:hive-census:receipt:v0", "predicate": predicate}
+    return {"payload": base64.b64encode(json.dumps(
+        statement, sort_keys=True, separators=(",", ":"),
+        ensure_ascii=False).encode()).decode(),
+        "payloadType": "application/vnd.in-toto+json",
+        "signatures": [{"keyid": "k", "sig": "cw=="}]}
+
+
+def test_post_merge_undecided_takes_caller_verdict_with_signal_tag(tmp_path):
+    # the landed-line parity fallback: nothing decided ⇒ the CALLER's verdict rides,
+    # tagged by the signal — none ⇒ unverified-judgment (the §6.2.5 canary rule).
+    p = tmp_path / "undecided.json"
+    p.write_text(json.dumps(_undecided_envelope()))
     cf = RecordingConnect()
     _seed_anchored(cf.conn, "LanguageConfig gotcha", REAL_ANCHOR)
-    _run(["ingest", str(REAL_RECEIPT), "--post-merge", "--verdict", "fail"],
-         connect_fn=cf)
+    rc, _, _ = _run(["ingest", str(p), "--post-merge", "--verdict", "fail"],
+                    connect_fn=cf)
+    assert rc == censusctl.EX_OK
     body = json.loads(_rows(cf.conn)[0]["payload"])
+    assert body["verdict"] == "fail"                 # caller-asserted (nothing decided)
     assert body["tag"] == "unverified-judgment" and body["signal"] == "none"
 
 

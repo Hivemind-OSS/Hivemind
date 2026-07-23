@@ -87,14 +87,39 @@ def _in_container_py(env: dict, code: str) -> str:
 
 
 def _evidence_rows(env: dict) -> list[dict]:
+    """Every census-fed row (the change_outcome + its verify_* riders), id-ordered."""
     out = _in_container_py(env, (
         "import sqlite3,json;"
         "con=sqlite3.connect('/data/shared.db');"
         "rows=[dict(zip(('id','episode_id','kind','actor','payload'),r)) for r in "
         "con.execute(\"SELECT id,episode_id,kind,actor,payload FROM evidence_events "
-        "WHERE kind='change_outcome' ORDER BY id\")];"
+        "WHERE actor='census' ORDER BY id\")];"
         "print(json.dumps(rows))"))
     return json.loads(out)
+
+
+def _seed_anchored_episode(env: dict) -> int:
+    """Seed ONE approved episode anchored under the LEGACY '' repo identity through
+    the v3 store surface, in-container (the real receipt fixture carries no
+    provenance.repo, and the §3.6 join is repo-exact — while agents can only anchor
+    to REGISTERED repos over MCP, the ''-identity legacy receipt joins only
+    ''-scoped rows). The daemon's in-RAM index never holds this row (it booted
+    first), so the read path stays untouched — exactly what the byte-inert check
+    wants. The two-process WAL write is itself part of what D7 proves."""
+    code = (
+        "import numpy as np;"
+        "from hive.adapters.sqlite_db import connect;"
+        "from hive.adapters.store_sqlite import SqliteEpisodeStore;"
+        "store=SqliteEpisodeStore(connect('/data/shared.db'));"
+        "eid,_=store.stage(text='the tree-sitter LanguageConfig table drives every "
+        "per-language extraction pass', weight=1.0, proposed_by='d7-gate', ts=10, "
+        f"anchors=[('', '{ANCHOR}')]);"
+        "ok=store.complete(eid, np.zeros(1024, dtype=np.float32), expected_version=0, "
+        "trust='provisional', last_active_ts=10);"
+        "print(eid if ok else 'SEED-FAILED')")
+    out = _in_container_py(env, code)
+    assert out != "SEED-FAILED", "seeding the anchored episode failed"
+    return int(out)
 
 
 @pytest.fixture(scope="module")
@@ -138,17 +163,21 @@ def test_d7_gate_real_receipt_real_row_o7_idempotent_byte_inert(stack):
     statement = json.loads(base64.b64decode(envelope["payload"]))
     prov = statement["predicate"]["provenance"]
 
-    # 2. one anchored episode written over the LIVE loopback MCP door
+    # 2a. one general memory written over the LIVE loopback MCP door (v3: no approver
+    #     field exists; the write lands provisional and serves immediately) — the
+    #     byte-inert read-path baseline rides THIS served memory.
     w = _mcp(port, "hive_write", {
-        "text": "the tree-sitter LanguageConfig table drives every per-language "
-                "extraction pass in the monolith extractor",
-        "approved_by": "d7-gate", "kind": "gotcha", "anchor": ANCHOR})
+        "text": "treat the monolith extractor's language table as generated code",
+        "kind": "gotcha"})
     assert w["status"] == "approved", w
-    eid = int(w["id"])
+    # 2b. the JOIN target: an episode anchored under the legacy '' repo identity,
+    #     seeded store-side in-container (agents cannot anchor to an unregistered
+    #     repo over MCP; the fixture receipt carries no provenance.repo).
+    eid = _seed_anchored_episode(env)
 
     # pre-ingest captures: the O7 baseline and the byte-inert read-path baseline
     health_before = _mcp(port, "hive_health", {})
-    query = "LanguageConfig per-language extraction table in the monolith extractor"
+    query = "how should the monolith extractor language table be treated"
     recall_before = _mcp(port, "hive_recall", {"query": query})
     assert recall_before["abstained"] is False     # the read path actually serves it
 
@@ -182,13 +211,13 @@ def test_d7_gate_real_receipt_real_row_o7_idempotent_byte_inert(stack):
     assert (vbody["exists_after"], vbody["drift"]) == (False, "removed")
     assert vbody["stamp"]["head_sha"] == prov["head_sha"]
 
-    # 5. O7 live: the feed mutated NO trust
+    # 5. O7 live: the feed mutated NO trust — the seeded row stays exactly as seeded
     health_after = _mcp(port, "hive_health", {})
     assert health_after["trust_counts"] == health_before["trust_counts"]
     trust = _in_container_py(env, (
         "import sqlite3;print(sqlite3.connect('/data/shared.db')"
         f".execute('SELECT trust FROM episodes WHERE id={eid}').fetchone()[0])"))
-    assert trust == "established"
+    assert trust == "provisional"
 
     # 6. idempotency under the real transport: re-ingest adds nothing
     ing2 = _cli(env, "ingest", str(RECEIPT), timeout=300)
@@ -213,4 +242,4 @@ def test_d7_gate_real_receipt_real_row_o7_idempotent_byte_inert(stack):
                            input=bad, timeout=120)
     assert r_bad.returncode == 65, r_bad.stderr[-1000:]
     assert "refused" in r_bad.stderr.lower()
-    assert len(_evidence_rows(env)) == 1           # still just the one row
+    assert len(_evidence_rows(env)) == 2           # still just the two rows

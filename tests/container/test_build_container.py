@@ -105,16 +105,23 @@ def test_identity_carries_tenant_and_agent():
     assert (c.identity.tenant_id, c.identity.agent_id) == ("t1", "a1")
 
 
-# ── AGI_MODE flag threads cfg → make_server (default OFF; ON only when opted in) ──
-def test_agi_mode_off_by_default_on_the_server():
+# ── the AGI sentinel + global canonical_ref wiring are GONE (v3, U4-THIN-AGENT) ──
+def test_agi_wiring_is_gone():
+    # no cfg group, no server attribute, and an explicit override fails fast as an
+    # unknown group — re-adding any of the three REDS this.
     c = _build()
-    assert c.cfg.agi.mode is False
-    assert c.make_server().agi_mode is False
+    assert not hasattr(c.cfg, "agi")
+    assert not hasattr(c.make_server(), "agi_mode")
+    with pytest.raises(ValueError, match="unknown config group"):
+        _build(agi={"mode": True})
 
 
-def test_agi_mode_threads_from_config_when_enabled():
-    c = _build(agi={"mode": True})
-    assert c.make_server().agi_mode is True
+def test_no_global_canonical_ref_threads_to_the_server():
+    # per-repo canonical refs live in the repo registry rows; the container passes no
+    # global one, so the server's last_verified rider keeps its unscoped default ("").
+    c = _build()
+    assert not hasattr(c.cfg, "census")
+    assert c.make_server().canonical_ref == ""
 
 
 # ── secret floor threads cfg → scanner + make_server (default ON; OFF only when opted out) ──
@@ -186,6 +193,28 @@ def test_migrate_raises_on_missing_ingested_ranges_table(tmp_path):
         c.migrate()
 
 
+@pytest.mark.parametrize("table", ["episode_anchors", "repos", "anchor_drift",
+                                   "ref_requests"])
+def test_migrate_asserts_the_v3_partition_tables(tmp_path, table):
+    """The v3 repo-partition set (anchor bindings, repo registry, drift cache,
+    branch-demand list) is boot-asserted like every required table — a store missing
+    one would limp to a cryptic mid-query crash at first recall/sync instead."""
+    c = _build(tmp_path)
+    c.conn.execute(f"DROP TABLE {table}")
+    with pytest.raises(RuntimeError, match="migration incomplete"):
+        c.migrate()
+
+
+def test_migrate_passes_with_the_full_v3_table_set(tmp_path):
+    # the positive twin: a fresh store carries every asserted table, migrate is clean.
+    c = _build(tmp_path)
+    c.migrate()                                                # no raise
+    present = {r["name"] for r in c.conn.execute(
+        "SELECT name FROM sqlite_master WHERE type='table'")}
+    for required in ("episode_anchors", "repos", "anchor_drift", "ref_requests"):
+        assert required in present
+
+
 def test_migrate_passes_dim_guard_on_fresh_store(tmp_path):
     """A fresh store (no persisted vectors) trivially passes the stored-vector dim guard —
     the fresh-start path the swap targets."""
@@ -208,11 +237,11 @@ def test_migrate_raises_on_stored_vector_dim_mismatch(tmp_path):
         c.migrate()
 
 
-def test_build_index_warms_from_approved_only():
+def test_build_index_warms_from_servable_only():
     c = _build()
     c.warm_embedder()
     c.admission.write("a durable memory about cache eviction",
-                      proposed_by="a1", approved_by="user")    # lands approved in one call
+                      proposed_by="a1")                        # v3: lands provisional, servable NOW
     c.index.rebuild_from_store([])                              # clear the warm cache
     assert c.index.size() == 0
     c.build_index()                                            # rebuild from the store
@@ -226,8 +255,8 @@ def test_make_server_round_trips_write_recall():
     server = c.make_server()
     assert isinstance(server, HiveMCPServer)
     text = "the WAL transaction runs under one BEGIN IMMEDIATE"
-    w = _content(_call(server, "hive_write", {"text": text, "approved_by": "user"}))
-    assert w["status"] == "approved"                              # client-gated, one call
+    w = _content(_call(server, "hive_write", {"text": text}))     # v3: no approver anywhere
+    assert w["status"] == "approved"                              # servable NOW (provisional)
     c.build_index()
     r = _content(_call(server, "hive_recall", {"query": text}))   # identical text ⇒ confident hit
     assert r["abstained"] is False

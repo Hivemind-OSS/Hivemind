@@ -94,7 +94,7 @@ def _call(url, name, args, *, token=None, headers=None, req_id=1):
 def test_tunnel_door_write_attributed_to_session_identity_then_recallable(stack):
     _loop, tun, token, c = stack
     text = "the WAL transaction runs under one BEGIN IMMEDIATE per producer tick"
-    status, w = _call(tun, "hive_write", {"text": text, "approved_by": "user"},
+    status, w = _call(tun, "hive_write", {"text": text},
                       token=token, headers={"X-Hive-Agent-Id": "alice-session-1"})
     assert status == 200 and w["status"] == "approved"
     # ATTRIBUTION: proposed_by is the per-SESSION identity, NOT the token label ("alice-laptop")
@@ -112,8 +112,8 @@ def test_all_four_tools_answer_over_the_tunnel_door(stack):
     _loop, tun, token, _c = stack
     s_h, h = _call(tun, "hive_health", {}, token=token)
     assert s_h == 200 and h["ok"] is True
-    s_w, w = _call(tun, "hive_write", {"text": "a durable insight about retries",
-                                       "approved_by": "u"}, token=token)
+    s_w, w = _call(tun, "hive_write", {"text": "a durable insight about retries"},
+                   token=token)
     assert s_w == 200 and w["status"] == "approved"
     s_c, cap = _call(tun, "hive_capture", {"text": "a quarantined note about caching"},
                      token=token)
@@ -127,7 +127,7 @@ def test_bad_token_writes_nothing_to_the_real_store(stack):
     _loop, tun, _token, c = stack
     before = c.store.counts()
     code, _ = _call(tun, "hive_write",
-                    {"text": "should never land", "approved_by": "u"}, token="hive_badtoken")
+                    {"text": "should never land"}, token="hive_badtoken")
     assert code == 401                                  # 401 at the tunnel door
     assert c.store.counts() == before                   # INV-1: the store was never touched
 
@@ -136,7 +136,7 @@ def test_bad_token_writes_nothing_to_the_real_store(stack):
 def test_loopback_door_tokenless_write_attributed_to_local_then_recallable(stack):
     loop, _tun, _token, c = stack
     text = "the index rebuild reads the servable snapshot at boot"
-    status, w = _call(loop, "hive_write", {"text": text, "approved_by": "user"})  # NO token
+    status, w = _call(loop, "hive_write", {"text": text})              # NO token
     assert status == 200 and w["status"] == "approved"
     ep = c.store.get_episode(w["id"])
     assert ep.proposed_by == "local"                    # the loopback residual bucket
@@ -149,7 +149,7 @@ def test_loopback_door_tokenless_write_attributed_to_local_then_recallable(stack
 def test_loopback_door_uses_header_identity(stack):
     loop, _tun, _token, c = stack
     status, w = _call(loop, "hive_write",
-                      {"text": "a header-attributed note", "approved_by": "u"},
+                      {"text": "a header-attributed note"},
                       headers={"X-Hive-Agent-Id": "alice"})
     assert status == 200
     assert c.store.get_episode(w["id"]).proposed_by == "alice"
@@ -159,9 +159,9 @@ def test_distinct_session_ids_are_distinct_identities(stack):
     # the per-session identity round-trip through the REAL server: two writes echoing distinct
     # Mcp-Session-Id headers (no explicit X-Hive-Agent-Id) land under two distinct proposed_by.
     loop, _tun, _token, c = stack
-    _, w1 = _call(loop, "hive_write", {"text": "session-bound note one", "approved_by": "u"},
+    _, w1 = _call(loop, "hive_write", {"text": "session-bound note one"},
                   headers={"Mcp-Session-Id": "sess-A"})
-    _, w2 = _call(loop, "hive_write", {"text": "session-bound note two", "approved_by": "u"},
+    _, w2 = _call(loop, "hive_write", {"text": "session-bound note two"},
                   headers={"Mcp-Session-Id": "sess-B"})
     assert c.store.get_episode(w1["id"]).proposed_by == "sess-A"
     assert c.store.get_episode(w2["id"]).proposed_by == "sess-B"
@@ -173,7 +173,7 @@ def test_two_listeners_share_one_lock_and_one_server(stack):
     # (a) cross-door visibility: a tokenless loopback write is recallable over the token door —
     # ONE server / ONE store sits behind both listeners.
     text = "cross-door visibility: one server behind both listeners"
-    status, _w = _call(loop, "hive_write", {"text": text, "approved_by": "user"})
+    status, _w = _call(loop, "hive_write", {"text": text})
     assert status == 200
     c.build_index()
     status, r = _call(tun, "hive_recall", {"query": text}, token=token)

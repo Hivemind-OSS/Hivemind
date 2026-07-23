@@ -469,14 +469,17 @@ def test_upgrade_prints_manual_hint_when_rollback_itself_fails(capsys):
     assert "hive restore" in err
 
 
-def test_connect_prints_edge_tools_breadcrumb(capsys):
-    # connect cross-references the edge-tools install without merging the verb; census evidence is
-    # server-side (the sync service), so no deleted `hive-edge census` verb may be instructed.
-    cli.main(["connect"], run=FakeRun(), out=io.StringIO(), env=ENV)
+def test_connect_prints_no_edge_install_and_no_onboarding_breadcrumb(capsys):
+    # v3 thin-agent connect: the MCP registration line only — no edge-install
+    # instruction, no per-repo setup fetch. Agents are repo-agnostic MCP clients;
+    # census evidence is server-side off the repo registry (`hive repo add`).
+    out = io.StringIO()
+    cli.main(["connect"], run=FakeRun(), out=out, env=ENV)
     err = capsys.readouterr().err
-    assert "install `hive-edge`" in err
-    assert "HIVE_SYNC__REPO_URL" in err     # census is server-side, keyed off the sync config
-    assert "census init" not in err          # the deleted edge verb never resurfaces here
+    both = out.getvalue() + err
+    assert "hive-edge" not in both           # no edge-install breadcrumb survives
+    assert "HIVE_SYNC__REPO_URL" not in both  # the deleted sync env var never resurfaces
+    assert "HIVE-ADMIN.md" not in both       # no doc-fetch pointer rides connect
 
 
 # ── status: aggregation (ps + in-container healthcheck + tunnel + seat count) ───
@@ -621,6 +624,77 @@ def test_tokens_builds_authctl_list():
     assert out.getvalue() == "alice\nbob\n"            # labels forwarded verbatim
 
 
+# ── repo registry: repo add/remove + repos shell to the in-container repoctl ───
+
+
+def test_repo_add_shells_repoctl_with_all_flags():
+    fake = FakeRun()
+    rc = cli.main(["repo", "add", "https://example.invalid/alpha.git",
+                   "--name", "alpha", "--branch", "main", "--token-env", "MY_TOKEN"],
+                  run=fake, out=io.StringIO(), env=ENV)
+    assert rc == cli.EX_OK
+    call = fake.calls[0]
+    assert call[:2] == ["docker", "compose"]           # exec into the RUNNING container
+    assert seq_in(call, "exec", "-T", "hive-server", "python", "-m",
+                  "hive.tools.repoctl", "add", "https://example.invalid/alpha.git")
+    # BUG-020 quoting discipline: every operator value is its OWN argv element,
+    # never a joined shell string — no `sh -c` anywhere in the child argv.
+    assert seq_in(call, "--name", "alpha")
+    assert seq_in(call, "--branch", "main")
+    assert seq_in(call, "--token-env", "MY_TOKEN")     # the var NAME rides; never a token
+    assert "sh" not in call and "-c" not in call
+
+
+def test_repo_add_minimal_passes_no_optional_flags():
+    fake = FakeRun()
+    rc = cli.main(["repo", "add", "https://example.invalid/alpha.git"],
+                  run=fake, out=io.StringIO(), env=ENV)
+    assert rc == cli.EX_OK
+    call = fake.calls[0]
+    assert seq_in(call, "hive.tools.repoctl", "add", "https://example.invalid/alpha.git")
+    assert "--name" not in call and "--branch" not in call and "--token-env" not in call
+
+
+def test_repo_remove_shells_repoctl_remove():
+    fake = FakeRun()
+    rc = cli.main(["repo", "remove", "alpha"], run=fake, out=io.StringIO(), env=ENV)
+    assert rc == cli.EX_OK
+    assert any(seq_in(c, "exec", "-T", "hive-server", "python", "-m",
+                      "hive.tools.repoctl", "remove", "alpha") for c in fake.calls)
+
+
+def test_repos_lists_via_repoctl_and_forwards_stdout():
+    listing = "alpha\thttps://example.invalid/alpha.git\tmain\tMY_TOKEN\n"
+    fake = FakeRun(script=[(lambda a: seq_in(a, "hive.tools.repoctl", "list"),
+                            proc(stdout=listing))])
+    out = io.StringIO()
+    rc = cli.main(["repos"], run=fake, out=out, env=ENV)
+    assert rc == cli.EX_OK
+    assert out.getvalue() == listing                   # the registry lines, verbatim
+    assert any(seq_in(c, "exec", "-T", "hive-server", "python", "-m",
+                      "hive.tools.repoctl", "list") for c in fake.calls)
+
+
+def test_repo_add_child_failure_forwards_sysexits(capsys):
+    fake = FakeRun(script=[(lambda a: seq_in(a, "hive.tools.repoctl", "add"),
+                            proc(rc=70, stderr="repoctl: repo 'alpha' is already "
+                                               "registered\n"))])
+    rc = cli.main(["repo", "add", "https://example.invalid/alpha.git", "--name", "alpha"],
+                  run=fake, out=io.StringIO(), env=ENV)
+    assert rc == 70                                    # repoctl already speaks sysexits
+    assert "already registered" in capsys.readouterr().err
+
+
+def test_repos_child_failure_forwards_sysexits(capsys):
+    fake = FakeRun(script=[(lambda a: seq_in(a, "hive.tools.repoctl", "list"),
+                            proc(rc=70, stderr="repoctl: boom\n"))])
+    out = io.StringIO()
+    rc = cli.main(["repos"], run=fake, out=out, env=ENV)
+    assert rc == 70
+    assert out.getvalue() == ""                        # no listing on failure
+    assert "boom" in capsys.readouterr().err
+
+
 # ── connect: transport registration line only — never the handshake ────────────
 
 
@@ -651,12 +725,13 @@ def test_connect_without_domain_prints_tokenless_loopback_line(capsys):
     rc = cli.main(["connect"], run=FakeRun(), out=out, env={})
     assert rc == cli.EX_OK
     text = out.getvalue()
-    assert "http://localhost:8765/mcp" in text
+    assert text.strip() == "claude mcp add --transport http hive http://localhost:8765/mcp"
     assert "Authorization: Bearer" not in text         # the loopback door is tokenless
-    assert "X-Hive-Agent-Id" not in text               # no baked id on the registration line
     err = capsys.readouterr().err
     assert "NGROK_DOMAIN" in err                        # says why it fell back to loopback
-    assert "X-Hive-Agent-Id" in err                     # the per-client explicit-id NOTE is shown
+    assert "X-Hive-Agent-Id" not in err                 # the identity walkthrough is gone
+                                                        # (registration line only — the usage
+                                                        # contract is served over MCP itself)
 
 
 def test_default_run_forwards_stdin_input():

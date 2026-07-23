@@ -443,7 +443,7 @@ def test_main_shares_one_lock_across_serve_and_sync(monkeypatch):
         captured["serve_lock"] = kw.get("lock")
         return lambda s: None
 
-    def fake_start_sync(cfg, store, evidence, lock):
+    def fake_start_sync(cfg, store, evidence, lock, *, lifecycle=None):
         captured["sync_lock"] = lock
         return None
 
@@ -457,14 +457,16 @@ def test_main_shares_one_lock_across_serve_and_sync(monkeypatch):
 
 
 def test_sync_starts_after_ready_markers_and_before_serve(monkeypatch):
-    """start_sync runs strictly AFTER _mark_ready (markers already '1') and before
-    serve blocks; it receives boot.store and a wired ChangeEvidenceService."""
+    """start_sync runs UNCONDITIONALLY (no arming env var — which repos to feed is the
+    store registry's, re-read every tick), strictly AFTER _mark_ready (markers already
+    '1') and before serve blocks; it receives boot.store and a wired
+    ChangeEvidenceService."""
     from hive.domain.change_evidence import ChangeEvidenceService
     calls: list = []
     store = _MetaStore()
     boot = _RecordingBoot(calls, store=store)
 
-    def fake_start_sync(cfg, store_, evidence, lock):
+    def fake_start_sync(cfg, store_, evidence, lock, *, lifecycle=None):
         calls.append("start_sync")
         assert store.meta.get(E.MARK_EMBEDDER_LOADED) == "1"    # ready markers first
         assert store_ is store
@@ -478,10 +480,34 @@ def test_sync_starts_after_ready_markers_and_before_serve(monkeypatch):
                      "start_sync", "serve"]
 
 
+def test_sync_receives_the_boot_lifecycle(monkeypatch):
+    """The Container's LifecycleService rides through to start_sync as the post-ingest
+    promotion sweep handle (the v3 established rung) — silently defaulting it to None
+    would make promote_established unreachable on every normal boot."""
+    captured: dict = {}
+    boot = _RecordingBoot([])
+    boot.lifecycle = object()                                   # the Container carries one
+
+    def fake_start_sync(cfg, store, evidence, lock, *, lifecycle=None):
+        captured["lifecycle"] = lifecycle
+        return None
+
+    monkeypatch.setattr(_sync_module(), "start_sync", fake_start_sync)
+    rc = E.main(env=_OK_ENV, build_boot=_boot_factory(boot), serve=lambda s: None)
+    assert rc == E.EX_OK
+    assert captured["lifecycle"] is boot.lifecycle              # threaded, not re-derived
+
+    # a minimal boot without one degrades to None (no sweep), never a crash
+    captured.clear()
+    rc = E.main(env=_OK_ENV, build_boot=_boot_factory(_RecordingBoot([])),
+                serve=lambda s: None)
+    assert rc == E.EX_OK and captured["lifecycle"] is None
+
+
 def test_sync_start_failure_logs_and_serves_anyway(monkeypatch):
     """The side-channel fails open: a start_sync explosion never blocks the serve
     (rc stays EX_OK, the injected serve still runs)."""
-    def boom(cfg, store, evidence, lock):
+    def boom(cfg, store, evidence, lock, *, lifecycle=None):
         raise RuntimeError("sync exploded")
 
     monkeypatch.setattr(_sync_module(), "start_sync", boom)
@@ -493,8 +519,8 @@ def test_sync_start_failure_logs_and_serves_anyway(monkeypatch):
 
 # ── the webhook nudge wiring: main() hands the LIVE sync wake Event to the tunnel door ──
 def test_main_threads_webhook_secret_and_live_sync_nudge_into_default_serve(monkeypatch):
-    """With sync armed, main() builds the default serve with cfg.sync.webhook_secret and
-    the started sync thread's wake Event's `set` as webhook_nudge — calling the threaded
+    """Sync is always started; main() builds the default serve with cfg.sync.webhook_secret
+    and the started sync thread's wake Event's `set` as webhook_nudge — calling the threaded
     nudge sets THAT Event, so a webhook 204 wakes the real loop."""
     import threading
     captured: dict = {}
@@ -509,10 +535,8 @@ def test_main_threads_webhook_secret_and_live_sync_nudge_into_default_serve(monk
 
     monkeypatch.setattr(E, "_make_http_serve", fake_make_http_serve)
     monkeypatch.setattr(_sync_module(), "start_sync",
-                        lambda cfg, store, evidence, lock: _SyncThread())
-    env = {"HIVE_TENANT_ID": "acme",
-           "HIVE_SYNC__REPO_URL": "https://example.invalid/repo.git",
-           "HIVE_SYNC__WEBHOOK_SECRET": "hook-secret"}
+                        lambda cfg, store, evidence, lock, *, lifecycle=None: _SyncThread())
+    env = {"HIVE_TENANT_ID": "acme", "HIVE_SYNC__WEBHOOK_SECRET": "hook-secret"}
     rc = E.main(env=env, build_boot=_boot_factory(_RecordingBoot([])))
     assert rc == E.EX_OK
     assert captured["webhook_secret"] == "hook-secret"     # cfg.sync.webhook_secret, verbatim
@@ -521,10 +545,10 @@ def test_main_threads_webhook_secret_and_live_sync_nudge_into_default_serve(monk
     assert ev.is_set()
 
 
-def test_main_without_sync_thread_passes_inert_webhook_wiring(monkeypatch):
-    """Sync unarmed (no HIVE_SYNC__REPO_URL ⇒ real start_sync returns None): the default
-    serve gets webhook_secret='' and webhook_nudge=None — the tunnel door's webhook branch
-    is dead code, byte-identical to the pre-webhook build."""
+def test_main_default_serve_gets_the_real_sync_threads_nudge(monkeypatch):
+    """The UNMOCKED path: start_sync always starts a real daemon thread now (an empty/
+    absent registry is an inert tick, not an unarmed daemon), so the default serve's
+    webhook_nudge is that live thread's wake Event's `set` — never None."""
     captured: dict = {}
 
     def fake_make_http_serve(boot, loopback_port, tunnel_port, **kw):
@@ -534,5 +558,110 @@ def test_main_without_sync_thread_passes_inert_webhook_wiring(monkeypatch):
     monkeypatch.setattr(E, "_make_http_serve", fake_make_http_serve)
     rc = E.main(env=_OK_ENV, build_boot=_boot_factory(_RecordingBoot([])))
     assert rc == E.EX_OK
-    assert captured["webhook_secret"] == ""
+    assert captured["webhook_secret"] == ""                # no operator secret ⇒ door stays dead
+    nudge = captured["webhook_nudge"]
+    assert nudge is not None and callable(nudge)           # the live thread's Event.set
+
+
+def test_main_sync_start_failure_passes_inert_webhook_wiring(monkeypatch):
+    """When start_sync itself fails (fail-open — the serve survives), the default serve
+    gets webhook_nudge=None: the tunnel door's webhook branch degrades to a no-op wake,
+    never a dangling handle onto a thread that does not exist."""
+    captured: dict = {}
+
+    def fake_make_http_serve(boot, loopback_port, tunnel_port, **kw):
+        captured.update(kw)
+        return lambda s: None
+
+    def boom(cfg, store, evidence, lock, *, lifecycle=None):
+        raise RuntimeError("sync exploded")
+
+    monkeypatch.setattr(E, "_make_http_serve", fake_make_http_serve)
+    monkeypatch.setattr(_sync_module(), "start_sync", boom)
+    rc = E.main(env=_OK_ENV, build_boot=_boot_factory(_RecordingBoot([])))
+    assert rc == E.EX_OK
     assert captured["webhook_nudge"] is None
+
+
+# ── the token_env boot probe: a registered credential var must exist (EX_CONFIG) ──
+class _Row:
+    """A minimal registry-row double (attribute contract of the store's RepoRow)."""
+    def __init__(self, name: str, token_env: str = "") -> None:
+        self.name = name
+        self.url = f"https://example.invalid/{name}.git"
+        self.canonical_ref = ""
+        self.token_env = token_env
+        self.added_ts = 0
+
+
+class _RegistryStore(_MetaStore):
+    def __init__(self, rows) -> None:
+        super().__init__()
+        self._rows = rows
+
+    def repo_registry(self):
+        return list(self._rows)
+
+
+def test_boot_fails_ex_config_naming_a_missing_token_env_var(capsys):
+    """A registry row whose token_env names an env var ABSENT from the boot env is
+    EX_CONFIG naming the var (fail-fast, no silent default) — BEFORE migrate, so a
+    misconfigured credential never reaches the store steps."""
+    calls: list = []
+    store = _RegistryStore([_Row("alpha", token_env="ALPHA_TOKEN")])
+    boot = _RecordingBoot(calls, store=store)
+    rc = E.main(env=_OK_ENV, build_boot=_boot_factory(boot), serve=_serve_recorder(calls))
+    assert rc == E.EX_CONFIG
+    assert calls == []                                     # probed BEFORE migrate; no serve
+    assert "ALPHA_TOKEN" in capsys.readouterr().err        # the var is NAMED, never its value
+
+
+def test_boot_proceeds_when_every_registered_token_env_var_is_present():
+    calls: list = []
+    store = _RegistryStore([_Row("alpha", token_env="ALPHA_TOKEN"),
+                            _Row("beta", token_env="BETA_TOKEN")])
+    boot = _RecordingBoot(calls, store=store)
+    env = dict(_OK_ENV, ALPHA_TOKEN="secret-a", BETA_TOKEN="secret-b")
+    rc = E.main(env=env, build_boot=_boot_factory(boot), serve=_serve_recorder(calls))
+    assert rc == E.EX_OK
+    assert calls == ["migrate", "build_index", "warm", "make_server", "serve"]
+
+
+def test_unset_token_env_rows_are_never_probed():
+    # a row with token_env='' falls to the fleet-default var at tick time and may run
+    # anonymous — HIVE_SYNC__TOKEN absent at boot must NOT fail the boot.
+    calls: list = []
+    store = _RegistryStore([_Row("alpha")])                # token_env unset
+    boot = _RecordingBoot(calls, store=store)
+    rc = E.main(env=_OK_ENV, build_boot=_boot_factory(boot), serve=_serve_recorder(calls))
+    assert rc == E.EX_OK
+
+
+def test_probe_names_every_missing_var_once(capsys):
+    store = _RegistryStore([_Row("alpha", token_env="TOK_A"),
+                            _Row("beta", token_env="TOK_B"),
+                            _Row("gamma", token_env="TOK_A")])   # a shared var, named once
+    rc = E.main(env=_OK_ENV, build_boot=_boot_factory(_RecordingBoot([], store=store)),
+                serve=lambda s: None)
+    assert rc == E.EX_CONFIG
+    err = capsys.readouterr().err
+    assert "TOK_A,TOK_B" in err                            # both named, deduped, name-only
+
+
+def test_probe_fails_open_on_a_missing_or_broken_registry_surface():
+    # a store without repo_registry (minimal fakes) or one that raises probes CLEAN —
+    # the probe reports only a genuinely registered, genuinely absent var; real store
+    # faults surface at migrate (EX_SOFTWARE), never as an invented config error.
+    calls: list = []
+    rc = E.main(env=_OK_ENV, build_boot=_boot_factory(_RecordingBoot(calls)),
+                serve=_serve_recorder(calls))              # _MetaStore: no registry surface
+    assert rc == E.EX_OK
+
+    class _BrokenRegistryStore(_MetaStore):
+        def repo_registry(self):
+            raise RuntimeError("registry unreadable")
+
+    calls2: list = []
+    boot = _RecordingBoot(calls2, store=_BrokenRegistryStore())
+    rc = E.main(env=_OK_ENV, build_boot=_boot_factory(boot), serve=_serve_recorder(calls2))
+    assert rc == E.EX_OK and "serve" in calls2
