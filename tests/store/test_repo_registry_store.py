@@ -63,6 +63,21 @@ def test_bad_slug_refused_nothing_written():
     assert _rows(s) == {}
 
 
+def test_path_special_all_dot_names_refused_nothing_written():
+    # '.' and '..' satisfy the [a-z0-9._-]+ charset alone but are path-special:
+    # a mirror path joined from one escapes (or IS) the mirrors dir, so the gate
+    # must refuse them at the source — no downstream path join may ever see one.
+    s = _store()
+    for bad in ("..", ".", "", "...", "...."):
+        with pytest.raises(ValueError, match="slug|name"):
+            s.repo_add(name=bad, url="https://example.invalid/x.git", added_ts=1)
+    assert _rows(s) == {}  # nothing written on any refusal
+    # dots INSIDE a name stay legal — ordinary slugs still register
+    for ok in ("repo-a", "svc.thing_1"):
+        s.repo_add(name=ok, url="https://example.invalid/x.git", added_ts=1)
+    assert set(_rows(s)) == {"repo-a", "svc.thing_1"}
+
+
 def test_slug_vocabulary_accepts_dots_dashes_underscores():
     s = _store()
     for ok in ("alpha", "a.b-c_d", "repo.name", "0numeric"):

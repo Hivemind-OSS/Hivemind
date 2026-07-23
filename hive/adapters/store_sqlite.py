@@ -155,7 +155,10 @@ _V3_EPISODE_COLUMNS = ("trust", "polarity", "kind", "meta")
 _NO_MIGRATION_HINT = "this build has no migration — start from a clean store/volume"
 
 # Registry names ride filesystem paths (mirror dirs) and scope labels — slug only.
-_REPO_NAME_RE = re.compile(r"^[a-z0-9._-]+$")
+# The lookahead refuses '.', '..', and every other all-dot name: those are path-special
+# (a mirror path joined from one escapes, or IS, the mirrors dir), so a name this
+# matches is genuinely path-safe — the charset alone would admit them.
+_REPO_NAME_RE = re.compile(r"^(?!\.+$)[a-z0-9._-]+$")
 
 
 @dataclass(frozen=True, slots=True)
@@ -1147,16 +1150,16 @@ class SqliteEpisodeStore:
         token_env: str = "",
         added_ts: int,
     ) -> None:
-        """Register one repo. ``name`` is slug-checked ([a-z0-9._-]+ — it rides mirror
-        paths and scope labels); a bad slug, empty url, or duplicate name RAISES
-        ValueError with the reason (nothing written — repoctl maps it to a non-zero
-        exit). ``token_env`` stores the NAME of the env var holding the git token
-        ('' ⇒ the HIVE_SYNC__TOKEN default) — indirection, never a secret byte. ONE
-        tx. // O(1)."""
+        """Register one repo. ``name`` is slug-checked ([a-z0-9._-]+, never empty or
+        all-dot like ``.``/``..`` — it rides mirror paths and scope labels); a bad
+        slug, empty url, or duplicate name RAISES ValueError with the reason (nothing
+        written — repoctl maps it to a non-zero exit). ``token_env`` stores the NAME
+        of the env var holding the git token ('' ⇒ the HIVE_SYNC__TOKEN default) —
+        indirection, never a secret byte. ONE tx. // O(1)."""
         if not isinstance(name, str) or _REPO_NAME_RE.match(name) is None:
             raise ValueError(
-                f"bad repo name {name!r} — want a [a-z0-9._-]+ slug "
-                "(it rides mirror paths and scope labels)"
+                f"bad repo name {name!r} — want a [a-z0-9._-]+ slug, no all-dot "
+                "names like '.' or '..' (it rides mirror paths and scope labels)"
             )
         if not url:
             raise ValueError("repo url must be non-empty")
