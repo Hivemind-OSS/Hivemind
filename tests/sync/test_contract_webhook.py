@@ -1,5 +1,6 @@
 """CT — the census-webhook nudge door (U1 D6): an HMAC-gated wake-up on the TUNNEL
-door only, never a data channel.
+door only, never a data channel. ONE nudge wakes the loop for ALL registered
+repos (the wake Event is loop-global — there is no per-repo nudge).
 
 Every test drives the REAL handler on a real loopback ``ThreadingHTTPServer`` with a
 real HMAC-SHA256 signature over the raw request bytes. The contract: with
@@ -196,6 +197,57 @@ def test_loopback_door_handler_treats_webhook_path_as_plain_mcp():
         assert len(spy.calls) == 1
     finally:
         stop()
+
+
+# ── the wake semantics: ONE nudge covers ALL registered repos ────────────────────
+def test_one_nudge_wakes_the_loop_for_all_repos(tmp_path):
+    """The nudge Event is loop-global: with two registered repos and a long poll
+    interval, ONE ``sync_nudge.set()`` (what the webhook door fires) yields one
+    tick that advances BOTH repos' watermarks — there is no per-repo nudge."""
+    import hive.app.sync as sync_mod
+    from hive.adapters.sqlite_db import connect
+    from hive.adapters.store_sqlite import SqliteEpisodeStore
+    from hive.app.config import Config
+    from hive.domain.change_evidence import ChangeEvidenceService
+    from tests.sync.conftest import Origin, meta, register_repo
+
+    store = SqliteEpisodeStore(connect(":memory:", check_same_thread=False))
+    a, b = Origin(tmp_path / "remote-a"), Origin(tmp_path / "remote-b")
+    register_repo(store, "alpha", a.url)
+    register_repo(store, "beta", b.url)
+    cfg = Config.load(db_path=":memory:", env={}, sync={
+        "mirror_dir": str(tmp_path / "mirrors"), "interval_s": 3600})
+    evidence = ChangeEvidenceService(reader=store, appender=store,
+                                     now=lambda: 424242, ranges=store)
+    thread = sync_mod.start_sync(cfg, store, evidence, threading.Lock())
+    try:
+        deadline = time.time() + 60
+        while time.time() < deadline and (
+                meta(store, "sync:alpha:last_tip") is None
+                or meta(store, "sync:beta:last_tip") is None):
+            time.sleep(0.05)                       # the immediate first tick lands both
+        a.commit("app.py", 'def greet(name):\n    return "yo " + name\n', "move a")
+        a.push()
+        b.commit("app.py", 'def greet(name):\n    return "ho " + name\n', "move b")
+        b.push()
+        tip_a = a.origin_sha("refs/heads/main")
+        tip_b = b.origin_sha("refs/heads/main")
+        thread.sync_nudge.set()                    # ← the ONE wake the webhook fires
+        deadline = time.time() + 60
+        while time.time() < deadline and (
+                meta(store, "sync:alpha:last_tip") != tip_a
+                or meta(store, "sync:beta:last_tip") != tip_b):
+            time.sleep(0.05)
+        assert meta(store, "sync:alpha:last_tip") == tip_a, (
+            "one nudge must wake the loop for alpha"
+        )
+        assert meta(store, "sync:beta:last_tip") == tip_b, (
+            "…and for beta — the wake is loop-global, never per-repo"
+        )
+    finally:
+        thread.sync_stop.set()
+        thread.sync_nudge.set()
+        thread.join(timeout=30)
 
 
 # ── run_http_dual wiring: the route lives on the TUNNEL door alone ───────────────

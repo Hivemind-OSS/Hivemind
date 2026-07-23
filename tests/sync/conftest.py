@@ -1,9 +1,13 @@
 """Shared substrate for the sync contract tests: REAL tmp git origins (a bare
 remote + a work clone pushed into), the REAL sqlite store (prod factory, prod
-thread posture), and a SyncService builder wired exactly like the entrypoint
-does it (ChangeEvidenceService with ``ranges=store``, one global lock). Receipts
-in these tests are built by the REAL ``python -m hive.census.cli build``
-subprocess — never a mock of git or of the census.
+thread posture), and a registry-driven SyncService builder wired exactly like the
+entrypoint does it (ChangeEvidenceService with ``ranges=store``, one global
+lock). Receipts in these tests are built by the REAL ``python -m hive.census.cli
+build`` subprocess — never a mock of git or of the census.
+
+NOTE: ``tests/contract/conftest.py`` (the FROZEN suite) imports ``ANCHOR``,
+``Origin``, ``git`` and ``harness_env`` from here — that surface may grow but
+never shrink or rename.
 """
 from __future__ import annotations
 
@@ -13,7 +17,7 @@ import subprocess
 import sys
 import threading
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Sequence
 
 import numpy as np
 import pytest
@@ -24,6 +28,7 @@ from hive.domain.change_evidence import ChangeEvidenceService
 
 DIM = 4
 ANCHOR = "app.py::greet"                 # the path::Symbol the seeded episodes anchor on
+REPO = "alpha"                           # the default registry name single-repo tests use
 
 # The test harness's own git calls must not inherit a hook-style GIT_DIR the test
 # under way may have planted in os.environ (that leak is exactly what the code
@@ -101,13 +106,51 @@ def store() -> SqliteEpisodeStore:
     return SqliteEpisodeStore(connect(":memory:", check_same_thread=False))
 
 
+def register_repo(store: SqliteEpisodeStore, name: str, url: str, *,
+                  canonical_ref: str = "main", token_env: str = "",
+                  ts: int = 0) -> None:
+    """One v3 registry row (``token_env`` names an env VAR, never a secret)."""
+    store.repo_add(name=name, url=url, canonical_ref=canonical_ref,
+                   token_env=token_env, added_ts=int(ts))
+
+
 def seed_episode(store: SqliteEpisodeStore, text: str, anchor: str = ANCHOR,
-                 ts: int = 10, meta: str = "") -> int:
-    eid, _ = store.stage(text=text, weight=1.0, tags="", proposed_by="w", ts=ts,
-                         anchor=anchor, meta=meta)
-    assert store.approve(eid, "h", np.eye(DIM, dtype=np.float32)[0],
-                         expected_version=0, approved_ts=ts)
+                 *, repo: str = REPO, ts: int = 10,
+                 trust: str = "provisional") -> int:
+    """Stage + complete one repo-scoped anchored episode through the v3 store
+    signature (``stage(anchors=[(repo, anchor)], repos=[])``)."""
+    eid, _ = store.stage(text=text, weight=1.0, proposed_by="w", ts=ts,
+                         polarity="neutral",
+                         anchors=[(repo, anchor)] if anchor else [],
+                         repos=[])
+    assert store.complete(eid, np.eye(DIM, dtype=np.float32)[0],
+                          expected_version=0, trust=trust, last_active_ts=ts)
     return eid
+
+
+def anchor_fp(store: SqliteEpisodeStore, episode_id: int,
+              repo: str = REPO, anchor: str = ANCHOR) -> dict:
+    """The parsed ``episode_anchors.fp_meta`` carrier for one binding ({} when
+    empty/unparseable)."""
+    row = store.conn.execute(
+        "SELECT fp_meta FROM episode_anchors "
+        "WHERE episode_id=? AND repo=? AND anchor=?",
+        (episode_id, repo, anchor)).fetchone()
+    assert row is not None, f"no anchor row for ({episode_id}, {repo!r}, {anchor!r})"
+    if not row["fp_meta"]:
+        return {}
+    parsed = json.loads(row["fp_meta"])
+    return parsed if isinstance(parsed, dict) else {}
+
+
+def drift_rows(store: SqliteEpisodeStore, repo: str = REPO,
+               tip_sha: Optional[str] = None) -> list[dict]:
+    sql = "SELECT * FROM anchor_drift WHERE repo=?"
+    args: list = [repo]
+    if tip_sha is not None:
+        sql += " AND tip_sha=?"
+        args.append(tip_sha)
+    return [dict(r) for r in store.conn.execute(sql + " ORDER BY tip_sha, anchor", args)]
 
 
 def evidence_rows(store: SqliteEpisodeStore, kind: str = "change_outcome") -> list[dict]:
@@ -125,23 +168,22 @@ def meta(store: SqliteEpisodeStore, key: str) -> Optional[str]:
     return None if row is None else str(row[0])
 
 
-def make_service(url: str | Origin, store: SqliteEpisodeStore, tmp_path: Path,
-                 run=None, now=None, **cfg_kw):
-    """A SyncService wired the entrypoint way: real store as reader/appender/ranges,
-    one fresh global lock, mirror under tmp_path. ``run`` (optional) injects the
-    spawn seam — an observing/replacing double; ``now`` (optional) injects the clock
-    seam (``sync:last_sync_ts`` stamps through it); None keeps each real default."""
+def make_service(store: SqliteEpisodeStore, tmp_path: Path,
+                 run=None, now=None, *, lifecycle=None, **cfg_kw):
+    """A v3 SyncService wired the entrypoint way: the real store as
+    reader/appender/ranges AND the repo registry (rows pre-registered by the
+    test), one fresh global lock, mirrors under ``tmp_path/mirrors/<name>``.
+    ``run``/``now`` inject the spawn/clock seams; ``lifecycle`` injects the
+    post-ingest promotion sweep handle; None keeps each real default."""
     from hive.app.config import SyncConfig
     from hive.app.sync import SyncService
-    canonical_ref = cfg_kw.pop("canonical_ref", "")
-    cfg = SyncConfig(repo_url=url.url if isinstance(url, Origin) else url,
-                     mirror_dir=str(tmp_path / "mirror"), **cfg_kw)
+    cfg = SyncConfig(mirror_dir=str(tmp_path / "mirrors"), **cfg_kw)
     evidence = ChangeEvidenceService(reader=store, appender=store,
                                      now=lambda: 424242, ranges=store)
     return SyncService(cfg, store, evidence, threading.Lock(),
                        **({"run": run} if run is not None else {}),
                        **({"now": now} if now is not None else {}),
-                       canonical_ref=canonical_ref)
+                       lifecycle=lifecycle)
 
 
 def build_receipt(repo: Path, base: str, head: str, out_dir: Path,
@@ -155,3 +197,37 @@ def build_receipt(repo: Path, base: str, head: str, out_dir: Path,
     proc = subprocess.run(argv, capture_output=True, text=True, env=harness_env())
     assert proc.returncode == 0, f"census build failed: {proc.stderr.strip()}"
     return json.loads(out.read_text(encoding="utf-8"))
+
+
+class RecordingRun:
+    """The scripted ``Run`` seam: records every spawn; answers from ``script``
+    ((predicate, CompletedProcess-or-callable) pairs, first match wins), else
+    delegates to the REAL ``default_run``."""
+
+    def __init__(self, script: Sequence[tuple] = ()) -> None:
+        self.calls: list[list[str]] = []
+        self.script = list(script)
+
+    def __call__(self, argv, env=None, timeout=None):
+        from hive.app.sync import default_run
+        argv = [str(a) for a in argv]
+        self.calls.append(argv)
+        for pred, result in self.script:
+            if pred(argv):
+                return result(argv) if callable(result) else result
+        return default_run(argv, env=env, timeout=timeout)
+
+
+def completed(argv=(), rc: int = 0, stdout: str = "", stderr: str = ""):
+    return subprocess.CompletedProcess(list(argv), rc, stdout=stdout, stderr=stderr)
+
+
+class RecordingLifecycle:
+    """A promote_established recorder (the sync leg's duck-typed handle)."""
+
+    def __init__(self) -> None:
+        self.calls = 0
+
+    def promote_established(self) -> list[int]:
+        self.calls += 1
+        return []
