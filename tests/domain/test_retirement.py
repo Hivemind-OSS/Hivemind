@@ -7,6 +7,7 @@ verify_stale vs verify_current recency, outcome-hurt with the identity-diversity
 rule (same-identity two-call self-destruction blocked), mechanical contradiction +
 the supersede near-dup winner, and general memories on clauses 2–3 only. Advisory
 ``hive_flag`` rows never qualify."""
+
 from __future__ import annotations
 
 import dataclasses
@@ -15,32 +16,50 @@ import pytest
 
 from hive.domain.conflict import ConflictNote
 from hive.domain.evidence_kinds import (
-    EK_OUTCOME_HELPED, EK_OUTCOME_HURT, EK_OUTCOME_VERIFIED_HURT,
-    EK_VERIFY_CURRENT, EK_VERIFY_STALE,
+    EK_OUTCOME_HELPED,
+    EK_OUTCOME_HURT,
+    EK_OUTCOME_VERIFIED_HURT,
+    EK_VERIFY_CURRENT,
+    EK_VERIFY_STALE,
 )
 from hive.domain.retirement import (
-    Eligibility, EvidenceRow, retirement_evidence,
+    Eligibility,
+    EvidenceRow,
+    retirement_evidence,
 )
 from tests.fakes._fakes import make_episode
 
 CALLER = "session-A"
 OTHER = "session-B"
 
-ANCHORED = make_episode(7, "the greet helper trims its input",
-                        anchors=[("alpha", "app.py::greet")])
+ANCHORED = make_episode(
+    7, "the greet helper trims its input", anchors=[("alpha", "app.py::greet")]
+)
 GENERAL = make_episode(7, "a general memory with no anchors")
 
 
-def _gate(episode=ANCHORED, *, caller=CALLER, drift=(), rows=(), pairs=(),
-          winner=None) -> Eligibility:
-    return retirement_evidence(episode=episode, caller_identity=caller,
-                               drift_verdicts=drift, evidence_rows=rows,
-                               conflict_pairs=pairs, winner_cosine=winner)
+def _gate(
+    episode=ANCHORED, *, caller=CALLER, drift=(), rows=(), pairs=(), winner=None
+) -> Eligibility:
+    return retirement_evidence(
+        episode=episode,
+        caller_identity=caller,
+        drift_verdicts=drift,
+        evidence_rows=rows,
+        conflict_pairs=pairs,
+        winner_cosine=winner,
+    )
 
 
 def _note(a: int, b: int, relation: str = "contradiction") -> ConflictNote:
-    return ConflictNote(a_id=min(a, b), b_id=max(a, b), relation=relation,
-                        cosine=0.9, anchor="", loser_hint=None)
+    return ConflictNote(
+        a_id=min(a, b),
+        b_id=max(a, b),
+        relation=relation,
+        cosine=0.9,
+        anchor="",
+        loser_hint=None,
+    )
 
 
 # ── the carrier ────────────────────────────────────────────────────────────────
@@ -57,17 +76,20 @@ def test_healthy_evidence_less_target_is_ineligible():
 
 
 # ── clause 1a: materialized drift at the canonical tip (anchored only) ─────────
-@pytest.mark.parametrize("verdict", ["anchor_missing", "anchor_changed",
-                                     "blast_radius_changed"])
+@pytest.mark.parametrize(
+    "verdict", ["anchor_missing", "anchor_changed", "blast_radius_changed"]
+)
 def test_qualifying_drift_verdicts_qualify_an_anchored_target(verdict):
     got = _gate(drift=(verdict,))
     assert got.eligible is True
     assert got.signals == (f"drift:{verdict}",)
-    assert any("drift" in s for s in got.signals)   # the CT-7 substring contract
+    assert any("drift" in s for s in got.signals)  # the CT-7 substring contract
 
 
-@pytest.mark.parametrize("verdict", ["fresh", "branch_scoped", "unverifiable",
-                                     "made_up_verdict", "", None, 42])
+@pytest.mark.parametrize(
+    "verdict",
+    ["fresh", "branch_scoped", "unverifiable", "made_up_verdict", "", None, 42],
+)
 def test_non_qualifying_or_malformed_drift_never_qualifies(verdict):
     assert _gate(drift=(verdict,)).eligible is False
 
@@ -87,25 +109,37 @@ def test_drift_is_na_for_a_general_memory():
 def test_verify_stale_alone_qualifies():
     got = _gate(rows=[EvidenceRow(EK_VERIFY_STALE, "census", 100)])
     assert got.eligible is True and got.signals == ("verify_stale",)
-    assert any("stale" in s for s in got.signals)   # the CT-7 substring contract
+    assert any("stale" in s for s in got.signals)  # the CT-7 substring contract
 
 
 def test_verify_stale_newer_than_current_qualifies():
-    got = _gate(rows=[EvidenceRow(EK_VERIFY_CURRENT, "census", 100),
-                      EvidenceRow(EK_VERIFY_STALE, "census", 200)])
+    got = _gate(
+        rows=[
+            EvidenceRow(EK_VERIFY_CURRENT, "census", 100),
+            EvidenceRow(EK_VERIFY_STALE, "census", 200),
+        ]
+    )
     assert got.eligible is True and "verify_stale" in got.signals
 
 
 def test_newer_verify_current_disqualifies_the_stale_row():
-    got = _gate(rows=[EvidenceRow(EK_VERIFY_STALE, "census", 100),
-                      EvidenceRow(EK_VERIFY_CURRENT, "census", 200)])
+    got = _gate(
+        rows=[
+            EvidenceRow(EK_VERIFY_STALE, "census", 100),
+            EvidenceRow(EK_VERIFY_CURRENT, "census", 200),
+        ]
+    )
     assert got.eligible is False
 
 
 def test_verify_tie_disqualifies_fail_closed():
     # equal timestamps: the re-verification wins — stale must be STRICTLY newer.
-    got = _gate(rows=[EvidenceRow(EK_VERIFY_STALE, "census", 100),
-                      EvidenceRow(EK_VERIFY_CURRENT, "census", 100)])
+    got = _gate(
+        rows=[
+            EvidenceRow(EK_VERIFY_STALE, "census", 100),
+            EvidenceRow(EK_VERIFY_CURRENT, "census", 100),
+        ]
+    )
     assert got.eligible is False
 
 
@@ -120,7 +154,7 @@ def test_outcome_verified_hurt_qualifies_any_actor():
     # server-written, non-forgeable — the recorded actor is irrelevant (census).
     got = _gate(rows=[EvidenceRow(EK_OUTCOME_VERIFIED_HURT, "census", 5)])
     assert got.eligible is True and got.signals == ("outcome_verified_hurt",)
-    assert any("hurt" in s for s in got.signals)    # the CT-7 substring contract
+    assert any("hurt" in s for s in got.signals)  # the CT-7 substring contract
 
 
 def test_outcome_hurt_from_other_identity_qualifies():
@@ -149,7 +183,7 @@ def test_outcome_clause_reaches_general_memories():
 def test_conflict_pair_naming_the_target_qualifies():
     got = _gate(pairs=[_note(7, 9)])
     assert got.eligible is True and got.signals == ("contradiction",)
-    assert any("contradiction" in s for s in got.signals)   # CT-7 substring
+    assert any("contradiction" in s for s in got.signals)  # CT-7 substring
 
 
 def test_conflict_pair_naming_the_target_as_b_side_qualifies():
@@ -171,8 +205,9 @@ def test_winner_cosine_qualifies_a_supersede():
     assert got.eligible is True and got.signals == ("winner_near_dup",)
 
 
-@pytest.mark.parametrize("bad", [float("nan"), float("inf"), float("-inf"),
-                                 1.5, -1.5, "high", object()])
+@pytest.mark.parametrize(
+    "bad", [float("nan"), float("inf"), float("-inf"), 1.5, -1.5, "high", object()]
+)
 def test_non_finite_or_out_of_range_winner_cosine_never_qualifies(bad):
     assert _gate(winner=bad).eligible is False
 
@@ -186,29 +221,43 @@ def test_contradiction_clause_reaches_general_memories():
 def test_flag_kind_rows_never_qualify():
     # a conflict_flags row smuggled into the ledger feed is a foreign kind — the
     # gate reads only its own vocabulary, so agent-asserted flags are inert.
-    rows = [EvidenceRow("conflict_flag", OTHER, 5), EvidenceRow("flag", OTHER, 5),
-            EvidenceRow("hive_flag", OTHER, 5)]
+    rows = [
+        EvidenceRow("conflict_flag", OTHER, 5),
+        EvidenceRow("flag", OTHER, 5),
+        EvidenceRow("hive_flag", OTHER, 5),
+    ]
     assert _gate(rows=rows).eligible is False
     assert _gate(GENERAL, rows=rows).eligible is False
 
 
 # ── signal accumulation: every satisfied clause, clause order ──────────────────
 def test_all_satisfied_clauses_are_stamped_in_clause_order():
-    got = _gate(drift=("anchor_missing",),
-                rows=[EvidenceRow(EK_VERIFY_STALE, "census", 100),
-                      EvidenceRow(EK_OUTCOME_VERIFIED_HURT, "census", 5),
-                      EvidenceRow(EK_OUTCOME_HURT, OTHER, 6)],
-                pairs=[_note(7, 9)], winner=0.9)
+    got = _gate(
+        drift=("anchor_missing",),
+        rows=[
+            EvidenceRow(EK_VERIFY_STALE, "census", 100),
+            EvidenceRow(EK_OUTCOME_VERIFIED_HURT, "census", 5),
+            EvidenceRow(EK_OUTCOME_HURT, OTHER, 6),
+        ],
+        pairs=[_note(7, 9)],
+        winner=0.9,
+    )
     assert got.eligible is True
-    assert got.signals == ("drift:anchor_missing", "verify_stale",
-                           "outcome_verified_hurt", "outcome_hurt_other_identity",
-                           "contradiction", "winner_near_dup")
+    assert got.signals == (
+        "drift:anchor_missing",
+        "verify_stale",
+        "outcome_verified_hurt",
+        "outcome_hurt_other_identity",
+        "contradiction",
+        "winner_near_dup",
+    )
 
 
 # ── total + fail-closed: undecidable ⇒ ineligible, never a raise ───────────────
 def test_malformed_evidence_rows_are_skipped_while_good_rows_qualify():
-    got = _gate(rows=["garbage", 42, ("only-kind",), None,
-                      (EK_OUTCOME_HURT, OTHER, 5)])       # the 3-sequence form
+    got = _gate(
+        rows=["garbage", 42, ("only-kind",), None, (EK_OUTCOME_HURT, OTHER, 5)]
+    )  # the 3-sequence form
     assert got.eligible is True
     assert got.signals == ("outcome_hurt_other_identity",)
 
@@ -223,9 +272,14 @@ def test_attr_shaped_rows_are_read():
 
 
 def test_none_feeds_are_ineligible_never_a_raise():
-    got = retirement_evidence(episode=ANCHORED, caller_identity=CALLER,
-                              drift_verdicts=None, evidence_rows=None,
-                              conflict_pairs=None, winner_cosine=None)
+    got = retirement_evidence(
+        episode=ANCHORED,
+        caller_identity=CALLER,
+        drift_verdicts=None,
+        evidence_rows=None,
+        conflict_pairs=None,
+        winner_cosine=None,
+    )
     assert got == Eligibility(False, ())
 
 
@@ -239,9 +293,13 @@ def test_whole_gate_fault_fails_closed_to_ineligible():
         def id(self):
             raise RuntimeError("carrier exploded")
 
-    got = retirement_evidence(episode=Broken(), caller_identity=CALLER,
-                              drift_verdicts=(), conflict_pairs=(),
-                              evidence_rows=[EvidenceRow(EK_VERIFY_STALE, "c", 1)])
+    got = retirement_evidence(
+        episode=Broken(),
+        caller_identity=CALLER,
+        drift_verdicts=(),
+        conflict_pairs=(),
+        evidence_rows=[EvidenceRow(EK_VERIFY_STALE, "c", 1)],
+    )
     assert got == Eligibility(False, ())
 
 

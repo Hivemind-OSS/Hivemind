@@ -28,6 +28,7 @@ import time
 from collections.abc import Callable, MutableMapping
 from dataclasses import dataclass
 from pathlib import Path
+from typing import IO
 
 _CHUNK_BYTES = 65_536
 # Bounded belt-and-suspenders waits after SIGKILL; never reached in practice.
@@ -77,7 +78,7 @@ class _CappedReader(threading.Thread):
     a full pipe; the flag records that the kept stream is incomplete.
     """
 
-    def __init__(self, stream, cap: int) -> None:
+    def __init__(self, stream: IO[bytes], cap: int) -> None:
         super().__init__(daemon=True)
         self._stream = stream
         self._cap = cap
@@ -109,14 +110,16 @@ class _CappedReader(threading.Thread):
 
 
 def _minimal_env(extra_env: tuple[tuple[str, str], ...]) -> dict[str, str]:
-    env = {key: os.environ[key] for key in ("PATH", "HOME", "TMPDIR") if key in os.environ}
+    env = {
+        key: os.environ[key] for key in ("PATH", "HOME", "TMPDIR") if key in os.environ
+    }
     env["LANG"] = "C.UTF-8"
     env["LC_ALL"] = "C.UTF-8"
     env.update(dict(extra_env))
     return env
 
 
-def _kill_group(proc: subprocess.Popen) -> None:
+def _kill_group(proc: subprocess.Popen[bytes]) -> None:
     try:
         # start_new_session makes the child the leader, so pid == pgid.
         os.killpg(proc.pid, signal.SIGKILL)
@@ -159,6 +162,8 @@ def run_hermetic(
             duration_s=time.monotonic() - started,
         )
 
+    # Both streams are PIPE, so Popen guarantees the handles exist.
+    assert proc.stdout is not None and proc.stderr is not None
     out_reader = _CappedReader(proc.stdout, max_output_bytes)
     err_reader = _CappedReader(proc.stderr, max_output_bytes)
     out_reader.start()

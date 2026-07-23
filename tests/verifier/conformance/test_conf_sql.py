@@ -92,5 +92,6 @@ def test_sql_tests_live_red_names_the_failing_check(
     assert result.tests.state == "failed"
     assert result.tests.failed >= 1
     assert any(
-        "deliberately failing check" in diag.message for diag in result.tests.diagnostics
+        "deliberately failing check" in diag.message
+        for diag in result.tests.diagnostics
     )

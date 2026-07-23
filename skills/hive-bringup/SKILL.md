@@ -63,10 +63,10 @@ hive logs      # follow the daemon logs (Ctrl-C detaches); `hive logs ngrok` for
   so it is recoverable; `hive restore` rolls back) — run it via **hive-backup-restore**. Do **not**
   hand-roll `docker compose down -v`: that destroys the store with no snapshot.
 - **Boot is a fail-fast state machine** — `config → migrate → index → embedder.warm → serve.ready`.
-  The exit code is the contract: `0` clean · `78` bad config (an out-of-range `.env` knob — or a
-  partial `HIVE_SYNC__*` config, e.g. a token without `HIVE_SYNC__REPO_URL` — fails loudly, never
-  clamps) · `70` an internal boot step failed · `69` the embedder never became
-  resident (no recall possible — treat as unhealthy).
+  The exit code is the contract: `0` clean · `78` bad config (an out-of-range `.env` knob fails
+  loudly, never clamps — and a registered repo's `--token-env` var absent from the server's
+  environment fails here too, naming the var) · `70` an internal boot step failed · `69` the
+  embedder never became resident (no recall possible — treat as unhealthy).
 - **No live reload** — config applies only at boot. After any `.env` edit, `hive up` to restart.
 
 ## Verify it actually serves (optional smoke test)

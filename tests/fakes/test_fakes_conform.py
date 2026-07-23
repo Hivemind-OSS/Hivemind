@@ -1,13 +1,23 @@
 """P0.0 — every fake satisfies its runtime_checkable Protocol."""
+
 from __future__ import annotations
 
 from hive.domain.ports import (
-    Clock, ConflictFlagStore, EmbeddingProvider, MetaStore, MutableVectorIndex,
-    SecretScanner, VectorIndex,
+    Clock,
+    ConflictFlagStore,
+    EmbeddingProvider,
+    MetaStore,
+    MutableVectorIndex,
+    SecretScanner,
+    VectorIndex,
 )
 from tests.fakes import (
-    FakeClock, FakeConflictFlagStore, FakeIndex, FakeProvider,
-    FakeScanner, FakeStore,
+    FakeClock,
+    FakeConflictFlagStore,
+    FakeIndex,
+    FakeProvider,
+    FakeScanner,
+    FakeStore,
 )
 
 

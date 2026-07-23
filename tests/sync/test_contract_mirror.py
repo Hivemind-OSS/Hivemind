@@ -14,6 +14,7 @@ non-symlink children of the configured mirrors dir, fails open per name, and
 runs BEFORE the empty-registry early-return. The credential never escapes the
 mirror's remote config — logs and the error meta are redacted.
 """
+
 from __future__ import annotations
 
 import logging
@@ -22,28 +23,37 @@ import shutil
 from hive.app.sync import META_LAST_SYNC_TS
 
 from tests.sync.conftest import (
-    Origin, RecordingRun, git, make_service, meta, register_repo,
+    Origin,
+    RecordingRun,
+    git,
+    make_service,
+    meta,
+    register_repo,
 )
 
 
-def test_tick_fetches_all_branches_per_repo_mirror(origin, store, tmp_path, monkeypatch):
+def test_tick_fetches_all_branches_per_repo_mirror(
+    origin, store, tmp_path, monkeypatch
+):
     # a hook-style GIT_DIR leak: every git call under test must strip it
     monkeypatch.setenv("GIT_DIR", str(tmp_path / "bogus-git-dir"))
     git(origin.work, "checkout", "-q", "-b", "feature")
-    origin.commit("app.py", 'def other():\n    return 1\n', "feature work")
+    origin.commit("app.py", "def other():\n    return 1\n", "feature work")
     origin.push("feature")
     git(origin.work, "checkout", "-q", "main")
     register_repo(store, "alpha", origin.url)
     svc = make_service(store, tmp_path)
     svc.tick()
 
-    mirror = tmp_path / "mirrors" / "alpha"      # the slug path: <mirror_dir>/<name>
+    mirror = tmp_path / "mirrors" / "alpha"  # the slug path: <mirror_dir>/<name>
     tip = origin.origin_sha("refs/heads/main")
     feature_tip = origin.origin_sha("refs/heads/feature")
     assert git(mirror, "rev-parse", "refs/remotes/origin/main").stdout.strip() == tip
     # ALL branches ride the one fetch — drift demand needs non-canonical tips
-    assert git(mirror, "rev-parse",
-               "refs/remotes/origin/feature").stdout.strip() == feature_tip
+    assert (
+        git(mirror, "rev-parse", "refs/remotes/origin/feature").stdout.strip()
+        == feature_tip
+    )
     assert meta(store, "sync:alpha:last_error") is None
 
     # the remote moves; the SAME mirror (repair-free) fetches the new tip next tick
@@ -51,7 +61,9 @@ def test_tick_fetches_all_branches_per_repo_mirror(origin, store, tmp_path, monk
     origin.push()
     new_tip = origin.origin_sha("refs/heads/main")
     svc.tick()
-    assert git(mirror, "rev-parse", "refs/remotes/origin/main").stdout.strip() == new_tip
+    assert (
+        git(mirror, "rev-parse", "refs/remotes/origin/main").stdout.strip() == new_tip
+    )
 
 
 def test_unreachable_repo_fails_open_others_sync(store, tmp_path, caplog):
@@ -65,16 +77,16 @@ def test_unreachable_repo_fails_open_others_sync(store, tmp_path, caplog):
     register_repo(store, "beta", healthy.url)
     svc = make_service(store, tmp_path, now=lambda: 31_337)
     with caplog.at_level(logging.WARNING, logger="hive.sync"):
-        svc.tick()                                   # ← re-raising here breaks fail-open
-    assert meta(store, "sync:alpha:last_error")      # the fault under ALPHA's key
+        svc.tick()  # ← re-raising here breaks fail-open
+    assert meta(store, "sync:alpha:last_error")  # the fault under ALPHA's key
     assert meta(store, "sync:beta:last_error") is None
     assert meta(store, "sync:beta:last_tip") == healthy.origin_sha("refs/heads/main")
-    assert meta(store, META_LAST_SYNC_TS) is None    # a faulted tick never stamps
+    assert meta(store, META_LAST_SYNC_TS) is None  # a faulted tick never stamps
     assert any("sync" in r.name for r in caplog.records)
     assert not (tmp_path / "mirrors" / "alpha").exists()
 
-    late = Origin(late_root)                         # the remote comes up in place
-    svc.tick()                                       # the next tick retries alpha
+    late = Origin(late_root)  # the remote comes up in place
+    svc.tick()  # the next tick retries alpha
     assert meta(store, "sync:alpha:last_tip") == late.origin_sha("refs/heads/main")
     assert meta(store, META_LAST_SYNC_TS) == "31337"  # now fully clean ⇒ stamped
 
@@ -85,33 +97,44 @@ def test_absent_token_env_var_fails_that_repo_open_named(store, tmp_path, monkey
     the sibling repo is untouched."""
     monkeypatch.delenv("HIVE_SYNC_TEST_MISSING_TOKEN", raising=False)
     healthy = Origin(tmp_path / "remote-b")
-    register_repo(store, "alpha", str(tmp_path / "whatever.git"),
-                  token_env="HIVE_SYNC_TEST_MISSING_TOKEN")
+    register_repo(
+        store,
+        "alpha",
+        str(tmp_path / "whatever.git"),
+        token_env="HIVE_SYNC_TEST_MISSING_TOKEN",
+    )
     register_repo(store, "beta", healthy.url)
     run = RecordingRun()
     svc = make_service(store, tmp_path, run=run)
     svc.tick()
 
     err = meta(store, "sync:alpha:last_error") or ""
-    assert "HIVE_SYNC_TEST_MISSING_TOKEN" in err     # the operator sees WHICH var
+    assert "HIVE_SYNC_TEST_MISSING_TOKEN" in err  # the operator sees WHICH var
     assert meta(store, "sync:beta:last_tip") == healthy.origin_sha("refs/heads/main")
     # the broken repo never even reached git (token resolution precedes the clone)
-    assert not any("clone" in c and str(tmp_path / "whatever.git") in " ".join(c)
-                   for c in run.calls)
+    assert not any(
+        "clone" in c and str(tmp_path / "whatever.git") in " ".join(c)
+        for c in run.calls
+    )
 
 
-def test_token_resolved_from_row_named_var_and_never_logged(store, tmp_path,
-                                                            caplog, monkeypatch):
+def test_token_resolved_from_row_named_var_and_never_logged(
+    store, tmp_path, caplog, monkeypatch
+):
     """The row-named var is resolved at tick time; an https clone failure whose
     git stderr echoes the rewritten URL must reach logs and the per-repo error
     REDACTED — the credential lives only in the mirror's remote config, never in
     any observable surface."""
     monkeypatch.setenv("HIVE_SYNC_TEST_TOKEN", "sekrit-token-123")
-    register_repo(store, "alpha", "https://127.0.0.1:9/owner/repo.git",
-                  token_env="HIVE_SYNC_TEST_TOKEN")
+    register_repo(
+        store,
+        "alpha",
+        "https://127.0.0.1:9/owner/repo.git",
+        token_env="HIVE_SYNC_TEST_TOKEN",
+    )
     svc = make_service(store, tmp_path)
     with caplog.at_level(logging.DEBUG, logger="hive.sync"):
-        svc.tick()                                   # connection refused, fast + offline
+        svc.tick()  # connection refused, fast + offline
     joined = "\n".join(r.getMessage() for r in caplog.records)
     assert "sekrit-token-123" not in joined
     assert "sekrit-token-123" not in (meta(store, "sync:alpha:last_error") or "")
@@ -121,17 +144,25 @@ def test_authenticated_url_shapes():
     """The token rides ONLY an https remote URL (the x-access-token form); non-https
     URLs and an empty token pass through byte-identical."""
     from hive.app.sync import authenticated_url
-    assert (authenticated_url("https://github.com/o/r.git", "tok")
-            == "https://x-access-token:tok@github.com/o/r.git")
-    assert authenticated_url("https://github.com/o/r.git", "") == "https://github.com/o/r.git"
-    assert authenticated_url("/local/path/origin.git", "tok") == "/local/path/origin.git"
+
+    assert (
+        authenticated_url("https://github.com/o/r.git", "tok")
+        == "https://x-access-token:tok@github.com/o/r.git"
+    )
+    assert (
+        authenticated_url("https://github.com/o/r.git", "")
+        == "https://github.com/o/r.git"
+    )
+    assert (
+        authenticated_url("/local/path/origin.git", "tok") == "/local/path/origin.git"
+    )
 
 
 def test_registry_canonical_ref_overrides_tracked_branch(store, tmp_path):
     """The registry row's canonical_ref names the tracked line; the origin default
     (HEAD) is only the fallback. With canonical_ref=trunk, a trunk push is what
     the ledger follows and what the per-repo watermark records."""
-    origin = Origin(tmp_path / "remote")             # default branch: main
+    origin = Origin(tmp_path / "remote")  # default branch: main
     git(origin.work, "checkout", "-q", "-b", "trunk")
     origin.commit("app.py", 'def greet(name):\n    return "trunk " + name\n', "trunk")
     origin.push("trunk")
@@ -139,8 +170,12 @@ def test_registry_canonical_ref_overrides_tracked_branch(store, tmp_path):
     svc = make_service(store, tmp_path)
     svc.tick()
     trunk_tip = origin.origin_sha("refs/heads/trunk")
-    assert git(tmp_path / "mirrors" / "alpha", "rev-parse",
-               "refs/remotes/origin/trunk").stdout.strip() == trunk_tip
+    assert (
+        git(
+            tmp_path / "mirrors" / "alpha", "rev-parse", "refs/remotes/origin/trunk"
+        ).stdout.strip()
+        == trunk_tip
+    )
     assert meta(store, "sync:alpha:last_tip") == trunk_tip
 
 
@@ -148,10 +183,10 @@ def test_registry_reread_each_tick_no_restart(origin, store, tmp_path):
     """D2: a repo registered AFTER the service started is picked up by the very
     next tick — no restart, no rebuild."""
     svc = make_service(store, tmp_path)
-    svc.tick()                                       # empty registry: inert
+    svc.tick()  # empty registry: inert
     assert not (tmp_path / "mirrors").exists()
 
-    register_repo(store, "alpha", origin.url)        # registered mid-flight
+    register_repo(store, "alpha", origin.url)  # registered mid-flight
     svc.tick()
     assert meta(store, "sync:alpha:last_tip") == origin.origin_sha("refs/heads/main")
 
@@ -164,7 +199,7 @@ def test_empty_registry_tick_is_inert(store, tmp_path):
     run = RecordingRun()
     svc = make_service(store, tmp_path, run=run, now=lambda: 999)
     svc.tick()
-    assert run.calls == []                           # ← cloning here is the mutation
+    assert run.calls == []  # ← cloning here is the mutation
     assert not (tmp_path / "mirrors").exists()
     assert meta(store, META_LAST_SYNC_TS) is None
 
@@ -184,10 +219,10 @@ def test_deregistered_repo_mirror_pruned_next_tick(store, tmp_path):
 
     assert store.repo_remove("alpha")
     svc.tick()
-    assert not (tmp_path / "mirrors" / "alpha").exists()   # ← the prune
-    assert (tmp_path / "mirrors" / "beta").is_dir()        # sibling mirror kept
+    assert not (tmp_path / "mirrors" / "alpha").exists()  # ← the prune
+    assert (tmp_path / "mirrors" / "beta").is_dir()  # sibling mirror kept
     assert meta(store, "sync:beta:last_tip") == b.origin_sha("refs/heads/main")
-    assert meta(store, "sync:alpha:last_error") is None    # a clean prune is silent
+    assert meta(store, "sync:alpha:last_error") is None  # a clean prune is silent
 
 
 def test_emptied_registry_tick_prunes_leftover_spawn_free(origin, store, tmp_path):
@@ -203,8 +238,8 @@ def test_emptied_registry_tick_prunes_leftover_spawn_free(origin, store, tmp_pat
     assert store.repo_remove("alpha")
     run.calls.clear()
     svc.tick()
-    assert run.calls == []                          # ← still no spawn on empty registry
-    assert not (tmp_path / "mirrors" / "alpha").exists()   # ← but the leftover is gone
+    assert run.calls == []  # ← still no spawn on empty registry
+    assert not (tmp_path / "mirrors" / "alpha").exists()  # ← but the leftover is gone
 
 
 def test_prune_skips_slug_invalid_and_symlink_children(store, tmp_path):
@@ -214,10 +249,10 @@ def test_prune_skips_slug_invalid_and_symlink_children(store, tmp_path):
     and the empty-registry tick stays spawn-free throughout."""
     mirrors = tmp_path / "mirrors"
     mirrors.mkdir(parents=True)
-    stray = mirrors / "Not A Slug"                  # uppercase + spaces: not ours
+    stray = mirrors / "Not A Slug"  # uppercase + spaces: not ours
     stray.mkdir()
     (stray / "x.txt").write_text("x")
-    outside = tmp_path / "outside"                  # a slug-named link escaping the base
+    outside = tmp_path / "outside"  # a slug-named link escaping the base
     outside.mkdir()
     (outside / "data.txt").write_text("precious")
     link = mirrors / "linked"
@@ -226,10 +261,12 @@ def test_prune_skips_slug_invalid_and_symlink_children(store, tmp_path):
     svc = make_service(store, tmp_path, run=run)
     svc.tick()
     assert run.calls == []
-    assert stray.is_dir() and (stray / "x.txt").exists()   # slug-invalid: untouched
-    assert link.is_symlink()                               # link skipped, not followed
-    assert (outside / "data.txt").exists()                 # the target survives whole
-    assert meta(store, "sync:linked:last_error") is None   # a skip is silent, not a fault
+    assert stray.is_dir() and (stray / "x.txt").exists()  # slug-invalid: untouched
+    assert link.is_symlink()  # link skipped, not followed
+    assert (outside / "data.txt").exists()  # the target survives whole
+    assert (
+        meta(store, "sync:linked:last_error") is None
+    )  # a skip is silent, not a fault
 
 
 def test_prune_fault_fails_open_tick_continues(store, tmp_path, monkeypatch, caplog):
@@ -247,12 +284,12 @@ def test_prune_fault_fails_open_tick_continues(store, tmp_path, monkeypatch, cap
     monkeypatch.setattr(shutil, "rmtree", boom)
     svc = make_service(store, tmp_path, now=lambda: 31_337)
     with caplog.at_level(logging.WARNING, logger="hive.sync"):
-        svc.tick()                       # ← raising here breaks the tick fail-open
-    assert leftover.is_dir()             # the fault left it in place (next tick retries)
+        svc.tick()  # ← raising here breaks the tick fail-open
+    assert leftover.is_dir()  # the fault left it in place (next tick retries)
     assert "prune" in (meta(store, "sync:gone:last_error") or "")
     assert meta(store, "sync:beta:last_tip") == healthy.origin_sha("refs/heads/main")
     assert meta(store, "sync:beta:last_error") is None
-    assert meta(store, META_LAST_SYNC_TS) is None    # a faulted tick never stamps
+    assert meta(store, META_LAST_SYNC_TS) is None  # a faulted tick never stamps
     joined = "\n".join(r.getMessage() for r in caplog.records)
     assert "repo=gone" in joined and "leg=prune" in joined
 
@@ -265,5 +302,5 @@ def test_clean_tick_stamps_last_sync_ts_via_now_seam(origin, store, tmp_path):
     svc = make_service(store, tmp_path, now=lambda: next(ticks))
     svc.tick()
     assert meta(store, META_LAST_SYNC_TS) == "111000"  # the seam clock, not time.time()
-    svc.tick()                                       # nothing moved — still a clean sync
+    svc.tick()  # nothing moved — still a clean sync
     assert meta(store, META_LAST_SYNC_TS) == "222000"

@@ -4,6 +4,7 @@ the change→episode join's candidate set, v3 ``(id, repo, anchor, polarity)`` r
 ``append_evidence`` (ChangeEvidenceAppender — the atomic, idempotent batch append the
 census ingest drives). One tx() per batch is REQUIRED, not stylistic: tx() is
 non-reentrant, so a partial receipt must be impossible from outside."""
+
 from __future__ import annotations
 
 import numpy as np
@@ -12,7 +13,10 @@ import pytest
 from hive.adapters.sqlite_db import connect
 from hive.adapters.store_sqlite import SqliteEpisodeStore
 from hive.domain.evidence_kinds import (
-    EK_CHANGE_OUTCOME, EK_OUTCOME_HURT, EK_OUTCOME_VERIFIED_HURT, EK_VERIFY_STALE,
+    EK_CHANGE_OUTCOME,
+    EK_OUTCOME_HURT,
+    EK_OUTCOME_VERIFIED_HURT,
+    EK_VERIFY_STALE,
 )
 from hive.domain.ports import AnchoredEpisodeReader, ChangeEvidenceAppender
 
@@ -20,15 +24,32 @@ DIM = 4
 
 
 def _store() -> SqliteEpisodeStore:
-    return SqliteEpisodeStore(connect(":memory:"))          # ledger-only: no index needed
+    return SqliteEpisodeStore(connect(":memory:"))  # ledger-only: no index needed
 
 
-def _approved(s: SqliteEpisodeStore, text: str, *, anchors=(),
-              trust: str = "established", polarity: str = "neutral") -> int:
-    eid, _ = s.stage(text=text, weight=1.0, proposed_by="w", ts=10,
-                     anchors=list(anchors), polarity=polarity)
-    assert s.complete(eid, np.eye(DIM, dtype=np.float32)[0], expected_version=0,
-                      trust=trust, last_active_ts=10)
+def _approved(
+    s: SqliteEpisodeStore,
+    text: str,
+    *,
+    anchors=(),
+    trust: str = "established",
+    polarity: str = "neutral",
+) -> int:
+    eid, _ = s.stage(
+        text=text,
+        weight=1.0,
+        proposed_by="w",
+        ts=10,
+        anchors=list(anchors),
+        polarity=polarity,
+    )
+    assert s.complete(
+        eid,
+        np.eye(DIM, dtype=np.float32)[0],
+        expected_version=0,
+        trust=trust,
+        last_active_ts=10,
+    )
     return eid
 
 
@@ -36,9 +57,14 @@ def _evidence_count(s: SqliteEpisodeStore) -> int:
     return s.conn.execute("SELECT COUNT(*) AS c FROM evidence_events").fetchone()["c"]
 
 
-def _row(eid: int, payload: str = '{"schema":"change_outcome/v1"}',
-         *, kind: str = EK_CHANGE_OUTCOME, actor: str = "census",
-         ts: int = 100) -> tuple:
+def _row(
+    eid: int,
+    payload: str = '{"schema":"change_outcome/v1"}',
+    *,
+    kind: str = EK_CHANGE_OUTCOME,
+    actor: str = "census",
+    ts: int = 100,
+) -> tuple:
     return (eid, kind, actor, ts, payload)
 
 
@@ -58,12 +84,20 @@ def test_real_store_satisfies_change_evidence_appender():
 
 def test_anchored_episodes_returns_repo_keyed_binding_rows():
     s = _store()
-    a = _approved(s, "anchored prohibition",
-                  anchors=[("hive", "hive/app/mcp_server.py::handle")],
-                  polarity="dont")
-    _approved(s, "scope-only fact", anchors=[])              # no binding ⇒ excluded
-    pend, _ = s.stage(text="still pending", weight=1.0, proposed_by="w",
-                      ts=10, anchors=[("hive", "hive/x.py::f")])   # pending ⇒ excluded
+    a = _approved(
+        s,
+        "anchored prohibition",
+        anchors=[("hive", "hive/app/mcp_server.py::handle")],
+        polarity="dont",
+    )
+    _approved(s, "scope-only fact", anchors=[])  # no binding ⇒ excluded
+    pend, _ = s.stage(
+        text="still pending",
+        weight=1.0,
+        proposed_by="w",
+        ts=10,
+        anchors=[("hive", "hive/x.py::f")],
+    )  # pending ⇒ excluded
     rows = s.anchored_episodes()
     assert rows == [(a, "hive", "hive/app/mcp_server.py::handle", "dont")]
     assert pend not in {i for i, _r, _a, _p in rows}
@@ -73,19 +107,32 @@ def test_anchored_episodes_one_row_per_binding():
     # an episode carrying several bindings yields one 4-tuple per binding — the
     # repo-filtered join (change_evidence.match_anchors) consumes them directly.
     s = _store()
-    eid = _approved(s, "bound in two repos",
-                    anchors=[("beta", "b.py::g"), ("alpha", "a.py::f")])
-    assert s.anchored_episodes() == [(eid, "alpha", "a.py::f", "neutral"),
-                                     (eid, "beta", "b.py::g", "neutral")]
+    eid = _approved(
+        s, "bound in two repos", anchors=[("beta", "b.py::g"), ("alpha", "a.py::f")]
+    )
+    assert s.anchored_episodes() == [
+        (eid, "alpha", "a.py::f", "neutral"),
+        (eid, "beta", "b.py::g", "neutral"),
+    ]
 
 
 def test_anchored_episodes_excludes_scope_only_rows():
     s = _store()
-    eid, _ = s.stage(text="repo-scoped, no code binding", weight=1.0,
-                     proposed_by="w", ts=10, repos=["alpha"])
-    assert s.complete(eid, np.eye(DIM, dtype=np.float32)[0], expected_version=0,
-                      trust="established", last_active_ts=10)
-    assert s.anchored_episodes() == []                       # anchor='' never joins
+    eid, _ = s.stage(
+        text="repo-scoped, no code binding",
+        weight=1.0,
+        proposed_by="w",
+        ts=10,
+        repos=["alpha"],
+    )
+    assert s.complete(
+        eid,
+        np.eye(DIM, dtype=np.float32)[0],
+        expected_version=0,
+        trust="established",
+        last_active_ts=10,
+    )
+    assert s.anchored_episodes() == []  # anchor='' never joins
 
 
 def test_anchored_episodes_includes_all_trust_states():
@@ -108,10 +155,12 @@ def test_evidence_rows_for_filters_to_the_named_kinds_in_order():
     eid = _approved(s, "gated target", anchors=[("r", "a.py::f")])
     s.insert_audit(eid, EK_VERIFY_STALE, "census", 30, "{}")
     s.insert_audit(eid, EK_OUTCOME_HURT, "agent-B", 10, "{}")
-    s.insert_audit(eid, EK_CHANGE_OUTCOME, "census", 20, "{}")   # foreign kind
+    s.insert_audit(eid, EK_CHANGE_OUTCOME, "census", 20, "{}")  # foreign kind
     rows = s.evidence_rows_for(eid, [EK_OUTCOME_HURT, EK_VERIFY_STALE])
-    assert rows == [(EK_VERIFY_STALE, "census", 30),
-                    (EK_OUTCOME_HURT, "agent-B", 10)]     # insertion order, kinds only
+    assert rows == [
+        (EK_VERIFY_STALE, "census", 30),
+        (EK_OUTCOME_HURT, "agent-B", 10),
+    ]  # insertion order, kinds only
     # the 3-tuple shape is exactly what retirement_evidence's duck-typed feed takes
     kind, actor, ts = rows[0]
     assert isinstance(kind, str) and isinstance(actor, str) and isinstance(ts, int)
@@ -149,7 +198,8 @@ def test_append_evidence_inserts_batch_and_returns_row_ids():
     assert len(inserted) == 2 and skipped == 0
     got = s.conn.execute(
         "SELECT id, episode_id, kind, actor, ts, payload FROM evidence_events "
-        "ORDER BY id").fetchall()
+        "ORDER BY id"
+    ).fetchall()
     assert [r["id"] for r in got] == inserted
     assert {r["episode_id"] for r in got} == {a, b}
     assert all(r["kind"] == EK_CHANGE_OUTCOME and r["actor"] == "census" for r in got)
@@ -163,8 +213,8 @@ def test_append_evidence_same_batch_twice_is_idempotent():
     first = s.append_evidence(batch)
     assert len(first[0]) == 2 and first[1] == 0
     again = s.append_evidence(batch)
-    assert again == ([], 2)                                  # 0 new rows, all skipped
-    assert _evidence_count(s) == 2                           # never duplicated
+    assert again == ([], 2)  # 0 new rows, all skipped
+    assert _evidence_count(s) == 2  # never duplicated
 
 
 def test_append_evidence_dedup_keyed_on_content_never_on_ts_or_actor():
@@ -173,8 +223,9 @@ def test_append_evidence_dedup_keyed_on_content_never_on_ts_or_actor():
     s = _store()
     a = _approved(s, "one", anchors=[("r", "a.py::f")])
     s.append_evidence([_row(a, ts=100)])
-    inserted, skipped = s.append_evidence([(a, EK_CHANGE_OUTCOME, "census-retry", 999,
-                                            '{"schema":"change_outcome/v1"}')])
+    inserted, skipped = s.append_evidence(
+        [(a, EK_CHANGE_OUTCOME, "census-retry", 999, '{"schema":"change_outcome/v1"}')]
+    )
     assert (inserted, skipped) == ([], 1)
     assert _evidence_count(s) == 1
 
@@ -184,7 +235,7 @@ def test_append_evidence_distinct_payload_is_a_new_row_not_a_skip():
     a = _approved(s, "one", anchors=[("r", "a.py::f")])
     s.append_evidence([_row(a, '{"head_sha":"aaa"}')])
     inserted, skipped = s.append_evidence([_row(a, '{"head_sha":"bbb"}')])
-    assert len(inserted) == 1 and skipped == 0               # a different change's outcome
+    assert len(inserted) == 1 and skipped == 0  # a different change's outcome
 
 
 def test_append_evidence_poisoned_row_mid_batch_leaves_zero_rows():
@@ -192,10 +243,13 @@ def test_append_evidence_poisoned_row_mid_batch_leaves_zero_rows():
     s = _store()
     a = _approved(s, "one", anchors=[("r", "a.py::f")])
     b = _approved(s, "two", anchors=[("r", "b.py::g")])
-    poisoned = [_row(a), (b, EK_CHANGE_OUTCOME, "census", None, "{}")]  # ts=None ⇒ NOT NULL raise
+    poisoned = [
+        _row(a),
+        (b, EK_CHANGE_OUTCOME, "census", None, "{}"),
+    ]  # ts=None ⇒ NOT NULL raise
     with pytest.raises(Exception):
         s.append_evidence(poisoned)
-    assert _evidence_count(s) == 0                           # the good row rolled back too
+    assert _evidence_count(s) == 0  # the good row rolled back too
 
 
 def test_append_evidence_empty_batch_is_a_noop():

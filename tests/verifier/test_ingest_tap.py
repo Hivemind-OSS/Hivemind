@@ -68,7 +68,12 @@ Result: FAIL
 class TestTapCounts:
     def test_tap_green_bats_stream(self) -> None:
         ingested = ingest_tap(GREEN_BATS, exit_code=0)
-        assert (ingested.passed, ingested.failed, ingested.errored, ingested.skipped) == (
+        assert (
+            ingested.passed,
+            ingested.failed,
+            ingested.errored,
+            ingested.skipped,
+        ) == (
             2,
             0,
             0,
@@ -93,7 +98,8 @@ class TestTapCounts:
         ingested = ingest_tap(RED_PG_PROVE, exit_code=1)
         assert (ingested.passed, ingested.failed) == (0, 1)
         assert any(
-            "deliberately failing check" in diag.message for diag in ingested.diagnostics
+            "deliberately failing check" in diag.message
+            for diag in ingested.diagnostics
         )
         assert classify(ingested)[0] == "failed"
 
@@ -122,8 +128,15 @@ class TestTapCounts:
     def test_tap_zero_plan_zero_points_is_not_run(self) -> None:
         # "1..0" declares zero tests and delivers zero: a complete, vacuous
         # report — zero counts, which classify() refuses to call a pass.
-        ingested = ingest_tap(b"1..0 # Skipped: no tests for this platform\n", exit_code=0)
-        assert (ingested.passed, ingested.failed, ingested.errored, ingested.skipped) == (
+        ingested = ingest_tap(
+            b"1..0 # Skipped: no tests for this platform\n", exit_code=0
+        )
+        assert (
+            ingested.passed,
+            ingested.failed,
+            ingested.errored,
+            ingested.skipped,
+        ) == (
             0,
             0,
             0,
@@ -136,7 +149,9 @@ class TestTapParseFailure:
     def test_tap_bailout_raises(self) -> None:
         # An aborted run is not a result, even with green points before the bail.
         with pytest.raises(ReportParseError, match="abort"):
-            ingest_tap(b"1..5\nok 1 boots\nBail out! database unreachable\n", exit_code=1)
+            ingest_tap(
+                b"1..5\nok 1 boots\nBail out! database unreachable\n", exit_code=1
+            )
 
     def test_tap_plan_only_no_results_raises(self) -> None:
         with pytest.raises(ReportParseError):

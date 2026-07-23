@@ -18,7 +18,7 @@ import sys
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from hive.census.diff import Change, ChangeSet
 
@@ -108,8 +108,10 @@ def _graph_offset(tree: Path) -> str:
         import matrix.paths
 
         keys = json.loads(
-            Path(matrix.paths.default_manifest()).read_text(encoding="utf-8"))
-        return matrix.root_offset(tree, [Path(key) for key in keys])
+            Path(matrix.paths.default_manifest()).read_text(encoding="utf-8")
+        )
+        offset: str = matrix.root_offset(tree, [Path(key) for key in keys])
+        return offset
     except Exception:
         return ""
 
@@ -141,9 +143,14 @@ def build_graphs(change: Change) -> GraphPair:
                 f"the change names {expected}; the worktree does not match "
                 "the diff"
             )
-    return GraphPair(base=base, head=head, base_stamp=base_stamp,
-                     head_stamp=head_stamp, base_offset=base_offset,
-                     head_offset=head_offset)
+    return GraphPair(
+        base=base,
+        head=head,
+        base_stamp=base_stamp,
+        head_stamp=head_stamp,
+        base_offset=base_offset,
+        head_offset=head_offset,
+    )
 
 
 _START_LINE_RE = re.compile(r"L(\d+)")
@@ -153,7 +160,7 @@ _START_LINE_RE = re.compile(r"L(\d+)")
 _SYMBOL_PARENT_RELATIONS = frozenset({"contains", "defines", "method"})
 
 
-def _is_file_node(data: dict) -> bool:
+def _is_file_node(data: dict[str, Any]) -> bool:
     # Built graphs mark no node with file_type="file" (every node is "code");
     # a file's own node is recognizable only as label == basename(source_file).
     # Reading one as a symbol would absorb whole-file spans and poison the
@@ -182,7 +189,9 @@ def _repo_relative(source_file: str, offset: str) -> str:
     return f"{offset}/{source_file}" if offset else source_file
 
 
-def _symbol_index(g_nx, *, offset: str = "") -> dict[str, list[tuple[int, str, str]]]:
+def _symbol_index(
+    g_nx: Any, *, offset: str = ""
+) -> dict[str, list[tuple[int, str, str]]]:
     """repo-relative source_file -> [(start_line, node_id, label)], by start line.
 
     Keys ride the REPO dialect (``offset`` re-roots the graph's spelling) so the
@@ -209,7 +218,7 @@ def _symbol_index(g_nx, *, offset: str = "") -> dict[str, list[tuple[int, str, s
     return by_file
 
 
-def _qualified_symbol(g_nx, node_id: str, label: str) -> str:
+def _qualified_symbol(g_nx: Any, node_id: str, label: str) -> str:
     """The combdrift spelling: a top-level name, or Class.method.
 
     A declaring parent that is neither the file's own node nor
@@ -217,7 +226,9 @@ def _qualified_symbol(g_nx, node_id: str, label: str) -> str:
     """
     name = _bare_name(label)
     for parent_id in sorted(g_nx.predecessors(node_id), key=str):
-        relation = str((g_nx.get_edge_data(parent_id, node_id) or {}).get("relation") or "")
+        relation = str(
+            (g_nx.get_edge_data(parent_id, node_id) or {}).get("relation") or ""
+        )
         if relation not in _SYMBOL_PARENT_RELATIONS:
             continue
         parent = g_nx.nodes[parent_id]
@@ -229,7 +240,7 @@ def _qualified_symbol(g_nx, node_id: str, label: str) -> str:
     return name
 
 
-def node_subject(g_nx, node_id: str, *, offset: str = "") -> str | None:
+def node_subject(g_nx: Any, node_id: str, *, offset: str = "") -> str | None:
     """The ``path::Symbol`` receipt spelling of one graph node, or None.
 
     ``offset`` re-roots the graph's source_file dialect to repo-root-relative
@@ -308,7 +319,9 @@ def attribute_symbols(
                     if not found:
                         pairs.add((changed.path, None))
                     for node_id, label in found:
-                        pairs.add((changed.path, _qualified_symbol(g_nx, node_id, label)))
+                        pairs.add(
+                            (changed.path, _qualified_symbol(g_nx, node_id, label))
+                        )
         except Exception:
             pairs.add((changed.path, None))
     return tuple(

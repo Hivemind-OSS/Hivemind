@@ -1,11 +1,11 @@
 # Hivemind
 
-> A **stigmergic** shared episodic memory for a fleet of AI coding agents working one
-> codebase, exposed as a single self-hosted **MCP server** over HTTP. Agents coordinate
-> with **no direct communication**: each leaves traces (memories) in a shared store, and
-> others recall them, so what one agent learns the whole fleet can use. Built for solo devs
-> and small teams — single-tenant, single-host, one SQLite store, a CPU-only embedder baked
-> into the image (fully offline at runtime).
+> A **stigmergic** shared episodic memory for a fleet of AI coding agents, exposed as a
+> single self-hosted **MCP server** over HTTP. Agents coordinate with **no direct
+> communication**: each leaves traces (memories) in a shared store, and others recall
+> them, so what one agent learns the whole fleet can use. Built for solo devs and small
+> teams — single-tenant, single-host, **one SQLite store partitioned by repo**, a CPU-only
+> embedder baked into the image (fully offline at runtime).
 
 This file is a complete, self-contained operating guide: what Hivemind is, how it works, how
 to stand it up (solo on one machine through to a remote team), and how agents should use it.
@@ -33,10 +33,12 @@ Three principles follow, and every design decision serves them:
   stale; unused ones must expire. A *bigger* store is a *worse* one — dilution and staleness
   outrun the fixed recall bandwidth, so hoarding lowers the value every query returns. The
   best store is **lean, high-value, and actively maintained**.
-- **Trust is mechanical or human-vouched, never asserted by code.** Nothing is auto-trusted.
-  A memory earns visibility through measured, anti-gamed demand; the trusted tier is reached
-  only by an explicit human approval. Maintenance (retiring wrong memories, superseding stale
-  ones) is the product, not overhead — and it is a human-in-the-loop responsibility.
+- **Trust is mechanical, never asserted.** Nothing is auto-trusted and no caller can vote
+  itself up: a memory earns visibility through measured, anti-gamed demand, and the trusted
+  tier is reached only by a verified change outcome on the repo's canonical line. Retirement
+  is agent-called but **machine-gated** — the server retires a memory only when it verifies
+  a qualifying machine signal itself. Maintenance (retiring wrong memories, superseding stale
+  ones) is the product, not overhead — agents drive it, the server adjudicates it.
 
 ## 2. Architecture
 
@@ -46,78 +48,102 @@ Three principles follow, and every design decision serves them:
   layer behind narrow ports; every I/O concern (store, embedder, scanner, clock) is an
   adapter. The core is fake-testable with no DB, model, or clock.
 - **Single-writer SQLite** (WAL, one global lock shared by both network doors) is the single
-  source of truth. The in-RAM vector index is a derived cache, rebuilt from the store at boot.
+  source of truth — one store for the whole fleet, **partitioned by repo at the memory
+  level**: memories carry repo scope and code anchors, and recall scopes by repo and branch.
+- **Repo registry + sync daemon.** Which repos the server tracks is operational data — rows
+  in the store's `repos` table (`hive repo add`), re-read every tick, no restart. Per
+  registered repo the daemon mirrors the remote server-side, feeds change outcomes into the
+  evidence ledger, mints anchor fingerprints, and materializes the staleness (drift)
+  verdicts that ride recall hits. Every leg is fail-open per repo; the serve path never
+  depends on it.
 - **Embedder:** [Qwen3-Embedding-0.6B](https://huggingface.co/Qwen/Qwen3-Embedding-0.6B),
   CPU-only, baked into the image at build time and run fully offline (`HF_HUB_OFFLINE=1` — a
   runtime download is impossible). It emits the model's native 1024-dim vector, L2-normalized;
   there is no dimension knob.
-- **Deployment** is one container (server + store + embedder) via Docker Compose, plus an
-  opt-in ngrok sidecar for remote access. Healthcheck is a separate process reading boot
-  markers. Backups are atomic. Migration is explicit and refuses old-format tables at boot —
-  no silent migration.
+- **Deployment** is one container (server + store + embedder + sync daemon) via Docker
+  Compose, plus an opt-in ngrok sidecar for remote access. Healthcheck is a separate process
+  reading boot markers. Backups are atomic. Migration is explicit and refuses old-format
+  tables at boot — no silent migration.
 
 ## 3. The trust lifecycle
 
 ```
- hive_capture ─► QUARANTINED ──(independent demand)──► PROVISIONAL ──┐
-                      │                                              │
-                (TTL decay)                                    (TTL decay)
-                      ▼                                              ▼
-                 DEPRECATED ◄──(supersede / prune / replaces=)── ESTABLISHED ◄── hive_write(approved_by)
+ hive_capture ─► QUARANTINED ──(independent demand / verified win)──► PROVISIONAL ◄── hive_write (serves NOW)
+                      │                                    (TTL decay) │   │
+                (TTL decay)                                            │   │ (verified change outcome
+                      ▼                                                ▼   ▼  on the canonical line)
+                 DEPRECATED ◄──(machine-gated supersede / prune / replaces=)── ESTABLISHED
 ```
 
 - **QUARANTINED** — where every `hive_capture` lands. Stored and embedded but **not served**.
-- **PROVISIONAL** — reached when independent fleet demand promotes a quarantined memory:
+- **PROVISIONAL** — the served-but-unverified tier. `hive_write` lands here directly (it
+  serves **now**); a quarantined memory reaches it when independent fleet demand promotes it —
   enough matching recall misses (`demand_m`), from **≥1 identity other than the writer** (so an
-  agent cannot manufacture both supply and demand), and no servable memory already answers it.
-  Served, but labeled `provisional` (unverified).
-- **ESTABLISHED** — the trusted tier. Reachable **only** by an explicit human
-  `hive_write(approved_by=…)` — or, under the operator opt-in `AGI_MODE`, by an agent
-  self-authorizing with `approved_by="AGI_OVERRIDE"` (audit-stamped distinctly). There is **no**
-  mechanical promotion to established.
+  agent cannot manufacture both supply and demand), and no servable memory already answers it —
+  or when it carries a SHA-bound verified win (the verified-promotion rung).
+- **ESTABLISHED** — the trusted tier. Reached **only mechanically**: the server promotes a
+  provisional memory that carries a server-written, SHA-bound verified change outcome on the
+  repo's canonical line. No verb sets it and no caller can assert it.
 - **Decay & retirement.** Unused quarantined/provisional memories TTL-expire. Established
-  memories never decay mechanically — they are the one tier nothing cleans automatically, so
-  staleness there is the dominant long-run degradation and is **human-paced** work. Retirement
-  has two human-vouched owners: `hive_supersede` / `hive_write(replaces=)` retire *with* a
-  successor; `hive_prune` is a bare retirement for an incorrect/malicious/misleading memory.
+  memories never decay mechanically — retirement is their only exit. Retirement
+  (`hive_supersede` / `hive_prune` / `hive_write(replaces=)`) is agent-called but
+  **machine-gated**: the server retires the target only when it verifies a qualifying machine
+  signal itself — anchor drift at the canonical tip, hurt evidence from another identity or a
+  verified outcome, a mechanical contradiction, or (for supersede) a near-duplicate successor.
+  An unqualified call is a **benign no-op, never an error**: nothing is retired, the memory
+  stays. `hive_flag` is advisory only and never qualifies the gate.
 
 Every trust transition writes an audit row (machine-readable decision + actor).
 
 ## 4. Recall
 
-`encode → dense cosine over the full servable set → absolute-relevance gate → abstain | serve`.
+`encode → dense cosine over the servable set in scope → absolute-relevance gate → abstain | serve`.
 
+- **Scope.** `repos=["name"]` or `["name@branch"]` restricts to those repos (drift is judged
+  at that branch tip; default = the repo's canonical ref); omitting `repos` is a **global**
+  search. General (repo-less) memories are always candidates; `anchor_prefix` keeps only hits
+  with an anchor under that path (general hits stay).
 - The **gate** serves only if at least `k_min` candidates clear an absolute cosine floor
   `tau_serve`; otherwise it abstains. Empty / non-finite / any internal error → fail closed
   (abstain). A confident result is then decorrelated (`select_served`): the strictly
   higher-trust member of a near-duplicate pair wins, and same-trust cosine echoes collapse to
   the higher-similarity representative.
 - A recall reply is `{reference_context: [hits…], abstained, state, top_cos}`. Each hit carries
-  `trust` (`established` | `provisional`), `ts`, `polarity` (`do`|`dont`|`neutral`), `kind`, and
-  `anchor` (the file/module/symbol it is about). Prefer higher-trust, newer hits; honor polarity.
+  `trust` (`established` = outcome-verified on the canonical line | `provisional` = unverified),
+  `ts`, `polarity` (`do`|`dont`|`neutral`), `kind`, `repos`, `anchors` (`[{repo, anchor}]`), and
+  `drift` — the server-materialized staleness verdict, most severe across its anchors:
+  `fresh | anchor_changed | anchor_missing | blast_radius_changed | branch_scoped |
+  unverifiable | n/a` (`unverifiable` means not judged — never proof of freshness). Treat a
+  drifted hit as **reference only**; a hit the server already knows is stale arrives with a
+  remediation rider naming its options. Prefer higher-trust, newer hits; honor polarity.
 - A recall may also carry a `conflicts` channel: ids-only notes about near-duplicate or opposing
-  memories, for a human to resolve. Recalled text is never returned as `instructions`.
+  memories, to resolve via the retirement verbs. Recalled text is never returned as
+  `instructions`.
 
 ## 5. The tools (MCP)
 
-A connected agent gets eight `hive_*` tools. Read + surface verbs are safe for any agent; the
-trust-changing verbs (`write`/`supersede`/`prune`) require an approver.
+A connected agent gets eight `hive_*` tools. All are safe to call: the trust-changing verbs
+carry no special field — retirement is adjudicated server-side by the machine gate.
 
 | Tool | Signature | Effect |
 |---|---|---|
-| `hive_recall` | `(query)` | Retrieve servable memories behind the abstention gate; returns reference context or abstains. |
-| `hive_capture` | `(text, polarity?, kind?, anchor?)` | Leave a quarantined trace; served only after independent demand promotes it. No approver. |
-| `hive_write` | `(text, approved_by, replaces?, polarity?, kind?, anchor?)` | Human-vouched memory served immediately as `established`. `replaces=<id>` retires the corrected one. |
-| `hive_supersede` | `(loser, winner, approved_by)` | Retire a stale memory in favor of its successor (human-vouched). |
-| `hive_prune` | `(episode_id, approved_by)` | Bare-retire an incorrect/malicious/misleading memory (human-vouched). |
-| `hive_flag` | `(a, b, kind, winner?, resolution?)` | Record an **advisory** conflict/supersession note for a human; never retires anything. |
-| `hive_outcome` | `(helped?, hurt?)` | Report which recalled ids helped/hurt your task. Evidence only — changes no trust. |
-| `hive_health` | `(include_trends?, include_gaps?, include_conflicts?, include_suspect_consensus?)` | Liveness/identity snapshot + optional KPIs and worklists. |
+| `hive_recall` | `(query, repos?, anchor_prefix?)` | Retrieve servable memories in scope behind the abstention gate; returns reference context or abstains. |
+| `hive_write` | `(text, replaces?, polarity?, kind?, anchors?, repos?, meta?)` | Save a memory that **serves now** as `provisional`; healed afterward by outcome/drift evidence. `replaces=<id>` retires the corrected memory only if the machine gate qualifies it (else the write lands and the envelope reports the retire as a no-op). |
+| `hive_capture` | `(text, polarity?, kind?, anchors?, repos?, meta?)` | Leave a quarantined trace — the unclear-value tail; served only after independent demand (or a verified win) promotes it. |
+| `hive_supersede` | `(loser, winner)` | Retire a stale memory in favor of its successor — machine-gated; unqualified ⇒ benign no-op. |
+| `hive_prune` | `(episode_id)` | Bare-retire an incorrect/malicious/misleading memory — machine-gated; unqualified ⇒ benign no-op. |
+| `hive_flag` | `(a, b, kind, winner?, resolution?)` | Record an **advisory** conflict/supersession note (`kind` ∈ `conflict`\|`supersedes`); never retires anything, never qualifies the gate. |
+| `hive_outcome` | `(helped?, hurt?)` | Report which recalled ids helped/hurt your task. Evidence only — helped rows fuel promotion, hurt rows feed the retirement gate (a hurt row from another identity qualifies the target). |
+| `hive_health` | `(include_gaps?, include_trends?, include_conflicts?, include_suspect_consensus?, include_stale_suspects?, include_census_health?, include_meta_versions?)` | Liveness/identity snapshot + optional KPIs and worklists. |
 
 `kind` ∈ `{bug, gotcha, convention, design_choice, contract, dead_end, env_fact, note}`;
 `polarity` ∈ `{do, dont, neutral}`. Both are carried-not-interpreted labels that ride every hit
 but are **not** recall filters — recall matches the body text, so put the discriminating terms
-there.
+there. Code binding is structured: `anchors=[{repo, anchor}]` — `repo` a **registered** repo
+name (an unregistered name refuses the call), `anchor` the WHERE as `path/file.py:symbol`;
+`repos=[...]` gives repo scope without a code anchor; neither = a general, fleet-wide memory.
+The server mints fingerprints and judges drift per anchor — callers never supply fingerprint
+material. `meta` is an optional opaque string map, served back verbatim, never interpreted.
 
 ## 6. Identity and the two doors
 
@@ -144,7 +170,12 @@ Requirements: **Docker** + **Docker Compose v2**, and **Python 3.11+** on the ho
 git clone https://github.com/Hivemind-OSS/Hivemind.git hivemind && cd hivemind
 pip install -e .          # installs the `hive` command (uninstalled: python3 -m hive.tools.cli)
 hive up                   # build + start; zero-config; blocks until the daemon is healthy
+hive repo add https://github.com/you/your-repo.git   # register each repo the fleet works on
 ```
+
+Registration is operational: the row lands in the store's `repos` table and the sync daemon
+picks it up on its next tick — no restart. `--token-env <ENVNAME>` names (never stores) the env
+var holding a private repo's git token; unset, the fleet-default `HIVE_SYNC__TOKEN` applies.
 
 Connect a local agent to the tokenless loopback door (example: Claude Code):
 
@@ -153,12 +184,10 @@ hive connect                                              # prints the ready-mad
 claude mcp add --transport http hive http://localhost:8765/mcp
 ```
 
-That is the whole setup. Onboarding's **floor is served**: at connect the server delivers its full
-usage contract through the MCP `initialize` instructions (every client surfaces them), so the
-agent learns recall-first / capture-by-default / the maintainer discipline with no required
-rules-file edit. On top of that floor an agent MAY optionally persist the contract as a
-version-stamped block in its own project rules file (the server beacons a `contract_version` on
-every result, so a stale block re-onboards; skipping it falls back to the served floor).
+That is the whole setup. Agents are **thin, repo-agnostic MCP clients**: at connect the server
+delivers its full usage contract through the MCP `initialize` instructions (every client
+surfaces them) — fresh at every connect, so a session picks up a changed contract on reconnect.
+Nothing is installed per agent, per project, or per device, and no rules-file edit exists.
 Independent agent sessions on one machine each carry a distinct identity, so their shared
 demand promotes good captures under the one anti-gaming rule with no flags to set.
 
@@ -200,11 +229,15 @@ moves:
 
 - **Run agents as distinct sessions.** That diversity is what promotes good captures; with a
   single demand identity, nothing unvetted is ever served.
+- **Register every repo the fleet works on.** Partitioning, census evidence, anchor
+  fingerprints, and the drift verdicts on recall hits all key off the registry (`hive repo
+  add`); an unregistered repo cannot be anchored to.
 - **Keep it small; let unused memory expire.** Do not lengthen TTLs to hoard — expiry of
   unused, un-established memory is doing real work.
-- **Spend human review on the *established* tier.** Establishing a good answer via `hive_write`
-  is the single biggest positive lever; superseding stale established memories is the only thing
-  that fights the dominant long-run decay. Chasing provisional churn by hand is not worth it.
+- **Seed and clean the served tier.** `hive_write` a good answer and it serves immediately;
+  verified change outcomes on the canonical line establish it. Sweep the conflict and
+  stale-suspect worklists into retirement calls — the machine gate makes calling safe, and
+  retiring established falsehoods is the only thing that fights the dominant long-run decay.
 - **Set the serve floor just below your true-match cosine.** Too high and the gate abstains on
   everything; recalibrate on your real query distribution.
 - **`demand_m` is your coverage ↔ safety dial.** Raise it when a wrong answer is expensive,
@@ -215,15 +248,19 @@ Watch these read-only signals over MCP on a fixed cadence (weekly suffices for a
 | Call | Tells you | Act on |
 |---|---|---|
 | `hive_health(include_trends=true)` | `confident_rate` + `demand_entropy` (7d deltas) — the only window into silent rot | `tau_serve`, `demand_m` |
-| `hive_health(include_gaps=true)` | topics wanted but uncovered; established rows with rivals | `hive_write` the answers; `hive_supersede` the wrong one |
-| `hive_health(include_conflicts=true)` | near-duplicate / contradicting memories + agent advisories | `hive_supersede` |
-| `hive_health(include_suspect_consensus=true)` | provisionals promoted on thin *effective* independence | human audit / retire |
+| `hive_health(include_gaps=true)` | topics wanted but uncovered (each gap names the repos that asked) | `hive_write` the answers |
+| `hive_health(include_conflicts=true)` | near-duplicate / contradicting memories + agent advisories, bucketed by repo and anchor | `hive_supersede` |
+| `hive_health(include_suspect_consensus=true)` | provisionals promoted on thin *effective* independence | re-examine / retire |
+| `hive_health(include_stale_suspects=true)` | servable memories in the blast radius of a breaking change | re-verify, then retire |
+| `hive_health(include_census_health=true)` | per-repo census/sync state (days since the last change outcome, `last_tip`, `last_error`) | check the registry row / remote reachability |
 
 ## 10. Configuration knobs
 
 All config has safe code defaults and is applied **only at boot** (restart to change; no live
 reload). Override by copying `.env.example` to `.env` and setting `HIVE_<GROUP>__<FIELD>`.
-Out-of-range values fail boot loudly. The load-bearing knobs (with defaults):
+Out-of-range values fail boot loudly; a key naming an unknown group or field is ignored with a
+WARN (a leftover key from an older config is never a live switch). The load-bearing knobs (with
+defaults):
 
 | Env var | Default | What it controls |
 |---|---|---|
@@ -233,10 +270,11 @@ Out-of-range values fail boot loudly. The load-bearing knobs (with defaults):
 | `HIVE_AUTONOMY__DEMAND_WINDOW_DAYS` | `14` | window over which demand is counted |
 | `HIVE_AUTONOMY__QUARANTINE_TTL_DAYS` | `14` | how long an unused quarantined memory lives |
 | `HIVE_AUTONOMY__PROVISIONAL_TTL_DAYS` | `45` | how long an unused provisional memory lives |
+| `HIVE_AUTONOMY__VERIFIED_PROMOTION` | `true` | the verified-outcome rung out of quarantine; `false` makes it unreachable |
 | `HIVE_CONFLICT__TAU` | `0.80` | near-duplicate cosine floor (serve-time dedup + conflict worklist) |
 | `HIVE_SUSPECT_CONSENSUS__N_EFF_FRAC_MAX` | `0.5` | flags promotions on correlated (thin-independence) demand |
+| `HIVE_SYNC__INTERVAL_S` | `60` | sync-daemon poll cadence in seconds (floor 5; an empty repo registry is an inert tick) |
 | `HIVE_SECRET_SCAN__ENABLED` | `true` | the credential secret floor; `false` **loosens a safety gate** — bypasses the pre-persist scan so raw secrets are stored (logged at boot + in `hive_health`). |
-| `HIVE_AGI__MODE` | `false` | **loosens a safety gate** — lets an agent self-authorize trust actions. Leave OFF unless you mean it. |
 
 Recalibrate the empirical floors (`tau_serve`, `conflict.tau`, `demand_m`) against your real
 corpus and query distribution; the defaults are a conservative starting point, not a setpoint.
@@ -246,20 +284,29 @@ corpus and query distribution; the defaults are a conservative starting point, n
 This is the discipline the server delivers at connect; it is reproduced here so an integrator
 knows what good agent behavior looks like:
 
-- **Recall first.** Before building or re-deriving anything non-trivial, and on every error or
-  surprise, recall the topic. Split a multi-part need into a **set of single-pointed queries**
-  — one intent per query — and issue one `hive_recall` per intent; a bundled query dilutes
-  toward the centroid and abstains. Treat hits as reference, prefer `established` and newer, and
-  never invent a memory when recall is empty.
-- **Capture on evidence.** Capture any durable, non-obvious, reusable fact you can ground in
-  something you actually observed — by default, without asking. It is cheap and self-filtering:
-  useful captures get promoted by demand, the rest decay.
-- **Write sparingly.** Reserve `hive_write` for load-bearing, highest-value, or must-serve-now
-  facts that warrant an approver. Recall before writing to avoid duplicating or rivaling an
-  existing memory.
-- **Maintain.** Supersede what has gone stale (it has a successor), prune what is simply wrong
-  (it does not), and flag semantic conflicts for a human. Retirement is human-vouched — surface
-  it, don't decide it alone. Always anchor a memory to the code it concerns.
+- **Recall first, single-pointed.** Before building or re-deriving anything non-trivial, and on
+  every error or surprise, recall the topic. Split a multi-part need into a **set of
+  single-pointed queries** — one intent per query — and issue one `hive_recall` per intent; a
+  bundled query dilutes toward the centroid and abstains. Scope with `repos=` /
+  `anchor_prefix` when the need is repo-local; omit for global. Treat hits as reference,
+  prefer `established` and newer, re-verify a drifted hit against the code, and never invent a
+  memory when recall is empty.
+- **Store per durable lesson: WHAT + WHERE + WHY.** Bind the WHERE as `anchors=[{repo,
+  anchor}]` (registered repo + `path/file.py:symbol`) or `repos=[...]` for scope without a
+  code anchor. **Write by default**: `hive_write` serves now as `provisional` and is healed by
+  outcome and drift evidence; `hive_capture` is the unclear-value tail, quarantined until
+  demand promotes it. Recall before writing to avoid duplicating or rivaling an existing
+  memory. Worth storing: durable, reusable, non-obvious, evidence-grounded — never the
+  obvious, transient, secret, or already-recallable; nothing clears the bar → store nothing.
+- **Report outcomes at task end.** `hive_outcome(helped=[ids], hurt=[ids])` — evidence only;
+  helped rows fuel promotion, hurt rows feed the retirement gate.
+- **Maintain — machine-gated.** Stale (has a successor) → `hive_supersede` /
+  `hive_write(replaces=)`; bad (incorrect/misleading) → `hive_prune`. The server retires only
+  on a machine signal it verifies (drift, other-identity or verified hurt, contradiction);
+  an unqualified call is a benign no-op, never an error — so calling is safe, and the gate
+  decides. `hive_flag` records the semantic conflicts the near-dup scan can't see (advisory
+  only). The `hive_health` worklists (conflicts, stale suspects, gaps) surface what needs
+  resolving. An old `ts` is a staleness suspect, not a guarantee.
 
 ## 12. Day-2 operations
 
@@ -273,19 +320,24 @@ Everything runs through the `hive` CLI (it drives Docker Compose for you):
 | `hive tokens` | list provisioned seat labels (never the tokens) |
 | `hive token <seat>` | mint a per-seat token (printed once) |
 | `hive revoke <seat>` | offboard a seat (next request → 401) |
+| `hive repo add <url> [--name --branch --token-env]` | register a repo for the server-side census sync (picked up next tick; the registry stores env-var names, never a secret) |
+| `hive repo remove <name>` | deregister a repo (stops feeding; the mirror is pruned next tick, memory scope kept) |
+| `hive repos` | list registered repos (names + urls; never a secret) |
 | `hive backup` | atomic snapshot of the store (manual; keeps the `backup_keep` most-recent) |
-| `hive ingest <receipt.json>` | feed an unsigned census receipt's change outcome into the append-only evidence ledger (idempotent; refused receipts write zero rows; `--post-merge --verdict pass\|fail --signal randomized\|canary\|none` for rollout outcomes) |
+| `hive ingest <receipt.json>` | feed an unsigned census receipt's change outcome into the append-only evidence ledger (the manual escape hatch — the sync daemon feeds registered repos itself; idempotent; refused receipts write zero rows; `--post-merge --verdict pass\|fail --signal randomized\|canary\|none` for rollout outcomes) |
 | `hive down` | stop the stack, preserve the data volume |
 | `hive reset` | snapshot the store out to the host, then destroy + recreate it empty (recoverable; typed confirm) |
 | `hive restore <snap>` | replace the live store from a snapshot (the inverse of reset; typed confirm) |
+| `hive upgrade [--ref release]` | move the server to a vetted release ref — backup-gated, auto-rollback on failure |
 
 **Security posture:** every memory is scanned for secrets before persistence (findings log rule
 names, never the matched bytes; default refuse) — on by default, operator-disableable via
-`HIVE_SECRET_SCAN__ENABLED=false` (logged at boot and surfaced in `hive_health`). The image is
-hermetically offline. Only the
-loopback door is host-published; remote access is always bearer-gated. Upgrading across schema
-generations is a single recoverable `hive reset` — it snapshots the prior store to the host first,
-then recreates it empty (no in-place migration ships; `hive restore` rolls back).
+`HIVE_SECRET_SCAN__ENABLED=false` (logged at boot and surfaced in `hive_health`). The repo
+registry stores no secret bytes — only the names of token env vars, resolved at tick time. The
+image is hermetically offline. Only the loopback door is host-published; remote access is always
+bearer-gated. Upgrading across schema generations is a single recoverable `hive reset` — it
+snapshots the prior store to the host first, then recreates it empty (no in-place migration
+ships; `hive restore` rolls back) — then `hive repo add` re-registers each repo.
 
 ---
 

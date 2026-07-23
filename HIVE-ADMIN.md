@@ -1,7 +1,8 @@
 # HIVE-ADMIN — operating the Hivemind MCP server
 
-The administrator's reference for standing up a Hivemind server, connecting a fleet, tuning the
-safety/recall knobs, and running it day-2. Everything here goes through the `hive` CLI
+The administrator's reference for standing up a Hivemind server, connecting a fleet,
+registering the repos it works on, tuning the safety/recall knobs, and running it day-2.
+Everything here goes through the `hive` CLI
 (`pip install -e .` provides the command; uninstalled, `python3 -m hive.tools.cli` is identical).
 For *what Hivemind is* and the agent-facing memory contract, see `llms-full.txt` (the complete
 self-contained guide; `llms.txt` is the short link index); for the quickstart,
@@ -30,8 +31,9 @@ hive up                    # build + start; blocks until the daemon is healthy
   the volume; `hive reset` snapshots it out to the host and recreates it empty (recoverable — §5).
 - **Schema upgrades are not in-place.** This build refuses old-format tables at boot (no silent
   migration). If `hive up` crash-loops after pulling a new build, the volume predates the current
-  schema — run `hive reset` for a clean store. Reset snapshots the prior store to the host first,
-  so the upgrade is recoverable (`hive restore <snapshot>` rolls it back).
+  schema — run `hive reset` for a clean store, then re-register your repos (`hive repo add`, §4).
+  Reset snapshots the prior store to the host first, so the upgrade is recoverable
+  (`hive restore <snapshot>` rolls it back).
 - The first `hive up` builds the image and warms the embedder; if the health-wait times out on a
   slow host, raise it with `HIVE_HEALTH_TIMEOUT=<seconds>` (default `180`).
 
@@ -50,12 +52,12 @@ server-minted `Mcp-Session-Id` a conforming client echoes, or an explicit `X-Hiv
 for readable provenance). That per-session diversity is what promotes captures, so a **solo dev's**
 independent agents earn each other's memories with no flag and no per-agent token.
 
-Onboarding's **floor is served**: at connect the server delivers the usage contract over MCP
-(the `initialize` instructions), so each agent learns the recall-first / capture-by-default
-discipline with nothing required to be written into its rules file. Optionally, an agent may persist
-that contract as a version-stamped rules block in its own project file — the server beacons a
-`contract_version` on every result so a stale block re-onboards, and a missing block degrades to the
-served floor. That is the agent's own act; the operator installs nothing.
+Agents are **thin, repo-agnostic MCP clients** — the registration line above is the entire
+per-agent setup. The usage contract is delivered over MCP at connect (the `initialize`
+instructions, which every client surfaces), fresh every time, so a session picks up a changed
+contract on its next reconnect. Nothing is written into a rules file, no hooks or allowlists are
+installed, and there is no per-project or per-device tooling to maintain; the operator installs
+nothing on any workstation.
 
 ## 3. Connect a remote team
 
@@ -104,9 +106,10 @@ an old `.env` is ignored (a WARN, not a crash) — remove it. Offboard a seat an
 
 All config is applied **only at boot** — restart to change it; there is no live reload. Override by
 copying `.env.example` to `.env` and setting `HIVE_<GROUP>__<FIELD>`. An out-of-range value **fails
-boot loudly** (it never silently clamps). The defaults are a conservative starting point —
-recalibrate the empirical floors (`tau_serve`, `conflict.tau`, `demand_m`) against your real corpus
-and query distribution.
+boot loudly** (it never silently clamps); an env key naming an unknown group or field is ignored
+with a WARN (so a leftover key from an older config is never a live switch). The defaults are a
+conservative starting point — recalibrate the empirical floors (`tau_serve`, `conflict.tau`,
+`demand_m`) against your real corpus and query distribution.
 
 **Recall — the never-hallucinate gate**
 
@@ -128,10 +131,11 @@ and query distribution.
 | `HIVE_AUTONOMY__COMPETITOR_TAU` | `0.85` | candidate↔servable cosine above which the demand is "already answered" (no promotion) |
 | `HIVE_AUTONOMY__QUARANTINE_TTL_DAYS` | `14` | how long an unused quarantined memory lives |
 | `HIVE_AUTONOMY__PROVISIONAL_TTL_DAYS` | `45` | how long an unused provisional memory lives |
+| `HIVE_AUTONOMY__VERIFIED_PROMOTION` | `true` | the verified-outcome rung out of quarantine: a memory carrying a SHA-bound verified win promotes at the next demand tick (competitor veto retained); `false` makes the rung unreachable |
 | `HIVE_AUTONOMY__ANOMALY_TAU` | `0.95` | compact-cluster cosine floor for the flood-anomaly flag (detection-only) |
 | `HIVE_AUTONOMY__ANOMALY_MIN_CLUSTER` | `5` | ≥ this many near-identical neighbors ⇒ flag the promotion (it never blocks it) |
 
-**Conflict & suspect-consensus — human worklists (detection only)**
+**Conflict & suspect-consensus — review worklists (detection only)**
 
 | Env var | Default | Controls |
 |---|---|---|
@@ -149,38 +153,52 @@ and query distribution.
 | `HIVE_RETENTION__BACKUP_DIR` | `<db_dir>/backups` | where snapshots are written |
 | `HIVE_OBS__LOG_LEVEL` | `20` | logging level (Python `logging`; `20` = INFO) |
 | `HIVE_SECRET_SCAN__ENABLED` | `true` | the credential secret floor; `false` **loosens a safety gate** (bypasses the scan — raw secrets get stored) — see below |
-| `HIVE_AGI__MODE` | `false` | **loosens a safety gate** — see below. Leave OFF unless you mean it |
 
-**Server-side census sync — the automatic change-outcome feed**
+**Per-repo census sync — the repo registry + the automatic change-outcome feed**
+
+Which repos the sync daemon feeds is **operational data, not boot config**: register them and the
+daemon (always running) picks the change up on its next tick — no restart, and an empty registry
+is an inert tick (no git, no clone).
+
+```bash
+hive repo add <url> [--name <slug>] [--branch <ref>] [--token-env <ENVNAME>]
+hive repo remove <name>
+hive repos
+```
+
+Rows land in the store's `repos` table. `--name` defaults to the URL basename (slug grammar
+`[a-z0-9._-]+`); `--branch` is the canonical branch (default: the origin default branch);
+`--token-env` is the **NAME** of an env var holding that repo's git token — the name is stored,
+never the token, and unset it falls back to the fleet-default `HIVE_SYNC__TOKEN`, resolved from
+the environment at tick time. At boot the entrypoint probes that every registered credential var
+is present and fails loudly (`EX_CONFIG`, naming the vars) if one is missing. Removing a repo
+stops the feed and prunes its mirror next tick; episode scope rows are kept, so a re-registered
+repo picks its memories straight back up.
+
+Per registered repo (each under its own fail-open guard) the daemon mirrors the remote at
+`<mirror_dir>/<name>/` and runs three legs: it feeds every landing on the canonical branch into
+the change-outcome evidence ledger (one unsigned receipt per new watermark..tip range, ingested
+post-merge, then the verified-outcome `established` sweep runs), backfills missing anchor
+fingerprints against the canonical tip, and materializes per-anchor staleness (drift) verdicts —
+at the canonical tip plus any branch tips recall demanded. Every leg is fail-open: an unreachable
+remote or a broken leg skips that repo's tick and the next tick retries; the other repos are
+untouched. The loop's own knobs:
 
 | Env var | Default | Controls |
 |---|---|---|
-| `HIVE_SYNC__REPO_URL` | *(unset)* | arms the feed: the server mirrors this repo and ingests every landing on the tracked branch (`HIVE_CENSUS__CANONICAL_REF`, else the origin default) as `change_outcome` evidence. Unset ⇒ byte-inert (no thread, no clone) |
-| `HIVE_SYNC__TOKEN` | *(unset)* | read-only token for a private remote — never logged, never in a receipt; it lives only in the mirror's git remote config |
 | `HIVE_SYNC__INTERVAL_S` | `60` | poll cadence in seconds (floor 5) |
-| `HIVE_SYNC__WEBHOOK_SECRET` | *(unset)* | arms `POST /census-webhook` on the tunnel door (constant-time HMAC-SHA256 vs `X-Hub-Signature-256`) — a push wakes the poll early; the interval stays the correctness floor |
-| `HIVE_SYNC__VERIFY_CANDIDATES` | `true` | the pre-merge candidate leg: changed PR heads are built + verified in sandboxed, time-bounded subprocesses (capped per tick) |
-| `HIVE_SYNC__MIRROR_DIR` | `/data/sync/mirror` | mirror location (a rebuildable cache inside the `hive-data` volume) |
+| `HIVE_SYNC__WEBHOOK_SECRET` | *(unset)* | arms `POST /census-webhook` on the tunnel door (constant-time HMAC-SHA256 vs `X-Hub-Signature-256`) — a push wakes the poll early for ALL registered repos; the interval stays the correctness floor |
+| `HIVE_SYNC__MIRROR_DIR` | `/data/sync/mirror` | base dir for the per-repo mirrors (`<dir>/<name>` — rebuildable caches inside the `hive-data` volume) |
 
-Setting `TOKEN` or `WEBHOOK_SECRET` without `REPO_URL` is a half-installed sync and **fails boot
-loudly** (`EX_CONFIG`, naming the missing var). The feed is detect-only (never a trust mutation)
-and every leg is fail-open — an unreachable remote or a broken build skips a tick and the next
-tick retries. It needs no compose change: configuration rides `.env` and the mirror lives in the
-existing volume. Watch it via `hive_health(include_census_health=true)` (§6). Arm and test this
-feed with the runnable **`hive-connect-repo`** skill (`skills/hive-connect-repo/SKILL.md`), which
-walks the prerequisites, auto-detects the tracked branch, and verifies the connection.
+No compose change is needed: knobs ride `.env`, the registry rides the store, and the mirrors
+live in the existing volume. Watch the feed via `hive_health(include_census_health=true)` — a
+per-repo census/sync block (§6). Arm and test a repo with the runnable **`hive-connect-repo`**
+skill (`skills/hive-connect-repo/SKILL.md`).
 
 **Fixed by the image (not runtime knobs).** The embedder is **Qwen3-Embedding-0.6B**, baked in at
 build and run fully offline (`HF_HUB_OFFLINE=1`) — it emits a native 1024-dim vector and there is no
 dimension knob; changing the model means rebuilding the image. The in-container store path is
 `/data/shared.db`; you manage the `hive-data` volume, not the path.
-
-**`HIVE_AGI__MODE` — the agent self-authorization opt-in.** Default OFF: a human
-`hive_write(approved_by=…)` is the only path to `established` trust and the only authority to retire
-(`hive_supersede`) or prune (`hive_prune`) a memory. Set it `true` only to deliberately delegate
-that per-write vouch to the fleet — an agent may then self-authorize with `approved_by="AGI_OVERRIDE"`,
-stamped byte-distinguishably in the audit (`provenance=agent_reasoned`). It loosens a safety gate, so
-it stays off unless you mean it.
 
 **`HIVE_SECRET_SCAN__ENABLED` — the credential secret floor.** Default ON: every memory is scanned
 for credentials *before* it is persisted, and a detected secret is refused (nothing is stored). Set
@@ -202,8 +220,11 @@ Everything runs through the `hive` CLI (it drives Docker Compose for you):
 | `hive tokens` | list provisioned seat labels (never the tokens) |
 | `hive token <seat>` | mint a per-seat token (printed once) |
 | `hive revoke <seat>` | offboard a seat (next request → 401) |
+| `hive repo add <url>` | register a repo for the server-side census sync (picked up next tick; `--name` / `--branch` / `--token-env` — §4) |
+| `hive repo remove <name>` | deregister a repo (stops feeding; the mirror is pruned next tick, scope rows kept) |
+| `hive repos` | list registered repos (names + urls; never a secret) |
 | `hive backup` | snapshot the store now — manual (no scheduler); keeps the `backup_keep` most-recent |
-| `hive ingest <receipt.json>` | feed an unsigned census receipt's change outcome into the append-only evidence ledger — the MANUAL escape hatch (with `HIVE_SYNC__REPO_URL` set the server feeds the ledger itself, §4); idempotent (an already-ingested `(repo, base, head, phase)` range is skipped whole, reported `range_skipped`); refused receipts write zero rows; `--post-merge --verdict pass\|fail --signal randomized\|canary\|none` for rollout outcomes |
+| `hive ingest <receipt.json>` | feed an unsigned census receipt's change outcome into the append-only evidence ledger — the MANUAL escape hatch (the sync daemon feeds every registered repo itself, §4); idempotent (an already-ingested `(repo, base, head, phase)` range is skipped whole, reported `range_skipped`); refused receipts write zero rows; `--post-merge --verdict pass\|fail --signal randomized\|canary\|none` for rollout outcomes |
 | `hive down` | stop the stack, preserve the `hive-data` volume |
 | `hive reset` | snapshot the store out to the host, then destroy + recreate it empty (recoverable; typed confirm) |
 | `hive restore <snap>` | replace the live store from a snapshot (the inverse of reset; typed confirm) |
@@ -218,82 +239,45 @@ fail-open rot:
 | Call | Tells you | Act on |
 |---|---|---|
 | `hive_health(include_trends=true)` | `confident_rate` + `demand_entropy` (current vs prior 7d, with deltas) | `tau_serve`, `demand_m` |
-| `hive_health(include_gaps=true)` | topics wanted but uncovered (clustered demand gaps) | `hive_write` the answers |
-| `hive_health(include_conflicts=true)` | near-duplicate / contradicting memories + agent advisories | `hive_supersede` |
-| `hive_health(include_suspect_consensus=true)` | provisionals promoted on thin effective independence | human audit / retire |
-| `hive_health(include_census_health=true)` | days since the last `change_outcome`, plus the `sync` block when the server-side feed has run (`last_tip`, `last_error`, counters; `status: "sync stalled"` only when configured yet dark) | check the `HIVE_SYNC__*` config / remote reachability (§4) |
+| `hive_health(include_gaps=true)` | topics wanted but uncovered (clustered demand gaps; each names the repos that asked) | `hive_write` the answers |
+| `hive_health(include_conflicts=true)` | near-duplicate / contradicting memories + agent advisories, bucketed by repo and anchor | `hive_supersede` |
+| `hive_health(include_suspect_consensus=true)` | provisionals promoted on thin effective independence | re-examine / retire |
+| `hive_health(include_stale_suspects=true)` | servable memories whose anchor sat in the blast radius of a breaking change | re-verify against the code, then `hive_supersede` / `hive_prune` |
+| `hive_health(include_census_health=true)` | per-repo census/sync block for every registered repo — days since the last `change_outcome`, sync state (`last_tip`, `last_error`; a dark feed reads null) | check the registry row / remote reachability (§4) |
 
 Highest-leverage operator moves: run agents as **distinct sessions** (that diversity is what
 promotes good captures); **keep the store small** — let unused memory expire rather than lengthening
-TTLs to hoard; and spend human review on the **established tier** (`hive_write` a good answer,
-`hive_supersede` a stale one) — that is the only thing that fights the dominant long-run decay.
+TTLs to hoard; and **seed and clean the served tier** — `hive_write` a good answer (it serves
+immediately; verified outcomes on the canonical line establish it) and sweep the conflict and
+stale-suspect worklists into retirement calls (the server retires only what a machine signal
+qualifies) — that is what fights the dominant long-run decay.
 
 ## 7. Security posture
 
 - Every memory is **scanned for secrets before persistence** by default (findings log rule names,
   never the matched bytes; the default action is refuse). The floor is on unless an operator opts
   out with `HIVE_SECRET_SCAN__ENABLED=false`, which is logged at boot and shown in `hive_health`.
+- The repo registry stores **no secret bytes** — only the names of token env vars; per-repo git
+  credentials resolve from the environment at tick time and live only in the mirror's git config.
 - The server image is **hermetically offline** — a runtime model or dependency download is impossible.
 - Only the **loopback door** is host-published; remote access is **always bearer-gated** by
   construction (the tunnel door binds token-required, and ngrok forwards only to it).
 - Schema upgrades are a recoverable `hive reset`, never an in-place migration.
 
-## 8. Staying current — edge tools & server upgrades
+## 8. Staying current — server upgrades
 
-The fleet has two install targets: the per-workstation **edge tools** install from the **public
-git repository via uv** and follow the served contract's minimum-version floor, while the single
-**server** moves to a vetted git ref deliberately and backup-gated. PyPI is not an install or
-publish channel for any of our distributions (`hive-edge`, `matrix`, `comb-drift`) — the `matrix`
-name is squatted there by an unrelated project — so agents install from git and the server ships
-its own copies as vendored wheels (`vendor/wheels/`).
-
-**Edge tools (every participant, local or remote).** After connecting (§2/§3), install the
-`hive-edge` CLI once from the public repository. **uv is required**: the CLI's workspace engines
-(comb-drift, matrix) resolve from git subdirectories via `[tool.uv.sources]`, which pip/pipx
-cannot read — they would resolve the squatted `matrix` name off the package index instead.
-
-```bash
-uv tool install git+https://github.com/Hivemind-OSS/Hive-edge@release
-uv tool update-shell   # once, so uv's tool directory is on your PATH
-```
-
-The `release` tag always points at the lockstep version the server ships in its vendored
-wheelhouse, so a fresh install meets the served `MIN_EDGE_VERSION` floor by construction.
-
-It is the per-workstation anchor toolchain — `mint` (fingerprint an anchor at capture), `verify`
-(check a recalled anchor against the working tree, incl. the `radius` advisory and branch-scope
-routing), `worktree-delta` (the task-end capture tripwire), `graph` (the persistent per-checkout
-code graph), and `hook` (the Claude-Code lifecycle adapters). **There is nothing to
-wire per repo or per device**: census evidence is computed and fed server-side (§4's
-`HIVE_SYNC__*` — the census + verifier engines live in the server image), so no git hooks, no
-`census init`, and no signing key exist on workstations. A connected agent installs or updates
-the CLI itself during onboarding; where it is absent, mint and verify simply no-op (fail-open —
-capture and recall are unaffected).
-
-**Edge tools stay current.** The served contract pins a minimum CLI version (`MIN_EDGE_VERSION`);
-when an agent's CLI is below it — or the contract version moves — the served re-onboard procedure
-has it run `uv tool upgrade hive-edge`, which moves the install to whatever the `release` tag
-points at. The retired `hive-edge upgrade` verb is removed as of 0.9.0 (it was a PyPI
-self-upgrade — a channel that never existed for our dists) — do **not** run it; on an older
-install it is a dead path. Roll back by reinstalling an explicit ref:
-
-```bash
-uv tool install --force git+https://github.com/Hivemind-OSS/Hive-edge@<tag-or-sha>
-```
-
-The served directive tells agents to defer to a human-pinned rollback rather than auto-upgrade
-over it, so a deliberate hold is yours to release.
-
-**State directory.** Per-device edge state lives under `~/.hive-edge/` (`HIVE_EDGE_HOME`
-overrides): worktree-delta baselines and `state/matrix/<digest>/` —
-the persistent per-checkout code-graph cache `hive-edge graph update` refreshes (the digest keys
-the checkout's real path, so two checkouts of one project never share a cache; the cache never
-lives inside the repo). Safe to delete — everything regenerates.
+There is exactly one install target: the **server**. Agents and workstations install nothing —
+they are thin MCP clients (§2), and the anchor/census engines the sync daemon runs ship *inside*
+the server image as vendored wheels (`vendor/wheels/` — the committed wheelhouse is the release
+artifact; PyPI is not an install or publish channel for any of our distributions, and
+`scripts/vendor_edge.py` is the single seam that refreshes the wheelhouse from the engine
+workspace). A contract change needs no fleet action either: each session receives the served
+usage contract fresh at its next connect.
 
 **Server upgrade / rollback.** Move the server to a vetted ref:
 
 ```bash
-hive upgrade                    # → release; aborts on a dirty tree (no magic stash)
+hive upgrade                    # → release; aborts on a dirty tree (no implicit stash)
 hive upgrade --ref <old-tag>    # roll the server back, same backup-gated path
 ```
 
@@ -303,5 +287,5 @@ health → gates on the app status. On any post-checkout failure it **auto-rever
 code (`git checkout <prev>`) and the store (the just-taken snapshot), then rebuilding — and if that
 revert itself fails it prints the exact manual `git checkout` + `hive restore <snap>` recovery.
 Because the build **refuses an old-format store** rather than migrating it (§1), a release that
-changes the schema comes up unhealthy and auto-rolls-back; cross a schema change with `hive reset` (a
-clean store) or a restore from backup, not `hive upgrade`.
+changes the schema comes up unhealthy and auto-rolls-back; cross a schema change with `hive reset`
+(a clean store — then `hive repo add` each repo) or a restore from backup, not `hive upgrade`.

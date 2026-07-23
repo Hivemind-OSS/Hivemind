@@ -1,19 +1,20 @@
 # Hivemind
 
-> A stigmergic shared episodic memory for a fleet of AI coding agents on one codebase,
+> A stigmergic shared episodic memory for a fleet of AI coding agents,
 > exposed as one self-hosted MCP server over HTTP. Agents coordinate with no direct
 > communication — each leaves traces (memories) others recall — behind a never-hallucinate
-> abstention gate. Single-tenant, single-host, one SQLite store, a CPU-only embedder baked
-> into the image (offline at runtime).
+> abstention gate. Single-tenant, single-host, one SQLite store partitioned by repo
+> (`hive repo add`), a CPU-only embedder baked into the image (offline at runtime).
 
-Operated through the `hive` CLI; consumed by agents over eight `hive_*` MCP tools. If you can
+Operated through the `hive` CLI; consumed by agents over eight `hive_*` MCP tools — thin,
+repo-agnostic clients that receive the usage contract over MCP at every connect. If you can
 load only one file, read `llms-full.txt` — it is the complete guide and assumes no prior context.
 
 ## Documentation
 
-- [llms-full.txt](llms-full.txt): The complete, self-contained operating guide — idea, architecture, trust lifecycle, recall, the eight MCP tools, identity, setup (solo → remote team), KPIs, configuration, and agent working procedure.
-- [README.md](README.md): Quickstart from a clone — requirements, `hive up`, connecting local and remote agents, the two-door auth model, configuration, and repository layout.
-- [HIVE-ADMIN.md](HIVE-ADMIN.md): Admin & operator guide — first-time setup, tunneling, tuning the recall/safety knobs (incl. the server-side automatic census feed, `HIVE_SYNC__*`), KPIs, day-2 operations (incl. `hive ingest`, the manual census escape hatch), and staying current (edge-tool install from the public git repo via uv + the `hive upgrade` / `uv tool upgrade hive-edge` release flow).
+- [llms-full.txt](llms-full.txt): The complete, self-contained operating guide — idea, architecture, the repo-partitioned store, trust lifecycle (mechanical promotion + machine-gated retirement), recall, the eight MCP tools, identity, setup (solo → remote team), KPIs, configuration, and agent working procedure.
+- [README.md](README.md): Quickstart from a clone — requirements, `hive up`, connecting local and remote agents, registering repos (`hive repo add` / `hive repos`), the two-door auth model, configuration, and repository layout.
+- [HIVE-ADMIN.md](HIVE-ADMIN.md): Admin & operator guide — first-time setup, tunneling, tuning the recall/safety knobs, the synced-repo registry + per-repo census feed (`HIVE_SYNC__*`), KPIs, day-2 operations (incl. `hive ingest`, the manual census escape hatch), and staying current (`hive upgrade` + the vendored server-side engine wheels).
 
 ## Operator runbooks
 

@@ -3,6 +3,51 @@
 All notable changes to this project are documented here.
 
 ## Added
+- U4-THIN-AGENT (schema v3, served contract v3): ONE store, partitioned by repo at the
+  memory level; agents are thin, repo-agnostic MCP clients that recall and store; the
+  server owns mint, staleness, poison, outcome, and promotion; trust is fully mechanical
+  + agent-adjudicated — no humans in the loop, no AGI sentinel. The pieces: a durable
+  synced-repo REGISTRY (`repos` table; `hive repo add <url> [--name --branch --token-env]`
+  / `hive repo remove <name>` / `hive repos`, shelling to the in-container
+  `hive.tools.repoctl`; rows are operational data — the sync daemon re-reads them every
+  tick, registering needs no restart; `--token-env` stores the NAME of the env var
+  holding that repo's git token, never a secret byte, unset ⇒ the fleet-default
+  `HIVE_SYNC__TOKEN`); the sync daemon rebuilt as a per-repo registry loop (one mirror,
+  ledger receipt, candidate evaluation, and server-side mint backfill per registered
+  repo; a deregistered repo's mirror is pruned next tick; per-repo census rows and a
+  per-repo `hive_health(include_census_health=true)` block); repo-partitioned memory —
+  structured `anchors=[{repo, anchor}]` + `repos=[...]` scope on the write verbs
+  (an unregistered repo name refuses the call; the server mints fingerprints and judges
+  drift per anchor, server-side — callers never supply fingerprint material) and scoped
+  recall (`repos=["name"|"name@branch"]`, `anchor_prefix`; omit = global; general
+  memories always remain candidates; partition filtering runs BEFORE the relevance
+  gate); serve-now trust (`hive_write` lands `trust=provisional`, recallable
+  immediately; `established` is reachable ONLY via a SHA-bound outcome-verified win on
+  the repo's canonical line — the server-written census artifact, never a human vouch);
+  the MACHINE-GATED retirement evidence gate (`hive_prune` / `hive_supersede` /
+  `hive_write(replaces=)` retire only when the server itself verifies a qualifying
+  machine signal for the target — anchor drift at the canonical tip, hurt evidence from
+  another identity or a verified outcome, a mechanical contradiction, or a near-dup
+  successor; an unqualified call is a benign no-op envelope, never an error); the
+  served-only usage contract (the whole contract rides the MCP `initialize` result's
+  `instructions` field, fresh at every connect — no install step, no versioned rules
+  block, no client hooks, no re-onboard loop; sessions pick up a changed contract on
+  reconnect); and a frozen v3 contract-test suite (`tests/contract/`) pinning the
+  surface. Rollout is deliberately clean-store: schema v3 starts empty and the prior
+  corpus is disposable — `hive reset`, then `hive repo add` each repo; no export, no
+  re-seed, no migration tooling. Consuming repos must one-time strip the now-dead
+  HIVEMIND-RULES block, hivemind hooks, and hive_* allowlist from their own rules files
+  / `.claude/settings.json`; the served tool descriptions change and sessions pick them
+  up on reconnect.
+- `make check` — the repo's canonical mechanical gate (create-on-first-touch):
+  `ruff format --check .` + `ruff check .` + `mypy hive/ --strict` + `pytest` (full
+  suite), non-zero on the first failing leg, each leg runnable alone (`make format` /
+  `lint` / `typecheck` / `test`). Legs run through `uv run --extra dev`, so a fresh
+  clone needs nothing beyond uv; the dev extra gains `ruff`, `mypy`, and the
+  `types-jsonschema` / `types-defusedxml` / `types-networkx` stubs. `[tool.mypy]` pins
+  `python_version` 3.12 with per-module `ignore_missing_imports` ONLY for the vendored
+  stub-less `combdrift.*` / `matrix.*` engines; the whole `hive/` tree now passes
+  strict mypy, and the tree is ruff-formatted end to end.
 - `hive-connect-repo` operator skill (`skills/hive-connect-repo/SKILL.md`): a guided runbook that
   arms and tests the server-side census feed against a GitHub repo — it checks the prerequisites
   (repo URL, a read-only token for a private remote, a sync-capable server image), auto-detects the

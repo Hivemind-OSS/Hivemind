@@ -12,6 +12,7 @@ and applied to exactly the health beacon, the primary button, the seat-count num
 keyboard focus ring. Health is the beacon's shape/fill + pulse, never a red state. The pulse is
 the page's ONLY animation (one `@keyframes`, gated off under `prefers-reduced-motion`).
 """
+
 from __future__ import annotations
 
 PAGE_HTML: str = """<!doctype html>

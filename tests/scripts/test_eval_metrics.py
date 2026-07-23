@@ -3,12 +3,16 @@
 ``bootstrap_ci``). Store-free, hash-speed. Degenerate inputs RAISE — an untestable
 number is refused, never masked.
 """
+
 from __future__ import annotations
 
 import pytest
 
 from scripts.eval_metrics import (
-    abstention_auroc, bootstrap_ci, mrr, recall_at_k,
+    abstention_auroc,
+    bootstrap_ci,
+    mrr,
+    recall_at_k,
 )
 
 
@@ -67,9 +71,9 @@ def test_auroc_ties_are_half():
 
 def test_auroc_degenerate_raises():
     with pytest.raises(ValueError):
-        abstention_auroc([0.1, 0.2], [False, False])   # all hits
+        abstention_auroc([0.1, 0.2], [False, False])  # all hits
     with pytest.raises(ValueError):
-        abstention_auroc([0.1, 0.2], [True, True])     # all misses
+        abstention_auroc([0.1, 0.2], [True, True])  # all misses
 
 
 def test_auroc_len_mismatch_raises():
@@ -83,9 +87,11 @@ def test_auroc_nan_score_raises():
     # ±inf is orderable and must STILL work (use isnan, not `not isfinite`).
     nan = float("nan")
     with pytest.raises(ValueError):
-        abstention_auroc([5.0, nan], [True, False])        # NaN in a hit position
+        abstention_auroc([5.0, nan], [True, False])  # NaN in a hit position
     with pytest.raises(ValueError):
-        abstention_auroc([1.0, nan, 2.0], [False, True, False])  # NaN in a miss position
+        abstention_auroc(
+            [1.0, nan, 2.0], [False, True, False]
+        )  # NaN in a miss position
     # a legitimate +inf confidence still scores (inf is orderable)
     assert abstention_auroc([float("inf"), 0.1], [False, True]) == pytest.approx(1.0)
 
@@ -93,10 +99,19 @@ def test_auroc_nan_score_raises():
 def test_auroc_target_band_on_fixture():
     # a realistic (imperfect) confidence split lands AUROC in the honest-abstention band.
     # 6 hits + 4 misses that overlap heavily in the middle ⇒ 18/24 concordant = 0.75.
-    scores = [0.92, 0.85, 0.80, 0.74, 0.60, 0.40,   # hits (a low straggler at 0.40)
-              0.78, 0.70, 0.55, 0.35]               # misses (high stragglers 0.78/0.70)
-    is_miss = [False, False, False, False, False, False,
-               True, True, True, True]
+    scores = [
+        0.92,
+        0.85,
+        0.80,
+        0.74,
+        0.60,
+        0.40,  # hits (a low straggler at 0.40)
+        0.78,
+        0.70,
+        0.55,
+        0.35,
+    ]  # misses (high stragglers 0.78/0.70)
+    is_miss = [False, False, False, False, False, False, True, True, True, True]
     auroc = abstention_auroc(scores, is_miss)
     assert 0.70 <= auroc <= 0.84
 
@@ -113,7 +128,7 @@ def test_bootstrap_ci_noise_not_significant():
     # symmetric noise around zero ⇒ CI straddles 0 (neither lo>0 nor hi<0)
     deltas = [0.2, -0.2, 0.1, -0.1, 0.15, -0.15, 0.05, -0.05]
     point, lo, hi = bootstrap_ci(deltas, seed=0)
-    assert lo <= 0.0 <= hi          # not CI-significant in either direction
+    assert lo <= 0.0 <= hi  # not CI-significant in either direction
 
 
 def test_bootstrap_ci_deterministic_seed():

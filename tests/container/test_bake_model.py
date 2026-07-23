@@ -3,6 +3,7 @@ a bake that cannot complete must return NON-ZERO so `docker build` fails, rather
 shipping a weightless image that only discovers the gap at first `--network none` recall.
 The heavy loader is injected so this runs without the multi-hundred-MB download.
 """
+
 from __future__ import annotations
 
 import pytest
@@ -58,13 +59,15 @@ def test_main_parses_args_and_invokes_bake(tmp_path):
         (dest / "f").parent.mkdir(parents=True, exist_ok=True)
         (dest / "f").write_text("w")
 
-    rc = B.main(["--model", "BAAI/bge-small-en-v1.5", "--dest", str(dest)], loader=loader)
+    rc = B.main(
+        ["--model", "BAAI/bge-small-en-v1.5", "--dest", str(dest)], loader=loader
+    )
     assert rc == B.OK
     assert seen["args"] == ("BAAI/bge-small-en-v1.5", str(dest))
 
 
 def test_main_requires_model_and_dest():
-    with pytest.raises(SystemExit):           # argparse: both flags required
+    with pytest.raises(SystemExit):  # argparse: both flags required
         B.main(["--model", "m"], loader=lambda *_: None)
     with pytest.raises(SystemExit):
         B.main(["--dest", "/tmp/x"], loader=lambda *_: None)

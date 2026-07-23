@@ -18,10 +18,11 @@ re-init) fails loud rather than shipping a store whose width disagrees with the 
 SentenceTransformer (the ~one-time model resident cost) and verifies the native dim. Until
 then ``loaded`` is False, so the M12 healthcheck refuses to go green (healthy ≡ resident).
 """
+
 from __future__ import annotations
 
 import logging
-from typing import Sequence
+from typing import Any, Sequence
 
 import numpy as np
 
@@ -39,7 +40,8 @@ def _require_finite(v: np.ndarray) -> np.ndarray:
     reembed-nan-corruption class). Catch it AT the producer, loudly. // O(d)."""
     if not bool(np.all(np.isfinite(v))):
         raise GeometryError(
-            "embedder produced a non-finite (NaN/Inf) vector — refused at the write boundary")
+            "embedder produced a non-finite (NaN/Inf) vector — refused at the write boundary"
+        )
     return v
 
 
@@ -48,11 +50,13 @@ class LocalSTEmbedder:
     shipping embedder; satisfies the ``EmbeddingProvider`` Protocol (``d``, ``encode``,
     ``encode_batch``) plus the M12 warm contract (``load``, ``loaded``, ``name``)."""
 
-    def __init__(self, *, d: int, model_name: str = DEFAULT_MODEL, model=None) -> None:
+    def __init__(
+        self, *, d: int, model_name: str = DEFAULT_MODEL, model: Any = None
+    ) -> None:
         self.name = str(model_name)
-        self.d = int(d)                    # the native (stored-vector) dim, sourced from native_dim_for
-        self._model = model                # an injected, already-loaded ST (tests) or None
-        self.loaded = False                # resident only after load() verifies the native dim
+        self.d = int(d)  # the native (stored-vector) dim, sourced from native_dim_for
+        self._model = model  # an injected, already-loaded ST (tests) or None
+        self.loaded = False  # resident only after load() verifies the native dim
 
     # ── warm: load the model + verify the native dim (the M12 boot.embedder_warm step) ──
     def load(self) -> "LocalSTEmbedder":
@@ -61,18 +65,22 @@ class LocalSTEmbedder:
         mismatch (the entrypoint maps that to EX_UNAVAILABLE=69)."""
         if self._model is None:
             from sentence_transformers import SentenceTransformer  # noqa: PLC0415 — lazy/heavy
+
             _log.info("embedding.model_load name=%s", self.name)
             self._model = SentenceTransformer(self.name, device="cpu")
         # sentence-transformers renamed get_sentence_embedding_dimension → get_embedding_dimension;
         # prefer the new name, fall back to the old, so we span versions without a FutureWarning.
-        get_dim = (getattr(self._model, "get_embedding_dimension", None)
-                   or self._model.get_sentence_embedding_dimension)
+        get_dim = (
+            getattr(self._model, "get_embedding_dimension", None)
+            or self._model.get_sentence_embedding_dimension
+        )
         native = int(get_dim())
         if native != self.d:
             raise GeometryError(
                 f"model native dim {native} != declared d {self.d} — the embedder emits the "
                 "model's native vector unchanged; re-initialise the store (hive reset) after a "
-                "model/dim change")
+                "model/dim change"
+            )
         _log.info("embedding.warm name=%s native_dim=%d", self.name, native)
         self.loaded = True
         return self
@@ -81,7 +89,9 @@ class LocalSTEmbedder:
     def encode(self, text: str) -> np.ndarray:
         if not self.loaded:
             self.load()
-        return _require_finite(self._encode_native([text])[0])     # the value WRITE boundary
+        return _require_finite(
+            self._encode_native([text])[0]
+        )  # the value WRITE boundary
 
     def encode_batch(self, texts: Sequence[str]) -> np.ndarray:
         if not self.loaded:
@@ -99,8 +109,10 @@ class LocalSTEmbedder:
         tightens the magnitude to exactly 1.0 — the renorm the now-removed truncation head used to
         perform. No prompt is passed, so capture and recall encode symmetrically (same text → same
         vector)."""
-        vecs = np.asarray(self._model.encode(
-            texts, normalize_embeddings=True, convert_to_numpy=True), dtype=np.float32)
+        vecs = np.asarray(
+            self._model.encode(texts, normalize_embeddings=True, convert_to_numpy=True),
+            dtype=np.float32,
+        )
         norms = np.linalg.norm(vecs, axis=1, keepdims=True)
         norms[norms == 0] = 1.0
         return np.ascontiguousarray(vecs / norms, dtype=np.float32)

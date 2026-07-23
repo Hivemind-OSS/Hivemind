@@ -27,6 +27,7 @@ INJECTED here as `build_boot` — so the boot ORDER, the fail-fast exit codes an
 embedder-resident gate are pinned by unit tests against a fake boot NOW, and the real
 wiring drops in behind the same seam later with zero change to this state machine.
 """
+
 from __future__ import annotations
 
 import logging
@@ -37,7 +38,7 @@ import time
 from typing import Any, Callable, Mapping, Optional, Protocol
 
 from hive.app.config import Config
-from hive.app.rate_limit import TokenBucketLimiter   # stdlib-light, torch-free
+from hive.app.rate_limit import TokenBucketLimiter  # stdlib-light, torch-free
 
 _log = logging.getLogger("hive.entrypoint")
 
@@ -51,8 +52,12 @@ _DEFAULT_DB_PATH = "/data/shared.db"
 _DEFAULT_AGENT_ID = "default-agent"
 _DEFAULT_TENANT_ID = "default"
 _DEFAULT_LOG_LEVEL = logging.INFO
-_DEFAULT_HTTP_PORT = 8765       # the loopback door — host-published (compose maps 127.0.0.1:8765)
-_DEFAULT_TUNNEL_PORT = 8766     # the tunnel door — compose-internal only (ngrok forwards to it)
+_DEFAULT_HTTP_PORT = (
+    8765  # the loopback door — host-published (compose maps 127.0.0.1:8765)
+)
+_DEFAULT_TUNNEL_PORT = (
+    8766  # the tunnel door — compose-internal only (ngrok forwards to it)
+)
 # Part S hardening: the rate-limit belt is fixed (no operator knob — disabling a DoS belt
 # on a tunnel-reachable daemon is a footgun). The 1 MiB body cap mirrors
 # http_server._DEFAULT_MAX_BODY (kept separate so http_server stays importable without it
@@ -69,9 +74,11 @@ def _configure_logging(level: int) -> None:
     import so module import stays light and torch-free. // O(1)."""
     try:
         from hive.app.observability import configure_json_logging  # noqa: PLC0415 — lazy
+
         configure_json_logging(level=int(level), stream=True)
-    except Exception as exc:                            # noqa: BLE001 — logging setup never aborts boot
+    except Exception as exc:  # noqa: BLE001 — logging setup never aborts boot
         _log.warning("entrypoint.log_config_failed kind=%s", type(exc).__name__)
+
 
 # Readiness markers the SEPARATE healthcheck process reads (same /data DB, same PID ns).
 # Namespaced (`boot:`) per the strict-prefix store discipline so they never collide with
@@ -90,7 +97,7 @@ def _proc_starttime(pid: int) -> int:
     try:
         with open(f"/proc/{int(pid)}/stat") as fh:
             data = fh.read()
-        rest = data[data.rindex(")") + 1:].split()
+        rest = data[data.rindex(")") + 1 :].split()
         return int(rest[19])
     except (OSError, ValueError, IndexError, OverflowError):
         return 0
@@ -105,13 +112,14 @@ class Boot(Protocol):
     `token_store` is the HTTP daemon's per-device verify seam (`.verify(token) -> label|None`);
     widening this Protocol requires the REAL adapter (Container) to carry it too, not just the
     fake — see test_build_container_is_boot_conformant."""
+
     store: Any
     token_store: Any
 
     def migrate(self) -> None: ...
     def build_index(self) -> None: ...
-    def warm_embedder(self) -> Any: ...   # returns the embedder; raise ⇒ EX_UNAVAILABLE
-    def make_server(self) -> Any: ...     # returns a HiveMCPServer (embedder resident)
+    def warm_embedder(self) -> Any: ...  # returns the embedder; raise ⇒ EX_UNAVAILABLE
+    def make_server(self) -> Any: ...  # returns a HiveMCPServer (embedder resident)
 
 
 def _default_build_boot(cfg: Config, *, tenant_id: str, agent_id: str) -> Boot:
@@ -121,23 +129,30 @@ def _default_build_boot(cfg: Config, *, tenant_id: str, agent_id: str) -> Boot:
     rather than a cryptic ImportError — unit tests never reach this path (they inject)."""
     try:
         from hive.app.container import build_container  # noqa: PLC0415 — lazy by design
-    except ImportError as exc:                          # pragma: no cover — P1.14 not yet wired
+    except ImportError as exc:  # pragma: no cover — P1.14 not yet wired
         _log.error("entrypoint.boot_unwired error=%s", type(exc).__name__)
         raise RuntimeError(
             "real adapter assembly is not wired until P1.14 "
             "(hive.app.container.build_container); inject build_boot to boot earlier"
         ) from exc
-    return build_container(cfg, tenant_id=tenant_id, agent_id=agent_id)  # pragma: no cover
+    return build_container(
+        cfg, tenant_id=tenant_id, agent_id=agent_id
+    )  # pragma: no cover
 
 
-def _make_http_serve(boot: Boot, loopback_port: int, tunnel_port: int, *,
-                     rate_limit: int = _DEFAULT_RATE_LIMIT,
-                     rate_window_s: float = _DEFAULT_RATE_WINDOW_S,
-                     max_body_bytes: int = _DEFAULT_MAX_BODY_BYTES,
-                     run_http_dual: Optional[Callable[..., None]] = None,
-                     lock: Optional[threading.Lock] = None,
-                     webhook_secret: str = "",
-                     webhook_nudge: Optional[Callable[[], None]] = None) -> Callable[[Any], None]:
+def _make_http_serve(
+    boot: Boot,
+    loopback_port: int,
+    tunnel_port: int,
+    *,
+    rate_limit: int = _DEFAULT_RATE_LIMIT,
+    rate_window_s: float = _DEFAULT_RATE_WINDOW_S,
+    max_body_bytes: int = _DEFAULT_MAX_BODY_BYTES,
+    run_http_dual: Optional[Callable[..., None]] = None,
+    lock: Optional[threading.Lock] = None,
+    webhook_secret: str = "",
+    webhook_nudge: Optional[Callable[[], None]] = None,
+) -> Callable[[Any], None]:
     """The DEFAULT serve step (replacing stdio): a warm HTTP daemon binding BOTH doors — the
     tokenless LOOPBACK door (host-published `loopback_port`) and the token-required TUNNEL door
     (compose-internal `tunnel_port`, ngrok-forwarded). Auth is a property of the listening
@@ -154,15 +169,27 @@ def _make_http_serve(boot: Boot, loopback_port: int, tunnel_port: int, *,
     light."""
     if run_http_dual is None:
         from hive.app.http_server import run_http_dual as impl  # noqa: PLC0415 — lazy, torch-free
+
         run_http_dual = impl
-    lock = lock if lock is not None else threading.Lock()                # ONE lock, both doors
-    limiter = TokenBucketLimiter(limit=rate_limit, window_s=rate_window_s)  # ONE limiter, both doors
+    lock = lock if lock is not None else threading.Lock()  # ONE lock, both doors
+    limiter = TokenBucketLimiter(
+        limit=rate_limit, window_s=rate_window_s
+    )  # ONE limiter, both doors
 
     def serve(server: Any) -> None:
-        run_http_dual(server, host="0.0.0.0", loopback_port=loopback_port,
-                      tunnel_port=tunnel_port, verify=boot.token_store.verify,
-                      lock=lock, limiter=limiter, max_body_bytes=max_body_bytes,
-                      webhook_secret=webhook_secret, webhook_nudge=webhook_nudge)
+        run_http_dual(
+            server,
+            host="0.0.0.0",
+            loopback_port=loopback_port,
+            tunnel_port=tunnel_port,
+            verify=boot.token_store.verify,
+            lock=lock,
+            limiter=limiter,
+            max_body_bytes=max_body_bytes,
+            webhook_secret=webhook_secret,
+            webhook_nudge=webhook_nudge,
+        )
+
     return serve
 
 
@@ -176,10 +203,16 @@ def _resolve_max_body(env: Mapping[str, str]) -> Optional[int]:
     try:
         max_body = int(raw)
     except ValueError:
-        _log.error("entrypoint.invalid_max_body var=HIVE_HTTP_MAX_BODY_BYTES code=%d", EX_CONFIG)
+        _log.error(
+            "entrypoint.invalid_max_body var=HIVE_HTTP_MAX_BODY_BYTES code=%d",
+            EX_CONFIG,
+        )
         return None
     if max_body <= 0:
-        _log.error("entrypoint.invalid_max_body var=HIVE_HTTP_MAX_BODY_BYTES code=%d", EX_CONFIG)
+        _log.error(
+            "entrypoint.invalid_max_body var=HIVE_HTTP_MAX_BODY_BYTES code=%d",
+            EX_CONFIG,
+        )
         return None
     return max_body
 
@@ -228,7 +261,7 @@ def _probe_token_env(boot: Boot, env: Mapping[str, str]) -> list[str]:
         return []
     try:
         rows = registry()
-    except Exception:                       # noqa: BLE001 — the probe never invents a config fault
+    except Exception:  # noqa: BLE001 — the probe never invents a config fault
         return []
     missing: list[str] = []
     for row in rows:
@@ -250,7 +283,7 @@ def _invalidate_ready(boot: Boot) -> None:
         return
     try:
         store.meta_set(MARK_EMBEDDER_LOADED, "0")
-    except Exception as exc:                            # noqa: BLE001 — never abort boot on this
+    except Exception as exc:  # noqa: BLE001 — never abort boot on this
         _log.warning("entrypoint.invalidate_ready_failed kind=%s", type(exc).__name__)
 
 
@@ -266,16 +299,24 @@ def _mark_ready(boot: Boot, *, pid: int) -> None:
     try:
         store.meta_set(MARK_SERVE_PID, str(pid))
         store.meta_set(MARK_SERVE_STARTTIME, str(_proc_starttime(pid)))
-        store.meta_set(MARK_EMBEDDER_LOADED, "1")       # set LAST — identity is in place first
-    except Exception as exc:                            # noqa: BLE001 — never abort serve on this
-        _log.warning("entrypoint.mark_ready_failed kind=%s (healthcheck stays red)",
-                     type(exc).__name__)
+        store.meta_set(
+            MARK_EMBEDDER_LOADED, "1"
+        )  # set LAST — identity is in place first
+    except Exception as exc:  # noqa: BLE001 — never abort serve on this
+        _log.warning(
+            "entrypoint.mark_ready_failed kind=%s (healthcheck stays red)",
+            type(exc).__name__,
+        )
 
 
-def main(argv: Optional[list[str]] = None, *, env: Optional[Mapping[str, str]] = None,
-         build_boot: Optional[Callable[..., Boot]] = None,
-         serve: Optional[Callable[[Any], None]] = None,
-         pid: Optional[int] = None) -> int:
+def main(
+    argv: Optional[list[str]] = None,
+    *,
+    env: Optional[Mapping[str, str]] = None,
+    build_boot: Optional[Callable[..., Boot]] = None,
+    serve: Optional[Callable[[Any], None]] = None,
+    pid: Optional[int] = None,
+) -> int:
     """Boot the container in strict order; return a sysexits exit code. Never raises out
     of the boot path — every failure is logged to stderr and converted to an exit code so
     stdout (the JSON-RPC channel) stays clean. // O(1) control flow."""
@@ -288,26 +329,38 @@ def main(argv: Optional[list[str]] = None, *, env: Optional[Mapping[str, str]] =
     _configure_logging(_DEFAULT_LOG_LEVEL)
 
     # ── config.loaded (EX_CONFIG on Config validation failure) ──
-    tenant_id, db_path, agent_id = _resolve_env(env)    # all default; tenant is a label, not required
+    tenant_id, db_path, agent_id = _resolve_env(
+        env
+    )  # all default; tenant is a label, not required
     max_body_bytes = _resolve_max_body(env)
     if max_body_bytes is None:
         return EX_CONFIG
     try:
         cfg = Config.load(db_path=db_path, env=env, runtime={"tenant_id": tenant_id})
-    except Exception as exc:                            # noqa: BLE001 — bad config is EX_CONFIG
+    except Exception as exc:  # noqa: BLE001 — bad config is EX_CONFIG
         # detail carries the exception message, which NAMES the offending variable —
         # an operator staring at exit 78 must know which var to fix; the scrub belt
         # guarantees no credential VALUE can ride the line.
-        _log.error("entrypoint.config_invalid kind=%s code=%d detail=%s",
-                   type(exc).__name__, EX_CONFIG, _scrub_secret_values(str(exc), env))
+        _log.error(
+            "entrypoint.config_invalid kind=%s code=%d detail=%s",
+            type(exc).__name__,
+            EX_CONFIG,
+            _scrub_secret_values(str(exc), env),
+        )
         return EX_CONFIG
-    _configure_logging(int(getattr(cfg.obs, "log_level", _DEFAULT_LOG_LEVEL)))  # operator level now live
+    _configure_logging(
+        int(getattr(cfg.obs, "log_level", _DEFAULT_LOG_LEVEL))
+    )  # operator level now live
     _log.info("entrypoint.config_loaded tenant_id=%s db_path=%s", tenant_id, db_path)
 
     try:
         boot = build_boot(cfg, tenant_id=tenant_id, agent_id=agent_id)
-    except Exception as exc:                            # noqa: BLE001 — assembler failure
-        _log.error("entrypoint.assemble_failed kind=%s code=%d", type(exc).__name__, EX_SOFTWARE)
+    except Exception as exc:  # noqa: BLE001 — assembler failure
+        _log.error(
+            "entrypoint.assemble_failed kind=%s code=%d",
+            type(exc).__name__,
+            EX_SOFTWARE,
+        )
         return EX_SOFTWARE
 
     # THE global write lock, owned by main(): the two HTTP doors and the sync daemon
@@ -324,34 +377,45 @@ def main(argv: Optional[list[str]] = None, *, env: Optional[Mapping[str, str]] =
     # repo's sync leg every tick, so it fails fast HERE, naming the var(s).
     missing_vars = _probe_token_env(boot, env)
     if missing_vars:
-        _log.error("entrypoint.token_env_missing vars=%s code=%d (a repo-registry row "
-                   "names this env var — set it, or re-register the repo without "
-                   "--token-env)", ",".join(missing_vars), EX_CONFIG)
+        _log.error(
+            "entrypoint.token_env_missing vars=%s code=%d (a repo-registry row "
+            "names this env var — set it, or re-register the repo without "
+            "--token-env)",
+            ",".join(missing_vars),
+            EX_CONFIG,
+        )
         return EX_CONFIG
 
     # ── migrate.done (EX_SOFTWARE; the guard below makes serve UNREACHABLE on failure) ──
     try:
         boot.migrate()
-    except Exception as exc:                            # noqa: BLE001
-        _log.error("entrypoint.migrate_failed kind=%s code=%d", type(exc).__name__, EX_SOFTWARE)
-        return EX_SOFTWARE                              # ← deleting this return is mutation #4
+    except Exception as exc:  # noqa: BLE001
+        _log.error(
+            "entrypoint.migrate_failed kind=%s code=%d", type(exc).__name__, EX_SOFTWARE
+        )
+        return EX_SOFTWARE  # ← deleting this return is mutation #4
     _log.info("entrypoint.migrate_done")
 
     # ── index.built (EX_SOFTWARE) ──
     try:
         boot.build_index()
-    except Exception as exc:                            # noqa: BLE001
-        _log.error("entrypoint.index_failed kind=%s code=%d", type(exc).__name__, EX_SOFTWARE)
+    except Exception as exc:  # noqa: BLE001
+        _log.error(
+            "entrypoint.index_failed kind=%s code=%d", type(exc).__name__, EX_SOFTWARE
+        )
         return EX_SOFTWARE
     _log.info("entrypoint.index_built")
 
     # ── embedder.warm (EX_UNAVAILABLE; healthy ≡ resident — a cold embedder cannot serve) ──
     try:
         embedder = boot.warm_embedder()
-    except Exception as exc:                            # noqa: BLE001 — dead embedder
-        _log.error("entrypoint.embedder_warm_failed kind=%s code=%d",
-                   type(exc).__name__, EX_UNAVAILABLE)
-        return EX_UNAVAILABLE                           # ← swallowing this is mutation #3
+    except Exception as exc:  # noqa: BLE001 — dead embedder
+        _log.error(
+            "entrypoint.embedder_warm_failed kind=%s code=%d",
+            type(exc).__name__,
+            EX_UNAVAILABLE,
+        )
+        return EX_UNAVAILABLE  # ← swallowing this is mutation #3
     if not bool(getattr(embedder, "loaded", False)):
         _log.error("entrypoint.embedder_not_resident code=%d", EX_UNAVAILABLE)
         return EX_UNAVAILABLE
@@ -360,9 +424,12 @@ def main(argv: Optional[list[str]] = None, *, env: Optional[Mapping[str, str]] =
     # ── assemble the server (embedder now resident) ──
     try:
         server = boot.make_server()
-    except Exception as exc:                            # noqa: BLE001
-        _log.error("entrypoint.make_server_failed kind=%s code=%d",
-                   type(exc).__name__, EX_SOFTWARE)
+    except Exception as exc:  # noqa: BLE001
+        _log.error(
+            "entrypoint.make_server_failed kind=%s code=%d",
+            type(exc).__name__,
+            EX_SOFTWARE,
+        )
         return EX_SOFTWARE
 
     # ── serve.ready: stamp the readiness markers, THEN serve (run_stdio blocks) ──
@@ -379,15 +446,23 @@ def main(argv: Optional[list[str]] = None, *, env: Optional[Mapping[str, str]] =
     # canonical ingest); a minimal boot without one degrades to no sweep, not a crash.
     sync_thread = None
     try:
-        from hive.app.sync import start_sync                            # noqa: PLC0415 — lazy
-        from hive.domain.change_evidence import ChangeEvidenceService   # noqa: PLC0415 — lazy
-        evidence = ChangeEvidenceService(reader=boot.store, appender=boot.store,
-                                         now=lambda: int(time.time()), ranges=boot.store)
-        sync_thread = start_sync(cfg, boot.store, evidence, lock,
-                                 lifecycle=getattr(boot, "lifecycle", None))
+        from hive.app.sync import start_sync  # noqa: PLC0415 — lazy
+        from hive.domain.change_evidence import ChangeEvidenceService  # noqa: PLC0415 — lazy
+
+        evidence = ChangeEvidenceService(
+            reader=boot.store,
+            appender=boot.store,
+            now=lambda: int(time.time()),
+            ranges=boot.store,
+        )
+        sync_thread = start_sync(
+            cfg, boot.store, evidence, lock, lifecycle=getattr(boot, "lifecycle", None)
+        )
     except Exception as exc:  # noqa: BLE001 — side-channel start must never abort serve
-        _log.warning("entrypoint.sync_start_failed kind=%s (serving without sync)",
-                     type(exc).__name__)
+        _log.warning(
+            "entrypoint.sync_start_failed kind=%s (serving without sync)",
+            type(exc).__name__,
+        )
 
     # Default the serve step to the warm HTTP daemon binding BOTH doors. Built only now —
     # after assembly (it needs boot.token_store.verify) and after start_sync, so the tunnel
@@ -399,10 +474,15 @@ def main(argv: Optional[list[str]] = None, *, env: Optional[Mapping[str, str]] =
     # fixed defaults. An injected `serve` (every unit test) takes precedence.
     if serve is None:
         nudge = getattr(sync_thread, "sync_nudge", None)
-        serve = _make_http_serve(boot, _DEFAULT_HTTP_PORT, _DEFAULT_TUNNEL_PORT,
-                                 max_body_bytes=max_body_bytes, lock=lock,
-                                 webhook_secret=cfg.sync.webhook_secret,
-                                 webhook_nudge=(nudge.set if nudge is not None else None))
+        serve = _make_http_serve(
+            boot,
+            _DEFAULT_HTTP_PORT,
+            _DEFAULT_TUNNEL_PORT,
+            max_body_bytes=max_body_bytes,
+            lock=lock,
+            webhook_secret=cfg.sync.webhook_secret,
+            webhook_nudge=(nudge.set if nudge is not None else None),
+        )
 
     serve(server)
     return EX_OK

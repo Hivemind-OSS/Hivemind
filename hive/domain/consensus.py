@@ -28,6 +28,7 @@ PURE: stdlib ``math`` only. The purity gate (tests/test_purity.py) forbids
 sqlite3 | torch | subprocess | os | git | time imports anywhere in hive/domain/. The detector
 is total and never raises: an unflaggable item (``k == 0``) is SKIPPED, never coined a flag.
 """
+
 from __future__ import annotations
 
 import logging
@@ -46,6 +47,7 @@ class SuspectConsensusItem:
     ``SettledWinReader``) and the ``anchor`` (carried for the app layer only; the NOTE never
     echoes it — ids + numbers, Law 4). Built by the app layer from ``promotion_provenance`` +
     ``settled_wins`` + ``scan_servable_labeled``."""
+
     episode_id: int
     rho_bar: float
     n_eff: float
@@ -60,6 +62,7 @@ class SuspectConsensusNote:
     ``rho_bar`` finite in [-1, 1], ``n_eff`` finite >= 0, ``k`` >= 0. Carries ids + numbers +
     the warning bool ONLY (no memory text, no anchor, no ``has_settled_win`` — Law 4). A
     detection note, never a verdict: a human re-examines the promotion via ``hive_supersede``."""
+
     episode_id: int
     rho_bar: float
     n_eff: float
@@ -76,8 +79,8 @@ class SuspectConsensusNote:
 
 
 def detect_suspect_consensus(
-        items: Sequence[SuspectConsensusItem], *, n_eff_frac_max: float,
-        top_n: int = 10) -> tuple[SuspectConsensusNote, ...]:
+    items: Sequence[SuspectConsensusItem], *, n_eff_frac_max: float, top_n: int = 10
+) -> tuple[SuspectConsensusNote, ...]:
     """Flag each provisional whose effective votes are THIN — ``n_eff / k < n_eff_frac_max``
     (k>=1; ``k == 0`` is not flaggable and is SKIPPED). ``martingale_warning`` = thin AND NOT
     ``has_settled_win`` (popular-but-uncorroborated). Output is deterministic — sorted by
@@ -91,13 +94,24 @@ def detect_suspect_consensus(
     for it in items:
         k = int(it.k)
         if k < 1:
-            continue                                   # k==0 ⇒ not flaggable (no votes to weigh)
+            continue  # k==0 ⇒ not flaggable (no votes to weigh)
         frac = float(it.n_eff) / float(k)
-        if not (frac < n_eff_frac_max):                # strict: at-or-above the floor is fine
+        if not (frac < n_eff_frac_max):  # strict: at-or-above the floor is fine
             continue
-        warning = not bool(it.has_settled_win)         # thin already true here ⇒ thin AND not win
-        scored.append((frac, SuspectConsensusNote(
-            episode_id=int(it.episode_id), rho_bar=float(it.rho_bar),
-            n_eff=float(it.n_eff), k=k, martingale_warning=warning)))
+        warning = not bool(
+            it.has_settled_win
+        )  # thin already true here ⇒ thin AND not win
+        scored.append(
+            (
+                frac,
+                SuspectConsensusNote(
+                    episode_id=int(it.episode_id),
+                    rho_bar=float(it.rho_bar),
+                    n_eff=float(it.n_eff),
+                    k=k,
+                    martingale_warning=warning,
+                ),
+            )
+        )
     scored.sort(key=lambda t: (t[0], t[1].episode_id))
     return tuple(note for _frac, note in scored[:top_n])

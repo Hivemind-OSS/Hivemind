@@ -15,6 +15,7 @@ Four contracts pinned here:
      schema-belt reject for a non-object), never a crash; and meta never enters
      the embedder (label-blind recall).
 """
+
 from __future__ import annotations
 
 import json
@@ -27,7 +28,7 @@ from tests.mcp._helpers import build_real_server, content, is_error, tool_call
 
 _CARRIER = '{"combdrift/fp":"combdrift-fp/1:deadbeef"}'
 _META_ARG = {"combdrift/fp": "combdrift-fp/1:deadbeef"}
-_CRED = "AKIAABCDEFGHIJKLMNOP"                       # fires the aws_akia rule
+_CRED = "AKIAABCDEFGHIJKLMNOP"  # fires the aws_akia rule
 
 
 def _raw_text(resp) -> str:
@@ -39,47 +40,71 @@ def _raw_text(resp) -> str:
 def test_capture_and_write_envelopes_byte_identical_when_meta_absent():
     server, _ = build_real_server()
     cap = tool_call(server, "hive_capture", {"text": "the widget frobnicates"})
-    expected_cap = json.dumps({
-        "status": "quarantined", "id": 1,
-        "scan": {"action": "clean", "rules": [], "n_findings": 0},
-        "deduped": False})
+    expected_cap = json.dumps(
+        {
+            "status": "quarantined",
+            "id": 1,
+            "scan": {"action": "clean", "rules": [], "n_findings": 0},
+            "deduped": False,
+        }
+    )
     assert _raw_text(cap) == expected_cap
 
     wr = tool_call(server, "hive_write", {"text": "the gadget rotates the flange"})
-    expected_wr = json.dumps({
-        "status": "approved", "id": 2, "trust": "provisional",
-        "scan": {"action": "clean", "rules": [], "n_findings": 0},
-        "deduped": False})
+    expected_wr = json.dumps(
+        {
+            "status": "approved",
+            "id": 2,
+            "trust": "provisional",
+            "scan": {"action": "clean", "rules": [], "n_findings": 0},
+            "deduped": False,
+        }
+    )
     assert _raw_text(wr) == expected_wr
 
     rc = tool_call(server, "hive_recall", {"query": "the gadget rotates the flange"})
     got = json.loads(_raw_text(rc))
-    expected_rc = json.dumps({
-        "reference_context": [{
-            "episode_id": 2, "text": "the gadget rotates the flange",
-            # sim rides through float32 cosine — take the served value, pin the shape
-            "sim": got["reference_context"][0]["sim"],
-            "trust": "provisional", "ts": 1000, "polarity": "neutral",
-            "kind": "note", "repos": [], "anchors": [],
-            "drift": {"type": "n/a", "detail": {"per_anchor": []}}}],
-        "abstained": False,
-        "trace_id": got["trace_id"],                 # per-call join key
-        "state": "CONFIDENT", "top_cos": got["top_cos"]})
-    assert _raw_text(rc) == expected_rc              # no meta key ANYWHERE, no beacon
+    expected_rc = json.dumps(
+        {
+            "reference_context": [
+                {
+                    "episode_id": 2,
+                    "text": "the gadget rotates the flange",
+                    # sim rides through float32 cosine — take the served value, pin the shape
+                    "sim": got["reference_context"][0]["sim"],
+                    "trust": "provisional",
+                    "ts": 1000,
+                    "polarity": "neutral",
+                    "kind": "note",
+                    "repos": [],
+                    "anchors": [],
+                    "drift": {"type": "n/a", "detail": {"per_anchor": []}},
+                }
+            ],
+            "abstained": False,
+            "trace_id": got["trace_id"],  # per-call join key
+            "state": "CONFIDENT",
+            "top_cos": got["top_cos"],
+        }
+    )
+    assert _raw_text(rc) == expected_rc  # no meta key ANYWHERE, no beacon
 
 
 # ── 2. omit-when-empty: meta rides IFF set, verbatim ──────────────────────────
 def test_recall_hit_carries_meta_only_when_set():
     server, _ = build_real_server()
-    tool_call(server, "hive_write", {"text": "lesson with a fingerprint",
-                                     "meta": _META_ARG})
+    tool_call(
+        server, "hive_write", {"text": "lesson with a fingerprint", "meta": _META_ARG}
+    )
     tool_call(server, "hive_write", {"text": "plain lesson, no fingerprint"})
-    with_meta = content(tool_call(
-        server, "hive_recall", {"query": "lesson with a fingerprint"}))
+    with_meta = content(
+        tool_call(server, "hive_recall", {"query": "lesson with a fingerprint"})
+    )
     hit = with_meta["reference_context"][0]
-    assert hit["meta"] == _CARRIER                   # the canonical string, verbatim
-    without = content(tool_call(
-        server, "hive_recall", {"query": "plain lesson, no fingerprint"}))
+    assert hit["meta"] == _CARRIER  # the canonical string, verbatim
+    without = content(
+        tool_call(server, "hive_recall", {"query": "plain lesson, no fingerprint"})
+    )
     assert "meta" not in without["reference_context"][0]
 
 
@@ -87,11 +112,12 @@ def test_recall_hit_carries_meta_only_when_set():
 def test_meta_value_is_secret_scanned_refuse_only():
     server, _ = build_real_server()
     for verb in ("hive_capture", "hive_write"):
-        res = content(tool_call(server, verb,
-                                {"text": "clean text", "meta": {"tool/key": _CRED}}))
+        res = content(
+            tool_call(server, verb, {"text": "clean text", "meta": {"tool/key": _CRED}})
+        )
         assert res["status"] == "refused"
         assert "aws_akia" in res["scan"]["rules"]
-        assert server.store.counts() == (0, 0)       # 0 rows — nothing staged
+        assert server.store.counts() == (0, 0)  # 0 rows — nothing staged
 
 
 def test_meta_credential_refused_even_under_redact_mode_scanner():
@@ -99,11 +125,14 @@ def test_meta_credential_refused_even_under_redact_mode_scanner():
     # but a credential in a meta VALUE still REFUSES: meta is never redacted.
     server, _ = build_real_server(scanner=FakeScanner(mode=REDACT))
     ctl = content(tool_call(server, "hive_write", {"text": f"the token is {_CRED}"}))
-    assert ctl["status"] == "redacted"               # control: text path redacts
-    res = content(tool_call(server, "hive_write", {
-        "text": "clean text", "meta": {"tool/key": _CRED}}))
+    assert ctl["status"] == "redacted"  # control: text path redacts
+    res = content(
+        tool_call(
+            server, "hive_write", {"text": "clean text", "meta": {"tool/key": _CRED}}
+        )
+    )
     assert res["status"] == "refused"
-    assert server.store.counts() == (1, 0)           # only the redacted control row
+    assert server.store.counts() == (1, 0)  # only the redacted control row
 
 
 # ── 4. clean refusal on bad grammar; recall stays meta-blind ──────────────────
@@ -123,6 +152,7 @@ def test_bad_meta_is_clean_refusal():
 
 class _SpyProvider(FakeProvider):
     """Records every text the embedder sees — meta must never be among them."""
+
     def __init__(self, d: int = 64) -> None:
         super().__init__(d=d)
         self.seen: list[str] = []
@@ -145,4 +175,4 @@ def test_recall_is_meta_blind():
     b = content(tool_call(plain, "hive_recall", {"query": text}))
     ha, hb = a["reference_context"][0], b["reference_context"][0]
     assert (ha["sim"], a["top_cos"]) == (hb["sim"], b["top_cos"])
-    assert all("combdrift" not in t for t in spy.seen)   # meta never embedded
+    assert all("combdrift" not in t for t in spy.seen)  # meta never embedded

@@ -9,6 +9,7 @@ observability block. With sync configured, darkness is REINTERPRETED as ``status
 "sync stalled"``. An empty registry serves ``{}`` (never the old flat single-repo
 shape); every leg fails open (Law 6 — the side-channel never breaks hive_health).
 """
+
 from __future__ import annotations
 
 import json
@@ -20,7 +21,10 @@ from hive.adapters.store_sqlite import SqliteEpisodeStore
 from hive.app.census_health import census_health_report
 from hive.domain.evidence_kinds import EK_CHANGE_OUTCOME, EK_OUTCOME_HELPED
 from tests.mcp._helpers import (
-    build_real_server, content, register_repo, tool_call,
+    build_real_server,
+    content,
+    register_repo,
+    tool_call,
 )
 
 _DAY_S = 86_400
@@ -29,8 +33,7 @@ _DAY_S = 86_400
 def _store(*repos: str) -> SqliteEpisodeStore:
     store = SqliteEpisodeStore(connect(":memory:"))
     for i, name in enumerate(repos):
-        store.repo_add(name=name, url=f"https://example.invalid/{name}.git",
-                       added_ts=i)
+        store.repo_add(name=name, url=f"https://example.invalid/{name}.git", added_ts=i)
     return store
 
 
@@ -49,7 +52,8 @@ def _insert_outcome(store, ts: int, repo: str | None, kind: str = EK_CHANGE_OUTC
 def test_empty_registry_serves_empty_block():
     store = _store()
     assert census_health_report(store) == {}, (
-        "an EMPTY registry serves {}, never the old flat shape")
+        "an EMPTY registry serves {}, never the old flat shape"
+    )
 
 
 def test_one_block_per_registered_repo_dark_by_default():
@@ -73,25 +77,27 @@ def test_newest_change_outcome_wins_per_repo():
     store = _store("alpha")
     now = int(time.time())
     _insert_outcome(store, now - 10 * _DAY_S, "alpha")
-    _insert_outcome(store, now - 2 * _DAY_S, "alpha")      # MAX(ts) wins
-    assert census_health_report(store)["alpha"][
-        "days_since_last_change_outcome"] == 2
+    _insert_outcome(store, now - 2 * _DAY_S, "alpha")  # MAX(ts) wins
+    assert census_health_report(store)["alpha"]["days_since_last_change_outcome"] == 2
 
 
 def test_repo_less_legacy_row_attributes_to_nobody():
     # a pre-v3 payload with no "repo" key cannot be attributed — honest under-claim.
     store = _store("alpha")
     _insert_outcome(store, int(time.time()), None)
-    assert census_health_report(store)["alpha"][
-        "days_since_last_change_outcome"] is None
+    assert (
+        census_health_report(store)["alpha"]["days_since_last_change_outcome"] is None
+    )
 
 
 def test_only_change_outcome_kind_counts():
     store = _store("alpha")
-    _insert_outcome(store, int(time.time()) - 5 * _DAY_S, "alpha",
-                    kind=EK_OUTCOME_HELPED)
-    assert census_health_report(store)["alpha"][
-        "days_since_last_change_outcome"] is None
+    _insert_outcome(
+        store, int(time.time()) - 5 * _DAY_S, "alpha", kind=EK_OUTCOME_HELPED
+    )
+    assert (
+        census_health_report(store)["alpha"]["days_since_last_change_outcome"] is None
+    )
 
 
 # ── the per-repo sync observability block ─────────────────────────────────────
@@ -192,6 +198,7 @@ class _RaisingConnStore:
     def repo_registry(self):
         class Row:
             name = "alpha"
+
         return [Row()]
 
 
@@ -207,7 +214,7 @@ def test_conn_fault_degrades_to_dark_blocks():
 def test_closed_conn_degrades_to_empty_never_raises():
     store = _store("alpha")
     store.conn.close()
-    assert census_health_report(store) == {}       # the registry read faults first
+    assert census_health_report(store) == {}  # the registry read faults first
 
 
 # ── the MCP surface (hive_health rides the per-repo report) ───────────────────
@@ -221,10 +228,11 @@ def test_health_serves_per_repo_blocks_over_mcp():
     assert set(block) == {"alpha", "beta"}
     assert block["alpha"]["sync"]["configured"] is True
     assert block["alpha"]["sync"]["last_tip"] == "c" * 40
-    assert block["alpha"]["sync"]["status"] == "sync stalled"   # configured + dark
+    assert block["alpha"]["sync"]["status"] == "sync stalled"  # configured + dark
     assert "sync" not in block["beta"]
     assert "days_since_last_change_outcome" not in block, (
-        "the flat single-repo shape is gone")
+        "the flat single-repo shape is gone"
+    )
 
 
 def test_health_empty_registry_serves_empty_block_over_mcp():
@@ -247,5 +255,7 @@ def test_census_health_flag_is_advertised():
 
     health = next(t for t in TOOL_DEFINITIONS if t["name"] == "hive_health")
     assert "include_census_health" in health["description"]
-    assert health["inputSchema"]["properties"]["include_census_health"] == {"type": "boolean"}
+    assert health["inputSchema"]["properties"]["include_census_health"] == {
+        "type": "boolean"
+    }
     assert len(health["description"]) <= METADATA_FIELD_LIMIT

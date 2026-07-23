@@ -11,14 +11,23 @@ cannot version-gate. A verify subprocess fault reads ``unverifiable``. The cache
 is a rebuildable Law-5 cache (wipe → repopulated; old tips pruned); the verify
 cap carries over.
 """
+
 from __future__ import annotations
 
 import json
 import re
 
 from tests.sync.conftest import (
-    ANCHOR, REPO, RecordingRun, completed, drift_rows, git, make_service, meta,
-    register_repo, seed_episode,
+    ANCHOR,
+    REPO,
+    RecordingRun,
+    completed,
+    drift_rows,
+    git,
+    make_service,
+    meta,
+    register_repo,
+    seed_episode,
 )
 
 FP_KEY = "combdrift/fp"
@@ -49,13 +58,14 @@ def test_fresh_then_stale_at_the_moved_tip_and_prune(origin, store, tmp_path):
     pruned (the cache key is the tip — a moved tip invalidates naturally)."""
     seed_episode(store, "greet lesson")
     svc = _armed(origin, store, tmp_path)
-    svc.tick()                                   # mint the fp + materialize at tip0
+    svc.tick()  # mint the fp + materialize at tip0
     tip0 = origin.origin_sha("refs/heads/main")
     assert _verdict_for(store, tip0) == "fresh"
     assert meta(store, f"sync:{REPO}:last_tip") == tip0
 
-    origin.commit("app.py", "def farewell(name):\n    return 'bye ' + name\n",
-                  "rm greet")
+    origin.commit(
+        "app.py", "def farewell(name):\n    return 'bye ' + name\n", "rm greet"
+    )
     origin.push()
     svc.tick()
     tip1 = origin.origin_sha("refs/heads/main")
@@ -68,10 +78,12 @@ def test_fresh_then_stale_at_the_moved_tip_and_prune(origin, store, tmp_path):
 def test_signature_change_materializes_anchor_changed(origin, store, tmp_path):
     seed_episode(store, "greet lesson")
     svc = _armed(origin, store, tmp_path)
-    svc.tick()                                   # fp minted at tip0
-    origin.commit("app.py",
-                  'def greet(name, punct):\n    return "hi " + name + punct\n',
-                  "widen greet")
+    svc.tick()  # fp minted at tip0
+    origin.commit(
+        "app.py",
+        'def greet(name, punct):\n    return "hi " + name + punct\n',
+        "widen greet",
+    )
     origin.push()
     svc.tick()
     tip1 = origin.origin_sha("refs/heads/main")
@@ -84,14 +96,17 @@ def test_incomparable_token_version_never_false_stale(origin, store, tmp_path):
     incomparable stored token silent even when the symbol is GONE."""
     eid = seed_episode(store, "greet lesson")
     svc = _armed(origin, store, tmp_path)
-    svc.tick()                                   # real fp minted
+    svc.tick()  # real fp minted
     row = store.conn.execute(
-        "SELECT fp_meta FROM episode_anchors WHERE episode_id=?", (eid,)).fetchone()
+        "SELECT fp_meta FROM episode_anchors WHERE episode_id=?", (eid,)
+    ).fetchone()
     fp = json.loads(row["fp_meta"])
     assert fp.get(FP_KEY), "precondition: a real minted token"
-    fp[FP_KEY] = _bump_version(fp[FP_KEY])       # incomparable, not different
-    store.conn.execute("UPDATE episode_anchors SET fp_meta=? WHERE episode_id=?",
-                       (json.dumps(fp, separators=(",", ":")), eid))
+    fp[FP_KEY] = _bump_version(fp[FP_KEY])  # incomparable, not different
+    store.conn.execute(
+        "UPDATE episode_anchors SET fp_meta=? WHERE episode_id=?",
+        (json.dumps(fp, separators=(",", ":")), eid),
+    )
     # move the line so a naive comparator WOULD scream stale
     origin.commit("app.py", "def farewell(name):\n    return 'bye'\n", "rm greet")
     origin.push()
@@ -109,7 +124,7 @@ def test_requested_ref_materializes_at_its_tip(origin, store, tmp_path):
     demand clock, so a lagging stamp never starves coverage)."""
     seed_episode(store, "greet lesson")
     svc = _armed(origin, store, tmp_path)
-    svc.tick()                                   # fp minted at the canonical tip
+    svc.tick()  # fp minted at the canonical tip
     git(origin.work, "checkout", "-q", "-b", "feature")
     origin.commit("app.py", "def other():\n    return 1\n", "break on feature")
     origin.push("feature")
@@ -128,8 +143,10 @@ def test_demand_window_excludes_refs_older_than_7d(origin, store, tmp_path):
     """The exclusion side of the 7d window: a ref whose last demand is > 7d older
     than the newest demand (and the service clock) ages off the work list."""
     seed_episode(store, "greet lesson")
-    for name, content in (("old-branch", "def other():\n    return 1\n"),
-                          ("new-branch", "def other():\n    return 2\n")):
+    for name, content in (
+        ("old-branch", "def other():\n    return 1\n"),
+        ("new-branch", "def other():\n    return 2\n"),
+    ):
         git(origin.work, "checkout", "-q", "-b", name)
         origin.commit("app.py", content, f"break on {name}")
         origin.push(name)
@@ -137,7 +154,7 @@ def test_demand_window_excludes_refs_older_than_7d(origin, store, tmp_path):
     old_tip = origin.origin_sha("refs/heads/old-branch")
     new_tip = origin.origin_sha("refs/heads/new-branch")
 
-    store.touch_ref_request(REPO, "old-branch", 1_000_000)   # 10.4d before newest
+    store.touch_ref_request(REPO, "old-branch", 1_000_000)  # 10.4d before newest
     store.touch_ref_request(REPO, "new-branch", 1_900_000)
     svc = _armed(origin, store, tmp_path, now=lambda: 2_000_000)
     svc.tick()
@@ -177,6 +194,7 @@ def test_cache_is_rebuildable(origin, store, tmp_path):
 
 def test_verify_cap_carries_over(origin, store, tmp_path, monkeypatch):
     import hive.app.sync as sync_mod
+
     monkeypatch.setattr(sync_mod, "_DRIFT_PER_TICK", 1)
     origin.commit("util.py", "def helper(x):\n    return x\n", "add util")
     origin.push()
@@ -184,11 +202,11 @@ def test_verify_cap_carries_over(origin, store, tmp_path, monkeypatch):
     seed_episode(store, "helper lesson", "util.py::helper")
     svc = _armed(origin, store, tmp_path)
 
-    svc.tick()                                   # one verify slot: one anchor lands
+    svc.tick()  # one verify slot: one anchor lands
     tip = origin.origin_sha("refs/heads/main")
     first = drift_rows(store, REPO, tip)
     assert len(first) == 1, f"bounded batch: {first}"
-    svc.tick()                                   # the remainder carries over
+    svc.tick()  # the remainder carries over
     verdicts = {r["anchor"]: r["verdict"] for r in drift_rows(store, REPO, tip)}
     assert set(verdicts) == {ANCHOR, "util.py::helper"}
     assert verdicts[ANCHOR] == "fresh" and verdicts["util.py::helper"] == "fresh"
@@ -214,12 +232,23 @@ def test_radius_change_maps_to_blast_radius_verdict(store, tmp_path):
     """The wire shim: a ``current`` anchor whose dependency-neighborhood radius
     CHANGED rides the radius tier into ``blast_radius_changed`` (never a bare
     fresh) — asserted through ``_verify_anchor`` with a scripted engine."""
+
     def is_verify(argv):
         return "verify" in argv and any("hive-edge" in a for a in argv[:1])
 
-    run = RecordingRun(script=[(is_verify, completed(
-        rc=0, stdout=json.dumps({"verdict": "current", "reason": "ok",
-                                 "radius": "changed"})))])
+    run = RecordingRun(
+        script=[
+            (
+                is_verify,
+                completed(
+                    rc=0,
+                    stdout=json.dumps(
+                        {"verdict": "current", "reason": "ok", "radius": "changed"}
+                    ),
+                ),
+            )
+        ]
+    )
     svc = make_service(store, tmp_path, run=run)
     verdict, detail = svc._verify_anchor(tmp_path, ANCHOR, "combdrift-fp/1:x", "")
     assert verdict == "blast_radius_changed"

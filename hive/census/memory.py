@@ -25,6 +25,7 @@ import sys
 import urllib.request
 from collections.abc import Sequence
 from dataclasses import dataclass
+from typing import Any
 
 _TEXT_CAP = 400
 _PRIORITY_DRIFTS = frozenset({"breaking", "removed"})
@@ -73,7 +74,7 @@ def order_subjects(symbols: Sequence[tuple[str, str, str]]) -> list[tuple[str, s
 
 def _recall_payload(
     hive_url: str, query: str, timeout_s: float, request_id: int
-) -> dict:
+) -> dict[str, Any]:
     """One hive_recall round trip: the tool payload dict, or _MemoryFault."""
     body = json.dumps(
         {
@@ -134,10 +135,12 @@ def _entry_from_hit(hit: object) -> MemoryContext | None:
         return None
     ts = hit.get("ts")
     sim = hit.get("sim")
-    sim_ok = (
-        isinstance(sim, (int, float))
+    sim_value = (
+        float(sim)
+        if isinstance(sim, (int, float))
         and not isinstance(sim, bool)
         and math.isfinite(sim)
+        else 0.0
     )
     return MemoryContext(
         episode_id=episode_id,
@@ -146,7 +149,7 @@ def _entry_from_hit(hit: object) -> MemoryContext | None:
         kind=_label(hit.get("kind")),
         anchor=_label(hit.get("anchor")),
         ts=ts if isinstance(ts, int) and not isinstance(ts, bool) else 0,
-        sim=float(sim) if sim_ok else 0.0,
+        sim=sim_value,
         text=text[:_TEXT_CAP],
     )
 

@@ -37,26 +37,36 @@ tests (tests/contract/test_retirement_gate.py).
 PURE: stdlib only. The purity gate (tests/test_purity.py) forbids
 sqlite3 | torch | subprocess | os | git | time imports anywhere in hive/domain/.
 """
+
 from __future__ import annotations
 
 import math
 from dataclasses import dataclass
-from typing import Optional
+from typing import TYPE_CHECKING, Any, Iterable, Optional
 
 from hive.domain.evidence_kinds import (
-    EK_OUTCOME_HURT, EK_OUTCOME_VERIFIED_HURT, EK_VERIFY_CURRENT, EK_VERIFY_STALE,
+    EK_OUTCOME_HURT,
+    EK_OUTCOME_VERIFIED_HURT,
+    EK_VERIFY_CURRENT,
+    EK_VERIFY_STALE,
 )
+
+if TYPE_CHECKING:
+    # Typing-only: the carrier class lives in models.py; retirement stays leaf-level
+    # at runtime (evidence_kinds only).
+    from hive.domain.models import Episode
 
 # The §3.4 wire drift verdicts that prove the anchor MOVED (the qualifying subset —
 # fresh/branch_scoped/unverifiable never justify retirement; unverifiable is the
 # fail-safe unknown, and unknown never retires).
-_QUALIFYING_DRIFT = frozenset({"anchor_missing", "anchor_changed",
-                               "blast_radius_changed"})
+_QUALIFYING_DRIFT = frozenset(
+    {"anchor_missing", "anchor_changed", "blast_radius_changed"}
+)
 
 # The stamped-signal vocabulary (audit ``signals`` entries). CT-7 asserts these by
 # SUBSTRING — 'drift' / 'stale' / 'hurt' / 'contradiction' — the exact spellings are
 # owned here.
-SIG_DRIFT_PREFIX = "drift:"                       # + the qualifying wire verdict
+SIG_DRIFT_PREFIX = "drift:"  # + the qualifying wire verdict
 SIG_VERIFY_STALE = "verify_stale"
 SIG_VERIFIED_HURT = "outcome_verified_hurt"
 SIG_HURT_OTHER_IDENTITY = "outcome_hurt_other_identity"
@@ -71,6 +81,7 @@ class EvidenceRow:
     ``evidence_kinds``), the recorded actor (the identity-diversity key for
     agent-reported hurt), and the row timestamp (the stale-vs-current recency
     order)."""
+
     kind: str
     actor: str
     ts: int
@@ -82,6 +93,7 @@ class Eligibility:
     names EVERY satisfied clause in clause order — stamped verbatim into the
     retirement audit so the ledger records exactly WHICH machine signal(s)
     authorized the retirement."""
+
     eligible: bool
     signals: tuple[str, ...]
 
@@ -96,8 +108,14 @@ def _row_fields(row: object) -> Optional[tuple[str, str, int]]:
         if isinstance(row, EvidenceRow):
             return row.kind, row.actor, int(row.ts)
         if hasattr(row, "kind"):
-            return (str(row.kind), str(getattr(row, "actor", "")),
-                    int(getattr(row, "ts", 0)))
+            return (
+                str(row.kind),
+                str(getattr(row, "actor", "")),
+                int(getattr(row, "ts", 0)),
+            )
+        kind: Any
+        actor: Any
+        ts: Any
         kind, actor, ts = row  # type: ignore[misc]  # 3-sequence form
         return str(kind), str(actor), int(ts)
     except Exception:  # noqa: BLE001 — undecidable row ⇒ skipped
@@ -109,8 +127,8 @@ def _involves(pair: object, episode_id: int) -> bool:
     ``b_id`` attrs (ConflictNote shape) or a 2+-sequence of ids; anything
     undecidable is False (a malformed pair never fabricates a contradiction)."""
     try:
-        a = getattr(pair, "a_id", None)
-        b = getattr(pair, "b_id", None)
+        a: Any = getattr(pair, "a_id", None)
+        b: Any = getattr(pair, "b_id", None)
         if a is None and b is None:
             a, b = pair[0], pair[1]  # type: ignore[index]
         return int(a) == episode_id or int(b) == episode_id
@@ -118,9 +136,15 @@ def _involves(pair: object, episode_id: int) -> bool:
         return False
 
 
-def retirement_evidence(*, episode, caller_identity, drift_verdicts,
-                        evidence_rows, conflict_pairs,
-                        winner_cosine=None) -> Eligibility:
+def retirement_evidence(
+    *,
+    episode: "Episode",
+    caller_identity: str,
+    drift_verdicts: Optional[Iterable[str]],
+    evidence_rows: Optional[Iterable[object]],
+    conflict_pairs: Optional[Iterable[object]],
+    winner_cosine: Optional[float] = None,
+) -> Eligibility:
     """Does at least one qualifying machine signal exist for ``episode``?
 
     Feeds (assembled by the boundary; every feed already fail-open there — a
@@ -166,7 +190,7 @@ def retirement_evidence(*, episode, caller_identity, drift_verdicts,
         for row in evidence_rows or ():
             fields = _row_fields(row)
             if fields is None:
-                continue                            # malformed row ⇒ under-claim
+                continue  # malformed row ⇒ under-claim
             parsed.append(fields)
             kind, _actor, ts = fields
             if kind == EK_VERIFY_STALE:
@@ -181,8 +205,10 @@ def retirement_evidence(*, episode, caller_identity, drift_verdicts,
         # (the identity-diversity clause: two-call self-destruction blocked).
         if any(kind == EK_OUTCOME_VERIFIED_HURT for kind, _a, _t in parsed):
             signals.append(SIG_VERIFIED_HURT)
-        if any(kind == EK_OUTCOME_HURT and actor != str(caller_identity)
-               for kind, actor, _t in parsed):
+        if any(
+            kind == EK_OUTCOME_HURT and actor != str(caller_identity)
+            for kind, actor, _t in parsed
+        ):
             signals.append(SIG_HURT_OTHER_IDENTITY)
 
         # ── clause 3: mechanical contradiction — a detector pair naming the
@@ -193,7 +219,7 @@ def retirement_evidence(*, episode, caller_identity, drift_verdicts,
             try:
                 c = float(winner_cosine)
             except (TypeError, ValueError):
-                c = float("nan")                    # undecidable ⇒ not a signal
+                c = float("nan")  # undecidable ⇒ not a signal
             if math.isfinite(c) and -1.0 <= c <= 1.0:
                 signals.append(SIG_WINNER_NEAR_DUP)
 

@@ -8,7 +8,6 @@ with fixed field values; no engine is faked.
 
 from __future__ import annotations
 
-from pathlib import Path
 
 import pytest
 
@@ -205,7 +204,9 @@ class TestRegressionJoinFailClosed:
         self, graph_pair, findings
     ) -> None:
         ghost = _verdict(
-            _symbol_change("lib.py", "ghost_zz9", "removed", "symbol_missing: ghost_zz9")
+            _symbol_change(
+                "lib.py", "ghost_zz9", "removed", "symbol_missing: ghost_zz9"
+            )
         )
         (finding,) = regression_join(ghost, graph_pair.base, depth=2)
         assert finding.tag == "unverified"

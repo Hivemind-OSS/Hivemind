@@ -14,6 +14,7 @@ scope. The abstain decision is the pure AbsoluteRelevanceGate (serve iff a
 candidate clears tau_serve); a flat-but-relevant field serves, a
 peaked-but-weak field abstains.
 """
+
 from __future__ import annotations
 
 import numpy as np
@@ -21,15 +22,28 @@ import pytest
 
 from hive.domain.lifecycle import is_servable
 from hive.domain.models import (
-    ABSTAIN, CONFIDENT, EMPTY_NO_DATA, AnchorRef, Episode, Scored, content_hash,
+    ABSTAIN,
+    CONFIDENT,
+    EMPTY_NO_DATA,
+    AnchorRef,
+    Episode,
+    Scored,
+    content_hash,
 )
 from hive.domain.ports import RepoScopeReader
 from hive.domain.recall import (
-    AbsoluteRelevanceGate, RecallPipeline, RecallScope, ScopedEpisodeReader,
+    AbsoluteRelevanceGate,
+    RecallPipeline,
+    RecallScope,
+    ScopedEpisodeReader,
     select_served,
 )
 from tests.fakes._fakes import (
-    FakeClock, FakeEpisodeReader, FakeIndex, FakeLedger, FakeScanner,
+    FakeClock,
+    FakeEpisodeReader,
+    FakeIndex,
+    FakeLedger,
+    FakeScanner,
 )
 
 D = 16
@@ -62,6 +76,7 @@ def _axis_vec(c: float, axis: int, d: int = D) -> np.ndarray:
 
 class _StubProvider:
     """Returns a FIXED query vector for any text (decouples from hash randomness)."""
+
     def __init__(self, vec: np.ndarray, d: int = D) -> None:
         self._vec = np.asarray(vec, dtype=np.float32)
         self.d = d
@@ -90,6 +105,7 @@ class _RaisingSearchIndex(FakeIndex):
 
 class _ListIndex:
     """Alternate adapter — list-backed instead of dict, same Protocol (swap seam)."""
+
     def __init__(self) -> None:
         self._rows: list[tuple[int, np.ndarray]] = []
 
@@ -118,18 +134,25 @@ class FakeScopedReader(FakeEpisodeReader):
     def servable_scopes(self, *, now: int, provisional_ttl_s: int):
         out: dict[int, tuple[frozenset[str], tuple[tuple[str, str], ...]]] = {}
         for eid, ep in self._by_id.items():
-            if not is_servable(status=ep.status, trust=ep.trust,
-                               last_active_ts=ep.last_active_ts, now=now,
-                               provisional_ttl_s=provisional_ttl_s):
+            if not is_servable(
+                status=ep.status,
+                trust=ep.trust,
+                last_active_ts=ep.last_active_ts,
+                now=now,
+                provisional_ttl_s=provisional_ttl_s,
+            ):
                 continue
-            out[eid] = (frozenset(ep.repos),
-                        tuple((a.repo, a.anchor) for a in ep.anchors))
+            out[eid] = (
+                frozenset(ep.repos),
+                tuple((a.repo, a.anchor) for a in ep.anchors),
+            )
         return out
 
 
 class _PoisonScopeReader(FakeEpisodeReader):
     """A reader whose partition map must NEVER be read — any call fails the
     read closed (and the test's CONFIDENT assert catches it)."""
+
     def servable_scopes(self, **_kw):
         raise AssertionError("servable_scopes must not be read on the global path")
 
@@ -148,9 +171,20 @@ def _ids(r) -> set[int]:
     return {h.episode_id for h in r.hits}
 
 
-def _pipe(*, index, reader, query_vec,
-          recall_top_n=10, tau_serve=0.70, k_min=1, embedder=None, ledger=None,
-          overscan=3, dup_tau=0.80, conflict_enabled=False):
+def _pipe(
+    *,
+    index,
+    reader,
+    query_vec,
+    recall_top_n=10,
+    tau_serve=0.70,
+    k_min=1,
+    embedder=None,
+    ledger=None,
+    overscan=3,
+    dup_tau=0.80,
+    conflict_enabled=False,
+):
     return RecallPipeline(
         embedder=embedder or _StubProvider(query_vec),
         index=index,
@@ -160,7 +194,7 @@ def _pipe(*, index, reader, query_vec,
         ledger=ledger if ledger is not None else FakeLedger(),
         clock_now=lambda: 0,
         scanner=FakeScanner(),
-        provisional_ttl_s=10**9,        # effectively fresh-forever for these tests
+        provisional_ttl_s=10**9,  # effectively fresh-forever for these tests
         overscan=overscan,
         dup_tau=dup_tau,
         conflict_enabled=conflict_enabled,
@@ -170,9 +204,11 @@ def _pipe(*, index, reader, query_vec,
 def _confident_setup(top_n=10):
     """gold(cos1) + two weak distractors ⟹ the gold clears tau_serve ⟹ CONFIDENT."""
     index, reader = FakeIndex(), FakeEpisodeReader()
-    for eid, vec, text in ((1, _e(0), "the gold memory"),
-                           (2, _cos_vec(0.1), "distractor a"),
-                           (3, _cos_vec(0.05), "distractor b")):
+    for eid, vec, text in (
+        (1, _e(0), "the gold memory"),
+        (2, _cos_vec(0.1), "distractor a"),
+        (3, _cos_vec(0.05), "distractor b"),
+    ):
         index.add(eid, vec)
         reader.add(eid, text, weight=1.0)
     return _pipe(index=index, reader=reader, query_vec=_e(0), recall_top_n=top_n)
@@ -183,7 +219,7 @@ def test_happy_path_returns_confident_hits():
     r = _confident_setup().recall("q", agent_id="A")
     assert r.state == CONFIDENT
     assert r.hits[0].episode_id == 1 and r.hits[0].text == "the gold memory"
-    assert r.top_cos == pytest.approx(1.0)     # the gold's absolute cosine
+    assert r.top_cos == pytest.approx(1.0)  # the gold's absolute cosine
 
 
 def test_confident_hit_carries_kind_repos_and_anchors():
@@ -191,9 +227,14 @@ def test_confident_hit_carries_kind_repos_and_anchors():
     # partition + code bindings (repos/anchors are read off the resolved Episode,
     # parallel to trust/ts/polarity). An unwired episode under-claims general.
     index, reader = FakeIndex(), FakeEpisodeReader()
-    reader.add(1, "the gold memory", weight=1.0, kind="bug",
-               anchors=[("alpha", "hive/domain/recall.py::RecallPipeline")])
-    reader.add(2, "distractor a", weight=1.0)            # no labels ⇒ under-claims
+    reader.add(
+        1,
+        "the gold memory",
+        weight=1.0,
+        kind="bug",
+        anchors=[("alpha", "hive/domain/recall.py::RecallPipeline")],
+    )
+    reader.add(2, "distractor a", weight=1.0)  # no labels ⇒ under-claims
     index.add(1, _e(0))
     index.add(2, _cos_vec(0.1))
     index.add(3, _cos_vec(0.05))
@@ -204,9 +245,10 @@ def test_confident_hit_carries_kind_repos_and_anchors():
     assert by_id[1].kind == "bug"
     assert by_id[1].repos == ("alpha",)
     assert by_id[1].anchors == (
-        AnchorRef("alpha", "hive/domain/recall.py::RecallPipeline"),)
-    assert by_id[2].kind == "note"                       # fail-safe defaults:
-    assert by_id[2].repos == () and by_id[2].anchors == ()   # general memory
+        AnchorRef("alpha", "hive/domain/recall.py::RecallPipeline"),
+    )
+    assert by_id[2].kind == "note"  # fail-safe defaults:
+    assert by_id[2].repos == () and by_id[2].anchors == ()  # general memory
 
 
 def test_recall_at_5_over_held_out_pairs_meets_floor():
@@ -218,11 +260,10 @@ def test_recall_at_5_over_held_out_pairs_meets_floor():
         reader.add(eid, text)
     hit_at5 = 0
     for eid, (vec, _text) in enumerate(golds):
-        r = _pipe(index=index, reader=reader, query_vec=vec).recall(
-            "q", agent_id="A")
+        r = _pipe(index=index, reader=reader, query_vec=vec).recall("q", agent_id="A")
         if r.state == CONFIDENT and eid in {h.episode_id for h in r.hits[:5]}:
             hit_at5 += 1
-    assert hit_at5 / len(golds) >= 0.33   # recall@5 floor
+    assert hit_at5 / len(golds) >= 0.33  # recall@5 floor
 
 
 # ── abstain ───────────────────────────────────────────────────────────────────
@@ -230,10 +271,9 @@ def test_abstain_returns_empty_hits():
     # 4 candidates ALL at cosine 0 with the query ⟹ none clear tau_serve ⟹ abstain
     index, reader = FakeIndex(), FakeEpisodeReader()
     for eid in (1, 2, 3, 4):
-        index.add(eid, _cos_vec(0.0))   # all cos 0 with query e0
+        index.add(eid, _cos_vec(0.0))  # all cos 0 with query e0
         reader.add(eid, f"t{eid}")
-    r = _pipe(index=index, reader=reader, query_vec=_e(0)).recall(
-        "q", agent_id="A")
+    r = _pipe(index=index, reader=reader, query_vec=_e(0)).recall("q", agent_id="A")
     assert r.state == ABSTAIN and r.hits == ()
 
 
@@ -245,8 +285,7 @@ def test_abstain_no_resurrect():
     for eid in (1, 2, 3, 4):
         index.add(eid, _cos_vec(0.0))
         reader.add(eid, f"t{eid}")
-    r = _pipe(index=index, reader=reader, query_vec=_e(0)).recall(
-        "q", agent_id="A")
+    r = _pipe(index=index, reader=reader, query_vec=_e(0)).recall("q", agent_id="A")
     assert r.state == ABSTAIN and r.hits == ()
 
 
@@ -262,12 +301,13 @@ def test_peaked_but_weak_field_abstains():
 
 def test_empty_index_is_empty_no_data():
     r = _pipe(index=FakeIndex(), reader=FakeEpisodeReader(), query_vec=_e(0)).recall(
-        "q", agent_id="A")
+        "q", agent_id="A"
+    )
     assert r.state == EMPTY_NO_DATA and r.hits == () and r.top_cos == 0.0
 
 
 def test_empty_and_abstain_are_distinct_states():
-    assert EMPTY_NO_DATA != ABSTAIN   # not conflated (top_cos 0.0 vs gate-fired)
+    assert EMPTY_NO_DATA != ABSTAIN  # not conflated (top_cos 0.0 vs gate-fired)
 
 
 # ── approved-only (M04's honest half) + never-flip ANN guard ──────────────────
@@ -283,8 +323,9 @@ def test_authoritative_index_required():
     idx = _NonAuthIndex()
     idx.add(1, _e(0))
     r = _pipe(index=idx, reader=FakeEpisodeReader(), query_vec=_e(0)).recall(
-        "q", agent_id="A")
-    assert r.state == EMPTY_NO_DATA and r.hits == ()   # never silently flips to ANN
+        "q", agent_id="A"
+    )
+    assert r.state == EMPTY_NO_DATA and r.hits == ()  # never silently flips to ANN
 
 
 # ── trace id ──────────────────────────────────────────────────────────────────
@@ -298,16 +339,17 @@ def test_trace_id_emitted_and_unique():
     for eid in (1, 2, 3):
         idx.add(eid, _cos_vec(0.0))
         rdr.add(eid, "t")
-    assert _pipe(index=idx, reader=rdr, query_vec=_e(0)).recall(
-        "q", agent_id="A").trace_id
+    assert (
+        _pipe(index=idx, reader=rdr, query_vec=_e(0)).recall("q", agent_id="A").trace_id
+    )
 
 
 # ── top_n is hits-length only, never the abstain decision ─────────────────────
 def test_recall_top_n_size_only():
     r1 = _confident_setup(top_n=1).recall("q", agent_id="A")
     r5 = _confident_setup(top_n=5).recall("q", agent_id="A")
-    assert r1.state == CONFIDENT and r5.state == CONFIDENT   # same gate decision
-    assert len(r1.hits) == 1 and len(r5.hits) == 3           # only hits length changes
+    assert r1.state == CONFIDENT and r5.state == CONFIDENT  # same gate decision
+    assert len(r1.hits) == 1 and len(r5.hits) == 3  # only hits length changes
     assert r1.top_cos == pytest.approx(r5.top_cos)
 
 
@@ -316,16 +358,18 @@ def test_embedder_failure_is_empty_no_data():
     idx, rdr = FakeIndex(), FakeEpisodeReader()
     idx.add(1, _e(0))
     rdr.add(1, "gold")
-    r = _pipe(index=idx, reader=rdr, query_vec=_e(0),
-              embedder=_RaisingProvider(_e(0))).recall("q", agent_id="A")
-    assert r.state == EMPTY_NO_DATA and r.hits == ()   # never raises into the caller
+    r = _pipe(
+        index=idx, reader=rdr, query_vec=_e(0), embedder=_RaisingProvider(_e(0))
+    ).recall("q", agent_id="A")
+    assert r.state == EMPTY_NO_DATA and r.hits == ()  # never raises into the caller
 
 
 def test_index_search_raise_is_empty_no_data():
     idx = _RaisingSearchIndex()
     idx.add(1, _e(0))
     r = _pipe(index=idx, reader=FakeEpisodeReader(), query_vec=_e(0)).recall(
-        "q", agent_id="A")
+        "q", agent_id="A"
+    )
     assert r.state == EMPTY_NO_DATA
 
 
@@ -336,11 +380,14 @@ def test_recall_against_alternate_index_adapter():
         for eid, vec, text in ((1, _e(0), "gold"), (2, _cos_vec(0.1), "d")):
             idx.add(eid, vec)
             rdr.add(eid, text)
-        r = _pipe(index=idx, reader=rdr, query_vec=_e(0)).recall(
-            "q", agent_id="A")
-        return (r.state, tuple((h.episode_id, h.text, round(h.sim, 6)) for h in r.hits),
-                round(r.top_cos, 9))
-    assert run(FakeIndex) == run(_ListIndex)   # internal repr differs; result identical
+        r = _pipe(index=idx, reader=rdr, query_vec=_e(0)).recall("q", agent_id="A")
+        return (
+            r.state,
+            tuple((h.episode_id, h.text, round(h.sim, 6)) for h in r.hits),
+            round(r.top_cos, 9),
+        )
+
+    assert run(FakeIndex) == run(_ListIndex)  # internal repr differs; result identical
 
 
 # ── CONFIDENT iff boundary (gate-pass + ≥1 hit) + resolve-away fail-closed ────
@@ -348,8 +395,7 @@ def test_single_candidate_passes_to_confident_with_that_hit():
     idx, rdr = FakeIndex(), FakeEpisodeReader()
     idx.add(7, _e(0))
     rdr.add(7, "only")
-    r = _pipe(index=idx, reader=rdr, query_vec=_e(0)).recall(
-        "q", agent_id="A")
+    r = _pipe(index=idx, reader=rdr, query_vec=_e(0)).recall("q", agent_id="A")
     assert r.state == CONFIDENT and len(r.hits) == 1 and r.hits[0].episode_id == 7
 
 
@@ -359,12 +405,15 @@ def test_malformed_search_result_is_empty_no_data():
     # not raise into the caller. The sims float-coercion must be inside the fail-closed try.
     class _BadSimIndex(FakeIndex):
         def search(self, query, k):
-            return [(1, None)]   # NULL distance from a misbehaving pgvector/Qdrant adapter
+            return [
+                (1, None)
+            ]  # NULL distance from a misbehaving pgvector/Qdrant adapter
 
     idx = _BadSimIndex()
     idx.add(1, _e(0))
     r = _pipe(index=idx, reader=FakeEpisodeReader(), query_vec=_e(0)).recall(
-        "q", agent_id="A")
+        "q", agent_id="A"
+    )
     assert r.state == EMPTY_NO_DATA
 
 
@@ -380,26 +429,27 @@ def test_nan_sim_index_never_confident():
     idx.add(2, _e(1))
     reader = FakeEpisodeReader()
     reader.add(1, "real gold")
-    reader.add(2, "corrupted")   # resolvable ⇒ would surface but for the gate
-    r = _pipe(index=idx, reader=reader, query_vec=_e(0)).recall(
-        "q", agent_id="A")
+    reader.add(2, "corrupted")  # resolvable ⇒ would surface but for the gate
+    r = _pipe(index=idx, reader=reader, query_vec=_e(0)).recall("q", agent_id="A")
     assert r.state != CONFIDENT
-    assert all(h.sim == h.sim for h in r.hits)   # no NaN sim surfaced (NaN != NaN)
+    assert all(h.sim == h.sim for h in r.hits)  # no NaN sim surfaced (NaN != NaN)
 
 
 def test_confident_result_must_carry_hits():
     # #E: the CONFIDENT<->has-hits biconditional made fully structural — CONFIDENT with empty
     # hits is unconstructable (the reverse of abstain-no-resurrect: no empty-confident either).
     from hive.domain.models import RecallResult
+
     with pytest.raises(ValueError):
         RecallResult(CONFIDENT, "t", (), 0.0)
 
 
 def test_gate_passes_but_all_resolve_away_is_empty_no_data():
     idx = FakeIndex()
-    idx.add(7, _e(0))                       # gate will pass (single relevant candidate)
+    idx.add(7, _e(0))  # gate will pass (single relevant candidate)
     r = _pipe(index=idx, reader=FakeEpisodeReader(), query_vec=_e(0)).recall(
-        "q", agent_id="A")
+        "q", agent_id="A"
+    )
     assert r.state == EMPTY_NO_DATA and r.hits == ()  # fail-closed
 
 
@@ -410,16 +460,28 @@ def _S(eid, sim):
 
 def _ep(eid, vec, *, trust="established", polarity="neutral", ts=0, text=None):
     text = text or f"memory-{eid}"
-    return Episode(id=eid, tenant_id="t", text=text, weight=1.0, ts=ts,
-                   content_hash=content_hash(text), status="approved",
-                   proposed_by="x", value=vec, trust=trust, polarity=polarity)
+    return Episode(
+        id=eid,
+        tenant_id="t",
+        text=text,
+        weight=1.0,
+        ts=ts,
+        content_hash=content_hash(text),
+        status="approved",
+        proposed_by="x",
+        value=vec,
+        trust=trust,
+        polarity=polarity,
+    )
 
 
 def test_select_drops_trust_dominated_near_dup():
     # of a near-dup pair (cos ≫ dup_tau) with strict trust dominance, the lower-trust member
     # is dropped (the folded-in conflict.suppress).
-    items = [(_S(1, 0.95), _ep(1, _cos_vec(0.95), trust="established")),
-             (_S(2, 0.92), _ep(2, _cos_vec(0.92), trust="provisional"))]
+    items = [
+        (_S(1, 0.95), _ep(1, _cos_vec(0.95), trust="established")),
+        (_S(2, 0.92), _ep(2, _cos_vec(0.92), trust="provisional")),
+    ]
     kept = select_served(items, dup_tau=0.80, top_n=10)
     assert [s.episode_id for s, _ in kept] == [1]
 
@@ -429,8 +491,13 @@ def test_select_keeps_higher_trust_truth_over_higher_sim_poison():
     # lower-cosine higher-trust truth in sim order. Pure greedy-by-sim MMR would keep the
     # poison and drop the truth; trust-dominance runs FIRST and drops the poison, so the
     # TRUTH survives. Reordering the two passes reds this.
-    items = [(_S(2, 0.96), _ep(2, _cos_vec(0.96), trust="provisional")),   # higher sim, poison
-             (_S(1, 0.93), _ep(1, _cos_vec(0.93), trust="established"))]   # lower sim, truth
+    items = [
+        (
+            _S(2, 0.96),
+            _ep(2, _cos_vec(0.96), trust="provisional"),
+        ),  # higher sim, poison
+        (_S(1, 0.93), _ep(1, _cos_vec(0.93), trust="established")),
+    ]  # lower sim, truth
     kept = select_served(items, dup_tau=0.80, top_n=10)
     assert [s.episode_id for s, _ in kept] == [1]
 
@@ -438,8 +505,10 @@ def test_select_keeps_higher_trust_truth_over_higher_sim_poison():
 def test_select_collapses_same_trust_echoes_to_higher_sim():
     # equal trust ⇒ trust-dominance drops nothing; MMR collapses the cosine echo to the
     # higher-sim representative (items are sim-desc, so the first survivor wins).
-    items = [(_S(1, 0.95), _ep(1, _cos_vec(0.95), trust="established")),
-             (_S(2, 0.92), _ep(2, _cos_vec(0.92), trust="established"))]
+    items = [
+        (_S(1, 0.95), _ep(1, _cos_vec(0.95), trust="established")),
+        (_S(2, 0.92), _ep(2, _cos_vec(0.92), trust="established")),
+    ]
     kept = select_served(items, dup_tau=0.80, top_n=10)
     assert [s.episode_id for s, _ in kept] == [1]
 
@@ -447,9 +516,11 @@ def test_select_collapses_same_trust_echoes_to_higher_sim():
 def test_select_caps_at_top_n_after_filtering():
     # three mutually-distinct (orthogonal, no near-dup) items: nothing is filtered, the cap
     # takes the top_n by the input sim order.
-    items = [(_S(1, 0.90), _ep(1, _e(1))),
-             (_S(2, 0.85), _ep(2, _e(2))),
-             (_S(3, 0.80), _ep(3, _e(3)))]
+    items = [
+        (_S(1, 0.90), _ep(1, _e(1))),
+        (_S(2, 0.85), _ep(2, _e(2))),
+        (_S(3, 0.80), _ep(3, _e(3))),
+    ]
     kept = select_served(items, dup_tau=0.80, top_n=2)
     assert [s.episode_id for s, _ in kept] == [1, 2]
 
@@ -493,7 +564,7 @@ def test_selected_out_row_is_not_exposed_belt_ordering():
     led = FakeLedger()
     _pair_pipe(ledger=led).recall("q", agent_id="A")
     exposed = {e for ex in led.exposures for e, _m in ex["items"]}
-    assert exposed == {1}                     # only the surviving gold, never the poison
+    assert exposed == {1}  # only the surviving gold, never the poison
 
 
 def test_lapsed_provisional_warm_in_index_dropped_and_not_exposed():
@@ -505,16 +576,27 @@ def test_lapsed_provisional_warm_in_index_dropped_and_not_exposed():
     TTL = 10
     clock = FakeClock(0)
     index, reader = FakeIndex(), FakeEpisodeReader()
-    index.add(1, _e(0))                                 # warm the index while the row is fresh
-    reader.add(1, "the lapsing provisional fact", trust="provisional",
-               last_active_ts=0, value=_e(0))
+    index.add(1, _e(0))  # warm the index while the row is fresh
+    reader.add(
+        1,
+        "the lapsing provisional fact",
+        trust="provisional",
+        last_active_ts=0,
+        value=_e(0),
+    )
     led = FakeLedger()
     pipe = RecallPipeline(
-        embedder=_StubProvider(_e(0)), index=index,
-        gate=AbsoluteRelevanceGate(0.70, 1), reader=reader,
-        recall_top_n=10, ledger=led, clock_now=clock.now, scanner=FakeScanner(),
-        provisional_ttl_s=TTL)
-    clock.advance(TTL + 1)                               # lapse the TTL WITHOUT rebuilding the index
+        embedder=_StubProvider(_e(0)),
+        index=index,
+        gate=AbsoluteRelevanceGate(0.70, 1),
+        reader=reader,
+        recall_top_n=10,
+        ledger=led,
+        clock_now=clock.now,
+        scanner=FakeScanner(),
+        provisional_ttl_s=TTL,
+    )
+    clock.advance(TTL + 1)  # lapse the TTL WITHOUT rebuilding the index
     r = pipe.recall("q", agent_id="A")
     # the lapsed row clears the gate (cos 1.0) but is dropped at resolve: absent from the served
     # context, and nothing else is servable ⇒ fail-closed EMPTY.
@@ -523,7 +605,7 @@ def test_lapsed_provisional_warm_in_index_dropped_and_not_exposed():
     # …and it was NEVER exposed (no liveness refresh that would resurrect the lapsed row).
     exposed = {e for ex in led.exposures for e, _m in ex["items"]}
     assert 1 not in exposed
-    assert led.exposures == []                           # no exposure row written at all
+    assert led.exposures == []  # no exposure row written at all
 
 
 def test_detect_conflicts_fault_fails_the_read_closed(monkeypatch):
@@ -534,6 +616,7 @@ def test_detect_conflicts_fault_fails_the_read_closed(monkeypatch):
 
     def boom(*a, **k):
         raise RuntimeError("detector boom")
+
     monkeypatch.setattr(recall_mod, "detect_conflicts", boom)
     r = _pair_pipe().recall("q", agent_id="A")
     assert r.state == EMPTY_NO_DATA and r.hits == ()
@@ -545,9 +628,11 @@ def _flat_relevant_pipe(*, tau_serve):
     absolutely relevant. The shift-invariant entropy gate abstained on the flatness; the
     absolute-relevance gate SERVES when they clear tau_serve (≤ 0.85) and abstains at 1.0."""
     index, reader = FakeIndex(), FakeEpisodeReader()
-    for eid, c, text in ((1, 0.85, "the gold fact"),
-                         (2, 0.84, "a sibling fact"),
-                         (3, 0.83, "another sibling")):
+    for eid, c, text in (
+        (1, 0.85, "the gold fact"),
+        (2, 0.84, "a sibling fact"),
+        (3, 0.83, "another sibling"),
+    ):
         index.add(eid, _cos_vec(c))
         reader.add(eid, text)
     return _pipe(index=index, reader=reader, query_vec=_e(0), tau_serve=tau_serve)
@@ -581,30 +666,45 @@ def _partitioned_setup(*, ledger=None, tau_serve=0.60):
     hive/domain), beta scope-only, general, alpha+beta shared."""
     index, reader = FakeIndex(), FakeScopedReader()
     rows = (
-        (1, 0.75, 1, "alpha: the retry helper doubles its backoff",
-         {"anchors": [("alpha", "hive/app/retry.py::backoff")]}),
-        (2, 0.72, 2, "beta: the retry helper jitters its delay",
-         {"repos": ["beta"]}),
+        (
+            1,
+            0.75,
+            1,
+            "alpha: the retry helper doubles its backoff",
+            {"anchors": [("alpha", "hive/app/retry.py::backoff")]},
+        ),
+        (2, 0.72, 2, "beta: the retry helper jitters its delay", {"repos": ["beta"]}),
         (3, 0.70, 3, "general: retries must be idempotent", {}),
-        (4, 0.68, 4, "shared: the retry helper is vendored in both",
-         {"repos": ["alpha", "beta"]}),
-        (5, 0.66, 5, "alpha: the policy caps at five attempts",
-         {"anchors": [("alpha", "hive/domain/policy.py::cap")]}),
+        (
+            4,
+            0.68,
+            4,
+            "shared: the retry helper is vendored in both",
+            {"repos": ["alpha", "beta"]},
+        ),
+        (
+            5,
+            0.66,
+            5,
+            "alpha: the policy caps at five attempts",
+            {"anchors": [("alpha", "hive/domain/policy.py::cap")]},
+        ),
     )
     for eid, c, axis, text, kw in rows:
         vec = _axis_vec(c, axis)
         index.add(eid, vec)
         reader.add(eid, text, value=vec, **kw)
-    return _pipe(index=index, reader=reader, query_vec=_e(0),
-                 tau_serve=tau_serve, ledger=ledger)
+    return _pipe(
+        index=index, reader=reader, query_vec=_e(0), tau_serve=tau_serve, ledger=ledger
+    )
 
 
 def test_scoped_hit_and_cross_repo_exclusion():
     r = _partitioned_setup().recall("q", agent_id="A", scope=_scope("alpha"))
     assert r.state == CONFIDENT
     got = _ids(r)
-    assert 1 in got                        # an alpha-anchored memory serves in alpha scope
-    assert 2 not in got                    # a beta-only memory is EXCLUDED from alpha
+    assert 1 in got  # an alpha-anchored memory serves in alpha scope
+    assert 2 not in got  # a beta-only memory is EXCLUDED from alpha
 
 
 def test_general_always_in_scope():
@@ -623,8 +723,13 @@ def test_omitted_scope_is_global():
 def test_empty_recall_scope_is_global_identity():
     # RecallScope((), "") is the identity filter — same served set as scope=None.
     pipe = _partitioned_setup()
-    assert _ids(pipe.recall("q", agent_id="A",
-                            scope=RecallScope((), ""))) == {1, 2, 3, 4, 5}
+    assert _ids(pipe.recall("q", agent_id="A", scope=RecallScope((), ""))) == {
+        1,
+        2,
+        3,
+        4,
+        5,
+    }
 
 
 def test_multi_repo_memory_serves_from_either_scope():
@@ -641,18 +746,20 @@ def test_scoped_weak_field_abstains_tau_preserved():
     index, reader = FakeIndex(), FakeScopedReader()
     strong = _e(0)
     index.add(1, strong)
-    reader.add(1, "alpha-only: the migration lock is advisory",
-               value=strong, repos=["alpha"])
+    reader.add(
+        1, "alpha-only: the migration lock is advisory", value=strong, repos=["alpha"]
+    )
     weak = _axis_vec(0.30, 2)
     index.add(2, weak)
     reader.add(2, "beta: an unrelated fact", value=weak, repos=["beta"])
     led = FakeLedger()
-    r = _pipe(index=index, reader=reader, query_vec=_e(0), tau_serve=0.70,
-              ledger=led).recall("q", agent_id="A", scope=_scope("beta"))
+    r = _pipe(
+        index=index, reader=reader, query_vec=_e(0), tau_serve=0.70, ledger=led
+    ).recall("q", agent_id="A", scope=_scope("beta"))
     assert r.state == ABSTAIN and r.hits == ()
-    assert r.top_cos == pytest.approx(0.30, abs=1e-4)   # the scoped top, never 1.0
+    assert r.top_cos == pytest.approx(0.30, abs=1e-4)  # the scoped top, never 1.0
     assert led.misses[-1]["miss_type"] == "abstained"
-    assert led.misses[-1]["repos_json"] == '["beta"]'   # the miss carries the scope
+    assert led.misses[-1]["repos_json"] == '["beta"]'  # the miss carries the scope
 
 
 def test_empty_partition_abstains():
@@ -663,8 +770,9 @@ def test_empty_partition_abstains():
     index.add(1, v)
     reader.add(1, "alpha-only fact about the scheduler", value=v, repos=["alpha"])
     led = FakeLedger()
-    r = _pipe(index=index, reader=reader, query_vec=_e(0),
-              ledger=led).recall("q", agent_id="A", scope=_scope("gamma"))
+    r = _pipe(index=index, reader=reader, query_vec=_e(0), ledger=led).recall(
+        "q", agent_id="A", scope=_scope("gamma")
+    )
     assert r.state == ABSTAIN and r.hits == ()
     assert led.misses[-1]["miss_type"] == "abstained"
     assert led.misses[-1]["repos_json"] == '["gamma"]'
@@ -676,21 +784,23 @@ def test_anchor_prefix_narrows_anchored_hits_only():
     # general and scope-only (unanchored) memories are KEPT — the prefix narrows the
     # anchored population only.
     r = _partitioned_setup().recall(
-        "q", agent_id="A", scope=_scope("alpha", prefix="hive/app"))
+        "q", agent_id="A", scope=_scope("alpha", prefix="hive/app")
+    )
     got = _ids(r)
-    assert 1 in got                        # anchored under the prefix
-    assert 5 not in got                    # every anchor outside the prefix
-    assert 3 in got                        # general memory kept
-    assert 4 in got                        # scope-only (unanchored) memory kept
+    assert 1 in got  # anchored under the prefix
+    assert 5 not in got  # every anchor outside the prefix
+    assert 3 in got  # general memory kept
+    assert 4 in got  # scope-only (unanchored) memory kept
 
 
 def test_anchor_prefix_alone_keeps_repo_partition_global():
     # anchor_prefix with NO repos: the repo partition stays global, the prefix
     # clause still narrows the anchored population.
     r = _partitioned_setup().recall(
-        "q", agent_id="A", scope=RecallScope((), "hive/app"))
+        "q", agent_id="A", scope=RecallScope((), "hive/app")
+    )
     got = _ids(r)
-    assert got == {1, 2, 3, 4}             # only the hive/domain-anchored 5 filtered
+    assert got == {1, 2, 3, 4}  # only the hive/domain-anchored 5 filtered
 
 
 def test_scope_ref_names_drift_tip_not_partition():
@@ -698,8 +808,9 @@ def test_scope_ref_names_drift_tip_not_partition():
     # partition filter matches by repo NAME, so any ref serves the same set.
     pipe = _partitioned_setup()
     canonical = _ids(pipe.recall("q", agent_id="A", scope=_scope("alpha")))
-    at_branch = _ids(pipe.recall("q", agent_id="A",
-                                 scope=_scope("alpha", ref="feature-x")))
+    at_branch = _ids(
+        pipe.recall("q", agent_id="A", scope=_scope("alpha", ref="feature-x"))
+    )
     assert canonical == at_branch
 
 
@@ -708,17 +819,18 @@ def test_miss_scope_encoding_sorted_deduped_names():
     # deduplicated, refs stripped; "" = a global miss (scope-less OR repo-empty —
     # an anchor_prefix alone never scopes demand).
     led = FakeLedger()
-    pipe = _pipe(index=FakeIndex(), reader=FakeScopedReader(), query_vec=_e(0),
-                 ledger=led)
+    pipe = _pipe(
+        index=FakeIndex(), reader=FakeScopedReader(), query_vec=_e(0), ledger=led
+    )
     scope = RecallScope((("beta", "v2"), ("alpha", ""), ("beta", "")), "")
     r = pipe.recall("q", agent_id="A", scope=scope)
-    assert r.state == EMPTY_NO_DATA                    # empty index short-circuit
+    assert r.state == EMPTY_NO_DATA  # empty index short-circuit
     assert led.misses[-1]["miss_type"] == "no_match"
     assert led.misses[-1]["repos_json"] == '["alpha","beta"]'
-    pipe.recall("q", agent_id="A")                     # scope omitted ⇒ global miss
+    pipe.recall("q", agent_id="A")  # scope omitted ⇒ global miss
     assert led.misses[-1]["repos_json"] == ""
     pipe.recall("q", agent_id="A", scope=RecallScope((), "hive/app"))
-    assert led.misses[-1]["repos_json"] == ""          # prefix-only ⇒ global miss
+    assert led.misses[-1]["repos_json"] == ""  # prefix-only ⇒ global miss
 
 
 def test_unscoped_recall_never_reads_partition_map():
@@ -731,8 +843,7 @@ def test_unscoped_recall_never_reads_partition_map():
     pipe = _pipe(index=index, reader=reader, query_vec=_e(0))
     assert pipe.recall("q", agent_id="A").state == CONFIDENT
     assert pipe.recall("q", agent_id="A", scope=None).state == CONFIDENT
-    assert pipe.recall("q", agent_id="A",
-                       scope=RecallScope((), "")).state == CONFIDENT
+    assert pipe.recall("q", agent_id="A", scope=RecallScope((), "")).state == CONFIDENT
 
 
 def test_partition_map_fault_fails_closed():
@@ -742,8 +853,9 @@ def test_partition_map_fault_fails_closed():
     index.add(1, _e(0))
     reader.add(1, "the gold memory", repos=["alpha"])
     led = FakeLedger()
-    r = _pipe(index=index, reader=reader, query_vec=_e(0),
-              ledger=led).recall("q", agent_id="A", scope=_scope("alpha"))
+    r = _pipe(index=index, reader=reader, query_vec=_e(0), ledger=led).recall(
+        "q", agent_id="A", scope=_scope("alpha")
+    )
     assert r.state == EMPTY_NO_DATA and r.hits == ()
     assert led.misses[-1]["miss_type"] == "no_match"
     assert led.misses[-1]["repos_json"] == '["alpha"]'
@@ -758,14 +870,26 @@ def test_scoped_lapsed_row_absent_from_map_dropped_pre_gate():
     clock = FakeClock(0)
     index, reader = FakeIndex(), FakeScopedReader()
     index.add(1, _e(0))
-    reader.add(1, "the lapsing beta fact", trust="provisional",
-               last_active_ts=0, value=_e(0), repos=["beta"])
+    reader.add(
+        1,
+        "the lapsing beta fact",
+        trust="provisional",
+        last_active_ts=0,
+        value=_e(0),
+        repos=["beta"],
+    )
     led = FakeLedger()
     pipe = RecallPipeline(
-        embedder=_StubProvider(_e(0)), index=index,
-        gate=AbsoluteRelevanceGate(0.70, 1), reader=reader,
-        recall_top_n=10, ledger=led, clock_now=clock.now, scanner=FakeScanner(),
-        provisional_ttl_s=TTL)
+        embedder=_StubProvider(_e(0)),
+        index=index,
+        gate=AbsoluteRelevanceGate(0.70, 1),
+        reader=reader,
+        recall_top_n=10,
+        ledger=led,
+        clock_now=clock.now,
+        scanner=FakeScanner(),
+        provisional_ttl_s=TTL,
+    )
     clock.advance(TTL + 1)
     r = pipe.recall("q", agent_id="A", scope=_scope("beta"))
     assert r.state == ABSTAIN and r.hits == ()
@@ -776,8 +900,7 @@ def test_scoped_exposure_covers_exactly_the_served_set():
     # exposure under a scope records the SERVED (scoped) set only — an excluded
     # partition's row is never liveness-refreshed by an out-of-scope ask.
     led = FakeLedger()
-    r = _partitioned_setup(ledger=led).recall(
-        "q", agent_id="A", scope=_scope("alpha"))
+    r = _partitioned_setup(ledger=led).recall("q", agent_id="A", scope=_scope("alpha"))
     assert r.state == CONFIDENT
     exposed = {e for ex in led.exposures for e, _m in ex["items"]}
     assert exposed == _ids(r)
@@ -789,19 +912,19 @@ def test_scoped_hits_carry_repos_and_anchors():
     by_id = {h.episode_id: h for h in r.hits}
     assert by_id[1].repos == ("alpha",)
     assert by_id[1].anchors == (AnchorRef("alpha", "hive/app/retry.py::backoff"),)
-    assert by_id[3].repos == () and by_id[3].anchors == ()   # general stays general
+    assert by_id[3].repos == () and by_id[3].anchors == ()  # general stays general
 
 
 def test_recall_scope_malformed_unconstructable():
     # frozen + self-asserting: a malformed scope never reaches the pipeline.
     with pytest.raises(ValueError):
-        RecallScope((("", ""),), "")               # empty repo name
+        RecallScope((("", ""),), "")  # empty repo name
     with pytest.raises(ValueError):
-        RecallScope((("alpha", "ref", "extra"),), "")   # not a (repo, ref) pair
+        RecallScope((("alpha", "ref", "extra"),), "")  # not a (repo, ref) pair
     with pytest.raises(ValueError):
-        RecallScope((("alpha", 1),), "")           # ref must be a str
+        RecallScope((("alpha", 1),), "")  # ref must be a str
     with pytest.raises(ValueError):
-        RecallScope((), None)                      # prefix must be a str
+        RecallScope((), None)  # prefix must be a str
 
 
 def test_scoped_reader_fakes_satisfy_the_ports():

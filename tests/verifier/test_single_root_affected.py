@@ -45,31 +45,11 @@ _ZERO_TESTS_REASON = "no affected tests in blast radius (lower bound)"
 # tree does — still exercises the two-argument contract. mod.py carries a
 # second symbol so the file's source_file index is never a single-node
 # degenerate case.
-_BASE_MOD = (
-    "def fn(a, b):\n"
-    "    return a + b\n"
-    "\n"
-    "\n"
-    "def other(x):\n"
-    "    return fn(x, 1)\n"
-)
+_BASE_MOD = "def fn(a, b):\n    return a + b\n\n\ndef other(x):\n    return fn(x, 1)\n"
 
-_HEAD_MOD = (
-    "def fn(a):\n"
-    "    return a\n"
-    "\n"
-    "\n"
-    "def other(x):\n"
-    "    return fn(x)\n"
-)
+_HEAD_MOD = "def fn(a):\n    return a\n\n\ndef other(x):\n    return fn(x)\n"
 
-_TEST_MOD = (
-    "from pkg.mod import fn\n"
-    "\n"
-    "\n"
-    "def test_fn():\n"
-    "    assert fn(1, 2) == 3\n"
-)
+_TEST_MOD = "from pkg.mod import fn\n\n\ndef test_fn():\n    assert fn(1, 2) == 3\n"
 
 # A [tool.pytest.ini_options] table makes the fixture root the spawned run's
 # own rootdir anchor (a bare [project] table is not one under pytest 9).
@@ -115,9 +95,12 @@ def _git(repo: Path, *args: str) -> str:
     proc = subprocess.run(
         [
             "git",
-            "-c", "user.name=bug039",
-            "-c", "user.email=bug039@fixture.invalid",
-            "-C", str(repo),
+            "-c",
+            "user.name=bug039",
+            "-c",
+            "user.email=bug039@fixture.invalid",
+            "-C",
+            str(repo),
             *args,
         ],
         capture_output=True,
@@ -185,9 +168,7 @@ def multi_root(tmp_path_factory: pytest.TempPathFactory):
     import matrix
 
     base = tmp_path_factory.mktemp("bug039-multi-root")
-    repo = _write_tree(
-        base / "repo", {"calc.py": _CALC, "test_calc.py": _TEST_CALC}
-    )
+    repo = _write_tree(base / "repo", {"calc.py": _CALC, "test_calc.py": _TEST_CALC})
     graph = matrix.build_graph(repo, out_dir=base / "matrix-out")
     return repo, graph
 
@@ -268,12 +249,18 @@ def package_receipt(
     env = {key: value for key, value in os.environ.items() if key != "MATRIX_OUT"}
     proc = subprocess.run(
         [
-            sys.executable, "-m", "hive.census.cli",
+            sys.executable,
+            "-m",
+            "hive.census.cli",
             "build",
-            "--repo", str(repo),
-            "--base", "mainline",
-            "--head", "feat-x",
-            "--out", str(out),
+            "--repo",
+            str(repo),
+            "--base",
+            "mainline",
+            "--head",
+            "feat-x",
+            "--out",
+            str(out),
         ],
         cwd=base,
         env=env,
@@ -301,9 +288,7 @@ class TestSingleRootReceiptDecidesEndToEnd:
         assert "pytest" in tests_line["detail"]["runners"]
         assert tests_line["reason"] != _ZERO_TESTS_REASON
 
-    def test_derive_pre_merge_accepts_the_receipt(
-        self, package_receipt: dict
-    ) -> None:
+    def test_derive_pre_merge_accepts_the_receipt(self, package_receipt: dict) -> None:
         # The sync candidate leg's own acceptance seam: decided execution
         # evidence derives a verdict instead of raising ReceiptRefused.
         verdict, tag = derive_pre_merge(package_receipt["lines"])
@@ -333,7 +318,9 @@ class TestMultiRootStaysByteIdentical:
         assert "test_calc" in result.affected.symbols  # the file-level hit survives
         assert result.tests.state == "passed"
         assert (result.tests.passed, result.tests.failed, result.tests.errored) == (
-            1, 0, 0,
+            1,
+            0,
+            0,
         )
         assert result.tests.runners == ("pytest",)
         assert result.tests.mode == "scoped"

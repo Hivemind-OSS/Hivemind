@@ -5,6 +5,7 @@ runtime image, the healthcheck/entrypoint wired to the right modules. These are 
 facts of the Dockerfile text — verifiable without a daemon (the live build is in
 test_container_live.py, skip-guarded).
 """
+
 from __future__ import annotations
 
 import re
@@ -67,12 +68,16 @@ def test_model_baked_before_volatile_source_copy():
     # depends only on the three self-contained files (the two empty __init__.py + bake_model.py),
     # which are copied BEFORE it; the full source is copied AFTER.
     builder = _stages()["builder"]
-    bake_at = builder.index("hive.tools.bake_model")          # the RUN (dotted module path)
+    bake_at = builder.index("hive.tools.bake_model")  # the RUN (dotted module path)
     wholesale = re.search(r"(?im)^COPY\s+hive/\s+\./hive/\s*$", builder)
     assert wholesale, "no wholesale `COPY hive/ ./hive/` in builder"
-    assert bake_at < wholesale.start(), "the model bake must precede `COPY hive/` or the cache is defeated"
+    assert bake_at < wholesale.start(), (
+        "the model bake must precede `COPY hive/` or the cache is defeated"
+    )
     for f in ("hive/__init__.py", "hive/tools/__init__.py", "hive/tools/bake_model.py"):
-        assert builder.index(f"COPY {f}") < bake_at, f"{f} must be copied before the bake"
+        assert builder.index(f"COPY {f}") < bake_at, (
+            f"{f} must be copied before the bake"
+        )
 
 
 def test_bake_dest_matches_runtime_hub_resolution():
@@ -100,10 +105,14 @@ def test_runtime_excludes_build_toolchain():
     assert "build-essential" in builder
     assert "build-essential" not in runtime
     installs = re.findall(r"apt-get install\s+((?:-\S+\s+)*)([^&\n]+)", runtime)
-    assert installs, "runtime must apt-get install git (the sync subsystem shells to it)"
+    assert installs, (
+        "runtime must apt-get install git (the sync subsystem shells to it)"
+    )
     for _flags, packages in installs:
         names = [token for token in packages.split() if token != "\\"]
-        assert names == ["git"], f"runtime apt installs must be exactly ['git'], got {names}"
+        assert names == ["git"], (
+            f"runtime apt installs must be exactly ['git'], got {names}"
+        )
 
 
 def test_runtime_has_git_and_uv_for_sync():
@@ -134,7 +143,9 @@ def test_pyright_bake_is_best_effort_only():
     assert bake, "the pyright warm-up must be guarded fail-open (`|| true`)"
     assert re.search(r"pip install[^\n]*\bpyright\b", builder)
     assert re.search(r"mkdir -p /root/\.cache", builder)
-    assert re.search(r"(?im)^COPY\s+--from=builder\s+/root/\.cache\s+/home/hive/\.cache\s*$", runtime)
+    assert re.search(
+        r"(?im)^COPY\s+--from=builder\s+/root/\.cache\s+/home/hive/\.cache\s*$", runtime
+    )
 
 
 def test_sync_state_dir_created_and_owned_by_hive():

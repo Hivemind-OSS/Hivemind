@@ -8,6 +8,7 @@ The in-RAM index is a best-effort WARM CACHE; `status='approved'` in SQLite is t
 durable truth, and `rebuild_from_store(scan_approved())` on boot / post-migration is
 the divergence-recovery guarantee (NOT in-transaction atomicity).
 """
+
 from __future__ import annotations
 
 import threading
@@ -39,7 +40,11 @@ class ExhaustiveCosineIndex:
                 return
             self._pos[episode_id] = len(self._ids)
             self._ids.append(int(episode_id))
-            self._mat = np.vstack([self._mat, v[None, :]]) if self._mat.size else v[None, :].copy()
+            self._mat = (
+                np.vstack([self._mat, v[None, :]])
+                if self._mat.size
+                else v[None, :].copy()
+            )
 
     add = sync_approved  # MutableVectorIndex alias
 
@@ -49,7 +54,7 @@ class ExhaustiveCosineIndex:
             if i is None:
                 return
             last = len(self._ids) - 1
-            if i != last:                       # swap-remove
+            if i != last:  # swap-remove
                 self._mat[i] = self._mat[last]
                 moved = self._ids[last]
                 self._ids[i] = moved
@@ -75,12 +80,12 @@ class ExhaustiveCosineIndex:
         q = self._check_vec(query)
         with self._lock:
             mat, ids = self._mat, list(self._ids)
-        sims = mat @ q                          # signed cosine (rows + query unit-norm)
+        sims = mat @ q  # signed cosine (rows + query unit-norm)
         n = len(ids)
         kk = min(k, n)
         if kk < n:
-            top = np.argpartition(-sims, kk - 1)[:kk]   # unordered top-k
-            top = top[np.argsort(-sims[top])]            # MUST re-sort the slice
+            top = np.argpartition(-sims, kk - 1)[:kk]  # unordered top-k
+            top = top[np.argsort(-sims[top])]  # MUST re-sort the slice
         else:
             top = np.argsort(-sims)
         return [(ids[i], float(sims[i])) for i in top]
@@ -90,13 +95,17 @@ class ExhaustiveCosineIndex:
         if v.shape != (self.dim,):
             raise ValueError(f"vector shape {v.shape} != ({self.dim},)")
         if not np.all(np.isfinite(v)):
-            raise ValueError("non-finite vector (NaN/inf) rejected at the index boundary")
-        return v.copy()                          # copy-on-ingest
+            raise ValueError(
+                "non-finite vector (NaN/inf) rejected at the index boundary"
+            )
+        return v.copy()  # copy-on-ingest
 
 
-def build_index(backend: str, dim: int):
+def build_index(backend: str, dim: int) -> "ExhaustiveCosineIndex":
     """Fail-fast factory. The swap point for the index backend [D3]."""
     backends = {"exhaustive": ExhaustiveCosineIndex}
     if backend not in backends:
-        raise ValueError(f"unknown index backend {backend!r}; valid: {sorted(backends)}")
+        raise ValueError(
+            f"unknown index backend {backend!r}; valid: {sorted(backends)}"
+        )
     return backends[backend](dim)

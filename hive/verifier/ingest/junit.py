@@ -32,7 +32,9 @@ def ingest_junit(raw: bytes, *, exit_code: int) -> Ingested:
     except (SyntaxError, ValueError, DefusedXmlException) as exc:
         raise ReportParseError(f"junit: malformed XML: {exc}") from exc
     if root.tag not in _ROOT_TAGS:
-        raise ReportParseError(f"junit: root element <{root.tag}> is not a JUnit report")
+        raise ReportParseError(
+            f"junit: root element <{root.tag}> is not a JUnit report"
+        )
 
     passed = failed = errored = skipped = 0
     diagnostics: list[Diagnostic] = []
@@ -52,9 +54,14 @@ def ingest_junit(raw: bytes, *, exit_code: int) -> Ingested:
             passed += 1
 
     for suite in root.iter("testsuite"):
-        if suite.find(".//testcase") is not None or suite.find(".//testsuite") is not None:
+        if (
+            suite.find(".//testcase") is not None
+            or suite.find(".//testsuite") is not None
+        ):
             continue  # descendants own the counts; attrs here would double-count
-        counts = {name: suite.get(name) for name in ("tests", "failures", "errors", "skipped")}
+        counts = {
+            name: suite.get(name) for name in ("tests", "failures", "errors", "skipped")
+        }
         if all(value is None for value in counts.values()):
             continue  # a bare empty suite contributes nothing
         try:
@@ -63,7 +70,9 @@ def ingest_junit(raw: bytes, *, exit_code: int) -> Ingested:
             suite_errored = int(counts["errors"] or 0)
             suite_skipped = int(counts["skipped"] or 0)
         except ValueError as exc:
-            raise ReportParseError(f"junit: non-integer suite count attribute: {exc}") from exc
+            raise ReportParseError(
+                f"junit: non-integer suite count attribute: {exc}"
+            ) from exc
         failed += suite_failed
         errored += suite_errored
         skipped += suite_skipped

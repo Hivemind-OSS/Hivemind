@@ -8,6 +8,7 @@ Two tiers:
   * GATED (``@pytest.mark.embed``): the real Qwen3 model (module-scoped, loaded once) — proves
     the native dim is discovered (1024), equals the declared d, and is emitted unchanged.
 """
+
 from __future__ import annotations
 
 import hashlib
@@ -19,7 +20,7 @@ from hive.adapters.embedding.local_st import DEFAULT_MODEL, LocalSTEmbedder
 from hive.domain.errors import GeometryError
 from hive.domain.ports import EmbeddingProvider
 
-_NATIVE = 1024   # Qwen3-Embedding-0.6B native dim
+_NATIVE = 1024  # Qwen3-Embedding-0.6B native dim
 
 
 # ── FAST tier: a stub SentenceTransformer (no model download) ──────────────────
@@ -30,26 +31,34 @@ class _StubModel:
     ``normalize_embeddings=True`` (unit only to ~1e-3 at 1024 dims in the real model); the embedder
     re-normalizes to exact unit norm regardless."""
 
-    def __init__(self, *, native: int = _NATIVE, fixed: np.ndarray | None = None) -> None:
+    def __init__(
+        self, *, native: int = _NATIVE, fixed: np.ndarray | None = None
+    ) -> None:
         self._native = int(native)
         self._fixed = None if fixed is None else np.asarray(fixed, dtype=np.float32)
 
-    def get_embedding_dimension(self) -> int:            # current sentence-transformers name
+    def get_embedding_dimension(self) -> int:  # current sentence-transformers name
         return self._native
 
-    def get_sentence_embedding_dimension(self) -> int:   # deprecated alias (real ST keeps both)
+    def get_sentence_embedding_dimension(
+        self,
+    ) -> int:  # deprecated alias (real ST keeps both)
         return self._native
 
     def _vec(self, text: str) -> np.ndarray:
-        rng = np.random.default_rng(int.from_bytes(hashlib.sha256(text.encode()).digest()[:8], "big"))
+        rng = np.random.default_rng(
+            int.from_bytes(hashlib.sha256(text.encode()).digest()[:8], "big")
+        )
         v = rng.standard_normal(self._native).astype(np.float32)
         return v / float(np.linalg.norm(v))
 
     def encode(self, texts, normalize_embeddings=True, convert_to_numpy=True, **kw):
         rows = list(texts)
         if self._fixed is not None:
-            return np.asarray([self._fixed[i % len(self._fixed)] for i in range(len(rows))],
-                              dtype=np.float32)
+            return np.asarray(
+                [self._fixed[i % len(self._fixed)] for i in range(len(rows))],
+                dtype=np.float32,
+            )
         return np.stack([self._vec(t) for t in rows], axis=0)
 
 
@@ -67,7 +76,9 @@ def test_encode_returns_unit_norm_float32_native_d():
 
 
 def test_encode_batch_rows_unit_norm():
-    M = _emb().encode_batch(["alpha beta gamma", "redis cache eviction", "git revert clawback"])
+    M = _emb().encode_batch(
+        ["alpha beta gamma", "redis cache eviction", "git revert clawback"]
+    )
     assert M.shape == (3, _NATIVE)
     assert np.allclose(np.linalg.norm(M, axis=1), 1.0, atol=1e-5)
 
@@ -90,7 +101,7 @@ def test_encode_is_native_passthrough():
     projection): encode() returns exactly the vector the model produced. Pinned against a known
     unit vector. (Deleting the passthrough — re-introducing any reducer — REDS this.)"""
     native = np.arange(1, _NATIVE + 1, dtype=np.float32)
-    native = native / float(np.linalg.norm(native))             # the model returns unit vectors
+    native = native / float(np.linalg.norm(native))  # the model returns unit vectors
     emb = LocalSTEmbedder(model=_StubModel(fixed=native[None, :]), d=_NATIVE).load()
     out = emb.encode("anything — the stub ignores the text")
     assert out.shape == (_NATIVE,)
@@ -102,7 +113,9 @@ def test_encode_renormalizes_to_exact_unit_norm():
     embedder RE-NORMALIZES at the producer to EXACT unit norm — the index treats ``mat @ q`` AS
     cosine and the trust-lifecycle cosines assume unit vectors. A NON-unit model vector must come
     out unit. Deleting the renorm in ``_encode_native`` REDS this."""
-    raw = np.full(_NATIVE, 2.0, dtype=np.float32)          # ||raw|| = 2*sqrt(1024) = 64, not unit
+    raw = np.full(
+        _NATIVE, 2.0, dtype=np.float32
+    )  # ||raw|| = 2*sqrt(1024) = 64, not unit
     emb = LocalSTEmbedder(model=_StubModel(fixed=raw[None, :]), d=_NATIVE).load()
     v = emb.encode("x")
     assert abs(float(np.linalg.norm(v)) - 1.0) < 1e-6
@@ -114,6 +127,7 @@ def test_native_dim_for_raises_on_unknown_model():
     """``native_dim_for`` fails fast on an unregistered model — its native dim must be registered
     (and weights baked) before it can ship, so a typo never silently picks a wrong store width."""
     from hive.adapters.embedding.factory import native_dim_for
+
     assert native_dim_for(DEFAULT_MODEL) == _NATIVE
     with pytest.raises(ValueError, match="unknown embedding model|native_dim_for"):
         native_dim_for("ghost/not-a-real-model")
@@ -146,16 +160,16 @@ def test_two_embedders_same_model_encode_identically():
 
 def test_loaded_is_false_until_load_then_idempotent():
     e = LocalSTEmbedder(model=_StubModel(), d=_NATIVE)
-    assert e.loaded is False                                # native not yet verified ⇒ not resident
+    assert e.loaded is False  # native not yet verified ⇒ not resident
     e.load()
     assert e.loaded is True
-    e.load()                                                # idempotent — no re-verify error
+    e.load()  # idempotent — no re-verify error
     assert e.loaded is True
 
 
 def test_lazy_encode_auto_loads():
     e = LocalSTEmbedder(model=_StubModel(), d=_NATIVE)
-    v = e.encode("auto load on first encode")              # not explicitly loaded
+    v = e.encode("auto load on first encode")  # not explicitly loaded
     assert e.loaded is True and v.shape == (_NATIVE,)
 
 
@@ -165,6 +179,7 @@ def test_conforms_to_embedding_provider():
 
 class _NanModel(_StubModel):
     """A model double whose encode() returns NaN — to exercise the write-boundary guard."""
+
     def encode(self, texts, **kw):
         return np.full((len(list(texts)), _NATIVE), np.nan, dtype=np.float32)
 
@@ -186,6 +201,7 @@ class TestRealQwen3:
     @pytest.fixture(scope="module")
     def st_model(self):
         from sentence_transformers import SentenceTransformer
+
         return SentenceTransformer(DEFAULT_MODEL, device="cpu")
 
     @pytest.fixture(scope="module")
@@ -195,8 +211,10 @@ class TestRealQwen3:
     def test_native_discovered_is_1024_and_emitted_unchanged(self, emb, st_model):
         """Headline acceptance: native is DISCOVERED from the real model (1024), equals the
         declared d, and is emitted unchanged (unit-norm, no projection)."""
-        get_dim = (getattr(st_model, "get_embedding_dimension", None)
-                   or st_model.get_sentence_embedding_dimension)
+        get_dim = (
+            getattr(st_model, "get_embedding_dimension", None)
+            or st_model.get_sentence_embedding_dimension
+        )
         assert emb.d == int(get_dim()) == _NATIVE
         v = emb.encode("the recall gate degrades to identity when uncertain")
         assert v.shape == (_NATIVE,) and abs(float(np.linalg.norm(v)) - 1.0) < 1e-5

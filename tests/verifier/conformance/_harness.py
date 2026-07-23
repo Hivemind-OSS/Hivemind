@@ -97,13 +97,17 @@ def _run_setup(argv: list[str], cwd: Path, what: str) -> None:
 _NPM_CI_DONE: set[Path] = set()
 
 
-def node_tools(monkeypatch: pytest.MonkeyPatch, lang: str, tools: tuple[str, ...]) -> None:
+def node_tools(
+    monkeypatch: pytest.MonkeyPatch, lang: str, tools: tuple[str, ...]
+) -> None:
     require_tools("node", "npm")
     lang_dir = FIXTURES / lang
     if lang_dir not in _NPM_CI_DONE:
         if not (lang_dir / "node_modules").is_dir():
             _run_setup(
-                ["npm", "ci", "--no-audit", "--no-fund"], lang_dir, f"npm ci in {lang_dir}"
+                ["npm", "ci", "--no-audit", "--no-fund"],
+                lang_dir,
+                f"npm ci in {lang_dir}",
             )
         _NPM_CI_DONE.add(lang_dir)
     bin_dir = lang_dir / "node_modules" / ".bin"
@@ -139,7 +143,9 @@ def ensure_cmake_build(variant_dir: Path) -> None:
         variant_dir,
         f"cmake configure in {variant_dir}",
     )
-    _run_setup(["cmake", "--build", "build"], variant_dir, f"cmake build in {variant_dir}")
+    _run_setup(
+        ["cmake", "--build", "build"], variant_dir, f"cmake build in {variant_dir}"
+    )
     _CMAKE_BUILT.add(variant_dir)
 
 
@@ -204,7 +210,10 @@ def link_graph(touched: str, test_file: str | None) -> nx.DiGraph:
     g.add_edge(touched, "sym.unit", relation="contains")
     if test_file is not None:
         g.add_node(
-            "sym.test_unit", label="test_unit()", file_type="code", source_file=test_file
+            "sym.test_unit",
+            label="test_unit()",
+            file_type="code",
+            source_file=test_file,
         )
         g.add_edge("sym.test_unit", "sym.unit", relation="calls")
     return g

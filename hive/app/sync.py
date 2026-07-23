@@ -69,6 +69,7 @@ Named safe directions (Law 6):
 (``sync_stop`` / ``sync_nudge``) so the webhook nudge door can wake the loop —
 ONE nudge wakes the loop for ALL registered repos.
 """
+
 from __future__ import annotations
 
 import json
@@ -82,29 +83,35 @@ import tempfile
 import threading
 import time
 from pathlib import Path
-from typing import Callable, Mapping, Optional, Sequence
+from typing import Any, Callable, Mapping, Optional, Protocol, Sequence
 
-from hive.app.config import SyncConfig
+from hive.app.config import Config, SyncConfig
 from hive.app.drift import DRIFT_UNVERIFIABLE, canonical_tip_key, wire_verdict
 from hive.domain.change_evidence import ChangeEvidenceService
 from hive.domain.meta import token_version
 
 _log = logging.getLogger("hive.sync")
 
-META_LAST_ERROR = "sync:last_error"       # tick-SHELL faults only (per-repo faults ride their own key)
-META_LAST_SYNC_TS = "sync:last_sync_ts"   # ts of the last fault-free tick (via the now seam)
-META_BACKFILLED_TOTAL = "sync:backfilled_total"   # anchor carriers fp-backfilled, ever
-_DEFAULT_MIRROR_DIR = "/data/sync/mirror"         # the base dir; mirrors live at <base>/<name>
-_DEFAULT_TOKEN_ENV = "HIVE_SYNC__TOKEN"           # the fleet-default credential var (D2)
+META_LAST_ERROR = (
+    "sync:last_error"  # tick-SHELL faults only (per-repo faults ride their own key)
+)
+META_LAST_SYNC_TS = (
+    "sync:last_sync_ts"  # ts of the last fault-free tick (via the now seam)
+)
+META_BACKFILLED_TOTAL = "sync:backfilled_total"  # anchor carriers fp-backfilled, ever
+_DEFAULT_MIRROR_DIR = "/data/sync/mirror"  # the base dir; mirrors live at <base>/<name>
+_DEFAULT_TOKEN_ENV = "HIVE_SYNC__TOKEN"  # the fleet-default credential var (D2)
 # The registry name grammar (store_sqlite.repo_add's gate, mirrored): only names
 # the registry could ever have minted are prune candidates — anything else in
 # the mirrors dir was never this daemon's mirror and is never deleted.
 _REPO_SLUG_RE = re.compile(r"^[a-z0-9._-]+$")
-_BACKFILL_PER_TICK = 50              # fp-mint cap per repo per tick; the rest carry over
-_DRIFT_PER_TICK = 50                 # verify cap per repo per tick; the rest carry over
-_REF_REQUEST_WINDOW_S = 7 * 86_400   # recall demand keeps a branch on the work list this long
-_ENGINE_TIMEOUT_S = 600              # the ONE bound on hive-edge mint/verify spawns
-_FP_KEY = "combdrift/fp"             # the stored interface-fingerprint carrier key
+_BACKFILL_PER_TICK = 50  # fp-mint cap per repo per tick; the rest carry over
+_DRIFT_PER_TICK = 50  # verify cap per repo per tick; the rest carry over
+_REF_REQUEST_WINDOW_S = (
+    7 * 86_400
+)  # recall demand keeps a branch on the work list this long
+_ENGINE_TIMEOUT_S = 600  # the ONE bound on hive-edge mint/verify spawns
+_FP_KEY = "combdrift/fp"  # the stored interface-fingerprint carrier key
 _SUBGRAPH_KEY = "matrix/subgraph_fp"  # the stored dependency-neighborhood carrier key
 
 
@@ -117,13 +124,21 @@ def last_error_key(repo: str) -> str:
 # The spawn seam (mirrors hive.tools.cli's Run/default_run shape): full child argv
 # + an env mapping in, the completed process out — injectable so contract tests can
 # observe or replace spawns without faking git itself.
-Run = Callable[..., "subprocess.CompletedProcess"]
+Run = Callable[..., "subprocess.CompletedProcess[str]"]
 
 
-def default_run(argv: Sequence[str], env: Optional[Mapping[str, str]] = None,
-                timeout: Optional[float] = None) -> subprocess.CompletedProcess:
-    return subprocess.run(list(argv), env=None if env is None else dict(env),
-                          capture_output=True, text=True, timeout=timeout)
+def default_run(
+    argv: Sequence[str],
+    env: Optional[Mapping[str, str]] = None,
+    timeout: Optional[float] = None,
+) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        list(argv),
+        env=None if env is None else dict(env),
+        capture_output=True,
+        text=True,
+        timeout=timeout,
+    )
 
 
 class _SyncFault(RuntimeError):
@@ -136,7 +151,9 @@ def _clean_env() -> dict[str, str]:
     never an inherited hook repo (BUG-034). Call-time import — the empty-registry
     path never loads matrix (byte-inert)."""
     from matrix import gitenv  # noqa: PLC0415 — call-time by design
-    return gitenv.clean_git_env()
+
+    env: dict[str, str] = gitenv.clean_git_env()
+    return env
 
 
 def authenticated_url(url: str, token: str) -> str:
@@ -146,7 +163,7 @@ def authenticated_url(url: str, token: str) -> str:
     must never be logged — ``_redact`` guards every escape path."""
     if not token or not url.startswith("https://"):
         return url
-    return "https://x-access-token:" + token + "@" + url[len("https://"):]
+    return "https://x-access-token:" + token + "@" + url[len("https://") :]
 
 
 def _redact(text: str, token: str) -> str:
@@ -164,12 +181,30 @@ def _incomparable_fp_version(fp_token: str) -> bool:
     and the CLI's own gate is the only one)."""
     version = token_version(fp_token)
     if version is None:
-        return True                  # malformed envelope: silence, never stale
+        return True  # malformed envelope: silence, never stale
     try:
         from combdrift.fingerprint import FINGERPRINT_VERSION  # noqa: PLC0415 — call-time by design
     except Exception:  # pragma: no cover — image without the engine wheel
         return False
     return version != str(FINGERPRINT_VERSION)
+
+
+class _RegistryRow(Protocol):
+    """The consumed surface of one repo-registry row (the store's ``RepoRow``
+    shape) — the daemon reads exactly these four fields. Read-only properties so
+    any row shape (frozen dataclass, test stub) conforms."""
+
+    @property
+    def name(self) -> str: ...
+
+    @property
+    def url(self) -> str: ...
+
+    @property
+    def canonical_ref(self) -> str: ...
+
+    @property
+    def token_env(self) -> str: ...
 
 
 class SyncService:
@@ -180,17 +215,24 @@ class SyncService:
     handle; ``lock`` is THE global write lock (shared with both HTTP doors) and is
     held ONLY for store access — never across a fetch or a subprocess."""
 
-    def __init__(self, cfg: SyncConfig, store, evidence: ChangeEvidenceService,
-                 lock: threading.Lock, run: Run = default_run,
-                 now: Optional[Callable[[], int]] = None, *,
-                 lifecycle=None) -> None:
+    def __init__(
+        self,
+        cfg: SyncConfig,
+        store: Any,
+        evidence: ChangeEvidenceService,
+        lock: threading.Lock,
+        run: Run = default_run,
+        now: Optional[Callable[[], int]] = None,
+        *,
+        lifecycle: Any = None,
+    ) -> None:
         self._cfg = cfg
         self._store = store
         self._evidence = evidence
         self._lock = lock
         self._run = run
         self._now = now or (lambda: int(time.time()))
-        self._lifecycle = lifecycle          # duck-typed: .promote_established() -> list[int]
+        self._lifecycle = lifecycle  # duck-typed: .promote_established() -> list[int]
         self.mirror_base = Path(cfg.mirror_dir or _DEFAULT_MIRROR_DIR)
         # the mint/verify CLI's own state home, beside the mirrors (volume-local
         # cache; pinned explicitly so the daemon never writes an operator's home)
@@ -250,7 +292,7 @@ class SyncService:
                 self._store.meta_set(META_LAST_SYNC_TS, str(self._now()))
 
     # ── one repo, one guard ────────────────────────────────────────────────────
-    def _repo_tick(self, row) -> bool:
+    def _repo_tick(self, row: _RegistryRow) -> bool:
         """Mirror + fetch, then the three legs, for ONE registry row. Returns True
         iff every leg ran fault-free; every fault is logged + recorded under THIS
         repo's ``sync:<name>:last_error`` and never raises past here."""
@@ -290,7 +332,7 @@ class SyncService:
         return ok
 
     @staticmethod
-    def _resolve_token(row) -> str:
+    def _resolve_token(row: _RegistryRow) -> str:
         """Per-repo credential via env-var indirection (D2): the registry row names
         the var, never a secret byte. A row-named var ABSENT at tick time raises
         (the KeyError NAMES the var) into the per-repo fail-open guard — surfaced
@@ -317,7 +359,7 @@ class SyncService:
         withholds ``sync:last_sync_ts`` exactly like a repo-leg fault."""
         try:
             children = sorted(self.mirror_base.iterdir())
-        except OSError:            # absent (or unreadable) base: nothing to prune
+        except OSError:  # absent (or unreadable) base: nothing to prune
             return True
         base = self.mirror_base.resolve()
         clean = True
@@ -326,9 +368,12 @@ class SyncService:
             if name in live or _REPO_SLUG_RE.match(name) is None:
                 continue
             try:
-                if (child.is_symlink() or not child.is_dir()
-                        or child.resolve().parent != base):
-                    continue       # never through a link, never outside the base
+                if (
+                    child.is_symlink()
+                    or not child.is_dir()
+                    or child.resolve().parent != base
+                ):
+                    continue  # never through a link, never outside the base
                 shutil.rmtree(child)
                 _log.info("sync.mirror_pruned repo=%s dir=%s", name, child)
             except Exception as exc:  # noqa: BLE001 — marker: raising here breaks
@@ -340,19 +385,20 @@ class SyncService:
         return clean
 
     # ── the mirror (a rebuildable cache — never the durable truth) ─────────────
-    def ensure_mirror(self, repo, token: str = "") -> Path:
+    def ensure_mirror(self, repo: _RegistryRow, token: str = "") -> Path:
         """Clone ``repo`` at ``<mirror_dir>/<name>/`` when absent or broken (a
         broken checkout is wiped and recloned — the mirror is a cache); a healthy
         mirror is a no-op. The name is a slug by registry construction, so the
         path cannot escape the base. The (possibly token-rewritten) URL lands
         ONLY in the clone's remote config."""
         mirror = self.mirror_base / repo.name
-        probe = self._run(["git", "-C", str(mirror), "rev-parse", "--git-dir"],
-                          env=_clean_env())
+        probe = self._run(
+            ["git", "-C", str(mirror), "rev-parse", "--git-dir"], env=_clean_env()
+        )
         if probe.returncode == 0:
             return mirror
         if mirror.exists():
-            shutil.rmtree(mirror, ignore_errors=True)   # broken cache: rebuild whole
+            shutil.rmtree(mirror, ignore_errors=True)  # broken cache: rebuild whole
         mirror.parent.mkdir(parents=True, exist_ok=True)
         argv = ["git", "clone", "--quiet"]
         if repo.canonical_ref:
@@ -370,24 +416,42 @@ class SyncService:
         branch (the clone-recorded ``origin/HEAD``)."""
         if canonical_ref:
             return canonical_ref
-        proc = self._run(["git", "-C", str(mirror), "symbolic-ref", "--short",
-                          "refs/remotes/origin/HEAD"], env=_clean_env())
+        proc = self._run(
+            [
+                "git",
+                "-C",
+                str(mirror),
+                "symbolic-ref",
+                "--short",
+                "refs/remotes/origin/HEAD",
+            ],
+            env=_clean_env(),
+        )
         name = (proc.stdout or "").strip()
         if proc.returncode == 0 and name:
-            return name[len("origin/"):] if name.startswith("origin/") else name
-        raise _SyncFault("tracked branch unresolved: origin/HEAD is unset and "
-                         "the registry row names no canonical_ref")
+            return name[len("origin/") :] if name.startswith("origin/") else name
+        raise _SyncFault(
+            "tracked branch unresolved: origin/HEAD is unset and "
+            "the registry row names no canonical_ref"
+        )
 
     def _fetch(self, mirror: Path) -> None:
         """The one fetch per repo per tick: ALL branches (force-updating — a
         rewritten remote line must still land locally), pruned — the drift
         materializer needs requested branch tips, not just the canonical line."""
-        self._git(mirror, "fetch", "--quiet", "--prune", "origin",
-                  "+refs/heads/*:refs/remotes/origin/*")
+        self._git(
+            mirror,
+            "fetch",
+            "--quiet",
+            "--prune",
+            "origin",
+            "+refs/heads/*:refs/remotes/origin/*",
+        )
 
     # ── the ledger leg: watermark..tip → ONE post_merge receipt ────────────────
-    def _ledger_leg(self, row, mirror: Path, branch: str,
-                    prev_local: Optional[str]) -> None:
+    def _ledger_leg(
+        self, row: _RegistryRow, mirror: Path, branch: str, prev_local: Optional[str]
+    ) -> None:
         tip = self._rev(mirror, f"refs/remotes/origin/{branch}")
         if tip is None:
             raise _SyncFault(f"tracked branch {branch!r} has no remote tip after fetch")
@@ -406,9 +470,12 @@ class SyncService:
             # last shared point, and record a DEFENSIVE receipt over
             # merge-base..tip — never a receipt over commits that no longer exist.
             merge_base = self._merge_base(mirror, base, tip)
-            _log.warning("sync.discontinuity repo=%s branch=%s (non-fast-forward "
-                         "remote; defensive receipt over the last shared point)",
-                         row.name, branch)
+            _log.warning(
+                "sync.discontinuity repo=%s branch=%s (non-fast-forward "
+                "remote; defensive receipt over the last shared point)",
+                row.name,
+                branch,
+            )
             base = merge_base or tip
         if base == tip:
             if watermark != tip:
@@ -417,22 +484,35 @@ class SyncService:
             return
         envelope = self._build_receipt(row, mirror, branch, base, tip)
         with self._lock:
-            report = self._evidence.ingest(envelope, phase="post_merge",
-                                           verdict="pass", signal="none")
+            report = self._evidence.ingest(
+                envelope, phase="post_merge", verdict="pass", signal="none"
+            )
             # same critical section as the ingest: the watermark can never run
             # ahead of rows the serve path could observe
             self._store.meta_set(tip_key, tip)
             # the post-ingest promotion sweep (CT-8): a canonical ingest is the
             # verified-win carrier, so the established rung runs right behind it
-            promoted = (self._lifecycle.promote_established()
-                        if self._lifecycle is not None else [])
-        _log.info("sync.ledger_ingested repo=%s base=%.12s head=%.12s matched=%d "
-                  "inserted=%d already=%d range_skipped=%s promoted=%d",
-                  row.name, base, tip, report.matched, len(report.inserted),
-                  report.already_recorded, report.range_skipped, len(promoted))
+            promoted = (
+                self._lifecycle.promote_established()
+                if self._lifecycle is not None
+                else []
+            )
+        _log.info(
+            "sync.ledger_ingested repo=%s base=%.12s head=%.12s matched=%d "
+            "inserted=%d already=%d range_skipped=%s promoted=%d",
+            row.name,
+            base,
+            tip,
+            report.matched,
+            len(report.inserted),
+            report.already_recorded,
+            report.range_skipped,
+            len(promoted),
+        )
 
-    def _build_receipt(self, row, mirror: Path, branch: str,
-                       base: str, head: str) -> dict:
+    def _build_receipt(
+        self, row: _RegistryRow, mirror: Path, branch: str, base: str, head: str
+    ) -> dict[str, Any]:
         """ONE census receipt over base..head via the real CLI in a SUBPROCESS
         (process isolation absorbs the engines' process-global scratch pinning;
         repo code never runs in the server process), parsed back for the in-proc
@@ -441,18 +521,36 @@ class SyncService:
         explicitly (the mirror checkout can lag the fetch)."""
         with tempfile.TemporaryDirectory(prefix="hive-sync-receipt-") as tmp:
             out = Path(tmp) / "receipt.json"
-            argv = [sys.executable, "-m", "hive.census.cli", "build",
-                    "--repo", str(mirror), "--base", base, "--head", head,
-                    "--repo-id", row.name, "--ref", branch,
-                    "--propagate", "--out", str(out)]
+            argv = [
+                sys.executable,
+                "-m",
+                "hive.census.cli",
+                "build",
+                "--repo",
+                str(mirror),
+                "--base",
+                base,
+                "--head",
+                head,
+                "--repo-id",
+                row.name,
+                "--ref",
+                branch,
+                "--propagate",
+                "--out",
+                str(out),
+            ]
             proc = self._run(argv, env=_clean_env())
             if proc.returncode != 0:
                 detail = (proc.stderr or proc.stdout or "").strip()[-500:]
                 raise _SyncFault(f"census build failed: {detail}")
-            return json.loads(out.read_text(encoding="utf-8"))
+            receipt: dict[str, Any] = json.loads(out.read_text(encoding="utf-8"))
+            return receipt
 
     # ── the mint-backfill leg: absent fp keys minted server-side ───────────────
-    def _backfill(self, row, mirror: Path, tip_sha: str, ref: str) -> None:
+    def _backfill(
+        self, row: _RegistryRow, mirror: Path, tip_sha: str, ref: str
+    ) -> None:
         """Fill ABSENT fingerprint carriers on approved anchor bindings of THIS
         repo: sweep ``anchors_lacking_fp`` (empty-carrier rows only — a pinned
         carrier is structurally out of the sweep), sync the mirror worktree to
@@ -476,16 +574,21 @@ class SyncService:
         for eid, anchor in todo[:_BACKFILL_PER_TICK]:
             minted = self._mint(mirror, anchor)
             if not minted:
-                continue                 # unresolvable ⇒ silent skip, loop alive
+                continue  # unresolvable ⇒ silent skip, loop alive
             with self._lock:
                 if self._store.fill_anchor_fp(
-                        eid, row.name, anchor,
-                        {**minted, "hive-sync/minted": provenance}):
+                    eid, row.name, anchor, {**minted, "hive-sync/minted": provenance}
+                ):
                     filled += 1
                     self._bump_counter_locked(META_BACKFILLED_TOTAL)
         if filled:
-            _log.info("sync.backfilled repo=%s carriers=%d tip=%.12s ref=%s",
-                      row.name, filled, tip_sha, ref)
+            _log.info(
+                "sync.backfilled repo=%s carriers=%d tip=%.12s ref=%s",
+                row.name,
+                filled,
+                tip_sha,
+                ref,
+            )
 
     def _mint(self, mirror: Path, anchor: str) -> dict[str, str]:
         """One ``hive-edge mint`` subprocess against the mirror — the edge CLI owns
@@ -495,9 +598,11 @@ class SyncService:
         (nonzero exit, unparseable stdout) reads as ``{}`` — the caller skips."""
         env = dict(_clean_env())
         env["HIVE_EDGE_HOME"] = self._edge_home
-        proc = self._run([self._edge_cli, "mint", "--repo", str(mirror),
-                          "--anchor", anchor], env=env,
-                         timeout=_ENGINE_TIMEOUT_S)
+        proc = self._run(
+            [self._edge_cli, "mint", "--repo", str(mirror), "--anchor", anchor],
+            env=env,
+            timeout=_ENGINE_TIMEOUT_S,
+        )
         if proc.returncode != 0:
             return {}
         try:
@@ -509,7 +614,9 @@ class SyncService:
         return {str(k): v for k, v in parsed.items() if isinstance(v, str)}
 
     # ── the drift materializer: (repo, tip, anchor) → wire verdicts (D5) ───────
-    def _materialize_drift(self, row, mirror: Path, canonical_tip: str) -> None:
+    def _materialize_drift(
+        self, row: _RegistryRow, mirror: Path, canonical_tip: str
+    ) -> None:
         """Materialize the ``anchor_drift`` cache for THIS repo at the canonical
         tip plus every branch tip recall demanded (``ref_requests`` within the
         demand window): a detached worktree per tip, ``hive-edge verify`` per
@@ -526,7 +633,7 @@ class SyncService:
         for ref in self._requested_refs(name):
             sha = self._rev(mirror, f"refs/remotes/origin/{ref}")
             if sha is not None and sha not in tips:
-                tips.append(sha)         # a deleted/unknown ref is silently skipped
+                tips.append(sha)  # a deleted/unknown ref is silently skipped
         if fps:
             anchors = sorted(fps)
             budget = _DRIFT_PER_TICK
@@ -564,7 +671,9 @@ class SyncService:
             "SELECT ea.anchor, ea.fp_meta FROM episode_anchors ea "
             "JOIN episodes e ON e.id = ea.episode_id "
             "WHERE ea.repo=? AND ea.anchor != '' AND e.status='approved' "
-            "ORDER BY ea.episode_id, ea.anchor", (name,))
+            "ORDER BY ea.episode_id, ea.anchor",
+            (name,),
+        )
         for r in rows:
             anchor = r["anchor"]
             if anchor in out:
@@ -576,10 +685,10 @@ class SyncService:
                 except ValueError:
                     parsed = None
                 if isinstance(parsed, dict):
-                    fp = parsed.get(_FP_KEY) if isinstance(
-                        parsed.get(_FP_KEY), str) else ""
-                    sub = parsed.get(_SUBGRAPH_KEY) if isinstance(
-                        parsed.get(_SUBGRAPH_KEY), str) else ""
+                    raw_fp = parsed.get(_FP_KEY)
+                    raw_sub = parsed.get(_SUBGRAPH_KEY)
+                    fp = raw_fp if isinstance(raw_fp, str) else ""
+                    sub = raw_sub if isinstance(raw_sub, str) else ""
             out[anchor] = (fp, sub)
         return out
 
@@ -595,24 +704,44 @@ class SyncService:
         with self._lock:
             row = self._store.conn.execute(
                 "SELECT MAX(last_requested_ts) AS newest FROM ref_requests "
-                "WHERE repo=?", (name,)).fetchone()
+                "WHERE repo=?",
+                (name,),
+            ).fetchone()
             newest = row["newest"] if row is not None else None
             if newest is None:
                 return []
             cutoff = min(int(self._now()), int(newest)) - _REF_REQUEST_WINDOW_S
-            return self._store.requested_refs(name, cutoff)
+            refs: list[str] = self._store.requested_refs(name, cutoff)
+            return refs
 
-    def _verify_at_tip(self, name: str, mirror: Path, tip: str,
-                       batch: Sequence[str], fps: Mapping[str, tuple[str, str]],
-                       now: int) -> list[tuple[str, str, str, str, str, int]]:
+    def _verify_at_tip(
+        self,
+        name: str,
+        mirror: Path,
+        tip: str,
+        batch: Sequence[str],
+        fps: Mapping[str, tuple[str, str]],
+        now: int,
+    ) -> list[tuple[str, str, str, str, str, int]]:
         """One detached worktree at ``tip``, one verify per anchor in ``batch``.
         The worktree is removed whole afterwards (a leaked worktree is only disk;
         the next tick's add gets a fresh tmpdir)."""
         worktree = Path(tempfile.mkdtemp(prefix="hive-sync-drift-wt-"))
         out: list[tuple[str, str, str, str, str, int]] = []
         try:
-            added = self._run(["git", "-C", str(mirror), "worktree", "add",
-                               "--detach", str(worktree), tip], env=_clean_env())
+            added = self._run(
+                [
+                    "git",
+                    "-C",
+                    str(mirror),
+                    "worktree",
+                    "add",
+                    "--detach",
+                    str(worktree),
+                    tip,
+                ],
+                env=_clean_env(),
+            )
             if added.returncode != 0:
                 detail = (added.stderr or added.stdout or "").strip()[-200:]
                 raise _SyncFault(f"worktree add failed at {tip[:12]}: {detail}")
@@ -621,13 +750,24 @@ class SyncService:
                 verdict, detail = self._verify_anchor(worktree, anchor, fp, subgraph)
                 out.append((name, tip, anchor, verdict, detail, now))
         finally:
-            self._run(["git", "-C", str(mirror), "worktree", "remove", "--force",
-                       str(worktree)], env=_clean_env())
+            self._run(
+                [
+                    "git",
+                    "-C",
+                    str(mirror),
+                    "worktree",
+                    "remove",
+                    "--force",
+                    str(worktree),
+                ],
+                env=_clean_env(),
+            )
             shutil.rmtree(worktree, ignore_errors=True)
         return out
 
-    def _verify_anchor(self, worktree: Path, anchor: str, fp: str,
-                       subgraph: str) -> tuple[str, str]:
+    def _verify_anchor(
+        self, worktree: Path, anchor: str, fp: str, subgraph: str
+    ) -> tuple[str, str]:
         """One anchor at one tree → ``(wire verdict, compact detail json)``.
         ``hive-edge verify`` owns the verdict logic (version envelopes, prose-
         anchor routing, radius); the output maps through ``wire_verdict`` so the
@@ -639,11 +779,11 @@ class SyncService:
             # test_version_gate_never_false_stale reds. The engine's own gate
             # covers only the resolved-symbol path; this belt covers the rest.
             return DRIFT_UNVERIFIABLE, json.dumps(
-                {"reason": "fingerprint_version_mismatch"}, separators=(",", ":"))
+                {"reason": "fingerprint_version_mismatch"}, separators=(",", ":")
+            )
         env = dict(_clean_env())
         env["HIVE_EDGE_HOME"] = self._edge_home
-        argv = [self._edge_cli, "verify", "--repo", str(worktree),
-                "--anchor", anchor]
+        argv = [self._edge_cli, "verify", "--repo", str(worktree), "--anchor", anchor]
         if fp:
             argv += ["--fp", fp]
         if subgraph:
@@ -651,17 +791,19 @@ class SyncService:
         proc = self._run(argv, env=env, timeout=_ENGINE_TIMEOUT_S)
         if proc.returncode != 0:
             return DRIFT_UNVERIFIABLE, json.dumps(
-                {"reason": "verify_failed"}, separators=(",", ":"))
+                {"reason": "verify_failed"}, separators=(",", ":")
+            )
         try:
             parsed = json.loads(proc.stdout or "")
         except ValueError:
             parsed = None
         if not isinstance(parsed, dict):
             return DRIFT_UNVERIFIABLE, json.dumps(
-                {"reason": "unparseable"}, separators=(",", ":"))
+                {"reason": "unparseable"}, separators=(",", ":")
+            )
         state = parsed.get("verdict")
         if state == "current" and parsed.get("radius") == "changed":
-            state = "radius_changed"     # the wire mapping's radius-tier notation
+            state = "radius_changed"  # the wire mapping's radius-tier notation
         verdict = wire_verdict(state, parsed.get("reason", ""))
         detail = {k: parsed[k] for k in ("reason", "radius") if k in parsed}
         return verdict, json.dumps(detail, separators=(",", ":"))
@@ -675,19 +817,32 @@ class SyncService:
         return proc.stdout
 
     def _rev(self, mirror: Path, ref: str) -> Optional[str]:
-        proc = self._run(["git", "-C", str(mirror), "rev-parse", "--verify",
-                          "--quiet", ref], env=_clean_env())
+        proc = self._run(
+            ["git", "-C", str(mirror), "rev-parse", "--verify", "--quiet", ref],
+            env=_clean_env(),
+        )
         out = (proc.stdout or "").strip()
         return out if proc.returncode == 0 and out else None
 
     def _is_ancestor(self, mirror: Path, ancestor: str, descendant: str) -> bool:
-        proc = self._run(["git", "-C", str(mirror), "merge-base",
-                          "--is-ancestor", ancestor, descendant], env=_clean_env())
+        proc = self._run(
+            [
+                "git",
+                "-C",
+                str(mirror),
+                "merge-base",
+                "--is-ancestor",
+                ancestor,
+                descendant,
+            ],
+            env=_clean_env(),
+        )
         return proc.returncode == 0
 
     def _merge_base(self, mirror: Path, a: str, b: str) -> Optional[str]:
-        proc = self._run(["git", "-C", str(mirror), "merge-base", a, b],
-                         env=_clean_env())
+        proc = self._run(
+            ["git", "-C", str(mirror), "merge-base", a, b], env=_clean_env()
+        )
         out = (proc.stdout or "").strip()
         return out if proc.returncode == 0 and out else None
 
@@ -695,7 +850,8 @@ class SyncService:
         # meta READS are raw SQL at the driving-adapter boundary (the healthcheck
         # idiom); callers hold the global lock — the conn is shared, not thread-safe.
         row = self._store.conn.execute(
-            "SELECT value FROM meta WHERE key=?", (key,)).fetchone()
+            "SELECT value FROM meta WHERE key=?", (key,)
+        ).fetchone()
         return None if row is None else str(row[0])
 
     def _bump_counter_locked(self, key: str) -> None:
@@ -715,14 +871,14 @@ class SyncService:
         except Exception:  # noqa: BLE001 — surfacing must never become the fault
             _log.warning("sync.last_error_write_failed leg=%s", leg)
 
-    def _note_repo_error(self, name: str, leg: str, exc: BaseException,
-                         token: str) -> None:
+    def _note_repo_error(
+        self, name: str, leg: str, exc: BaseException, token: str
+    ) -> None:
         """Per-repo fail-open surfacing: the fault is logged (redacted) and
         recorded under ``sync:<name>:last_error`` — the OTHER repos' keys and the
         tick itself are untouched."""
         message = _redact(f"{leg}: {type(exc).__name__}: {exc}", token)[:500]
-        _log.warning("sync.repo_leg_failed repo=%s leg=%s error=%s",
-                     name, leg, message)
+        _log.warning("sync.repo_leg_failed repo=%s leg=%s error=%s", name, leg, message)
         try:
             with self._lock:
                 self._store.meta_set(last_error_key(name), message)
@@ -730,8 +886,14 @@ class SyncService:
             _log.warning("sync.last_error_write_failed repo=%s leg=%s", name, leg)
 
 
-def start_sync(cfg, store, evidence: ChangeEvidenceService,
-               lock: threading.Lock, *, lifecycle=None) -> threading.Thread:
+def start_sync(
+    cfg: Config,
+    store: Any,
+    evidence: ChangeEvidenceService,
+    lock: threading.Lock,
+    *,
+    lifecycle: Any = None,
+) -> threading.Thread:
     """Arm the sync daemon from the ROOT config (reads ``cfg.sync`` only — WHICH
     repos to feed is the store registry's, re-read every tick). ALWAYS starts the
     thread: an empty registry is an inert tick, not an unarmed daemon, so
@@ -743,12 +905,14 @@ def start_sync(cfg, store, evidence: ChangeEvidenceService,
     sync_cfg: SyncConfig = cfg.sync
     service = SyncService(sync_cfg, store, evidence, lock, lifecycle=lifecycle)
     stop, nudge = threading.Event(), threading.Event()
-    thread = threading.Thread(target=service.run_forever, args=(stop, nudge),
-                              name="hive-sync", daemon=True)
-    thread.sync_stop = stop          # type: ignore[attr-defined]
-    thread.sync_nudge = nudge        # type: ignore[attr-defined]
-    thread.sync_service = service    # type: ignore[attr-defined]
+    thread = threading.Thread(
+        target=service.run_forever, args=(stop, nudge), name="hive-sync", daemon=True
+    )
+    thread.sync_stop = stop  # type: ignore[attr-defined]
+    thread.sync_nudge = nudge  # type: ignore[attr-defined]
+    thread.sync_service = service  # type: ignore[attr-defined]
     thread.start()
-    _log.info("sync.armed interval_s=%d mirrors=%s", sync_cfg.interval_s,
-              service.mirror_base)
+    _log.info(
+        "sync.armed interval_s=%d mirrors=%s", sync_cfg.interval_s, service.mirror_base
+    )
     return thread

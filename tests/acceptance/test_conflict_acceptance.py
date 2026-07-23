@@ -13,6 +13,7 @@ sits comfortably between — detection is deterministic across minor model jitte
 tau=0.85 is stricter; its calibration is the benchmark's job.)
 A permissive tau_serve=0.01 makes recall serve the co-present near-dups confidently (they
 clear the absolute-relevance floor — the gate is proven elsewhere)."""
+
 from __future__ import annotations
 
 import pytest
@@ -22,16 +23,19 @@ from tests.acceptance.conftest import build_acc
 from tests.fakes._fakes import FakeClock
 from tests.mcp._helpers import content
 
-pytestmark = pytest.mark.embed   # loads the real Qwen3 model (gated heavy tier)
+pytestmark = pytest.mark.embed  # loads the real Qwen3 model (gated heavy tier)
 
 _CONF = {"enabled": True, "tau": 0.80}
 _PERMISSIVE = {"tau_serve": 0.01}
 
 
 def _call(server, name, args, agent="agent-A"):
-    return content(server.handle(
-        MCPRequest(1, "tools/call", {"name": name, "arguments": args}),
-        identity=ServerIdentity("acc", agent)))
+    return content(
+        server.handle(
+            MCPRequest(1, "tools/call", {"name": name, "arguments": args}),
+            identity=ServerIdentity("acc", agent),
+        )
+    )
 
 
 def _write(server, text, **kw):
@@ -50,22 +54,30 @@ def _adv(snap):
 def test_e2e_contradiction_surfaced_in_both_surfaces_then_resolved(embedder_v1):
     c = build_acc(embedder_v1, recall=_PERMISSIVE, conflict=_CONF)
     server = c.make_server()
-    do = _write(server, "Always run the container as a non-root user.",
-                polarity="do")["id"]
-    dont = _write(server, "Run the container as root for simplicity.",
-                  polarity="dont")["id"]
+    do = _write(server, "Always run the container as a non-root user.", polarity="do")[
+        "id"
+    ]
+    dont = _write(server, "Run the container as root for simplicity.", polarity="dont")[
+        "id"
+    ]
     c.build_index()
 
     # (1) the health worklist surfaces the contradiction (gate-independent scan)
     snap = _call(server, "hive_health", {"include_conflicts": True})
-    assert any({m["a_id"], m["b_id"]} == {do, dont} and m["relation"] == "contradiction"
-               for m in _mech(snap))
+    assert any(
+        {m["a_id"], m["b_id"]} == {do, dont} and m["relation"] == "contradiction"
+        for m in _mech(snap)
+    )
 
     # (2) the recall carrier surfaces it too (both co-served under the permissive gate)
-    r = _call(server, "hive_recall", {"query": "should the container run as root or not"})
+    r = _call(
+        server, "hive_recall", {"query": "should the container run as root or not"}
+    )
     assert r["abstained"] is False
-    assert any({p["a_id"], p["b_id"]} == {do, dont} and p["relation"] == "contradiction"
-               for p in r.get("conflicts", []))
+    assert any(
+        {p["a_id"], p["b_id"]} == {do, dont} and p["relation"] == "contradiction"
+        for p in r.get("conflicts", [])
+    )
 
     # (3) resolve it: keep the 'do', retire the 'dont' — the near-dup contradiction
     # is itself the qualifying machine signal (no approver exists in v3)
@@ -76,7 +88,9 @@ def test_e2e_contradiction_surfaced_in_both_surfaces_then_resolved(embedder_v1):
     # (4) the pair has vanished from EVERY surface (loser deprecated → non-servable)
     snap2 = _call(server, "hive_health", {"include_conflicts": True})
     assert not any({m["a_id"], m["b_id"]} == {do, dont} for m in _mech(snap2))
-    r2 = _call(server, "hive_recall", {"query": "should the container run as root or not"})
+    r2 = _call(
+        server, "hive_recall", {"query": "should the container run as root or not"}
+    )
     served = {h["episode_id"] for h in r2["reference_context"]}
     assert dont not in served and "conflicts" not in r2
 
@@ -86,15 +100,23 @@ def test_e2e_redundancy_loser_hint_points_at_older(embedder_v1):
     clock = FakeClock(1_000_000)
     c = build_acc(embedder_v1, clock=clock, recall=_PERMISSIVE, conflict=_CONF)
     server = c.make_server()
-    older = _write(server, "Use connection pooling for the database; never open a "
-                           "connection per request.")["id"]
-    clock.advance(10_000)                       # the second write is newer
-    newer = _write(server, "Reuse database connections through a pool instead of opening "
-                           "one each request.")["id"]
+    older = _write(
+        server,
+        "Use connection pooling for the database; never open a connection per request.",
+    )["id"]
+    clock.advance(10_000)  # the second write is newer
+    newer = _write(
+        server,
+        "Reuse database connections through a pool instead of opening "
+        "one each request.",
+    )["id"]
     c.build_index()
     snap = _call(server, "hive_health", {"include_conflicts": True})
-    red = [m for m in _mech(snap)
-           if {m["a_id"], m["b_id"]} == {older, newer} and m["relation"] == "redundancy"]
+    red = [
+        m
+        for m in _mech(snap)
+        if {m["a_id"], m["b_id"]} == {older, newer} and m["relation"] == "redundancy"
+    ]
     assert red, "expected a redundancy between the two pooling paraphrases"
     # same trust (both established) ⇒ ts breaks the tie ⇒ the OLDER row is the loser
     assert red[0]["loser_hint"] == older
@@ -108,9 +130,17 @@ def test_e2e_advisory_flag_surfaces_then_autoclears(embedder_v1):
     a = _write(server, "Cache eviction policy should protect queue keys.")["id"]
     b = _write(server, "Deploys must run database migrations in a separate step.")["id"]
     c.build_index()
-    flagged = _call(server, "hive_flag",
-                    {"a": a, "b": b, "kind": "supersedes", "winner": b,
-                     "resolution": "the migration rule is the current one"})
+    flagged = _call(
+        server,
+        "hive_flag",
+        {
+            "a": a,
+            "b": b,
+            "kind": "supersedes",
+            "winner": b,
+            "resolution": "the migration rule is the current one",
+        },
+    )
     assert flagged["status"] == "flagged"
     snap = _call(server, "hive_health", {"include_conflicts": True})
     assert any({x["a_id"], x["b_id"]} == {a, b} for x in _adv(snap))

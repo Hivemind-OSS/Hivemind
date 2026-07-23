@@ -80,7 +80,9 @@ class _FakeHive:
                     body = {}
                 hive.requests.append(body if isinstance(body, dict) else {})
                 params = body.get("params") if isinstance(body, dict) else None
-                arguments = params.get("arguments") if isinstance(params, dict) else None
+                arguments = (
+                    params.get("arguments") if isinstance(params, dict) else None
+                )
                 query = arguments.get("query") if isinstance(arguments, dict) else ""
                 action = hive.respond(query)
                 if isinstance(action, tuple) and action[0] == "sleep":
@@ -176,23 +178,45 @@ class TestOrderSubjects:
 class TestFetchServedHits:
     def test_entries_carry_labels_verbatim_across_all_tiers(self) -> None:
         hits = [
-            _hit(41, "greet's punct is relied on by templating callers",
-                 trust="established", polarity="dont", kind="gotcha"),
-            _hit(42, "prefer explicit greeting arity",
-                 trust="provisional", polarity="do", kind="decision",
-                 anchor="", sim=0.61, ts=1750000000),
+            _hit(
+                41,
+                "greet's punct is relied on by templating callers",
+                trust="established",
+                polarity="dont",
+                kind="gotcha",
+            ),
+            _hit(
+                42,
+                "prefer explicit greeting arity",
+                trust="provisional",
+                polarity="do",
+                kind="decision",
+                anchor="",
+                sim=0.61,
+                ts=1750000000,
+            ),
         ]
         with fake_hive(lambda q: _payload(hits)) as hive:
             entries = fetch_institutional_context(hive.url, [("pkg/lib.py", "greet")])
         assert entries == [
             MemoryContext(
-                episode_id=41, trust="established", polarity="dont", kind="gotcha",
-                anchor="pkg/lib.py::greet", ts=1751800000, sim=0.87,
+                episode_id=41,
+                trust="established",
+                polarity="dont",
+                kind="gotcha",
+                anchor="pkg/lib.py::greet",
+                ts=1751800000,
+                sim=0.87,
                 text="greet's punct is relied on by templating callers",
             ),
             MemoryContext(
-                episode_id=42, trust="provisional", polarity="do", kind="decision",
-                anchor="", ts=1750000000, sim=0.61,
+                episode_id=42,
+                trust="provisional",
+                polarity="do",
+                kind="decision",
+                anchor="",
+                ts=1750000000,
+                sim=0.61,
                 text="prefer explicit greeting arity",
             ),
         ]
@@ -224,14 +248,18 @@ class TestFetchServedHits:
     def test_cap_total_truncates_and_stops_querying(self) -> None:
         def respond(query: str) -> dict:
             index = int(query[1])
-            return _payload([_hit(10 * index + j, f"lesson {index}.{j}") for j in (1, 2)])
+            return _payload(
+                [_hit(10 * index + j, f"lesson {index}.{j}") for j in (1, 2)]
+            )
 
         subjects = [("p1.py", "s"), ("p2.py", "s"), ("p3.py", "s")]
         with fake_hive(respond) as hive:
             entries = fetch_institutional_context(hive.url, subjects, cap_total=4)
             request_count = len(hive.requests)
         assert len(entries) == 4
-        assert request_count == 2  # the cap was reached; the third subject is never asked
+        assert (
+            request_count == 2
+        )  # the cap was reached; the third subject is never asked
 
     def test_duplicate_subjects_are_queried_once(self) -> None:
         with fake_hive(lambda q: _payload([])) as hive:
@@ -244,7 +272,9 @@ class TestFetchServedHits:
         def respond(query: str) -> dict:
             if query.startswith("mute"):
                 # Adversarial: an abstaining envelope carrying hits anyway.
-                return _payload([_hit(1, "never trust an abstained hit")], abstained=True)
+                return _payload(
+                    [_hit(1, "never trust an abstained hit")], abstained=True
+                )
             return _payload([_hit(2, "served lesson")])
 
         with fake_hive(respond) as hive:
@@ -254,7 +284,9 @@ class TestFetchServedHits:
         assert [entry.episode_id for entry in entries] == [2]
 
     def test_dedupe_by_episode_id_across_subjects(self) -> None:
-        with fake_hive(lambda q: _payload([_hit(7, "one lesson, two subjects")])) as hive:
+        with fake_hive(
+            lambda q: _payload([_hit(7, "one lesson, two subjects")])
+        ) as hive:
             entries = fetch_institutional_context(
                 hive.url, [("a.py", "f"), ("b.py", "g")]
             )
@@ -268,8 +300,14 @@ class TestFetchServedHits:
     def test_no_subjects_or_zero_caps_ask_nothing(self) -> None:
         with fake_hive(lambda q: _payload([_hit(1, "t")])) as hive:
             assert fetch_institutional_context(hive.url, []) == []
-            assert fetch_institutional_context(hive.url, [("a.py", "f")], cap_subjects=0) == []
-            assert fetch_institutional_context(hive.url, [("a.py", "f")], cap_total=0) == []
+            assert (
+                fetch_institutional_context(hive.url, [("a.py", "f")], cap_subjects=0)
+                == []
+            )
+            assert (
+                fetch_institutional_context(hive.url, [("a.py", "f")], cap_total=0)
+                == []
+            )
             assert hive.requests == []
 
 
@@ -287,26 +325,40 @@ class TestFetchDefensiveParse:
                 meta={"combdrift/fp": "combdrift-fp/1:function(a)"},
                 last_verified={"ts": 1, "sha": "e" * 40, "state": "current"},
             ),
-            _hit(6, "labels degrade safe", trust=None, polarity=7,
-                 kind=[], anchor={}, ts="old", sim="high"),
+            _hit(
+                6,
+                "labels degrade safe",
+                trust=None,
+                polarity=7,
+                kind=[],
+                anchor={},
+                ts="old",
+                sim="high",
+            ),
         ]
         with fake_hive(lambda q: _payload(hits)) as hive:
             entries = fetch_institutional_context(hive.url, [("a.py", "f")])
         assert [entry.episode_id for entry in entries] == [5, 6]
         degraded = entries[1]
         assert (degraded.trust, degraded.polarity, degraded.kind, degraded.anchor) == (
-            "", "", "", ""
+            "",
+            "",
+            "",
+            "",
         )
         assert degraded.ts == 0
         assert degraded.sim == 0.0
 
     def test_nonfinite_sim_sanitized(self) -> None:
-        raw = ("raw", (
-            '{"jsonrpc": "2.0", "id": 1, "result": {"content": [{"type": "text", '
-            '"text": "{\\"abstained\\": false, \\"reference_context\\": '
-            '[{\\"episode_id\\": 9, \\"text\\": \\"nan sim\\", \\"sim\\": NaN}]}"}], '
-            '"isError": false}}'
-        ).encode("utf-8"))
+        raw = (
+            "raw",
+            (
+                '{"jsonrpc": "2.0", "id": 1, "result": {"content": [{"type": "text", '
+                '"text": "{\\"abstained\\": false, \\"reference_context\\": '
+                '[{\\"episode_id\\": 9, \\"text\\": \\"nan sim\\", \\"sim\\": NaN}]}"}], '
+                '"isError": false}}'
+            ).encode("utf-8"),
+        )
         with fake_hive(lambda q: raw) as hive:
             entries = fetch_institutional_context(hive.url, [("a.py", "f")])
         assert [entry.episode_id for entry in entries] == [9]
@@ -339,16 +391,26 @@ class TestFetchFailsOpen:
         self._assert_empty_with_one_note(entries, capsys)
 
     def test_jsonrpc_error_envelope(self, capsys: pytest.CaptureFixture) -> None:
-        envelope = ("envelope", {"jsonrpc": "2.0", "id": 1,
-                                 "error": {"code": -32600, "message": "bad"}})
+        envelope = (
+            "envelope",
+            {"jsonrpc": "2.0", "id": 1, "error": {"code": -32600, "message": "bad"}},
+        )
         with fake_hive(lambda q: envelope) as hive:
             entries = fetch_institutional_context(hive.url, [("a.py", "f")])
         self._assert_empty_with_one_note(entries, capsys)
 
     def test_tool_iserror_envelope(self, capsys: pytest.CaptureFixture) -> None:
-        envelope = ("envelope", {"jsonrpc": "2.0", "id": 1,
-                                 "result": {"content": [{"type": "text", "text": "boom"}],
-                                            "isError": True}})
+        envelope = (
+            "envelope",
+            {
+                "jsonrpc": "2.0",
+                "id": 1,
+                "result": {
+                    "content": [{"type": "text", "text": "boom"}],
+                    "isError": True,
+                },
+            },
+        )
         with fake_hive(lambda q: envelope) as hive:
             entries = fetch_institutional_context(hive.url, [("a.py", "f")])
         self._assert_empty_with_one_note(entries, capsys)

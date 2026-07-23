@@ -23,9 +23,10 @@ arrives as ``known_repos`` (a ``name -> bool`` callable or a read-only collectio
 of names, e.g. ``{r.name for r in store.repo_registry()}``) — the gate never
 imports the store.
 """
+
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Container
 
 from hive.domain.models import AnchorRef
 
@@ -51,14 +52,18 @@ def split_scope(entry: str) -> tuple[str, str]:
     return name, branch
 
 
-def _known_fn(known_repos: object) -> Callable[[str], bool]:
+def _known_fn(
+    known_repos: Callable[[str], bool] | Container[str],
+) -> Callable[[str], bool]:
     """The injected registry-membership read, normalized to a predicate."""
     if callable(known_repos):
-        return known_repos  # type: ignore[return-value]
-    return lambda name: name in known_repos  # type: ignore[operator]
+        return known_repos
+    return lambda name: name in known_repos
 
 
-def normalize_anchors(raw: object, *, known_repos) -> tuple[AnchorRef, ...]:
+def normalize_anchors(
+    raw: object, *, known_repos: Callable[[str], bool] | Container[str]
+) -> tuple[AnchorRef, ...]:
     """Shape ``raw`` into the canonical ``AnchorRef`` tuple, or raise ``BadAnchors``.
 
     ``None`` / ``""`` / ``[]`` → ``()`` (absent — a general or scope-only memory).
@@ -70,10 +75,10 @@ def normalize_anchors(raw: object, *, known_repos) -> tuple[AnchorRef, ...]:
     if not isinstance(raw, (list, tuple)):
         raise BadAnchors(
             "anchors must be an array of {repo, anchor} objects, got "
-            f"{type(raw).__name__}")
+            f"{type(raw).__name__}"
+        )
     if len(raw) > SCOPE_MAX_ENTRIES:
-        raise BadAnchors(
-            f"anchors has {len(raw)} entries (max {SCOPE_MAX_ENTRIES})")
+        raise BadAnchors(f"anchors has {len(raw)} entries (max {SCOPE_MAX_ENTRIES})")
     known = _known_fn(known_repos)
     out: list[AnchorRef] = []
     seen: set[tuple[str, str]] = set()
@@ -81,33 +86,41 @@ def normalize_anchors(raw: object, *, known_repos) -> tuple[AnchorRef, ...]:
         if not isinstance(item, dict):
             raise BadAnchors(
                 f"anchors[{i}] must be a {{repo, anchor}} object, got "
-                f"{type(item).__name__}")
+                f"{type(item).__name__}"
+            )
         extra = set(item) - _ANCHOR_KEYS
         if extra:
             raise BadAnchors(
                 f"anchors[{i}] has unknown key(s) {sorted(map(repr, extra))} "
-                "(want exactly repo, anchor)")
+                "(want exactly repo, anchor)"
+            )
         repo = item.get("repo")
         anchor = item.get("anchor")
         if not isinstance(repo, str) or not repo:
             raise BadAnchors(
-                f"anchors[{i}].repo must be a non-empty registered repo name")
+                f"anchors[{i}].repo must be a non-empty registered repo name"
+            )
         if not isinstance(anchor, str) or not anchor:
             raise BadAnchors(
                 f"anchors[{i}].anchor must be a non-empty code location "
-                "(path or path::Symbol)")
+                "(path or path::Symbol)"
+            )
         if not known(repo):
             raise BadAnchors(
-                f"unknown repo {repo!r} in anchors[{i}] — not in the registry")
+                f"unknown repo {repo!r} in anchors[{i}] — not in the registry"
+            )
         if (repo, anchor) in seen:
             raise BadAnchors(
-                f"duplicate anchor binding ({repo!r}, {anchor!r}) at anchors[{i}]")
+                f"duplicate anchor binding ({repo!r}, {anchor!r}) at anchors[{i}]"
+            )
         seen.add((repo, anchor))
         out.append(AnchorRef(repo=repo, anchor=anchor))
     return tuple(out)
 
 
-def normalize_repos(raw: object, *, known_repos) -> tuple[tuple[str, str], ...]:
+def normalize_repos(
+    raw: object, *, known_repos: Callable[[str], bool] | Container[str]
+) -> tuple[tuple[str, str], ...]:
     """Shape ``raw`` into canonical ``(name, branch)`` pairs, or raise ``BadAnchors``.
 
     ``None`` / ``""`` / ``[]`` → ``()`` (absent — the global match-everything
@@ -120,7 +133,8 @@ def normalize_repos(raw: object, *, known_repos) -> tuple[tuple[str, str], ...]:
     if not isinstance(raw, (list, tuple)):
         raise BadAnchors(
             "repos must be an array of 'name' / 'name@branch' strings, got "
-            f"{type(raw).__name__}")
+            f"{type(raw).__name__}"
+        )
     if len(raw) > SCOPE_MAX_ENTRIES:
         raise BadAnchors(f"repos has {len(raw)} entries (max {SCOPE_MAX_ENTRIES})")
     known = _known_fn(known_repos)
@@ -129,17 +143,21 @@ def normalize_repos(raw: object, *, known_repos) -> tuple[tuple[str, str], ...]:
     for i, entry in enumerate(raw):
         if not isinstance(entry, str) or not entry:
             raise BadAnchors(
-                f"repos[{i}] must be a non-empty 'name' / 'name@branch' string")
+                f"repos[{i}] must be a non-empty 'name' / 'name@branch' string"
+            )
         name, branch = split_scope(entry)
         if not name:
             raise BadAnchors(f"repos[{i}] {entry!r} has an empty repo name")
         if "@" in entry and not branch:
             raise BadAnchors(f"repos[{i}] {entry!r} has an empty branch after '@'")
         if not known(name):
-            raise BadAnchors(f"unknown repo {name!r} in repos[{i}] — not in the registry")
+            raise BadAnchors(
+                f"unknown repo {name!r} in repos[{i}] — not in the registry"
+            )
         if name in seen:
             raise BadAnchors(
-                f"repo {name!r} named twice in repos (one scope entry per repo)")
+                f"repo {name!r} named twice in repos (one scope entry per repo)"
+            )
         seen.add(name)
         out.append((name, branch))
     return tuple(out)

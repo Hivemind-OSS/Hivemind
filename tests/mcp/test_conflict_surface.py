@@ -4,12 +4,17 @@ breaks the read). Near-dups are modeled with FakeClusterProvider (cid-tagged tex
 a cid-matched query embeds at cosine≈1 to both, clearing the absolute-relevance floor so a
 confident recall returns the co-present near-dups. Plus C5: the hive_health worklist, v3 —
 mechanical entries bucket by (repo, anchor) BINDING and carry both."""
+
 from __future__ import annotations
 
 from hive.app.config import ConflictConfig
 from tests.fakes._fakes import FakeClusterProvider
 from tests.mcp._helpers import (
-    build_real_server, content, register_repo, tool_call, write_text,
+    build_real_server,
+    content,
+    register_repo,
+    tool_call,
+    write_text,
 )
 
 D = 64
@@ -21,9 +26,12 @@ def _srv(*, enabled=True, tau_serve=0.70):
     # carrier/worklist classify); a non-matching query stays absolutely weak and abstains. The
     # carrier detects over the PRE-select resolved field, so it surfaces the pair even when
     # select_served decorrelates the served set (drops one near-dup twin).
-    server, clock = build_real_server(d=D, tau_serve=tau_serve,
-                                      embedder=FakeClusterProvider(d=D),
-                                      conflict=ConflictConfig(enabled=enabled))
+    server, clock = build_real_server(
+        d=D,
+        tau_serve=tau_serve,
+        embedder=FakeClusterProvider(d=D),
+        conflict=ConflictConfig(enabled=enabled),
+    )
     register_repo(server, "alpha")
     register_repo(server, "beta")
     return server, clock
@@ -40,11 +48,21 @@ def _anchored(repo, anchor):
 # ── ON: opposing polarity near-dups → a contradiction in the carrier ───────────
 def test_recall_surfaces_contradiction_for_opposing_near_dups():
     server, _ = _srv(enabled=True)
-    a = _write(server, "cid=1 run database migrations during deploy",
-               polarity="do", anchors=_anchored("alpha", "deploy.py"))["id"]
-    b = _write(server, "cid=1 never run migrations during a deploy window",
-               polarity="dont", anchors=_anchored("alpha", "deploy.py"))["id"]
-    r = content(tool_call(server, "hive_recall", {"query": "cid=1 migrations on deploy"}))
+    a = _write(
+        server,
+        "cid=1 run database migrations during deploy",
+        polarity="do",
+        anchors=_anchored("alpha", "deploy.py"),
+    )["id"]
+    b = _write(
+        server,
+        "cid=1 never run migrations during a deploy window",
+        polarity="dont",
+        anchors=_anchored("alpha", "deploy.py"),
+    )["id"]
+    r = content(
+        tool_call(server, "hive_recall", {"query": "cid=1 migrations on deploy"})
+    )
     assert r["abstained"] is False
     assert "conflicts" in r
     pair = r["conflicts"][0]
@@ -56,11 +74,13 @@ def test_recall_surfaces_redundancy_with_loser_hint():
     server, _ = _srv(enabled=True)
     a = _write(server, "cid=2 use connection pooling for the db", polarity="do")["id"]
     b = _write(server, "cid=2 reuse db connections via a pool", polarity="do")["id"]
-    r = content(tool_call(server, "hive_recall", {"query": "cid=2 db connection reuse"}))
+    r = content(
+        tool_call(server, "hive_recall", {"query": "cid=2 db connection reuse"})
+    )
     pair = r["conflicts"][0]
     assert pair["relation"] == "redundancy"
-    assert pair["loser_hint"] in (a, b)            # a directional retire candidate
-    assert "hive_supersede" in pair["note"]         # the resolution path is named
+    assert pair["loser_hint"] in (a, b)  # a directional retire candidate
+    assert "hive_supersede" in pair["note"]  # the resolution path is named
 
 
 # ── Law 4: conflicts carries IDS ONLY, never enters reference_context ───────────
@@ -74,9 +94,9 @@ def test_conflicts_never_carry_memory_text_nor_enter_reference_context():
     # conflict dict (which has no text/sim) sitting in reference_context REDs this.
     for hit in r["reference_context"]:
         assert {"episode_id", "text", "sim"} <= set(hit)
-        assert "relation" not in hit                 # a conflict pair must never appear as a hit
+        assert "relation" not in hit  # a conflict pair must never appear as a hit
     for pair in r["conflicts"]:
-        assert "text" not in pair                   # NO memory content rides the carrier
+        assert "text" not in pair  # NO memory content rides the carrier
         assert set(pair) >= {"a_id", "b_id", "relation", "cosine", "loser_hint", "note"}
 
 
@@ -87,7 +107,7 @@ def test_conflicts_absent_when_disabled():
     _write(server, "cid=4 never concatenate user input into sql", polarity="do")
     r = content(tool_call(server, "hive_recall", {"query": "cid=4 sql injection"}))
     assert r["abstained"] is False
-    assert "conflicts" not in r                      # OFF ⇒ no key (byte-inert)
+    assert "conflicts" not in r  # OFF ⇒ no key (byte-inert)
 
 
 def test_no_conflicts_key_when_no_near_dup_pair():
@@ -95,7 +115,7 @@ def test_no_conflicts_key_when_no_near_dup_pair():
     server, _ = _srv(enabled=True)
     _write(server, "cid=5 a fact about caching", polarity="do")
     r = content(tool_call(server, "hive_recall", {"query": "cid=5 caching"}))
-    assert "conflicts" not in r                      # single hit ⇒ no pair to surface
+    assert "conflicts" not in r  # single hit ⇒ no pair to surface
 
 
 # ── a detector fault fails the read CLOSED (select_served owns it; no fail-open carrier) ──
@@ -110,24 +130,32 @@ def test_detector_fault_fails_read_closed():
 
     def _boom(*a, **k):
         raise RuntimeError("detector exploded")
+
     import hive.domain.recall as mod
+
     orig = mod.detect_conflicts
     mod.detect_conflicts = _boom
     try:
         r = content(tool_call(server, "hive_recall", {"query": "cid=6 near dup"}))
     finally:
         mod.detect_conflicts = orig
-    assert r["abstained"] is True                    # fail-closed: no un-vetted set served
+    assert r["abstained"] is True  # fail-closed: no un-vetted set served
     assert r["reference_context"] == [] and "conflicts" not in r
 
 
 # ── C5: the health conflict worklist (include_conflicts, v3 buckets) ───────────
 def test_health_report_surfaces_mechanical_redundancy_with_repo_and_anchor():
     server, _ = _srv(enabled=True)
-    a = _write(server, "cid=7 cache evictions hurt the queue",
-               anchors=_anchored("alpha", "redis.conf"))["id"]
-    b = _write(server, "cid=7 queue keys must not be evicted",
-               anchors=_anchored("alpha", "redis.conf"))["id"]
+    a = _write(
+        server,
+        "cid=7 cache evictions hurt the queue",
+        anchors=_anchored("alpha", "redis.conf"),
+    )["id"]
+    b = _write(
+        server,
+        "cid=7 queue keys must not be evicted",
+        anchors=_anchored("alpha", "redis.conf"),
+    )["id"]
     snap = content(tool_call(server, "hive_health", {"include_conflicts": True}))
     assert "conflicts" in snap
     mech = [c for c in snap["conflicts"] if c["source"] == "mechanical"]
@@ -143,14 +171,23 @@ def test_health_report_buckets_by_repo_and_anchor():
     server, _ = _srv(enabled=True)
     _write(server, "cid=8 first about deploys", anchors=_anchored("alpha", "deploy.py"))
     _write(server, "cid=8 second about deploys", anchors=_anchored("alpha", "ci.yml"))
-    _write(server, "cid=22 do vendor the schema file", polarity="do",
-           anchors=_anchored("alpha", "pkg/schema.py::load"))
-    _write(server, "cid=22 dont vendor the schema file", polarity="dont",
-           anchors=_anchored("beta", "pkg/schema.py::load"))
+    _write(
+        server,
+        "cid=22 do vendor the schema file",
+        polarity="do",
+        anchors=_anchored("alpha", "pkg/schema.py::load"),
+    )
+    _write(
+        server,
+        "cid=22 dont vendor the schema file",
+        polarity="dont",
+        anchors=_anchored("beta", "pkg/schema.py::load"),
+    )
     snap = content(tool_call(server, "hive_health", {"include_conflicts": True}))
     mech = [c for c in snap.get("conflicts", []) if c["source"] == "mechanical"]
     assert mech == [], (
-        "different anchors / different repos ⇒ different buckets ⇒ no entry")
+        "different anchors / different repos ⇒ different buckets ⇒ no entry"
+    )
 
 
 def test_health_unanchored_near_dups_share_the_general_bucket():
@@ -167,8 +204,8 @@ def test_health_conflicts_absent_unless_requested():
     server, _ = _srv(enabled=True)
     _write(server, "cid=9 a memory", anchors=_anchored("alpha", "x.py"))
     _write(server, "cid=9 another memory", anchors=_anchored("alpha", "x.py"))
-    snap = content(tool_call(server, "hive_health", {}))   # no include_conflicts
-    assert "conflicts" not in snap                          # ← drop the gate ⇒ this REDs
+    snap = content(tool_call(server, "hive_health", {}))  # no include_conflicts
+    assert "conflicts" not in snap  # ← drop the gate ⇒ this REDs
 
 
 def test_health_conflicts_absent_when_disabled():
@@ -176,21 +213,33 @@ def test_health_conflicts_absent_when_disabled():
     _write(server, "cid=10 a memory", anchors=_anchored("alpha", "x.py"))
     _write(server, "cid=10 another memory", anchors=_anchored("alpha", "x.py"))
     snap = content(tool_call(server, "hive_health", {"include_conflicts": True}))
-    assert "conflicts" not in snap                          # OFF ⇒ byte-inert
+    assert "conflicts" not in snap  # OFF ⇒ byte-inert
 
 
 def test_health_report_merges_open_advisory_flag():
     server, _ = _srv(enabled=True)
     # two DISTINCT-cluster memories (no mechanical near-dup) flagged advisory by an agent
-    a = _write(server, "cid=11 deploy uses make", anchors=_anchored("alpha", "deploy.py"))["id"]
-    b = _write(server, "cid=12 deploy uses ship.sh", anchors=_anchored("alpha", "release.md"))["id"]
+    a = _write(
+        server, "cid=11 deploy uses make", anchors=_anchored("alpha", "deploy.py")
+    )["id"]
+    b = _write(
+        server, "cid=12 deploy uses ship.sh", anchors=_anchored("alpha", "release.md")
+    )["id"]
     lo, hi = sorted((a, b))
-    server.store.record_conflict_flag(kind="conflict", a_id=lo, b_id=hi, winner_id=None,
-                                      resolution="agent thinks these disagree",
-                                      proposed_by="agent-A", ts=1)
+    server.store.record_conflict_flag(
+        kind="conflict",
+        a_id=lo,
+        b_id=hi,
+        winner_id=None,
+        resolution="agent thinks these disagree",
+        proposed_by="agent-A",
+        ts=1,
+    )
     snap = content(tool_call(server, "hive_health", {"include_conflicts": True}))
     adv = [c for c in snap["conflicts"] if c["source"] == "advisory"]
-    assert any({c["a_id"], c["b_id"]} == {a, b} and c["kind"] == "conflict" for c in adv)
+    assert any(
+        {c["a_id"], c["b_id"]} == {a, b} and c["kind"] == "conflict" for c in adv
+    )
 
 
 def test_advisory_flag_autoclears_when_episode_retired():
@@ -198,14 +247,21 @@ def test_advisory_flag_autoclears_when_episode_retired():
     a = _write(server, "cid=13 alpha", anchors=_anchored("alpha", "a.py"))["id"]
     b = _write(server, "cid=14 beta", anchors=_anchored("alpha", "b.py"))["id"]
     lo, hi = sorted((a, b))
-    server.store.record_conflict_flag(kind="supersedes", a_id=lo, b_id=hi, winner_id=hi,
-                                      resolution="", proposed_by="agent-A", ts=1)
+    server.store.record_conflict_flag(
+        kind="supersedes",
+        a_id=lo,
+        b_id=hi,
+        winner_id=hi,
+        resolution="",
+        proposed_by="agent-A",
+        ts=1,
+    )
     # retire one side → the flag must drop off the worklist (read-time servable-both
     # filter). Store-level retire: the read-side auto-clear is what is under test.
     assert server.store.supersede(a, b, actor="test", ts=int(clock.now()))
     snap = content(tool_call(server, "hive_health", {"include_conflicts": True}))
     adv = [c for c in snap.get("conflicts", []) if c["source"] == "advisory"]
-    assert adv == []                                       # auto-cleared (no status flip needed)
+    assert adv == []  # auto-cleared (no status flip needed)
 
 
 def test_health_report_fail_open_returns_empty_conflicts():
@@ -215,6 +271,7 @@ def test_health_report_fail_open_returns_empty_conflicts():
 
     def _boom(*a, **k):
         raise RuntimeError("scan exploded")
+
     server.store.scan_servable_labeled = _boom
     snap = content(tool_call(server, "hive_health", {"include_conflicts": True}))
-    assert snap["ok"] is True and snap["conflicts"] == []   # degrades, health still ok
+    assert snap["ok"] is True and snap["conflicts"] == []  # degrades, health still ok

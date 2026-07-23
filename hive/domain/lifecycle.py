@@ -24,24 +24,41 @@ machine-gated retirement, and decay.
 PURE: stdlib + numpy only. The purity gate (tests/test_purity.py) forbids
 sqlite3 | torch | subprocess | os | git | time imports anywhere in hive/domain/.
 """
+
 from __future__ import annotations
 
 import json
 import logging
 import math
 from dataclasses import dataclass
-from typing import Callable, Optional, Sequence
+from typing import (
+    TYPE_CHECKING,
+    Callable,
+    Collection,
+    Final,
+    Optional,
+    Protocol,
+    Sequence,
+)
 
 import numpy as np  # permitted in domain (not in the forbidden I/O set)
 
 from hive.domain.anomaly import cluster_anomaly
 from hive.domain.evidence_kinds import EK_OUTCOME_VERIFIED_HELPED, EK_PROMOTE
 
+if TYPE_CHECKING:
+    # Typing-only: runtime imports here would close cycles (ports -> models ->
+    # lifecycle; models -> lifecycle).
+    from hive.domain.models import Episode
+    from hive.domain.ports import VectorIndex
+
 _log = logging.getLogger("hive.lifecycle")
 
-QUARANTINED, PROVISIONAL, ESTABLISHED, DEPRECATED = (
-    "quarantined", "provisional", "established", "deprecated")
-TRUST_STATES = (QUARANTINED, PROVISIONAL, ESTABLISHED, DEPRECATED)
+QUARANTINED: Final = "quarantined"
+PROVISIONAL: Final = "provisional"
+ESTABLISHED: Final = "established"
+DEPRECATED: Final = "deprecated"
+TRUST_STATES: Final = (QUARANTINED, PROVISIONAL, ESTABLISHED, DEPRECATED)
 
 
 @dataclass(frozen=True, slots=True)
@@ -52,13 +69,14 @@ class MissRow:
     from the REDACTED text when the scanner masked; never present for refused);
     ``repos`` is the query's repo scope (v3 §3.6) — ``()`` = a GLOBAL miss, which
     matches every candidate scope."""
+
     vector: "np.ndarray"
     agent_id: str
     ts: int
     repos: tuple[str, ...] = ()
 
 
-def scope_matches(a: Sequence[str], b: Sequence[str]) -> bool:
+def scope_matches(a: Collection[str], b: Collection[str]) -> bool:
     """THE §3.6 partition-compatibility clause, in one owner:
 
         S matches R  ≡  S == [] or R == [] or S ∩ R != ∅
@@ -68,8 +86,9 @@ def scope_matches(a: Sequence[str], b: Sequence[str]) -> bool:
     return not a or not b or bool(frozenset(a) & frozenset(b))
 
 
-def is_servable(*, status: str, trust: str, last_active_ts: int,
-                now: int, provisional_ttl_s: int) -> bool:
+def is_servable(
+    *, status: str, trust: str, last_active_ts: int, now: int, provisional_ttl_s: int
+) -> bool:
     """THE single servability rule. Used by the store's servable scan (index
     rebuild), the promotion/demotion index sync, and the mcp_server recall belt.
 
@@ -89,8 +108,15 @@ def is_servable(*, status: str, trust: str, last_active_ts: int,
     return False
 
 
-def decayed(*, trust: str, last_active_ts: int, created_ts: int, now: int,
-            quarantine_ttl_s: int, provisional_ttl_s: int) -> bool:
+def decayed(
+    *,
+    trust: str,
+    last_active_ts: int,
+    created_ts: int,
+    now: int,
+    quarantine_ttl_s: int,
+    provisional_ttl_s: int,
+) -> bool:
     """Lazy death rule (the sweep materializes what this reads):
 
     quarantined  — dead iff ``now − max(created_ts, last_active_ts) > quarantine_ttl``
@@ -112,7 +138,8 @@ def decayed(*, trust: str, last_active_ts: int, created_ts: int, now: int,
 
 # ── demand-promotion: the ONLY path out of quarantine ──────────────────────────
 
-def _cosine(a, b) -> Optional[float]:
+
+def _cosine(a: "np.ndarray", b: "np.ndarray") -> Optional[float]:
     """True cosine in float64, or None when UNDECIDABLE — non-finite components,
     shape mismatch, or a zero norm. None is the fail-closed signal: an undecidable
     similarity must never count as demand.  // O(d)."""
@@ -148,13 +175,13 @@ def _demand_independence(matched: Sequence["MissRow"]) -> tuple[float, float]:
     for i in range(k):
         for j in range(i + 1, k):
             c = _cosine(matched[i].vector, matched[j].vector)
-            if c is None:                          # undecidable pair ⇒ skipped, never counted
+            if c is None:  # undecidable pair ⇒ skipped, never counted
                 continue
             cosines.append(max(-1.0, min(1.0, c)))
     if not cosines:
         return (0.0, float(k))
     rho_bar = max(-1.0, min(1.0, float(sum(cosines) / len(cosines))))
-    d_eff = 1.0 + (k - 1) * max(0.0, rho_bar)      # max(0,·) ⇒ n_eff <= k by construction
+    d_eff = 1.0 + (k - 1) * max(0.0, rho_bar)  # max(0,·) ⇒ n_eff <= k by construction
     return (rho_bar, float(k) / d_eff)
 
 
@@ -167,13 +194,14 @@ class PromotionDecision:
     are the decorrelated-demand stamp (computed on the promote path only, value-INDEPENDENT
     of the verdict — they record HOW independent the demand was, never gate it); both keep the
     under-claiming 0.0 on every non-promote path."""
+
     promote: bool
-    n_misses: int                 # matched misses inside the window
-    n_other_identities: int       # matched misses from identities ≠ the writer
-    competitor_sim: float         # top-1 cosine against the SERVABLE index
+    n_misses: int  # matched misses inside the window
+    n_other_identities: int  # matched misses from identities ≠ the writer
+    competitor_sim: float  # top-1 cosine against the SERVABLE index
     reason: str
-    rho_bar: float = 0.0          # mean pairwise cosine of the matched-miss vectors
-    n_eff: float = 0.0            # effective independent votes (k / design-effect)
+    rho_bar: float = 0.0  # mean pairwise cosine of the matched-miss vectors
+    n_eff: float = 0.0  # effective independent votes (k / design-effect)
 
 
 class DemandRule:
@@ -196,8 +224,9 @@ class DemandRule:
     a lone agent cannot manufacture both supply and demand, but ≥2 agent-sessions can —
     independent of how many humans direct them. There is no elapsed-span bypass."""
 
-    def __init__(self, *, demand_m: int, demand_tau: float,
-                 competitor_tau: float) -> None:
+    def __init__(
+        self, *, demand_m: int, demand_tau: float, competitor_tau: float
+    ) -> None:
         if int(demand_m) < 1:
             raise ValueError(f"demand_m must be >= 1 (got {demand_m})")
         for name, v in (("demand_tau", demand_tau), ("competitor_tau", competitor_tau)):
@@ -207,10 +236,15 @@ class DemandRule:
         self.demand_tau = float(demand_tau)
         self.competitor_tau = float(competitor_tau)
 
-    def decide(self, *, candidate_vec: "np.ndarray", candidate_writer: str,
-               misses: Sequence[MissRow],
-               competitor_top_sim: float,
-               candidate_repos: Sequence[str]) -> PromotionDecision:
+    def decide(
+        self,
+        *,
+        candidate_vec: "np.ndarray",
+        candidate_writer: str,
+        misses: Sequence[MissRow],
+        competitor_top_sim: float,
+        candidate_repos: Sequence[str],
+    ) -> PromotionDecision:
         try:
             comp = float(competitor_top_sim)
             if not math.isfinite(comp):
@@ -228,33 +262,44 @@ class DemandRule:
                 if not scope_matches(m.repos, cand_scope):
                     continue
                 c = _cosine(m.vector, candidate_vec)
-                if c is None:                      # undecidable input ⇒ fail closed
+                if c is None:  # undecidable input ⇒ fail closed
                     return PromotionDecision(False, 0, 0, comp, "non_finite")
                 if c >= self.demand_tau:
                     matched.append(m)
             n_other = sum(1 for m in matched if m.agent_id != candidate_writer)
             if len(matched) < self.demand_m:
-                return PromotionDecision(False, len(matched), n_other, comp,
-                                         "insufficient_demand")
-            if n_other == 0:                       # the always-on anti-gaming floor (SOLE rule)
+                return PromotionDecision(
+                    False, len(matched), n_other, comp, "insufficient_demand"
+                )
+            if n_other == 0:  # the always-on anti-gaming floor (SOLE rule)
                 return PromotionDecision(False, len(matched), 0, comp, "self_demand")
             if comp >= self.competitor_tau:
-                return PromotionDecision(False, len(matched), n_other, comp,
-                                         "competitor_answers")
+                return PromotionDecision(
+                    False, len(matched), n_other, comp, "competitor_answers"
+                )
             # promote path ONLY (after every gating clause has had its chance to return) —
             # so the measure is value-INDEPENDENT of the verdict (Law 3): it records HOW
             # independent the demand was, it never decides whether to promote.
             rho_bar, n_eff = _demand_independence(matched)
-            return PromotionDecision(True, len(matched), n_other, comp, "demand",
-                                     rho_bar=rho_bar, n_eff=n_eff)
-        except Exception:                          # noqa: BLE001 — total by contract
-            _log.warning("demand rule internal failure → fail-closed no-promote",
-                         exc_info=True)
+            return PromotionDecision(
+                True,
+                len(matched),
+                n_other,
+                comp,
+                "demand",
+                rho_bar=rho_bar,
+                n_eff=n_eff,
+            )
+        except Exception:  # noqa: BLE001 — total by contract
+            _log.warning(
+                "demand rule internal failure → fail-closed no-promote", exc_info=True
+            )
             return PromotionDecision(False, 0, 0, 0.0, "error")
 
 
-def verified_win_decision(*, has_verified_win: bool, competitor_top_sim: float,
-                          competitor_tau: float) -> PromotionDecision:
+def verified_win_decision(
+    *, has_verified_win: bool, competitor_top_sim: float, competitor_tau: float
+) -> PromotionDecision:
     """The verified-win rung's pure verdict — the SECOND mechanical path out of
     quarantine, reachable only when the operator wires a verified reader (default
     OFF). Promote IFF a SHA-bound ``outcome_verified_helped`` audit exists AND no
@@ -277,6 +322,36 @@ def verified_win_decision(*, has_verified_win: bool, competitor_top_sim: float,
     return PromotionDecision(True, 0, 0, comp, "verified_win")
 
 
+class _LifecycleStore(Protocol):
+    """The store surface the lifecycle service actually consumes (typing-only;
+    the concrete SqliteEpisodeStore satisfies it structurally). NOT a swap-seam
+    port — episode-CRUD deliberately stays off ports.py (see ports docstring)."""
+
+    def quarantined_candidates(
+        self, *, now: int, quarantine_ttl_s: int
+    ) -> list[tuple[int, "np.ndarray", str, int, int]]: ...
+    def sweep_decayed(
+        self, *, now: int, q_ttl_s: int, p_ttl_s: int
+    ) -> dict[str, int]: ...
+    def provisional_ids(self) -> list[int]: ...
+    def set_trust(self, episode_id: int, new_trust: str, *, now: int) -> bool: ...
+    def insert_audit(
+        self, episode_id: int, kind: str, actor: str, ts: int, payload: str
+    ) -> int: ...
+    def misses_window(self, since_ts: int) -> list[MissRow]: ...
+    def get_episode(self, episode_id: int) -> "Optional[Episode]": ...
+    def servable_scopes(
+        self, *, now: int, provisional_ttl_s: int
+    ) -> dict[int, tuple[frozenset[str], tuple[tuple[str, str], ...]]]: ...
+
+
+class _VerifiedWinReader(Protocol):
+    """The SHA-bound verified-win read the established rung consumes (typing-only;
+    the SqliteEpisodeStore satisfies it structurally)."""
+
+    def verified_wins(self, episode_ids: Sequence[int]) -> set[int]: ...
+
+
 class LifecycleService:
     """The promotion/decay driver, composed from duck-typed store + index handles,
     the pure DemandRule, and an injected clock. Trigger sites are SYNCHRONOUS at
@@ -291,10 +366,21 @@ class LifecycleService:
     read is never consulted, every envelope byte-identical (the opt-OUT form —
     the shipped config default is ON: ``HIVE_AUTONOMY__VERIFIED_PROMOTION``)."""
 
-    def __init__(self, *, store, index, rule: DemandRule, now: Callable[[], int],
-                 demand_window_s: int, quarantine_ttl_s: int, provisional_ttl_s: int,
-                 enabled: bool = True, anomaly_tau: float = 0.95,
-                 anomaly_min_cluster: int = 5, verified_reader=None) -> None:
+    def __init__(
+        self,
+        *,
+        store: "_LifecycleStore",
+        index: "VectorIndex",
+        rule: DemandRule,
+        now: Callable[[], int],
+        demand_window_s: int,
+        quarantine_ttl_s: int,
+        provisional_ttl_s: int,
+        enabled: bool = True,
+        anomaly_tau: float = 0.95,
+        anomaly_min_cluster: int = 5,
+        verified_reader: Optional["_VerifiedWinReader"] = None,
+    ) -> None:
         self._store = store
         self._index = index
         self._rule = rule
@@ -306,7 +392,7 @@ class LifecycleService:
         # promotion-time embedding-cluster anomaly flag thresholds (detection-only, advisory)
         self._anomaly_tau = float(anomaly_tau)
         self._anomaly_min_cluster = int(anomaly_min_cluster)
-        self._verified_reader = verified_reader      # None ⇒ the rung is unreachable
+        self._verified_reader = verified_reader  # None ⇒ the rung is unreachable
 
     # ── trigger: a capture arrived — does existing demand already want it? ────
     def on_capture(self, episode_id: int) -> Optional[PromotionDecision]:
@@ -314,57 +400,82 @@ class LifecycleService:
             return None
         try:
             t = self._now()
-            cands = {c[0]: c for c in self._store.quarantined_candidates(
-                now=t, quarantine_ttl_s=self._q_ttl)}
+            cands = {
+                c[0]: c
+                for c in self._store.quarantined_candidates(
+                    now=t, quarantine_ttl_s=self._q_ttl
+                )
+            }
             cand = cands.get(int(episode_id))
-            if cand is None:                       # unknown / not quarantined / decayed
+            if cand is None:  # unknown / not quarantined / decayed
                 return None
             _eid, vec, writer, _ts, _la = cand
             repos = self._candidate_repos(int(episode_id))
-            if repos is None:                      # scope undecidable ⇒ fail-closed skip
+            if repos is None:  # scope undecidable ⇒ fail-closed skip
                 return None
             neighbors = [c[1] for k, c in cands.items() if k != int(episode_id)]
-            return self._evaluate(int(episode_id), vec, writer, t,
-                                  misses=self._window(t), neighbor_vecs=neighbors,
-                                  candidate_repos=repos)
-        except Exception:                          # noqa: BLE001 — never break a capture
-            _log.warning("lifecycle.on_capture_failed episode_id=%s", episode_id,
-                         exc_info=True)
+            return self._evaluate(
+                int(episode_id),
+                vec,
+                writer,
+                t,
+                misses=self._window(t),
+                neighbor_vecs=neighbors,
+                candidate_repos=repos,
+            )
+        except Exception:  # noqa: BLE001 — never break a capture
+            _log.warning(
+                "lifecycle.on_capture_failed episode_id=%s", episode_id, exc_info=True
+            )
             return None
 
     # ── trigger: a miss arrived — is any live candidate now demanded enough? ──
     # The caller records the miss FIRST; the window read here must include it.
-    def on_miss(self, vector: "np.ndarray",
-                agent_id: str) -> list[tuple[int, PromotionDecision]]:
+    def on_miss(
+        self, vector: "np.ndarray", agent_id: str
+    ) -> list[tuple[int, PromotionDecision]]:
         if not self.enabled:
             return []
         try:
             t = self._now()
             misses = self._window(t)
-            cands = list(self._store.quarantined_candidates(
-                now=t, quarantine_ttl_s=self._q_ttl))
+            cands = list(
+                self._store.quarantined_candidates(now=t, quarantine_ttl_s=self._q_ttl)
+            )
             out: list[tuple[int, PromotionDecision]] = []
             for eid, vec, writer, _ts, _la in cands:
                 pre = _cosine(vector, vec)
                 if pre is None or pre < self._rule.demand_tau:
-                    continue                       # this miss is not about this candidate
+                    continue  # this miss is not about this candidate
                 repos = self._candidate_repos(int(eid))
-                if repos is None:                  # scope undecidable ⇒ fail-closed skip
+                if repos is None:  # scope undecidable ⇒ fail-closed skip
                     continue
                 # competitor sim is re-searched PER candidate, so a promotion earlier
                 # in this same scan vetoes its own near-duplicates. The OTHER co-quarantined
                 # vectors are the anomaly detector's neighborhood (the flood signature).
                 neighbors = [c[1] for c in cands if int(c[0]) != int(eid)]
-                out.append((int(eid), self._evaluate(int(eid), vec, writer, t,
-                                                     misses=misses,
-                                                     neighbor_vecs=neighbors,
-                                                     candidate_repos=repos)))
+                out.append(
+                    (
+                        int(eid),
+                        self._evaluate(
+                            int(eid),
+                            vec,
+                            writer,
+                            t,
+                            misses=misses,
+                            neighbor_vecs=neighbors,
+                            candidate_repos=repos,
+                        ),
+                    )
+                )
             return out
-        except Exception:                          # noqa: BLE001 — never break a recall
-            _log.warning("lifecycle.on_miss_failed agent_id=%s", agent_id, exc_info=True)
+        except Exception:  # noqa: BLE001 — never break a recall
+            _log.warning(
+                "lifecycle.on_miss_failed agent_id=%s", agent_id, exc_info=True
+            )
             return []
 
-    def sweep(self, now: Optional[int] = None) -> dict:
+    def sweep(self, now: Optional[int] = None) -> dict[str, int]:
         """Materialize lazy decay (boot + post-capture piggyback): TTL-lapsed
         quarantined/provisional rows flip to deprecated. Inert when disabled;
         a sweep fault is logged, never raised. Decay is the only trust change
@@ -374,9 +485,12 @@ class LifecycleService:
             return {}
         try:
             t = self._now() if now is None else int(now)
-            return dict(self._store.sweep_decayed(now=t, q_ttl_s=self._q_ttl,
-                                                  p_ttl_s=self._p_ttl))
-        except Exception:                          # noqa: BLE001
+            return dict(
+                self._store.sweep_decayed(
+                    now=t, q_ttl_s=self._q_ttl, p_ttl_s=self._p_ttl
+                )
+            )
+        except Exception:  # noqa: BLE001
             _log.warning("lifecycle.sweep_failed", exc_info=True)
             return {}
 
@@ -409,13 +523,22 @@ class LifecycleService:
                 if eid not in wins:
                     continue
                 if self._store.set_trust(eid, ESTABLISHED, now=t):
-                    self._store.insert_audit(eid, EK_PROMOTE, "server", t, json.dumps({
-                        "rule": "verified_established",
-                        "evidence_kind": EK_OUTCOME_VERIFIED_HELPED}))
+                    self._store.insert_audit(
+                        eid,
+                        EK_PROMOTE,
+                        "server",
+                        t,
+                        json.dumps(
+                            {
+                                "rule": "verified_established",
+                                "evidence_kind": EK_OUTCOME_VERIFIED_HELPED,
+                            }
+                        ),
+                    )
                     promoted.append(eid)
                     _log.info("lifecycle.established episode_id=%s", eid)
             return promoted
-        except Exception:                          # noqa: BLE001 — fail-open sweep
+        except Exception:  # noqa: BLE001 — fail-open sweep
             _log.warning("lifecycle.promote_established_failed", exc_info=True)
             return promoted
 
@@ -429,9 +552,12 @@ class LifecycleService:
         partition cannot be determined is skipped this pass, never promoted."""
         try:
             ep = self._store.get_episode(int(episode_id))
-        except Exception:                          # noqa: BLE001 — undecidable scope
-            _log.warning("lifecycle.candidate_repos_failed episode_id=%s",
-                         episode_id, exc_info=True)
+        except Exception:  # noqa: BLE001 — undecidable scope
+            _log.warning(
+                "lifecycle.candidate_repos_failed episode_id=%s",
+                episode_id,
+                exc_info=True,
+            )
             return None
         if ep is None:
             return None
@@ -447,63 +573,111 @@ class LifecycleService:
         wave a duplicate through)."""
         hits = self._index.search(vec, max(1, int(self._index.size())))
         if not hits:
-            return -1.0                            # empty index ⇒ no competitor
+            return -1.0  # empty index ⇒ no competitor
         cand_scope = tuple(scope)
         if not cand_scope:
-            return float(hits[0][1])               # general: everything competes
-        scopes = self._store.servable_scopes(now=self._now(),
-                                             provisional_ttl_s=self._p_ttl)
-        for eid, sim in hits:                      # walk desc, first compatible eid
+            return float(hits[0][1])  # general: everything competes
+        scopes = self._store.servable_scopes(
+            now=self._now(), provisional_ttl_s=self._p_ttl
+        )
+        for eid, sim in hits:  # walk desc, first compatible eid
             entry = scopes.get(int(eid))
             repos = tuple(entry[0]) if entry is not None else ()
             if scope_matches(repos, cand_scope):
                 return float(sim)
-        return -1.0                                # no partition-compatible competitor
+        return -1.0  # no partition-compatible competitor
 
-    def _evaluate(self, episode_id: int, vec: "np.ndarray", writer: str, t: int,
-                  *, misses: Sequence[MissRow],
-                  neighbor_vecs: Sequence = (),
-                  candidate_repos: Sequence[str] = ()) -> PromotionDecision:
-        d = self._rule.decide(candidate_vec=vec, candidate_writer=writer,
-                              misses=misses,
-                              competitor_top_sim=self._competitor_top_sim(
-                                  vec, candidate_repos),
-                              candidate_repos=candidate_repos)
+    def _evaluate(
+        self,
+        episode_id: int,
+        vec: "np.ndarray",
+        writer: str,
+        t: int,
+        *,
+        misses: Sequence[MissRow],
+        neighbor_vecs: Sequence["np.ndarray"] = (),
+        candidate_repos: Sequence[str] = (),
+    ) -> PromotionDecision:
+        d = self._rule.decide(
+            candidate_vec=vec,
+            candidate_writer=writer,
+            misses=misses,
+            competitor_top_sim=self._competitor_top_sim(vec, candidate_repos),
+            candidate_repos=candidate_repos,
+        )
         if d.promote and self._store.set_trust(episode_id, PROVISIONAL, now=t):
             # embedding-cluster anomaly flag (detection-only, advisory): the candidate's
             # compactness against its co-quarantined neighbors — the MINJA/AgentPoison flood
             # signature. Computed AFTER the promote decision and stamped into the durable
             # audit; it NEVER blocks promotion (O7 — resolution stays the human rail).
-            anomaly = cluster_anomaly(vec, neighbor_vecs, tau=self._anomaly_tau,
-                                      min_cluster=self._anomaly_min_cluster)
-            self._store.insert_audit(episode_id, EK_PROMOTE, "server", t, json.dumps({
-                "rule": "demand", "n_misses": d.n_misses,
-                "demand_independence": {"rho_bar": d.rho_bar, "n_eff": d.n_eff,
-                                        "k": d.n_misses},
-                "cluster_anomaly": anomaly,
-                "n_other_identities": d.n_other_identities,
-                "competitor_sim": d.competitor_sim, "reason": d.reason}))
-            _log.info("lifecycle.promoted episode_id=%s n_misses=%d n_other=%d anomaly=%s",
-                      episode_id, d.n_misses, d.n_other_identities, anomaly)
+            anomaly = cluster_anomaly(
+                vec,
+                neighbor_vecs,
+                tau=self._anomaly_tau,
+                min_cluster=self._anomaly_min_cluster,
+            )
+            self._store.insert_audit(
+                episode_id,
+                EK_PROMOTE,
+                "server",
+                t,
+                json.dumps(
+                    {
+                        "rule": "demand",
+                        "n_misses": d.n_misses,
+                        "demand_independence": {
+                            "rho_bar": d.rho_bar,
+                            "n_eff": d.n_eff,
+                            "k": d.n_misses,
+                        },
+                        "cluster_anomaly": anomaly,
+                        "n_other_identities": d.n_other_identities,
+                        "competitor_sim": d.competitor_sim,
+                        "reason": d.reason,
+                    }
+                ),
+            )
+            _log.info(
+                "lifecycle.promoted episode_id=%s n_misses=%d n_other=%d anomaly=%s",
+                episode_id,
+                d.n_misses,
+                d.n_other_identities,
+                anomaly,
+            )
             return d
         # the verified-win rung: consulted ONLY when the demand rule did not promote,
         # and only when a reader is wired (None ⇒ unreachable — the opt-OUT form).
         if d.promote or self._verified_reader is None:
             return d
         has_win = int(episode_id) in self._verified_reader.verified_wins(
-            [int(episode_id)])
+            [int(episode_id)]
+        )
         if not has_win:
             return d
-        v = verified_win_decision(has_verified_win=True,
-                                  competitor_top_sim=self._competitor_top_sim(
-                                      vec, candidate_repos),
-                                  competitor_tau=self._rule.competitor_tau)
+        v = verified_win_decision(
+            has_verified_win=True,
+            competitor_top_sim=self._competitor_top_sim(vec, candidate_repos),
+            competitor_tau=self._rule.competitor_tau,
+        )
         if v.promote and self._store.set_trust(episode_id, PROVISIONAL, now=t):
-            self._store.insert_audit(episode_id, EK_PROMOTE, "server", t, json.dumps({
-                "rule": "verified_win",
-                "evidence_kind": EK_OUTCOME_VERIFIED_HELPED,
-                "competitor_sim": v.competitor_sim, "reason": v.reason}))
-            _log.info("lifecycle.promoted_verified episode_id=%s competitor_sim=%.4f",
-                      episode_id, v.competitor_sim)
+            self._store.insert_audit(
+                episode_id,
+                EK_PROMOTE,
+                "server",
+                t,
+                json.dumps(
+                    {
+                        "rule": "verified_win",
+                        "evidence_kind": EK_OUTCOME_VERIFIED_HELPED,
+                        "competitor_sim": v.competitor_sim,
+                        "reason": v.reason,
+                    }
+                ),
+            )
+            _log.info(
+                "lifecycle.promoted_verified episode_id=%s competitor_sim=%.4f",
+                episode_id,
+                v.competitor_sim,
+            )
             return v
-        return d                                     # richer demand diagnostics on no-op
+        return d  # richer demand diagnostics on no-op

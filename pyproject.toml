@@ -51,7 +51,19 @@ sync = [
     "jsonschema>=4.21,<5",
     "defusedxml>=0.7",
 ]
-dev = ["pytest>=7", "hypothesis>=6.100", "hive[sync]"]
+dev = [
+    "pytest>=7",
+    "hypothesis>=6.100",
+    "hive[sync]",
+    # `make check` tooling: format/lint + strict typecheck legs.
+    "ruff>=0.8",
+    "mypy>=1.15",
+    # Typeshed stubs for third-party deps that ship none themselves; installing the
+    # stubs keeps `mypy --strict` honest instead of ignore_missing_imports overrides.
+    "types-jsonschema>=4.21",
+    "types-defusedxml>=0.7",
+    "types-networkx>=3",
+]
 
 [tool.setuptools.packages.find]
 # Ship the hive package (+ tests for editable checkouts). The repo-root scripts/ utilities are
@@ -77,6 +89,21 @@ include = ["hive*", "tests*"]
 hive-edge = { path = "vendor/wheels/hive_edge-0.9.0-py3-none-any.whl" }
 comb-drift = { path = "vendor/wheels/comb_drift-0.9.0-py3-none-any.whl" }
 matrix = { path = "vendor/wheels/matrix-0.9.0-py3-none-any.whl" }
+
+[tool.mypy]
+# Pinned so the gate is machine-independent. 3.12 (not the 3.11 requires-python floor)
+# because installed numpy's stubs use PEP 695 `type` statements, which mypy rejects under
+# a 3.11 target. The strict flag itself lives in the `make check` recipe
+# (`mypy hive/ --strict`) so the gate's severity is visible in one place.
+python_version = "3.12"
+
+[[tool.mypy.overrides]]
+# comb-drift and matrix are the vendored engine wheels (vendor/wheels/, refreshed by
+# scripts/vendor_edge.py). Neither ships a py.typed marker and no types-* stubs package
+# exists for them, so their imports resolve as Any. Override is stub-availability-only —
+# never add first-party hive modules here.
+module = ["combdrift.*", "matrix.*"]
+ignore_missing_imports = true
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

@@ -132,7 +132,10 @@ def test_output_cap_truncates_and_child_still_completes(tmp_path: Path) -> None:
 
 def test_small_output_is_not_truncated(tmp_path: Path) -> None:
     res = run_hermetic(
-        ("sh", "-c", "printf hello"), cwd=tmp_path, timeout_s=_SHORT, max_output_bytes=10_000
+        ("sh", "-c", "printf hello"),
+        cwd=tmp_path,
+        timeout_s=_SHORT,
+        max_output_bytes=10_000,
     )
     assert res.truncated is False
     assert res.stdout == b"hello"
@@ -144,13 +147,23 @@ def test_small_output_is_not_truncated(tmp_path: Path) -> None:
 def test_spawn_result_exit_code_none_iff_timed_out() -> None:
     with pytest.raises(ValueError):
         SpawnResult(
-            argv=("x",), exit_code=None, stdout=b"", stderr=b"",
-            timed_out=False, truncated=False, duration_s=0.1,
+            argv=("x",),
+            exit_code=None,
+            stdout=b"",
+            stderr=b"",
+            timed_out=False,
+            truncated=False,
+            duration_s=0.1,
         )
     with pytest.raises(ValueError):
         SpawnResult(
-            argv=("x",), exit_code=0, stdout=b"", stderr=b"",
-            timed_out=True, truncated=False, duration_s=0.1,
+            argv=("x",),
+            exit_code=0,
+            stdout=b"",
+            stderr=b"",
+            timed_out=True,
+            truncated=False,
+            duration_s=0.1,
         )
 
 
@@ -197,8 +210,13 @@ def test_probe_rides_an_injected_spawn_seam(tmp_path: Path) -> None:
     # the injected callable must never touch the real filesystem PATH.
     def fake_spawn(argv, *, cwd, timeout_s, extra_env=(), **kwargs):
         return SpawnResult(
-            argv=tuple(argv), exit_code=0, stdout=b"fake 9.9\n", stderr=b"",
-            timed_out=False, truncated=False, duration_s=0.0,
+            argv=tuple(argv),
+            exit_code=0,
+            stdout=b"fake 9.9\n",
+            stderr=b"",
+            timed_out=False,
+            truncated=False,
+            duration_s=0.0,
         )
 
     presence = probe_tool(("hive-no-such-tool-xyz", "--version"), spawn=fake_spawn)

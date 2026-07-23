@@ -208,7 +208,9 @@ def test_golden_full_bundle_receipt(hand_receipt: dict) -> None:
 
 def test_unverifiable_symbol_tag_is_single_sourced(hand_receipt: dict) -> None:
     mystery = [
-        line for line in hand_receipt["lines"] if line["subject"] == "pkg/lib.py::mystery"
+        line
+        for line in hand_receipt["lines"]
+        if line["subject"] == "pkg/lib.py::mystery"
     ]
     assert len(mystery) == 2  # existence + contract
     assert all(line["tag"] == "unverified" for line in mystery)
@@ -225,8 +227,10 @@ def test_unverifiable_symbol_tag_is_single_sourced(hand_receipt: dict) -> None:
     assert contract["reason"] == "signature_changed: required parameter removed: punct"
 
 
-def test_class4_differential_line_always_present_never_faked(hand_receipt: dict) -> None:
-    (line,) = [l for l in hand_receipt["lines"] if l["class"] == "differential"]
+def test_class4_differential_line_always_present_never_faked(
+    hand_receipt: dict,
+) -> None:
+    (line,) = [ln for ln in hand_receipt["lines"] if ln["class"] == "differential"]
     assert line["tag"] == "not-run"
     assert line["reason"] == "no-producer"
     assert "gating" not in line  # its vacuous precision entry gates
@@ -256,7 +260,9 @@ def test_above_budget_class_lines_ride_unstamped(hand_inputs: dict) -> None:
     node_lines = [
         line for line in receipt["lines"] if line["class"] in ("existence", "contract")
     ]
-    assert node_lines and all(line["gating"] is False for line in node_lines)  # 2/3 < 0.7
+    assert node_lines and all(
+        line["gating"] is False for line in node_lines
+    )  # 2/3 < 0.7
 
 
 def test_precision_entries_carry_decided_fractions(hand_receipt: dict) -> None:
@@ -506,7 +512,9 @@ class TestRefStamp:
             k: v for k, v in hand_receipt.items() if k != "provenance"
         }
 
-    def test_absent_ref_is_byte_identical(self, hand_inputs: dict, hand_receipt: dict) -> None:
+    def test_absent_ref_is_byte_identical(
+        self, hand_inputs: dict, hand_receipt: dict
+    ) -> None:
         # marker target: writing the key unconditionally (None/"" included) breaks
         # legacy byte-identity — the FULL receipt must equal the ref-less golden shape.
         assert build_receipt(**hand_inputs, ref=None) == hand_receipt
@@ -521,9 +529,7 @@ class TestRepoStamp:
     def test_repo_rides_provenance_and_validates(
         self, hand_inputs: dict, hand_receipt: dict
     ) -> None:
-        receipt = build_receipt(
-            **hand_inputs, repo="https://example.test/org/repo.git"
-        )
+        receipt = build_receipt(**hand_inputs, repo="https://example.test/org/repo.git")
         assert receipt["provenance"]["repo"] == "https://example.test/org/repo.git"
         # the stamp is the ONLY delta: everything else is byte-identical
         provenance_less_repo = {

@@ -22,35 +22,11 @@ import pytest
 from hive.census import cli
 from hive.census.schema import validate_receipt
 
-_BASE_LIB = (
-    "def greet(name, punct):\n"
-    '    return "hi " + name + punct\n'
-)
-_HEAD_LIB = (
-    "def greet(name):\n"
-    '    return "hi " + name\n'
-)
-_BASE_APP = (
-    "from lib import greet\n"
-    "\n"
-    "\n"
-    "def caller():\n"
-    '    return greet("world", "!")\n'
-)
-_HEAD_APP = (
-    "from lib import greet\n"
-    "\n"
-    "\n"
-    "def caller():\n"
-    '    return greet("world")\n'
-)
-_TEST_LIB = (
-    "from lib import greet\n"
-    "\n"
-    "\n"
-    "def test_greet():\n"
-    '    assert greet("x", ".")\n'
-)
+_BASE_LIB = 'def greet(name, punct):\n    return "hi " + name + punct\n'
+_HEAD_LIB = 'def greet(name):\n    return "hi " + name\n'
+_BASE_APP = 'from lib import greet\n\n\ndef caller():\n    return greet("world", "!")\n'
+_HEAD_APP = 'from lib import greet\n\n\ndef caller():\n    return greet("world")\n'
+_TEST_LIB = 'from lib import greet\n\n\ndef test_greet():\n    assert greet("x", ".")\n'
 
 
 def _git(repo: Path, *args: str) -> str:
@@ -162,19 +138,21 @@ def run(
 ) -> tuple[subprocess.CompletedProcess, Path, Path]:
     run_dir = tmp_path_factory.mktemp("e2e-run")
     out = run_dir / "envelope.json"
-    env = {
-        key: value
-        for key, value in os.environ.items()
-        if key != "MATRIX_OUT"
-    }
+    env = {key: value for key, value in os.environ.items() if key != "MATRIX_OUT"}
     proc = subprocess.run(
         [
-            sys.executable, "-m", "hive.census.cli",
+            sys.executable,
+            "-m",
+            "hive.census.cli",
             "build",
-            "--repo", str(e2e_repo),
-            "--base", "HEAD~1",
-            "--head", "HEAD",
-            "--out", str(out),
+            "--repo",
+            str(e2e_repo),
+            "--base",
+            "HEAD~1",
+            "--head",
+            "HEAD",
+            "--out",
+            str(out),
         ],
         cwd=run_dir,
         env=env,
@@ -245,10 +223,14 @@ class TestParsedOnce:
         rc = cli.main(
             [
                 "build",
-                "--repo", str(e2e_repo),
-                "--base", "HEAD~1",
-                "--head", "HEAD",
-                "--out", str(out),
+                "--repo",
+                str(e2e_repo),
+                "--base",
+                "HEAD~1",
+                "--head",
+                "HEAD",
+                "--out",
+                str(out),
             ]
         )
         assert rc == cli.EX_OK

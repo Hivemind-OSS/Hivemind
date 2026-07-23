@@ -9,7 +9,9 @@ import pytest
 from hive.verifier.touched import TouchedFile, TouchedSet
 
 
-def tf(path: str = "src/app.py", lines: frozenset[int] = frozenset({3, 7})) -> TouchedFile:
+def tf(
+    path: str = "src/app.py", lines: frozenset[int] = frozenset({3, 7})
+) -> TouchedFile:
     return TouchedFile(path=path, lines=lines)
 
 

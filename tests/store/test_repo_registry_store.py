@@ -4,6 +4,7 @@ slug-checked ([a-z0-9._-]+ — they ride mirror paths and scope labels); a dupli
 bad name RAISES with nothing written (repoctl maps it to a non-zero exit); ``token_env``
 stores the NAME of an env var — indirection, never a secret byte. These are the
 store-level halves of CT-10's scenarios."""
+
 from __future__ import annotations
 
 import pytest
@@ -25,12 +26,17 @@ def _rows(s: SqliteEpisodeStore) -> dict[str, dict]:
 # ── add ────────────────────────────────────────────────────────────────────────
 def test_add_lands_a_row_with_the_pinned_keyword_surface():
     s = _store()
-    s.repo_add(name="alpha", url="https://example.invalid/alpha.git",
-               canonical_ref="main", token_env="MY_GH_TOKEN", added_ts=42)
+    s.repo_add(
+        name="alpha",
+        url="https://example.invalid/alpha.git",
+        canonical_ref="main",
+        token_env="MY_GH_TOKEN",
+        added_ts=42,
+    )
     row = _rows(s)["alpha"]
     assert row["url"] == "https://example.invalid/alpha.git"
     assert row["canonical_ref"] == "main"
-    assert row["token_env"] == "MY_GH_TOKEN"      # the env var NAME, never the value
+    assert row["token_env"] == "MY_GH_TOKEN"  # the env var NAME, never the value
     assert row["added_ts"] == 42
 
 
@@ -75,24 +81,39 @@ def test_no_secret_byte_ever_stored():
     # the registry stores the env var NAME — even a caller confusing name and value
     # would land only what it passed; the row never gains the token from the env.
     s = _store()
-    s.repo_add(name="alpha", url="https://example.invalid/alpha.git",
-               token_env="MY_GH_TOKEN", added_ts=1)
-    dumped = "\n".join(str(v) for r in s.conn.execute("SELECT * FROM repos")
-                       for v in tuple(r))
+    s.repo_add(
+        name="alpha",
+        url="https://example.invalid/alpha.git",
+        token_env="MY_GH_TOKEN",
+        added_ts=1,
+    )
+    dumped = "\n".join(
+        str(v) for r in s.conn.execute("SELECT * FROM repos") for v in tuple(r)
+    )
     assert SECRET_VALUE not in dumped
-    assert "MY_GH_TOKEN" in dumped                 # the NAME is the stored indirection
+    assert "MY_GH_TOKEN" in dumped  # the NAME is the stored indirection
 
 
 # ── list / remove ──────────────────────────────────────────────────────────────
 def test_registry_returns_name_ordered_repo_rows():
     s = _store()
     s.repo_add(name="beta", url="https://example.invalid/beta.git", added_ts=2)
-    s.repo_add(name="alpha", url="https://example.invalid/alpha.git",
-               canonical_ref="main", token_env="T", added_ts=1)
+    s.repo_add(
+        name="alpha",
+        url="https://example.invalid/alpha.git",
+        canonical_ref="main",
+        token_env="T",
+        added_ts=1,
+    )
     rows = s.repo_registry()
-    assert [r.name for r in rows] == ["alpha", "beta"]      # name-ordered
-    assert rows[0] == RepoRow(name="alpha", url="https://example.invalid/alpha.git",
-                              canonical_ref="main", token_env="T", added_ts=1)
+    assert [r.name for r in rows] == ["alpha", "beta"]  # name-ordered
+    assert rows[0] == RepoRow(
+        name="alpha",
+        url="https://example.invalid/alpha.git",
+        canonical_ref="main",
+        token_env="T",
+        added_ts=1,
+    )
 
 
 def test_remove_deletes_the_row_idempotent_bool():
@@ -100,7 +121,7 @@ def test_remove_deletes_the_row_idempotent_bool():
     s.repo_add(name="alpha", url="https://example.invalid/alpha.git", added_ts=1)
     assert s.repo_remove("alpha") is True
     assert _rows(s) == {}
-    assert s.repo_remove("alpha") is False         # no such name ⇒ no-op False
+    assert s.repo_remove("alpha") is False  # no such name ⇒ no-op False
 
 
 def test_remove_leaves_episode_scope_rows_untouched():
@@ -108,9 +129,14 @@ def test_remove_leaves_episode_scope_rows_untouched():
     # repo picks them straight back up (removal stops the FEED, not the memory).
     s = _store()
     s.repo_add(name="alpha", url="https://example.invalid/alpha.git", added_ts=1)
-    eid, _ = s.stage(text="alpha-scoped memory", weight=1.0, proposed_by="w",
-                     anchors=[("alpha", "a.py::f")])
+    eid, _ = s.stage(
+        text="alpha-scoped memory",
+        weight=1.0,
+        proposed_by="w",
+        anchors=[("alpha", "a.py::f")],
+    )
     s.repo_remove("alpha")
-    n = s.conn.execute("SELECT COUNT(*) AS c FROM episode_anchors "
-                       "WHERE episode_id=?", (eid,)).fetchone()["c"]
+    n = s.conn.execute(
+        "SELECT COUNT(*) AS c FROM episode_anchors WHERE episode_id=?", (eid,)
+    ).fetchone()["c"]
     assert n == 1

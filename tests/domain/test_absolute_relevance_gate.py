@@ -8,9 +8,9 @@ wrongly served it) — plus the load-bearing non-finite fail-closed guard (the n
 no softmax to raise, so the explicit guard is the only thing standing between a NaN sim and
 a fabricated CONFIDENT verdict) and the GateVerdict self-assertion.
 """
+
 from __future__ import annotations
 
-import math
 
 import pytest
 
@@ -34,9 +34,10 @@ def test_gate_verdict_rejects_negative_n_relevant():
 
 def test_gate_verdict_is_frozen():
     import dataclasses
+
     v = GateVerdict(False, 0.9, 1)
     with pytest.raises(dataclasses.FrozenInstanceError):
-        v.suppress = True   # type: ignore[misc]
+        v.suppress = True  # type: ignore[misc]
 
 
 # ── ctor validation (B1 fail-fast) ────────────────────────────────────────────
@@ -120,8 +121,8 @@ def test_k_min_boundary_is_strict_lt():
 
 def test_high_k_min_requires_a_quorum():
     g = AbsoluteRelevanceGate(0.70, 3)
-    assert g.evaluate([0.9, 0.8, 0.75, 0.1]).suppress is False   # 3 clear
-    assert g.evaluate([0.9, 0.8, 0.1]).suppress is True          # only 2 clear
+    assert g.evaluate([0.9, 0.8, 0.75, 0.1]).suppress is False  # 3 clear
+    assert g.evaluate([0.9, 0.8, 0.1]).suppress is True  # only 2 clear
 
 
 # ── empty / non-finite ⇒ fail-closed SUPPRESS (Law 1) ─────────────────────────
@@ -150,7 +151,7 @@ def test_top_cos_clamped_into_unit_interval():
 def test_negative_cosines_abstain_with_valid_top_cos():
     v = AbsoluteRelevanceGate(0.70).evaluate([-0.2, -0.3, -0.4])
     assert v.suppress is True and v.n_relevant == 0
-    assert v.top_cos == pytest.approx(-0.2)   # within [-1,1], no fail-closed
+    assert v.top_cos == pytest.approx(-0.2)  # within [-1,1], no fail-closed
 
 
 # ── from_recall: floor-by-identity ────────────────────────────────────────────
@@ -164,11 +165,12 @@ def test_from_recall_reads_floor_and_holds_identity():
     rc = _StubRecall(0.55, 2)
     g = AbsoluteRelevanceGate.from_recall(rc)
     assert g.tau_serve == 0.55 and g.k_min == 2
-    assert g._recall is rc          # IDENTITY, not a float copy (CONFIG_DRIFT killed)
+    assert g._recall is rc  # IDENTITY, not a float copy (CONFIG_DRIFT killed)
 
 
 def test_from_recall_defaults_k_min_for_older_config():
     class _NoKMin:
         tau_serve = 0.70
+
     g = AbsoluteRelevanceGate.from_recall(_NoKMin())
-    assert g.k_min == 1             # getattr default keeps the duck-typed contract alive
+    assert g.k_min == 1  # getattr default keeps the duck-typed contract alive

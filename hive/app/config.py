@@ -19,6 +19,7 @@ Grounded deviations (built-decision-wins):
   upper-case `CORTEX_D` collision — the `__` group/field split prevents any case-clash
   within a group.
 """
+
 from __future__ import annotations
 
 import dataclasses
@@ -41,7 +42,9 @@ class RuntimeConfig:
 
     def __post_init__(self) -> None:
         if not self.db_path:
-            raise ValueError("runtime.db_path is required (no silent default); set db_path=...")
+            raise ValueError(
+                "runtime.db_path is required (no silent default); set db_path=..."
+            )
 
 
 @dataclass(frozen=True)
@@ -55,7 +58,8 @@ class EmbeddingConfig:
     def __post_init__(self) -> None:
         if self.provider != "local_st":
             raise ValueError(
-                f"embedding.provider {self.provider!r} unknown; valid=['local_st']")
+                f"embedding.provider {self.provider!r} unknown; valid=['local_st']"
+            )
 
 
 @dataclass(frozen=True)
@@ -68,7 +72,7 @@ class RecallConfig:
     # query distribution; the 0.70 default is the prior flat-serve posture, calibration-grounded.
     # Meaningful only because stored/searched vectors are EXACT unit-norm (BUG-008).
     tau_serve: float = 0.70
-    k_min: int = 1                        # min absolutely-relevant hits to serve (>= 1)
+    k_min: int = 1  # min absolutely-relevant hits to serve (>= 1)
     # decorrelated serve-set selection is UNCONDITIONAL (no knob): overscan resolves
     # recall_top_n*overscan candidates so select_served can backfill servable hits past unservable
     # top ranks, then runs trust-dominance + MMR over that pool, capped at recall_top_n.
@@ -76,11 +80,14 @@ class RecallConfig:
 
     def __post_init__(self) -> None:
         if self.recall_top_n < 1:
-            raise ValueError(f"recall.recall_top_n must be >= 1 (got {self.recall_top_n})")
+            raise ValueError(
+                f"recall.recall_top_n must be >= 1 (got {self.recall_top_n})"
+            )
         if not (math.isfinite(self.tau_serve) and 0.0 < self.tau_serve <= 1.0):
             raise ValueError(
                 f"recall.tau_serve must be finite in (0.0, 1.0] (the never-hallucinate "
-                f"serve floor); got {self.tau_serve}")
+                f"serve floor); got {self.tau_serve}"
+            )
         if int(self.k_min) < 1:
             raise ValueError(f"recall.k_min must be >= 1 (got {self.k_min})")
         if int(self.overscan) < 1:
@@ -93,18 +100,21 @@ class AutonomyConfig:
     decay). ``enabled=False`` flips the whole subsystem inert: capture refused,
     no promotion/decay, no ledger writes on the read path — byte-stable with the
     pre-lifecycle build (labels stay, additive-only)."""
+
     enabled: bool = True
-    demand_m: int = 3               # window misses required to promote
+    demand_m: int = 3  # window misses required to promote
     demand_window_days: int = 14
-    demand_tau: float = 0.75        # miss ↔ candidate cosine floor
-    competitor_tau: float = 0.85    # candidate ↔ servable cosine ⇒ demand already answered
+    demand_tau: float = 0.75  # miss ↔ candidate cosine floor
+    competitor_tau: float = (
+        0.85  # candidate ↔ servable cosine ⇒ demand already answered
+    )
     quarantine_ttl_days: int = 14
     provisional_ttl_days: int = 45
     # promotion-time embedding-cluster anomaly flag (detection-only, advisory). A candidate
     # with >= anomaly_min_cluster quarantined neighbors within cos >= anomaly_tau is flagged
     # in the promote audit (the MINJA/AgentPoison flood signature); it NEVER blocks promotion.
-    anomaly_tau: float = 0.95       # compact-cluster cosine floor (tighter than near-dup)
-    anomaly_min_cluster: int = 5    # >= this many near-identical neighbors ⇒ flag
+    anomaly_tau: float = 0.95  # compact-cluster cosine floor (tighter than near-dup)
+    anomaly_min_cluster: int = 5  # >= this many near-identical neighbors ⇒ flag
     # the verified-promotion rung (HIVE_AUTONOMY__VERIFIED_PROMOTION): when ON, a
     # quarantined memory carrying a SHA-bound outcome_verified_helped audit promotes at
     # the next demand tick (competitor veto retained). It adds a second mechanical path out
@@ -117,8 +127,13 @@ class AutonomyConfig:
     verified_promotion: bool = True
 
     def __post_init__(self) -> None:
-        for name in ("demand_m", "demand_window_days", "quarantine_ttl_days",
-                     "provisional_ttl_days", "anomaly_min_cluster"):
+        for name in (
+            "demand_m",
+            "demand_window_days",
+            "quarantine_ttl_days",
+            "provisional_ttl_days",
+            "anomaly_min_cluster",
+        ):
             v = getattr(self, name)
             if int(v) < 1:
                 raise ValueError(f"autonomy.{name} must be >= 1 (got {v})")
@@ -147,6 +162,7 @@ class ConflictConfig:
     recalibrate on the real corpus via the benchmark; the asymmetric cost (a false positive can
     lead a human to retire a real memory) argues for keeping margin rather than chasing the
     lowest-cosine conflicts."""
+
     enabled: bool = True
     tau: float = 0.80
     top_n: int = 10
@@ -169,14 +185,18 @@ class SuspectConsensusConfig:
     human worklist (Law 3, THEORY §10 O7). ``n_eff_frac_max`` is the thin-vote floor: a
     provisional with ``n_eff / k < n_eff_frac_max`` is flagged (0.5 ⇒ flag any promotion driven by
     fewer than half as many INDEPENDENT votes as raw asks). ``top_n`` caps the worklist."""
+
     n_eff_frac_max: float = 0.5
     top_n: int = 10
 
     def __post_init__(self) -> None:
-        if not (math.isfinite(self.n_eff_frac_max) and 0.0 < self.n_eff_frac_max <= 1.0):
+        if not (
+            math.isfinite(self.n_eff_frac_max) and 0.0 < self.n_eff_frac_max <= 1.0
+        ):
             raise ValueError(
                 f"suspect_consensus.n_eff_frac_max must be finite in (0, 1] "
-                f"(got {self.n_eff_frac_max})")
+                f"(got {self.n_eff_frac_max})"
+            )
         if self.top_n < 1:
             raise ValueError(f"suspect_consensus.top_n must be >= 1 (got {self.top_n})")
 
@@ -184,11 +204,13 @@ class SuspectConsensusConfig:
 @dataclass(frozen=True)
 class RetentionConfig:
     backup_keep: int = 30
-    backup_dir: str = ""                 # "" ⇒ computed as <db_dir>/backups at load()
+    backup_dir: str = ""  # "" ⇒ computed as <db_dir>/backups at load()
 
     def __post_init__(self) -> None:
         if self.backup_keep < 1:
-            raise ValueError(f"retention.backup_keep must be >= 1 (got {self.backup_keep})")
+            raise ValueError(
+                f"retention.backup_keep must be >= 1 (got {self.backup_keep})"
+            )
 
 
 @dataclass(frozen=True)
@@ -207,6 +229,7 @@ class SecretScanConfig:
     DefaultSecretScanner adapter (the injected scanner returns CLEAN when off); the pure-domain
     scan is untouched (Law 4). A disabled floor is never silent — it is surfaced loudly at boot
     (a WARN) and in ``hive_health`` (a ``secret_scan_disabled`` key, present only when off)."""
+
     enabled: bool = True
 
 
@@ -221,6 +244,7 @@ class SyncConfig:
     via each registry row's ``token_env`` indirection at tick time, never from config).
     ``mirror_dir`` "" ⇒ /data/sync/mirror (resolved by the sync service, the volume-local
     default)."""
+
     interval_s: int = 60
     webhook_secret: str = ""
     mirror_dir: str = ""
@@ -298,13 +322,15 @@ class Config:
         # rather than silently dropping it and leaving the floor at its default.
         for g, vals in overrides.items():
             if g not in _GROUP_TYPES:
-                raise ValueError(f"unknown config group override {g!r}; "
-                                 f"valid={sorted(_GROUP_TYPES)}")
+                raise ValueError(
+                    f"unknown config group override {g!r}; valid={sorted(_GROUP_TYPES)}"
+                )
             known = {f.name for f in fields(_GROUP_TYPES[g])}
             for k in vals:
                 if k not in known:
                     raise ValueError(
-                        f"unknown config override {g}.{k!r}; valid={sorted(known)}")
+                        f"unknown config override {g}.{k!r}; valid={sorted(known)}"
+                    )
             merged[g].update(dict(vals))
         # db_path: explicit arg wins over a runtime override dict, else default
         if db_path != _MEMORY_DB or "db_path" not in merged["runtime"]:
@@ -319,15 +345,20 @@ class Config:
         # default backup_dir = <db_dir>/backups (computed once, after db_path is known)
         if not groups["retention"].backup_dir:
             db = groups["runtime"].db_path
-            base = os.path.dirname(os.path.abspath(db)) if db != _MEMORY_DB else os.getcwd()
+            base = (
+                os.path.dirname(os.path.abspath(db))
+                if db != _MEMORY_DB
+                else os.getcwd()
+            )
             groups["retention"] = dataclasses.replace(
-                groups["retention"], backup_dir=os.path.join(base, "backups"))
+                groups["retention"], backup_dir=os.path.join(base, "backups")
+            )
 
         return cls(**groups)
 
 
 # ── load helpers ──────────────────────────────────────────────────────────────
-def _construct_group(group: str, vals: Mapping[str, Any]):
+def _construct_group(group: str, vals: Mapping[str, Any]) -> Any:
     typ = _GROUP_TYPES[group]
     flds = {f.name for f in fields(typ)}
     kwargs = {k: v for k, v in vals.items() if k in flds}
@@ -344,7 +375,7 @@ def _apply_env(merged: dict[str, dict[str, Any]], env: Mapping[str, str]) -> Non
     for raw_key, raw_val in env.items():
         if not raw_key.startswith("HIVE_") or "__" not in raw_key:
             continue
-        body = raw_key[len("HIVE_"):]
+        body = raw_key[len("HIVE_") :]
         group_tok, _, field_tok = body.partition("__")
         group = group_by_upper.get(group_tok.upper())
         if group is None:
@@ -360,8 +391,12 @@ def _apply_env(merged: dict[str, dict[str, Any]], env: Mapping[str, str]) -> Non
             merged[group][fld.name] = _coerce(raw_val, fld.type, fld.name)
         except (ValueError, TypeError):
             # WARN with field name + target type ONLY — never the raw value (secret-safe)
-            _log.warning("config.env_not_coercible field=%s.%s target_type=%s ignored",
-                         group, fld.name, _type_name(fld.type))
+            _log.warning(
+                "config.env_not_coercible field=%s.%s target_type=%s ignored",
+                group,
+                fld.name,
+                _type_name(fld.type),
+            )
 
 
 def _type_name(decl: Any) -> str:
@@ -384,7 +419,7 @@ def _coerce(value: str, decl: Any, field_name: str) -> Any:
         return int(value)
     if t is float:
         return float(value)
-    return value                         # str / Optional[str] / unknown → leave as string
+    return value  # str / Optional[str] / unknown → leave as string
 
 
 def _annotation_base(decl: Any) -> Any:
@@ -397,5 +432,3 @@ def _annotation_base(decl: Any) -> Any:
     if "bool" in s:
         return bool
     return str
-
-

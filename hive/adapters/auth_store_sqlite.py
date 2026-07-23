@@ -13,6 +13,7 @@ out of ``domain/ports.py``. It is an app-layer adapter used only by the transpor
 (``isolation_level=None``) where a bare INSERT/DELETE autocommits — they do NOT join the
 producer tick's ``BEGIN IMMEDIATE`` lane.
 """
+
 from __future__ import annotations
 
 import hashlib
@@ -56,7 +57,8 @@ class SqliteTokenStore:
         plaintext = new_token()
         self.conn.execute(
             "INSERT INTO access_tokens(label, token_hash) VALUES(?, ?)",
-            (label, token_hash(plaintext)))
+            (label, token_hash(plaintext)),
+        )
         return plaintext
 
     def verify(self, plaintext: str) -> Optional[str]:
@@ -66,7 +68,8 @@ class SqliteTokenStore:
         // O(1) on the UNIQUE index."""
         row = self.conn.execute(
             "SELECT label FROM access_tokens WHERE token_hash=?",
-            (token_hash(plaintext),)).fetchone()
+            (token_hash(plaintext),),
+        ).fetchone()
         return None if row is None else row["label"]
 
     def revoke(self, label: str) -> bool:
@@ -79,5 +82,6 @@ class SqliteTokenStore:
         """All provisioned device labels, sorted — the operator's seat inventory. Labels
         only, never hashes: safe to surface in status output. // O(n)."""
         rows = self.conn.execute(
-            "SELECT label FROM access_tokens ORDER BY label").fetchall()
+            "SELECT label FROM access_tokens ORDER BY label"
+        ).fetchall()
         return [row["label"] for row in rows]

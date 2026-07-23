@@ -2,6 +2,7 @@
 episode, as ``[(episode_id, ts, payload)]``. Read-only, no DDL; powers the
 ``hive_health(include_stale_suspects)`` worklist, whose app-side report owns the
 servable filter and the defensive payload parse (the payload rides OPAQUE here)."""
+
 from __future__ import annotations
 
 import json
@@ -20,19 +21,31 @@ def _store() -> SqliteEpisodeStore:
 
 
 def _seed(s: SqliteEpisodeStore, text: str) -> int:
-    eid, _ = s.stage(text=text, weight=1.0, proposed_by="w", ts=10,
-                     anchors=[("r", "a.py::F")])
-    s.complete(eid, np.eye(DIM, dtype=np.float32)[0], expected_version=0,
-               trust="established", last_active_ts=10)
+    eid, _ = s.stage(
+        text=text, weight=1.0, proposed_by="w", ts=10, anchors=[("r", "a.py::F")]
+    )
+    s.complete(
+        eid,
+        np.eye(DIM, dtype=np.float32)[0],
+        expected_version=0,
+        trust="established",
+        last_active_ts=10,
+    )
     return eid
 
 
 def _suspect_payload(seed: str = "m/x.py::Seed") -> str:
-    return json.dumps({"schema": "stale_suspect/v1",
-                       "matched": {"path": "a.py", "symbol": "F"},
-                       "seed": seed, "drift": "removed",
-                       "stamp": {"base_sha": "a" * 40, "head_sha": "b" * 40}},
-                      sort_keys=True, separators=(",", ":"))
+    return json.dumps(
+        {
+            "schema": "stale_suspect/v1",
+            "matched": {"path": "a.py", "symbol": "F"},
+            "seed": seed,
+            "drift": "removed",
+            "stamp": {"base_sha": "a" * 40, "head_sha": "b" * 40},
+        },
+        sort_keys=True,
+        separators=(",", ":"),
+    )
 
 
 def test_newest_suspect_row_wins_per_episode():
@@ -50,9 +63,13 @@ def test_newest_suspect_row_wins_per_episode():
 def test_same_ts_newest_row_id_wins():
     s = _store()
     eid = _seed(s, "same-ts memory")
-    s.insert_audit(eid, EK_STALE_SUSPECT, "census", 100, _suspect_payload("first.py::S"))
-    s.insert_audit(eid, EK_STALE_SUSPECT, "census", 100, _suspect_payload("second.py::S"))
-    (_, _, payload), = s.stale_suspect_rows()
+    s.insert_audit(
+        eid, EK_STALE_SUSPECT, "census", 100, _suspect_payload("first.py::S")
+    )
+    s.insert_audit(
+        eid, EK_STALE_SUSPECT, "census", 100, _suspect_payload("second.py::S")
+    )
+    ((_, _, payload),) = s.stale_suspect_rows()
     assert json.loads(payload)["seed"] == "second.py::S"
 
 
@@ -79,7 +96,7 @@ def test_payload_rides_opaque_even_when_malformed():
     s = _store()
     eid = _seed(s, "broken payload")
     s.insert_audit(eid, EK_STALE_SUSPECT, "census", 100, "not-json")
-    (got_eid, _, payload), = s.stale_suspect_rows()
+    ((got_eid, _, payload),) = s.stale_suspect_rows()
     assert got_eid == eid and payload == "not-json"
 
 

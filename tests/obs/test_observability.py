@@ -1,6 +1,7 @@
 """P1.9 — M11 observability: JSONFormatter (standard fields) + configure_json_logging,
 and the security floor that a secret value never reaches an emitted log line.
 """
+
 from __future__ import annotations
 
 import io
@@ -27,7 +28,9 @@ def _emit_and_capture(fn) -> list[str]:
 
 
 def test_json_formatter_emits_standard_fields():
-    rec = logging.LogRecord("hive", logging.INFO, __file__, 10, "hello %s", ("world",), None)
+    rec = logging.LogRecord(
+        "hive", logging.INFO, __file__, 10, "hello %s", ("world",), None
+    )
     out = json.loads(JSONFormatter().format(rec))
     assert out["level"] == "INFO"
     assert out["logger"] == "hive"
@@ -52,7 +55,9 @@ def test_configure_is_idempotent_no_handler_pileup():
 def test_secret_never_logged():
     # the env-coercion-failure path is the one that omits the raw value (could be a secret).
     secret = "sk-LIVESECRET_ghp_AKIA_payload_99887766"
-    env = {"HIVE_RECALL__RECALL_TOP_N": secret}   # non-coercible to int → WARN, value withheld
+    env = {
+        "HIVE_RECALL__RECALL_TOP_N": secret
+    }  # non-coercible to int → WARN, value withheld
 
     lines = _emit_and_capture(lambda _log: Config.load(db_path=":memory:", env=env))
 
@@ -60,6 +65,6 @@ def test_secret_never_logged():
     assert "sk-" not in blob
     assert "AKIA" not in blob
     assert "ghp_" not in blob
-    assert secret not in blob          # the WHOLE raw value, not just canary prefixes
+    assert secret not in blob  # the WHOLE raw value, not just canary prefixes
     # but the field name (safe) MUST be present so the warning is actionable
     assert any("recall_top_n" in ln.lower() for ln in lines)

@@ -9,6 +9,7 @@ secret scan stays the ONE non-bypassable gate (refuse = 0 rows, redact = masked
 text only, meta refuse-only), anchors + repo scope thread to ``stage`` in the same
 tx, ``replaces`` validates its target before anything is staged, and a write that
 dedups onto a QUARANTINED row LIFTS it to provisional WITH its audit row."""
+
 from __future__ import annotations
 
 import json
@@ -74,22 +75,42 @@ class _Store:
         self.fail_complete = False
         self._next = 100
 
-    def stage(self, *, text, weight, proposed_by, ts, polarity, kind, meta,
-              anchors, repos):
-        self.stage_calls.append(dict(text=text, weight=weight,
-                                     proposed_by=proposed_by, ts=ts,
-                                     polarity=polarity, kind=kind, meta=meta,
-                                     anchors=list(anchors), repos=list(repos)))
+    def stage(
+        self, *, text, weight, proposed_by, ts, polarity, kind, meta, anchors, repos
+    ):
+        self.stage_calls.append(
+            dict(
+                text=text,
+                weight=weight,
+                proposed_by=proposed_by,
+                ts=ts,
+                polarity=polarity,
+                kind=kind,
+                meta=meta,
+                anchors=list(anchors),
+                repos=list(repos),
+            )
+        )
         h = content_hash(text)
         if h in self.by_hash:
             return self.by_hash[h], True
         self._next += 1
         eid = self._next
-        self.rows[eid] = dict(text=text, weight=float(weight), ts=int(ts),
-                              proposed_by=proposed_by, status="pending",
-                              trust=QUARANTINED, value=None, version=0,
-                              last_active_ts=0, polarity=polarity, kind=kind,
-                              meta=meta, superseded_by=None)
+        self.rows[eid] = dict(
+            text=text,
+            weight=float(weight),
+            ts=int(ts),
+            proposed_by=proposed_by,
+            status="pending",
+            trust=QUARANTINED,
+            value=None,
+            version=0,
+            last_active_ts=0,
+            polarity=polarity,
+            kind=kind,
+            meta=meta,
+            superseded_by=None,
+        )
         self.anchors[eid] = [(r, a) for r, a in anchors]
         self.scopes[eid] = list(repos)
         self.by_hash[h] = eid
@@ -100,31 +121,51 @@ class _Store:
         if row is None:
             return None
         eid = int(episode_id)
-        anchor_refs = tuple(AnchorRef(repo=r, anchor=a)
-                            for r, a in self.anchors.get(eid, ()))
-        repos = tuple(sorted({*self.scopes.get(eid, ()),
-                              *(a.repo for a in anchor_refs)}))
-        return Episode(id=eid, tenant_id="default", text=row["text"],
-                       weight=row["weight"], ts=row["ts"],
-                       content_hash=content_hash(row["text"]),
-                       status=row["status"], proposed_by=row["proposed_by"],
-                       value=row["value"], version=row["version"],
-                       trust=row["trust"], superseded_by=row["superseded_by"],
-                       last_active_ts=row["last_active_ts"],
-                       polarity=row["polarity"], kind=row["kind"],
-                       meta=row["meta"], repos=repos, anchors=anchor_refs)
+        anchor_refs = tuple(
+            AnchorRef(repo=r, anchor=a) for r, a in self.anchors.get(eid, ())
+        )
+        repos = tuple(
+            sorted({*self.scopes.get(eid, ()), *(a.repo for a in anchor_refs)})
+        )
+        return Episode(
+            id=eid,
+            tenant_id="default",
+            text=row["text"],
+            weight=row["weight"],
+            ts=row["ts"],
+            content_hash=content_hash(row["text"]),
+            status=row["status"],
+            proposed_by=row["proposed_by"],
+            value=row["value"],
+            version=row["version"],
+            trust=row["trust"],
+            superseded_by=row["superseded_by"],
+            last_active_ts=row["last_active_ts"],
+            polarity=row["polarity"],
+            kind=row["kind"],
+            meta=row["meta"],
+            repos=repos,
+            anchors=anchor_refs,
+        )
 
-    def complete(self, episode_id, value, *, expected_version, trust,
-                 last_active_ts):
-        self.complete_calls.append(dict(episode_id=int(episode_id), trust=trust,
-                                        expected_version=expected_version,
-                                        last_active_ts=int(last_active_ts)))
+    def complete(self, episode_id, value, *, expected_version, trust, last_active_ts):
+        self.complete_calls.append(
+            dict(
+                episode_id=int(episode_id),
+                trust=trust,
+                expected_version=expected_version,
+                last_active_ts=int(last_active_ts),
+            )
+        )
         row = self.rows.get(int(episode_id))
         if row is None or row["version"] != expected_version or self.fail_complete:
             return False
-        row.update(status="approved", trust=trust,
-                   last_active_ts=int(last_active_ts),
-                   value=np.asarray(value, dtype=np.float32))
+        row.update(
+            status="approved",
+            trust=trust,
+            last_active_ts=int(last_active_ts),
+            value=np.asarray(value, dtype=np.float32),
+        )
         return True
 
     def reject(self, episode_id):
@@ -148,11 +189,15 @@ class _Store:
         return len(self.audits)
 
     def supersede(self, target_id, replacement_id, *, actor, ts):
-        self.supersede_calls.append((int(target_id), int(replacement_id), actor,
-                                     int(ts)))
+        self.supersede_calls.append(
+            (int(target_id), int(replacement_id), actor, int(ts))
+        )
         row = self.rows.get(int(target_id))
-        if row is None or int(target_id) == int(replacement_id) \
-                or row["trust"] == DEPRECATED:
+        if (
+            row is None
+            or int(target_id) == int(replacement_id)
+            or row["trust"] == DEPRECATED
+        ):
             return False
         row["trust"] = DEPRECATED
         row["superseded_by"] = int(replacement_id)
@@ -180,9 +225,14 @@ def _svc(mode: str = REFUSE, *, lifecycle=None, autonomy_enabled: bool = True):
     store = _Store()
     provider = _CountingProvider()
     scanner = _CountingScanner(mode)
-    svc = AdmissionService(store, scanner, provider, now=lambda: NOW,
-                           lifecycle=lifecycle,
-                           autonomy_enabled=autonomy_enabled)
+    svc = AdmissionService(
+        store,
+        scanner,
+        provider,
+        now=lambda: NOW,
+        lifecycle=lifecycle,
+        autonomy_enabled=autonomy_enabled,
+    )
     return svc, store, provider, scanner
 
 
@@ -220,7 +270,7 @@ def test_capture_lands_quarantined_unservable_label():
     r = svc.capture("an unvouched but maybe useful insight", proposed_by="agent-1")
     assert r.status == "quarantined" and r.deduped is False
     ep = store.get_episode(r.episode_id)
-    assert ep.status == "approved" and ep.trust == QUARANTINED   # materialized, unserved
+    assert ep.status == "approved" and ep.trust == QUARANTINED  # materialized, unserved
     assert ep.value is not None
     assert store.complete_calls[-1]["trust"] == QUARANTINED
 
@@ -228,19 +278,25 @@ def test_capture_lands_quarantined_unservable_label():
 # ── anchors + repos thread to stage in the same tx ─────────────────────────────
 def test_write_threads_anchors_and_repos_to_stage():
     svc, store, *_ = _svc()
-    svc.write("the greet helper trims input", proposed_by="a",
-              anchors=[AnchorRef(repo="alpha", anchor="app.py::greet")],
-              repos=["beta"])
+    svc.write(
+        "the greet helper trims input",
+        proposed_by="a",
+        anchors=[AnchorRef(repo="alpha", anchor="app.py::greet")],
+        repos=["beta"],
+    )
     staged = store.stage_calls[-1]
-    assert staged["anchors"] == [("alpha", "app.py::greet")]   # (repo, anchor) pairs
-    assert staged["repos"] == ["beta"]                         # declared scope-only
+    assert staged["anchors"] == [("alpha", "app.py::greet")]  # (repo, anchor) pairs
+    assert staged["repos"] == ["beta"]  # declared scope-only
 
 
 def test_capture_threads_anchors_and_repos_to_stage():
     svc, store, *_ = _svc()
-    svc.capture("the loader caches per repo", proposed_by="a",
-                anchors=[AnchorRef(repo="alpha", anchor="pkg/loader.py")],
-                repos=["alpha"])
+    svc.capture(
+        "the loader caches per repo",
+        proposed_by="a",
+        anchors=[AnchorRef(repo="alpha", anchor="pkg/loader.py")],
+        repos=["alpha"],
+    )
     staged = store.stage_calls[-1]
     assert staged["anchors"] == [("alpha", "pkg/loader.py")]
     assert staged["repos"] == ["alpha"]
@@ -248,11 +304,19 @@ def test_capture_threads_anchors_and_repos_to_stage():
 
 def test_write_threads_polarity_kind_meta_to_stage():
     svc, store, *_ = _svc()
-    svc.write("never inline credentials", proposed_by="a", polarity="dont",
-              kind="convention", meta='{"v":1}')
+    svc.write(
+        "never inline credentials",
+        proposed_by="a",
+        polarity="dont",
+        kind="convention",
+        meta='{"v":1}',
+    )
     staged = store.stage_calls[-1]
-    assert (staged["polarity"], staged["kind"], staged["meta"]) == \
-        ("dont", "convention", '{"v":1}')
+    assert (staged["polarity"], staged["kind"], staged["meta"]) == (
+        "dont",
+        "convention",
+        '{"v":1}',
+    )
 
 
 # ── #5a: the secret floor — refuse is 0 rows, redact stores masked text only ───
@@ -260,7 +324,7 @@ def test_write_refuses_on_secret_zero_rows():
     svc, store, *_ = _svc()
     with pytest.raises(SecretRefused):
         svc.write(f"my key {SECRET}", proposed_by="a")
-    assert store.stage_calls == []                 # scan fires BEFORE any stage
+    assert store.stage_calls == []  # scan fires BEFORE any stage
     assert store.rows == {}
 
 
@@ -277,8 +341,8 @@ def test_redact_stores_masked_text_and_lands_provisional():
     assert r.status == "redacted" and r.scan.action == REDACT
     ep = store.get_episode(r.episode_id)
     assert SECRET not in ep.text and "[REDACTED]" in ep.text
-    assert r.content_hash == content_hash(ep.text)         # hash over masked text
-    assert ep.trust == PROVISIONAL                          # redacted is servable too
+    assert r.content_hash == content_hash(ep.text)  # hash over masked text
+    assert ep.trust == PROVISIONAL  # redacted is servable too
 
 
 def test_meta_gate_refuses_secret_bearing_meta_even_in_redact_mode():
@@ -287,8 +351,9 @@ def test_meta_gate_refuses_secret_bearing_meta_even_in_redact_mode():
     for verb in ("write", "capture"):
         svc, store, *_ = _svc(mode=REDACT)
         with pytest.raises(SecretRefused):
-            getattr(svc, verb)("clean text", proposed_by="a",
-                               meta=f'{{"token":"{SECRET}"}}')
+            getattr(svc, verb)(
+                "clean text", proposed_by="a", meta=f'{{"token":"{SECRET}"}}'
+            )
         assert store.stage_calls == [] and store.rows == {}
 
 
@@ -299,7 +364,7 @@ def test_write_dedup_same_text_no_reembed():
     b = svc.write("same insight text", proposed_by="b")
     assert a.episode_id == b.episode_id and b.deduped is True
     assert len(store.rows) == 1
-    assert provider.encodes == 1                   # the dedup path never re-embeds
+    assert provider.encodes == 1  # the dedup path never re-embeds
 
 
 def test_write_dedup_onto_established_never_demotes():
@@ -308,19 +373,20 @@ def test_write_dedup_onto_established_never_demotes():
     store.rows[r.episode_id]["trust"] = ESTABLISHED
     again = svc.write("an established team fact", proposed_by="b")
     assert again.deduped is True and again.episode_id == r.episode_id
-    assert store.get_episode(r.episode_id).trust == ESTABLISHED   # no demotion
-    assert store.audits == []                                     # no lift audit
+    assert store.get_episode(r.episode_id).trust == ESTABLISHED  # no demotion
+    assert store.audits == []  # no lift audit
 
 
 def test_write_dedup_onto_deprecated_does_not_revive():
     svc, store, *_ = _svc()
     old = svc.write("the port is 5432", proposed_by="a")
-    new = svc.write("the port is 6543 since the migration", proposed_by="a",
-                    replaces=old.episode_id)
+    new = svc.write(
+        "the port is 6543 since the migration", proposed_by="a", replaces=old.episode_id
+    )
     assert new.superseded == old.episode_id
-    again = svc.write("the port is 5432", proposed_by="b")   # dedups onto the dead row
+    again = svc.write("the port is 5432", proposed_by="b")  # dedups onto the dead row
     assert again.deduped is True and again.episode_id == old.episode_id
-    assert store.get_episode(old.episode_id).trust == DEPRECATED   # NOT revived
+    assert store.get_episode(old.episode_id).trust == DEPRECATED  # NOT revived
 
 
 # ── the dedup-onto-quarantined LIFT (v3): promote in place + audit ─────────────
@@ -335,8 +401,8 @@ def test_write_dedup_onto_quarantined_lifts_with_audit():
     w = svc.write("a fact first seen autonomously", proposed_by="agent-2")
     assert w.deduped is True and w.episode_id == cap.episode_id
     ep = store.get_episode(cap.episode_id)
-    assert ep.trust == PROVISIONAL                 # lifted in place…
-    assert provider.encodes == 1                   # …without a re-embed
+    assert ep.trust == PROVISIONAL  # lifted in place…
+    assert provider.encodes == 1  # …without a re-embed
     eid, kind, actor, ts, payload = store.audits[-1]
     assert (eid, kind, actor, ts) == (cap.episode_id, "promote", "server", NOW)
     body = json.loads(payload)
@@ -346,7 +412,7 @@ def test_write_dedup_onto_quarantined_lifts_with_audit():
 def test_lift_failure_raises_loud():
     svc, store, *_ = _svc()
     svc.capture("a fact first seen autonomously", proposed_by="agent-1")
-    store.fail_set_trust = True                    # lost-update race on the lift
+    store.fail_set_trust = True  # lost-update race on the lift
     with pytest.raises(RuntimeError, match="lift-on-dedup"):
         svc.write("a fact first seen autonomously", proposed_by="agent-2")
 
@@ -355,8 +421,9 @@ def test_lift_failure_raises_loud():
 def test_write_replaces_supersedes_existing_target():
     svc, store, *_ = _svc()
     old = svc.write("the port is 5432", proposed_by="a")
-    new = svc.write("the port is 6543 since the migration", proposed_by="a",
-                    replaces=old.episode_id)
+    new = svc.write(
+        "the port is 6543 since the migration", proposed_by="a", replaces=old.episode_id
+    )
     assert new.superseded == old.episode_id
     dead = store.get_episode(old.episode_id)
     assert dead.trust == DEPRECATED and dead.superseded_by == new.episode_id
@@ -366,9 +433,8 @@ def test_write_replaces_supersedes_existing_target():
 def test_write_replaces_unknown_target_fails_whole_call():
     svc, store, *_ = _svc()
     with pytest.raises(ValueError, match="does not exist"):
-        svc.write("a correction aimed at nothing", proposed_by="a",
-                  replaces=424242)
-    assert store.stage_calls == [] and store.rows == {}   # nothing stored
+        svc.write("a correction aimed at nothing", proposed_by="a", replaces=424242)
+    assert store.stage_calls == [] and store.rows == {}  # nothing stored
 
 
 def test_write_replaces_self_dedup_is_benign_noop():
@@ -376,7 +442,7 @@ def test_write_replaces_self_dedup_is_benign_noop():
     old = svc.write("exactly this text", proposed_by="a")
     r = svc.write("exactly this text", proposed_by="a", replaces=old.episode_id)
     assert r.deduped is True and r.episode_id == old.episode_id
-    assert r.superseded is None                    # a memory can never retire itself
+    assert r.superseded is None  # a memory can never retire itself
     ep = store.get_episode(old.episode_id)
     assert ep.trust == PROVISIONAL and ep.superseded_by is None
 
@@ -388,8 +454,7 @@ def test_write_replaces_store_refusal_is_benign():
     old = svc.write("the port is 5432", proposed_by="a")
     store.rows[old.episode_id]["trust"] = DEPRECATED
     store.rows[old.episode_id]["superseded_by"] = None
-    r = svc.write("a brand new correction", proposed_by="a",
-                  replaces=old.episode_id)
+    r = svc.write("a brand new correction", proposed_by="a", replaces=old.episode_id)
     assert r.status == "approved" and r.superseded is None
     assert store.get_episode(r.episode_id).trust == PROVISIONAL
 
@@ -440,8 +505,8 @@ def test_capture_dedup_never_touches_existing_trust():
     w = svc.write("a provisional team fact", proposed_by="a")
     r = svc.capture("a provisional team fact", proposed_by="agent-1")
     assert r.deduped is True and r.episode_id == w.episode_id
-    assert store.get_episode(w.episode_id).trust == PROVISIONAL   # untouched
-    assert life.captures == [] and life.sweeps == 0   # dedup is not a new candidate
+    assert store.get_episode(w.episode_id).trust == PROVISIONAL  # untouched
+    assert life.captures == [] and life.sweeps == 0  # dedup is not a new candidate
 
 
 def test_capture_disabled_refuses_before_the_scan():
@@ -449,7 +514,7 @@ def test_capture_disabled_refuses_before_the_scan():
     svc, store, _provider, scanner = _svc(lifecycle=life, autonomy_enabled=False)
     r = svc.capture("anything at all", proposed_by="agent-1")
     assert r.status == "disabled" and r.episode_id is None and r.scan is None
-    assert scanner.scans == 0                      # the text was never even scanned
+    assert scanner.scans == 0  # the text was never even scanned
     assert store.stage_calls == [] and store.rows == {}
     assert life.captures == [] and life.sweeps == 0
 
@@ -482,4 +547,4 @@ def test_secret_refused_exception_carries_no_secret():
         svc.write(f"key {SECRET}", proposed_by="a")
         raise AssertionError("expected SecretRefused")
     except SecretRefused as e:
-        assert SECRET not in str(e)                # only rule names + counts
+        assert SECRET not in str(e)  # only rule names + counts

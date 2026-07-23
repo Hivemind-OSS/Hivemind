@@ -18,16 +18,22 @@ sqlite3 | torch | subprocess | os | git | time imports anywhere in hive/domain/.
 The detector is total and fail-closed: an undecidable (non-finite / shape-mismatch /
 zero-norm) pair is SKIPPED, never counted as a conflict.
 """
+
 from __future__ import annotations
 
 import logging
 import math
 from dataclasses import dataclass
-from typing import Callable, Optional, Sequence
+from typing import TYPE_CHECKING, Callable, Optional, Sequence
 
 import numpy as np  # permitted in domain (compute, not I/O)
 
 from hive.domain.errors import SecretRefused
+
+if TYPE_CHECKING:
+    # Typing-only: a runtime import would close the cycle
+    # lifecycle -> anomaly -> conflict -> ports -> models -> lifecycle.
+    from hive.domain.ports import ConflictFlagStore, EpisodeReader, SecretScanner
 from hive.domain.secret_scan import REDACT, REFUSE
 
 _log = logging.getLogger("hive.conflict")
@@ -49,12 +55,13 @@ class ConflictItem:
     the carried labels that classify a near-dup pair. ``trust`` is established|provisional
     (only servable rows enter detection). Built by the app layer from the eps it already
     holds (recall belt) or from ``scan_servable_labeled`` (offline report)."""
+
     episode_id: int
-    vector: "np.ndarray"
-    polarity: str            # do | dont | neutral
+    vector: "Optional[np.ndarray]"
+    polarity: str  # do | dont | neutral
     anchor: str
     ts: int
-    trust: str               # established | provisional
+    trust: str  # established | provisional
 
 
 @dataclass(frozen=True, slots=True)
@@ -64,24 +71,27 @@ class ConflictNote:
     finite in [-1, 1]. ``loser_hint`` is the directional retire-candidate for a
     ``redundancy`` (the lower-(trust, ts, id) id) and ``None`` for a symmetric
     ``contradiction`` — a HINT, never applied here."""
-    a_id: int                # canonical: a_id < b_id
+
+    a_id: int  # canonical: a_id < b_id
     b_id: int
-    relation: str            # contradiction | redundancy
-    cosine: float            # finite, in [-1, 1]
-    anchor: str              # the shared anchor if both equal, else ""
+    relation: str  # contradiction | redundancy
+    cosine: float  # finite, in [-1, 1]
+    anchor: str  # the shared anchor if both equal, else ""
     loser_hint: Optional[int]
 
     def __post_init__(self) -> None:
         if self.relation not in _RELATIONS:
             raise ValueError(f"bad relation {self.relation!r}")
         if not self.a_id < self.b_id:
-            raise ValueError(f"ConflictNote ids must be canonical a_id<b_id "
-                             f"(got {self.a_id}, {self.b_id})")
+            raise ValueError(
+                f"ConflictNote ids must be canonical a_id<b_id "
+                f"(got {self.a_id}, {self.b_id})"
+            )
         if not (math.isfinite(self.cosine) and -1.0 <= self.cosine <= 1.0):
             raise ValueError(f"cosine must be finite in [-1, 1] (got {self.cosine})")
 
 
-def _cosine(a, b) -> Optional[float]:
+def _cosine(a: Optional[np.ndarray], b: Optional[np.ndarray]) -> Optional[float]:
     """True cosine in float64, or None when UNDECIDABLE — non-finite components, shape
     mismatch, or a zero norm. None is the fail-closed signal: an undecidable similarity
     must never count as a conflict (mirrors lifecycle._cosine).  // O(d)."""
@@ -115,8 +125,9 @@ def _loser_hint(x: ConflictItem, y: ConflictItem) -> int:
     return x.episode_id if kx < ky else y.episode_id
 
 
-def suppression_targets(notes: Sequence[ConflictNote],
-                        trust_by_id: dict[int, str]) -> frozenset[int]:
+def suppression_targets(
+    notes: Sequence[ConflictNote], trust_by_id: dict[int, str]
+) -> frozenset[int]:
     """The episode ids a serve-time filter may PRUNE: for each detected note, the member
     whose ``_TRUST_RANK`` is STRICTLY lower than its partner's (a provisional loses to an
     established). A tie — equal trust, or two unknown-equal ranks — yields NO target: geometry
@@ -136,8 +147,9 @@ def suppression_targets(notes: Sequence[ConflictNote],
     return frozenset(drop)
 
 
-def detect_conflicts(items: Sequence[ConflictItem], *, tau: float,
-                     top_n: int = 10) -> tuple[ConflictNote, ...]:
+def detect_conflicts(
+    items: Sequence[ConflictItem], *, tau: float, top_n: int = 10
+) -> tuple[ConflictNote, ...]:
     """All pairs i<j whose cosine ≥ ``tau``, classified by polarity: opposing (do↔dont)
     → contradiction; else → redundancy (+ a directional loser_hint). Pure cosine in
     float64; an undecidable pair (non-finite / shape / zero-norm) is SKIPPED (fail-closed,
@@ -152,11 +164,11 @@ def detect_conflicts(items: Sequence[ConflictItem], *, tau: float,
         for j in range(i + 1, n):
             a, b = items[i], items[j]
             if a.episode_id == b.episode_id:
-                continue                              # defensive: same row, no self-pair
+                continue  # defensive: same row, no self-pair
             c = _cosine(a.vector, b.vector)
             if c is None:
-                continue                              # undecidable ⇒ fail-closed skip
-            c = max(-1.0, min(1.0, c))                # float-error clamp into [-1, 1]
+                continue  # undecidable ⇒ fail-closed skip
+            c = max(-1.0, min(1.0, c))  # float-error clamp into [-1, 1]
             if c < tau:
                 continue
             lo, hi = (a, b) if a.episode_id < b.episode_id else (b, a)
@@ -165,13 +177,20 @@ def detect_conflicts(items: Sequence[ConflictItem], *, tau: float,
             else:
                 relation, loser = REDUNDANCY, _loser_hint(lo, hi)
             anchor = lo.anchor if lo.anchor == hi.anchor else ""
-            scored.append((c, ConflictNote(lo.episode_id, hi.episode_id, relation, c,
-                                           anchor, loser)))
+            scored.append(
+                (
+                    c,
+                    ConflictNote(
+                        lo.episode_id, hi.episode_id, relation, c, anchor, loser
+                    ),
+                )
+            )
     scored.sort(key=lambda t: (-t[0], t[1].a_id, t[1].b_id))
     return tuple(note for _c, note in scored[:top_n])
 
 
 # ── the advisory-flag domain service (Layer 2 — untrusted, never retires) ───────
+
 
 @dataclass(frozen=True, slots=True)
 class FlagResult:
@@ -179,7 +198,8 @@ class FlagResult:
     present) or ``disabled`` (the feature is off — nothing written). ``recorded`` is True
     only when a NEW row landed (an idempotent re-flag is ``flagged`` + ``recorded=False``).
     ``kind`` echoes the advisory kind, or None when disabled."""
-    status: str              # "flagged" | "disabled"
+
+    status: str  # "flagged" | "disabled"
     recorded: bool
     kind: Optional[str]
 
@@ -196,16 +216,32 @@ class ConflictFlagService:
     Fail direction: validation rejects (raises) BEFORE any persistence, so an invalid flag
     leaves zero rows. Disabled ⇒ inert. PURE domain (ports + clock only)."""
 
-    def __init__(self, *, flag_store, scanner, reader, now: Callable[[], int],
-                 enabled: bool = False) -> None:
-        self._flags = flag_store          # ConflictFlagStore (record_conflict_flag)
-        self._scanner = scanner           # SecretScanner (scan the resolution text)
-        self._reader = reader             # EpisodeReader (both ids must exist)
+    def __init__(
+        self,
+        *,
+        flag_store: ConflictFlagStore,
+        scanner: SecretScanner,
+        reader: EpisodeReader,
+        now: Callable[[], int],
+        enabled: bool = False,
+    ) -> None:
+        self._flags = flag_store  # record_conflict_flag
+        self._scanner = scanner  # scans the resolution text
+        self._reader = reader  # both ids must exist
         self._now = now
         self.enabled = bool(enabled)
 
-    def flag(self, *, kind: str, a_id: int, b_id: int, winner_id: Optional[int],
-             resolution: str, proposed_by: str, request_id: str = "-") -> FlagResult:
+    def flag(
+        self,
+        *,
+        kind: str,
+        a_id: int,
+        b_id: int,
+        winner_id: Optional[int],
+        resolution: str,
+        proposed_by: str,
+        request_id: str = "-",
+    ) -> FlagResult:
         """Validate → scan resolution → canonicalize → record ONE advisory row. Raises
         ValueError on a self-pair / unknown episode / a ``supersedes`` without a winner in
         the pair (nothing written); raises SecretRefused if the resolution carries a
@@ -219,34 +255,66 @@ class ConflictFlagService:
         if kind not in ("conflict", "supersedes"):
             raise ValueError(f"bad flag kind {kind!r}")
         # both episodes must EXIST before anything is persisted (no half state)
-        if self._reader.get_episode(a_id) is None or self._reader.get_episode(b_id) is None:
+        if (
+            self._reader.get_episode(a_id) is None
+            or self._reader.get_episode(b_id) is None
+        ):
             raise ValueError(
-                "both episodes must exist to flag a conflict — nothing recorded")
+                "both episodes must exist to flag a conflict — nothing recorded"
+            )
         if kind == "supersedes":
             if winner_id is None or int(winner_id) not in (a_id, b_id):
                 raise ValueError(
-                    "kind='supersedes' requires winner to be one of the two episodes")
+                    "kind='supersedes' requires winner to be one of the two episodes"
+                )
             winner: Optional[int] = int(winner_id)
-        else:                              # conflict is symmetric — there is no winner
+        else:  # conflict is symmetric — there is no winner
             winner = None
         # scan the human/agent resolution text BEFORE persisting (refuse → 0 rows)
         verdict = self._scanner.scan(resolution or "")
         if verdict.action == REFUSE:
-            _log.warning("conflict.flag_refused", extra={
-                "event": "conflict.flag_refused",
-                "rules": [f.rule for f in verdict.findings],
-                "proposed_by": proposed_by, "request_id": request_id})
+            _log.warning(
+                "conflict.flag_refused",
+                extra={
+                    "event": "conflict.flag_refused",
+                    "rules": [f.rule for f in verdict.findings],
+                    "proposed_by": proposed_by,
+                    "request_id": request_id,
+                },
+            )
             raise SecretRefused(
                 f"refused: credential in resolution "
                 f"({len(verdict.findings)} finding(s))",
                 rules=[f.rule for f in verdict.findings],
-                n_findings=len(verdict.findings))
-        stored = verdict.redacted_text if verdict.action == REDACT else (resolution or "")
-        lo, hi = (a_id, b_id) if a_id < b_id else (b_id, a_id)   # winner stable under swap
+                n_findings=len(verdict.findings),
+            )
+        stored = (
+            (verdict.redacted_text or "")
+            if verdict.action == REDACT
+            else (resolution or "")
+        )
+        lo, hi = (
+            (a_id, b_id) if a_id < b_id else (b_id, a_id)
+        )  # winner stable under swap
         recorded = self._flags.record_conflict_flag(
-            kind=kind, a_id=lo, b_id=hi, winner_id=winner, resolution=stored,
-            proposed_by=proposed_by, ts=int(self._now()))
-        _log.info("conflict.flagged", extra={
-            "event": "conflict.flagged", "kind": kind, "a_id": lo, "b_id": hi,
-            "recorded": recorded, "proposed_by": proposed_by, "request_id": request_id})
+            kind=kind,
+            a_id=lo,
+            b_id=hi,
+            winner_id=winner,
+            resolution=stored,
+            proposed_by=proposed_by,
+            ts=int(self._now()),
+        )
+        _log.info(
+            "conflict.flagged",
+            extra={
+                "event": "conflict.flagged",
+                "kind": kind,
+                "a_id": lo,
+                "b_id": hi,
+                "recorded": recorded,
+                "proposed_by": proposed_by,
+                "request_id": request_id,
+            },
+        )
         return FlagResult("flagged", recorded=recorded, kind=kind)

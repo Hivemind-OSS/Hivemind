@@ -15,6 +15,7 @@ asserted against a second real ``hive-edge mint`` subprocess, never a mock.
 NOTE: the FROZEN suite (tests/contract/test_server_mint.py) imports
 ``direct_mint`` from this module — it may grow but never rename.
 """
+
 from __future__ import annotations
 
 import json
@@ -23,7 +24,13 @@ import sys
 from pathlib import Path
 
 from tests.sync.conftest import (
-    ANCHOR, REPO, anchor_fp, harness_env, make_service, meta, register_repo,
+    ANCHOR,
+    REPO,
+    anchor_fp,
+    harness_env,
+    make_service,
+    meta,
+    register_repo,
     seed_episode,
 )
 
@@ -44,9 +51,12 @@ def direct_mint(repo: Path, anchor: str, home: Path) -> dict:
     state home — fully independent of the server-side code path under test."""
     env = dict(harness_env())
     env["HIVE_EDGE_HOME"] = str(home)
-    proc = subprocess.run([_edge_cli(), "mint", "--repo", str(repo),
-                           "--anchor", anchor],
-                          capture_output=True, text=True, env=env)
+    proc = subprocess.run(
+        [_edge_cli(), "mint", "--repo", str(repo), "--anchor", anchor],
+        capture_output=True,
+        text=True,
+        env=env,
+    )
     assert proc.returncode == 0, proc.stderr
     return json.loads(proc.stdout)
 
@@ -59,7 +69,8 @@ def _armed(origin, store, tmp_path, **kw):
 def test_fills_absent_carrier(origin, store, tmp_path):
     eid = seed_episode(store, "greet growls on empty names")
     before = store.conn.execute(
-        "SELECT text, content_hash, value FROM episodes WHERE id=?", (eid,)).fetchone()
+        "SELECT text, content_hash, value FROM episodes WHERE id=?", (eid,)
+    ).fetchone()
     svc = _armed(origin, store, tmp_path)
     svc.tick()
     tip = origin.origin_sha("refs/heads/main")
@@ -70,9 +81,13 @@ def test_fills_absent_carrier(origin, store, tmp_path):
     # the provenance rides in the exact format — character for character
     assert filled[PROVENANCE_KEY] == f"hive-sync-minted/1:server@{tip} main"
     after = store.conn.execute(
-        "SELECT text, content_hash, value FROM episodes WHERE id=?", (eid,)).fetchone()
-    assert (after["text"], after["content_hash"], after["value"]) == \
-        (before["text"], before["content_hash"], before["value"])   # anchor carrier ONLY
+        "SELECT text, content_hash, value FROM episodes WHERE id=?", (eid,)
+    ).fetchone()
+    assert (after["text"], after["content_hash"], after["value"]) == (
+        before["text"],
+        before["content_hash"],
+        before["value"],
+    )  # anchor carrier ONLY
     assert meta(store, META_BACKFILLED_TOTAL) == "1"
     assert meta(store, META_LAST_ERROR) is None
 
@@ -83,39 +98,44 @@ def test_pinned_carrier_never_swept_or_displaced(origin, store, tmp_path):
     byte-for-byte — no re-mint, no provenance stamp, nothing."""
     full_pin = '{"combdrift/fp":"combdrift-fp/1:human-pinned"}'
     partial_pin = json.dumps(
-        {SUBGRAPH_KEY: "matrix-subgraph-fp/1:" + "0" * 64}, separators=(",", ":"))
+        {SUBGRAPH_KEY: "matrix-subgraph-fp/1:" + "0" * 64}, separators=(",", ":")
+    )
     tagged = seed_episode(store, "tagged memory")
     partial = seed_episode(store, "partially tagged memory")
-    store.conn.execute("UPDATE episode_anchors SET fp_meta=? WHERE episode_id=?",
-                       (full_pin, tagged))
-    store.conn.execute("UPDATE episode_anchors SET fp_meta=? WHERE episode_id=?",
-                       (partial_pin, partial))
+    store.conn.execute(
+        "UPDATE episode_anchors SET fp_meta=? WHERE episode_id=?", (full_pin, tagged)
+    )
+    store.conn.execute(
+        "UPDATE episode_anchors SET fp_meta=? WHERE episode_id=?",
+        (partial_pin, partial),
+    )
     svc = _armed(origin, store, tmp_path)
     svc.tick()
 
     raw_tagged = store.conn.execute(
-        "SELECT fp_meta FROM episode_anchors WHERE episode_id=?",
-        (tagged,)).fetchone()["fp_meta"]
+        "SELECT fp_meta FROM episode_anchors WHERE episode_id=?", (tagged,)
+    ).fetchone()["fp_meta"]
     raw_partial = store.conn.execute(
-        "SELECT fp_meta FROM episode_anchors WHERE episode_id=?",
-        (partial,)).fetchone()["fp_meta"]
-    assert raw_tagged == full_pin                 # byte-identical: never revisited
+        "SELECT fp_meta FROM episode_anchors WHERE episode_id=?", (partial,)
+    ).fetchone()["fp_meta"]
+    assert raw_tagged == full_pin  # byte-identical: never revisited
     assert raw_partial == partial_pin
     assert meta(store, META_BACKFILLED_TOTAL) is None
     assert meta(store, META_LAST_ERROR) is None
 
 
 def test_skips_unresolvable_silently_loop_alive(origin, store, tmp_path):
-    ghost = seed_episode(store, "anchored to code that is gone",
-                         "no/such/file.py::ghost")
+    ghost = seed_episode(
+        store, "anchored to code that is gone", "no/such/file.py::ghost"
+    )
     live = seed_episode(store, "greet growls on empty names")
     svc = _armed(origin, store, tmp_path)
     svc.tick()
 
     assert anchor_fp(store, ghost, REPO, "no/such/file.py::ghost") == {}
-    assert meta(store, META_LAST_ERROR) is None          # no provenance, no error
-    assert FP_KEY in anchor_fp(store, live)              # the loop stayed alive past it
-    svc.tick()                                           # and the skip never wedges
+    assert meta(store, META_LAST_ERROR) is None  # no provenance, no error
+    assert FP_KEY in anchor_fp(store, live)  # the loop stayed alive past it
+    svc.tick()  # and the skip never wedges
     assert anchor_fp(store, ghost, REPO, "no/such/file.py::ghost") == {}
     assert meta(store, META_LAST_ERROR) is None
 
@@ -125,35 +145,38 @@ def test_matches_edge_mint_at_the_moved_tip(origin, store, tmp_path):
     edge mint yields on the same tree — including after the tip MOVES, so the
     server must mint the TIP tree, never the clone-time checkout."""
     svc = _armed(origin, store, tmp_path)
-    svc.tick()                                           # clone + baseline at seed tip
+    svc.tick()  # clone + baseline at seed tip
     origin.commit(
         "app.py",
-        'def greet(name, punct):\n    return "hi " + name + punct\n', "widen greet")
+        'def greet(name, punct):\n    return "hi " + name + punct\n',
+        "widen greet",
+    )
     origin.push()
     tip = origin.origin_sha("refs/heads/main")
     eid = seed_episode(store, "greet growls on empty names")
-    svc.tick()                                           # fetch + backfill at the NEW tip
+    svc.tick()  # fetch + backfill at the NEW tip
 
     reference = direct_mint(origin.work, ANCHOR, tmp_path / "edge-home-direct")
     assert reference, "the reference anchor must resolve"
     got = anchor_fp(store, eid)
     for key, value in reference.items():
-        assert got[key] == value                         # byte-equal, key by key
+        assert got[key] == value  # byte-equal, key by key
     assert got[PROVENANCE_KEY] == f"hive-sync-minted/1:server@{tip} main"
     assert meta(store, META_LAST_ERROR) is None
 
 
 def test_cap_carries_over(origin, store, tmp_path, monkeypatch):
     import hive.app.sync as sync_mod
+
     monkeypatch.setattr(sync_mod, "_BACKFILL_PER_TICK", 1)
     first = seed_episode(store, "first anchored memory")
     second = seed_episode(store, "second anchored memory")
     svc = _armed(origin, store, tmp_path)
 
-    svc.tick()                                           # one slot: lowest id fills
+    svc.tick()  # one slot: lowest id fills
     assert FP_KEY in anchor_fp(store, first)
-    assert anchor_fp(store, second) == {}                # bounded — the rest waits
-    svc.tick()                                           # the remainder carries over
+    assert anchor_fp(store, second) == {}  # bounded — the rest waits
+    svc.tick()  # the remainder carries over
     assert FP_KEY in anchor_fp(store, second)
     assert meta(store, META_BACKFILLED_TOTAL) == "2"
     assert meta(store, META_LAST_ERROR) is None

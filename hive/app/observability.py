@@ -4,6 +4,7 @@ One JSON record per line at every boundary; configured ONCE at server start onto
 root logger. The in-memory metrics registry is DROPPED for v-min (Diagnostics →
 health only). Secrets are NEVER logged — callers pass field names/counts/paths, never values.
 """
+
 from __future__ import annotations
 
 import json
@@ -22,11 +23,30 @@ class JSONFormatter(logging.Formatter):
     plus any JSON-serializable record extras (e.g. trace_id); non-serializable extras are
     repr'd, never dropped."""
 
-    BASE_FIELDS = {"name", "levelname", "msg", "args", "exc_info", "exc_text",
-                   "stack_info", "lineno", "funcName", "created", "msecs",
-                   "relativeCreated", "thread", "threadName", "processName",
-                   "process", "message", "pathname", "filename", "module",
-                   "levelno", "taskName"}
+    BASE_FIELDS = {
+        "name",
+        "levelname",
+        "msg",
+        "args",
+        "exc_info",
+        "exc_text",
+        "stack_info",
+        "lineno",
+        "funcName",
+        "created",
+        "msecs",
+        "relativeCreated",
+        "thread",
+        "threadName",
+        "processName",
+        "process",
+        "message",
+        "pathname",
+        "filename",
+        "module",
+        "levelno",
+        "taskName",
+    }
 
     def format(self, record: logging.LogRecord) -> str:
         payload: dict[str, Any] = {
@@ -72,7 +92,11 @@ def configure_json_logging(
     if file:
         os.makedirs(os.path.dirname(os.path.abspath(file)) or ".", exist_ok=True)
         rfh = RotatingFileHandler(
-            filename=file, maxBytes=max_bytes, backupCount=backup_count, encoding="utf-8")
+            filename=file,
+            maxBytes=max_bytes,
+            backupCount=backup_count,
+            encoding="utf-8",
+        )
         rfh.setFormatter(fmt)
         root.addHandler(rfh)
     root.propagate = False

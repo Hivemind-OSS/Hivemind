@@ -1,4 +1,5 @@
 """P1.1 — M02 ExhaustiveCosineIndex: authoritative, signed, boot-rebuildable [B3]."""
+
 from __future__ import annotations
 
 import numpy as np
@@ -36,10 +37,12 @@ def test_search_returns_cosine_scores_not_bare_ids():
 
 def test_search_within_k_is_sorted():
     ix = _idx()
-    for i, x in enumerate([_unit(1, 0, 0), _unit(0.8, 0.2, 0), _unit(0.5, 0.5, 0), _unit(0, 0, 1)], 1):
+    for i, x in enumerate(
+        [_unit(1, 0, 0), _unit(0.8, 0.2, 0), _unit(0.5, 0.5, 0), _unit(0, 0, 1)], 1
+    ):
         ix.sync_approved(i, x)
     out = ix.search(_unit(1, 0, 0), k=2)
-    assert [e for e, _ in out] == [1, 2]            # partition slice re-sorted descending
+    assert [e for e, _ in out] == [1, 2]  # partition slice re-sorted descending
 
 
 def test_anticorrelated_value_never_surfaces_first():
@@ -49,15 +52,15 @@ def test_anticorrelated_value_never_surfaces_first():
     ix.sync_approved(1, _unit(0.5, 0.8660254, 0))
     ix.sync_approved(2, _unit(-0.9, 0.4358899, 0))
     out = ix.search(_unit(1, 0, 0), k=2)
-    assert out[0][0] == 1 and out[1][0] == 2        # −v never beats a positive cos
+    assert out[0][0] == 1 and out[1][0] == 2  # −v never beats a positive cos
 
 
 def test_topk_truncates_and_empty_guards():
     ix = _idx()
     ix.sync_approved(1, _unit(1, 0, 0))
-    assert len(ix.search(_unit(1, 0, 0), k=5)) == 1     # min(k, n)
+    assert len(ix.search(_unit(1, 0, 0), k=5)) == 1  # min(k, n)
     assert ix.search(_unit(1, 0, 0), k=0) == []
-    assert _idx().search(_unit(1, 0, 0), k=3) == []     # empty index, no raise
+    assert _idx().search(_unit(1, 0, 0), k=3) == []  # empty index, no raise
 
 
 def test_exhaustive_is_authoritative_and_has_no_ann_attrs():
@@ -72,17 +75,17 @@ def test_growing_n_never_flips_path():
     ix = ExhaustiveCosineIndex(8)
     gold = _unit(*rng.standard_normal(8))
     ix.sync_approved(999999, gold)
-    for i in range(10_050):                          # well past the legacy 10k threshold
+    for i in range(10_050):  # well past the legacy 10k threshold
         v = rng.standard_normal(8).astype(np.float32)
         ix.sync_approved(i, v / np.linalg.norm(v))
-    assert ix.search(gold, k=1)[0][0] == 999999      # exact rank-1, no silent ANN flip
+    assert ix.search(gold, k=1)[0][0] == 999999  # exact rank-1, no silent ANN flip
 
 
 def test_dim_mismatch_and_nan_rejected():
     ix = _idx()
     ix.sync_approved(1, _unit(1, 0, 0))
     with pytest.raises(ValueError):
-        ix.search(np.array([1.0, 0.0], dtype=np.float32), k=1)   # wrong dim
+        ix.search(np.array([1.0, 0.0], dtype=np.float32), k=1)  # wrong dim
     with pytest.raises(ValueError):
         ix.search(np.array([np.nan, 0, 0], dtype=np.float32), k=1)  # NaN guard
     with pytest.raises(ValueError):
@@ -93,8 +96,10 @@ def test_sync_approved_copies_value():
     ix = _idx()
     v = _unit(1, 0, 0)
     ix.sync_approved(1, v)
-    v[:] = _unit(0, 1, 0)                            # mutate source after ingest
-    assert ix.search(_unit(1, 0, 0), k=1)[0][0] == 1   # search unchanged (copy-on-ingest)
+    v[:] = _unit(0, 1, 0)  # mutate source after ingest
+    assert (
+        ix.search(_unit(1, 0, 0), k=1)[0][0] == 1
+    )  # search unchanged (copy-on-ingest)
 
 
 def test_index_rebuilds_from_approved_only():
@@ -104,7 +109,10 @@ def test_index_rebuilds_from_approved_only():
     ix.rebuild_from_store(iter(approved))
     assert ix.size() == 2
     assert ix.search(_unit(1, 0, 0), k=5)[0][0] == 1
-    assert {e for e, _ in ix.search(_unit(1, 0, 0), k=5)} == {1, 2}   # pending (id 3) absent
+    assert {e for e, _ in ix.search(_unit(1, 0, 0), k=5)} == {
+        1,
+        2,
+    }  # pending (id 3) absent
 
 
 def test_rebuild_is_idempotent():

@@ -6,6 +6,7 @@ scan of the files that WOULD become layers (pyproject.toml + hive/ + vendor/, th
 COPY set) finds no AWS/OpenAI/GitHub credential shapes. The full layer-tar scan of a built image is
 in test_container_live.py (skip-guarded); this is the daemon-free static guarantee.
 """
+
 from __future__ import annotations
 
 import re
@@ -21,20 +22,31 @@ _DOCKERIGNORE = _ROOT / ".dockerignore"
 # test below — the matcher's own coverage is pinned so it cannot silently regress to a no-op.
 _SECRET_RE = re.compile(
     r"(sk-[A-Za-z0-9-]{20,}|AKIA[0-9A-Z]{16}|ghp_[A-Za-z0-9]{36}"
-    r"|github_pat_[A-Za-z0-9_]{50,}|xox[baprs]-[A-Za-z0-9-]{10,}|AIza[A-Za-z0-9_-]{35})")
+    r"|github_pat_[A-Za-z0-9_]{50,}|xox[baprs]-[A-Za-z0-9-]{10,}|AIza[A-Za-z0-9_-]{35})"
+)
 
 # modern credential shapes the scanner MUST flag (regression guard against a too-narrow regex)
 _KNOWN_KEY_FAKES = [
     "sk-proj-Abcd1234Efgh5678Ijkl9012Mnop3456qrst",
     "sk-ant-api03-Abc12345Def67890Ghi12345Jkl67890",
     "github_pat_11ABCDEFG0abcdefghijKL_mnopqrstuvwxyz0123456789ABCDEFGHIJKLMNOP",
-    "AKIAIOSFODNN7EXAMPLE", "ghp_" + "a" * 36, "AIza" + "A" * 35,
+    "AKIAIOSFODNN7EXAMPLE",
+    "ghp_" + "a" * 36,
+    "AIza" + "A" * 35,
 ]
 
 # exactly the trees the Dockerfile COPYs into a layer
 _CONTEXT = [_ROOT / "pyproject.toml", _ROOT / "hive", _ROOT / "vendor"]
-_REQUIRED_IGNORES = [".git", "__pycache__", ".env", "*.pem", "*.key",
-                     "tests/", "docs/", "*.db"]
+_REQUIRED_IGNORES = [
+    ".git",
+    "__pycache__",
+    ".env",
+    "*.pem",
+    "*.key",
+    "tests/",
+    "docs/",
+    "*.db",
+]
 
 
 def test_dockerignore_exists():
@@ -51,8 +63,15 @@ def test_dockerignore_secret_patterns_are_depth_agnostic():
     # a bare `*.key`/`.env` matches only the context ROOT; the COPY hive/ ./hive/ would still
     # bake a nested credential. The recursive **/ sibling must be present for each.
     body = _DOCKERIGNORE.read_text()
-    required_recursive = ["**/.env", "**/*.pem", "**/*.key", "**/*.p12",
-                          "**/id_rsa*", "**/*.secret", "**/*.db"]
+    required_recursive = [
+        "**/.env",
+        "**/*.pem",
+        "**/*.key",
+        "**/*.p12",
+        "**/id_rsa*",
+        "**/*.secret",
+        "**/*.db",
+    ]
     missing = [pat for pat in required_recursive if pat not in body]
     assert not missing, f".dockerignore missing recursive secret excludes: {missing}"
 

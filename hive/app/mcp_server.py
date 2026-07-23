@@ -38,6 +38,7 @@ transport an IDE execs inside the warm container. It reuses ``build_container`` 
 marker-INERT: it NEVER touches the PID-1 boot readiness markers the container healthcheck
 reads (that policy stays in ``hive.tools.entrypoint``, the long-lived ENTRYPOINT).
 """
+
 from __future__ import annotations
 
 import json
@@ -45,7 +46,7 @@ import logging
 import os
 import sys
 from dataclasses import dataclass
-from typing import Any, Callable, Mapping, Optional
+from typing import Any, Callable, Mapping, Optional, TextIO
 
 from hive.app.anchors import BadAnchors, normalize_anchors, normalize_repos
 from hive.app.census_health import census_health_report
@@ -55,22 +56,33 @@ from hive.app.gaps import cluster_misses
 from hive.app.trends import compute_trends
 from hive.app.tool_defs import TOOL_DEFINITIONS
 from hive.domain.conflict import (
-    CONTRADICTION, ConflictItem, _cosine, detect_conflicts,
+    CONTRADICTION,
+    ConflictItem,
+    ConflictNote,
+    _cosine,
+    detect_conflicts,
 )
 from hive.domain.consensus import (
-    SuspectConsensusItem, detect_suspect_consensus,
+    SuspectConsensusItem,
+    detect_suspect_consensus,
 )
 from hive.domain.errors import SecretRefused
 from hive.domain.evidence_kinds import (
-    EK_OUTCOME_HELPED, EK_OUTCOME_HURT, EK_OUTCOME_VERIFIED_HURT, EK_PRUNE,
-    EK_SUPERSEDE, EK_VERIFY_CURRENT, EK_VERIFY_STALE,
+    EK_OUTCOME_HELPED,
+    EK_OUTCOME_HURT,
+    EK_OUTCOME_VERIFIED_HURT,
+    EK_PRUNE,
+    EK_SUPERSEDE,
+    EK_VERIFY_CURRENT,
+    EK_VERIFY_STALE,
 )
 from hive.domain.kinds import DEFAULT_KIND
 from hive.domain.lifecycle import DEPRECATED, is_servable
 from hive.domain.meta import BadMeta, normalize_meta
-from hive.domain.models import CONFIDENT
+from hive.domain.models import CONFIDENT, Episode
 from hive.domain.recall import RecallScope
 from hive.domain.retirement import Eligibility, retirement_evidence
+from hive.domain.secret_scan import ScanVerdict
 
 _log = logging.getLogger("hive.app.mcp_server")
 
@@ -82,7 +94,9 @@ SERVER_VERSION = "1.0.0"
 
 _PREVIEW_LEN = 160
 # inputSchema by tool name — the single source for the pre-dispatch validation belt.
-_SCHEMA_BY_NAME: dict[str, dict] = {t["name"]: t["inputSchema"] for t in TOOL_DEFINITIONS}
+_SCHEMA_BY_NAME: dict[str, dict[str, Any]] = {
+    t["name"]: t["inputSchema"] for t in TOOL_DEFINITIONS
+}
 
 # ── the §3.2 retirement-gate wire strings (normative — CT-7/CT-1 assert them) ──
 # The unqualified-supersede rider marker on a write envelope, and the noop reason on
@@ -92,26 +106,31 @@ GATE_NOOP_REASON = GATE_NOOP_SIGNAL + " — nothing retired"
 
 # The ledger kinds the retirement gate reads (§3.2 clauses 1b/2). The boundary names
 # what qualifies; an unfiltered read would hand the gate foreign kinds to ignore.
-_GATE_LEDGER_KINDS = (EK_VERIFY_CURRENT, EK_VERIFY_STALE,
-                      EK_OUTCOME_HURT, EK_OUTCOME_VERIFIED_HURT)
+_GATE_LEDGER_KINDS = (
+    EK_VERIFY_CURRENT,
+    EK_VERIFY_STALE,
+    EK_OUTCOME_HURT,
+    EK_OUTCOME_VERIFIED_HURT,
+)
 
 _INELIGIBLE = Eligibility(False, ())
 
 
 # ── JSON-RPC envelopes (PORT) ────────────────────────────────────────────────
 
+
 @dataclass
 class MCPRequest:
     id: Any
     method: str
-    params: dict
+    params: dict[str, Any]
 
 
 @dataclass
 class MCPResponse:
     id: Any
-    result: Optional[dict] = None
-    error: Optional[dict] = None
+    result: Optional[dict[str, Any]] = None
+    error: Optional[dict[str, Any]] = None
 
     def to_json(self) -> str:
         out: dict[str, Any] = {"jsonrpc": "2.0", "id": self.id}
@@ -122,8 +141,8 @@ class MCPResponse:
         return json.dumps(out, default=_json_default)
 
 
-def _err(code: int, message: str, data: Any = None) -> dict:
-    e = {"code": code, "message": message}
+def _err(code: int, message: str, data: Any = None) -> dict[str, Any]:
+    e: dict[str, Any] = {"code": code, "message": message}
     if data is not None:
         e["data"] = data
     return e
@@ -141,11 +160,13 @@ def _json_default(obj: Any) -> Any:
 class ServerIdentity:
     """One process == one identity. ``tenant_id`` is a constant label, never a query
     filter (single-tenant); ``agent_id`` is the default ``proposed_by`` on write."""
+
     tenant_id: str = "default"
     agent_id: str = "agent"
 
 
 # ── pre-dispatch schema validation belt (runs before any port) ─────────
+
 
 def _type_ok(val: Any, t: str) -> bool:
     """JSON-schema scalar/container type check. ``bool`` is excluded from integer/
@@ -165,7 +186,7 @@ def _type_ok(val: Any, t: str) -> bool:
     return True
 
 
-def _validate_items(key: str, val: list, items: dict) -> Optional[str]:
+def _validate_items(key: str, val: list[Any], items: dict[str, Any]) -> Optional[str]:
     """Per-item validation of an array field against its advertised ``items`` schema —
     the SAME dict object ``tool_defs`` advertises (e.g. ``_ANCHORS_PROPERTY['items']``),
     never a parallel shape. Scalar items get a type check; object items additionally get
@@ -195,7 +216,7 @@ def _validate_items(key: str, val: list, items: dict) -> Optional[str]:
     return None
 
 
-def _validate_args(name: str, args: dict) -> Optional[str]:
+def _validate_args(name: str, args: dict[str, Any]) -> Optional[str]:
     """Return an error message if ``args`` violate the tool's inputSchema, else None.
     Checks required[], scalar types, enum membership, and array ITEMS (object items —
     the ``anchors`` grammar — down to their required/typed/no-extra keys). Extra
@@ -232,11 +253,13 @@ def _preview(text: str) -> str:
     return text if len(text) <= _PREVIEW_LEN else text[:_PREVIEW_LEN] + "…"
 
 
-def _scan_report(verdict) -> dict:
+def _scan_report(verdict: ScanVerdict) -> dict[str, Any]:
     """The ScanReport envelope — rule NAMES + count only, NEVER the secret bytes."""
-    return {"action": verdict.action,
-            "rules": [f.rule for f in verdict.findings],
-            "n_findings": len(verdict.findings)}
+    return {
+        "action": verdict.action,
+        "rules": [f.rule for f in verdict.findings],
+        "n_findings": len(verdict.findings),
+    }
 
 
 def _abstain_note(state: str) -> str:
@@ -246,33 +269,49 @@ def _abstain_note(state: str) -> str:
     return "no confident match — abstained rather than surface a weak guess"
 
 
-def _conflict_note_to_wire(note) -> dict:
+def _conflict_note_to_wire(note: ConflictNote) -> dict[str, Any]:
     """A mechanical ``ConflictNote`` → the ids-only wire dict. Carries NO memory text (Law 4):
     only ids, the relation, the cosine, the shared anchor, and a directional retire HINT with
     the resolution call spelled out — never an applied action here (the retirement verbs stay
     machine-gated at their own boundary, THEORY §10 O7)."""
-    d: dict = {"a_id": note.a_id, "b_id": note.b_id, "relation": note.relation,
-               "cosine": round(float(note.cosine), 4), "anchor": note.anchor,
-               "loser_hint": note.loser_hint, "source": "mechanical"}
+    d: dict[str, Any] = {
+        "a_id": note.a_id,
+        "b_id": note.b_id,
+        "relation": note.relation,
+        "cosine": round(float(note.cosine), 4),
+        "anchor": note.anchor,
+        "loser_hint": note.loser_hint,
+        "source": "mechanical",
+    }
     if note.relation == CONTRADICTION:
-        d["note"] = ("opposing polarity (do vs dont) on near-duplicate memories — they "
-                     "disagree; resolve which holds via hive_supersede (machine-gated)")
+        d["note"] = (
+            "opposing polarity (do vs dont) on near-duplicate memories — they "
+            "disagree; resolve which holds via hive_supersede (machine-gated)"
+        )
     else:
         winner = note.b_id if note.loser_hint == note.a_id else note.a_id
-        d["note"] = (f"near-duplicate memories; {note.loser_hint} is the lower-trust/older "
-                     f"retire candidate (hive_supersede loser={note.loser_hint} "
-                     f"winner={winner})")
+        d["note"] = (
+            f"near-duplicate memories; {note.loser_hint} is the lower-trust/older "
+            f"retire candidate (hive_supersede loser={note.loser_hint} "
+            f"winner={winner})"
+        )
     return d
 
 
-def _flag_to_wire(flag: dict) -> dict:
+def _flag_to_wire(flag: dict[str, Any]) -> dict[str, Any]:
     """An open advisory ``conflict_flags`` row → the worklist wire dict. ``kind`` is the
     advisory vocabulary (conflict|supersedes); ``resolution`` is the flagger's secret-scanned
     rationale. ids only — no memory text rides it."""
-    return {"a_id": flag["a_id"], "b_id": flag["b_id"], "kind": flag["kind"],
-            "winner_id": flag["winner_id"], "resolution": flag["resolution"],
-            "proposed_by": flag["proposed_by"], "source": "advisory",
-            "note": "agent-flagged advisory; resolve via hive_supersede (machine-gated)"}
+    return {
+        "a_id": flag["a_id"],
+        "b_id": flag["b_id"],
+        "kind": flag["kind"],
+        "winner_id": flag["winner_id"],
+        "resolution": flag["resolution"],
+        "proposed_by": flag["proposed_by"],
+        "source": "advisory",
+        "note": "agent-flagged advisory; resolve via hive_supersede (machine-gated)",
+    }
 
 
 def _parse_repos_json(raw: object) -> list[str]:
@@ -294,16 +333,28 @@ def _parse_repos_json(raw: object) -> list[str]:
 class HiveMCPServer:
     """JSON-RPC 2.0 over stdio. One process == one ``ServerIdentity``."""
 
-    def __init__(self, *, admission, recall, store, embedder,
-                 identity: ServerIdentity, now: Callable[[], int],
-                 started_ts: int = 0, db_path: str = "", autonomy=None,
-                 conflict=None, flag_service=None, suspect_consensus=None,
-                 secret_scan_enabled: bool = True,
-                 canonical_ref: str = "") -> None:
-        self.admission = admission          # AdmissionService: write + capture
-        self.recall = recall                # RecallPipeline: recall(query, *, agent_id)
-        self.store = store                  # the store adapter: get_episode (belt) / counts
-        self.embedder = embedder            # EmbeddingProvider: health probes (d, name)
+    def __init__(
+        self,
+        *,
+        admission: Any,
+        recall: Any,
+        store: Any,
+        embedder: Any,
+        identity: ServerIdentity,
+        now: Callable[[], int],
+        started_ts: int = 0,
+        db_path: str = "",
+        autonomy: Any = None,
+        conflict: Any = None,
+        flag_service: Any = None,
+        suspect_consensus: Any = None,
+        secret_scan_enabled: bool = True,
+        canonical_ref: str = "",
+    ) -> None:
+        self.admission = admission  # AdmissionService: write + capture
+        self.recall = recall  # RecallPipeline: recall(query, *, agent_id)
+        self.store = store  # the store adapter: get_episode (belt) / counts
+        self.embedder = embedder  # EmbeddingProvider: health probes (d, name)
         self.identity = identity
         self.now = now
         self.started_ts = int(started_ts)
@@ -312,7 +363,8 @@ class HiveMCPServer:
         # The recall belt's per-hit is_servable re-check reads provisional_ttl off
         # it; the gap report reads demand_window/demand_tau.
         if autonomy is None:
-            from hive.app.config import AutonomyConfig   # noqa: PLC0415 — lazy default
+            from hive.app.config import AutonomyConfig  # noqa: PLC0415 — lazy default
+
             autonomy = AutonomyConfig()
         self.autonomy = autonomy
         # conflict surfacing (duck-typed ConflictConfig). The PRODUCT default is ON: the real
@@ -323,7 +375,8 @@ class HiveMCPServer:
         # surfacing a carrier the flag verb cannot service. ``flag_service`` (ConflictFlagService
         # or None) backs hive_flag — gated by conflict.enabled.
         if conflict is None:
-            from hive.app.config import ConflictConfig   # noqa: PLC0415 — lazy default
+            from hive.app.config import ConflictConfig  # noqa: PLC0415 — lazy default
+
             conflict = ConflictConfig(enabled=False)
         self.conflict = conflict
         self.flag_service = flag_service
@@ -333,7 +386,8 @@ class HiveMCPServer:
         # same single-gate posture as the conflict worklist. Detection-only — it reads stamped
         # promote audits, never retires (Law 3).
         if suspect_consensus is None:
-            from hive.app.config import SuspectConsensusConfig   # noqa: PLC0415 — lazy default
+            from hive.app.config import SuspectConsensusConfig  # noqa: PLC0415 — lazy default
+
             suspect_consensus = SuspectConsensusConfig()
         self.suspect_consensus = suspect_consensus
         # The credential secret-floor posture (HIVE_SECRET_SCAN__ENABLED, default ON). The actual
@@ -346,7 +400,9 @@ class HiveMCPServer:
         # line it measured. (v3 note: per-repo canonical refs live in the repo registry;
         # this single label only scopes the ledger rider, never drift.)
         self.canonical_ref = canonical_ref
-        self._tool_handlers: dict[str, Callable[[dict, ServerIdentity], dict]] = {
+        self._tool_handlers: dict[
+            str, Callable[[dict[str, Any], ServerIdentity], dict[str, Any]]
+        ] = {
             "hive_write": self._handle_write,
             "hive_capture": self._handle_capture,
             "hive_recall": self._handle_recall,
@@ -358,64 +414,104 @@ class HiveMCPServer:
         }
 
     # ── protocol dispatch (PORT) ──────────────────────────────────────────────
-    def handle(self, req: MCPRequest, *, identity: Optional[ServerIdentity] = None) -> MCPResponse:
+    def handle(
+        self, req: MCPRequest, *, identity: Optional[ServerIdentity] = None
+    ) -> MCPResponse:
         # Per-request identity (the HTTP daemon's verified caller); ``None`` ⇒ the process
         # ``ServerIdentity`` (the stdio path + every existing test pass ``req`` only, so they
         # are byte-for-byte unchanged). The transport resolves WHO calls; attribution stays
         # in the handlers (D1).
         ident = identity or self.identity
         if req.method == "initialize":
-            return MCPResponse(id=req.id, result={
-                "protocolVersion": MCP_VERSION,
-                "capabilities": {"tools": {"listChanged": False}},
-                "serverInfo": {"name": SERVER_NAME, "version": SERVER_VERSION},
-                # the spec-canonical usage contract every client surfaces at connect (M2 channel)
-                "instructions": SERVER_INSTRUCTIONS})
+            return MCPResponse(
+                id=req.id,
+                result={
+                    "protocolVersion": MCP_VERSION,
+                    "capabilities": {"tools": {"listChanged": False}},
+                    "serverInfo": {"name": SERVER_NAME, "version": SERVER_VERSION},
+                    # the spec-canonical usage contract every client surfaces at connect (M2 channel)
+                    "instructions": SERVER_INSTRUCTIONS,
+                },
+            )
         if req.method == "tools/list":
             return MCPResponse(id=req.id, result={"tools": TOOL_DEFINITIONS})
         if req.method == "tools/call":
             return self._tools_call(req, ident)
         if req.method == "ping":
             return MCPResponse(id=req.id, result={})
-        return MCPResponse(id=req.id, error=_err(-32601, f"method not found: {req.method}"))
+        return MCPResponse(
+            id=req.id, error=_err(-32601, f"method not found: {req.method}")
+        )
 
-    def _tool_result(self, req_id: Any, content: dict, *, is_error: bool) -> MCPResponse:
+    def _tool_result(
+        self, req_id: Any, content: dict[str, Any], *, is_error: bool
+    ) -> MCPResponse:
         # v3: NO contract-version beacon — the usage contract reaches every agent fresh at
         # connect via the initialize instructions; there is no installed block to drift
         # from, so no per-result version stamp exists (CT-11 pins its absence).
-        return MCPResponse(id=req_id, result={
-            "content": [{"type": "text", "text": json.dumps(content, default=_json_default)}],
-            "isError": is_error})
+        return MCPResponse(
+            id=req_id,
+            result={
+                "content": [
+                    {"type": "text", "text": json.dumps(content, default=_json_default)}
+                ],
+                "isError": is_error,
+            },
+        )
 
     def _tool_error(self, req_id: Any, message: str) -> MCPResponse:
-        return MCPResponse(id=req_id, result={
-            "content": [{"type": "text", "text": message}], "isError": True})
+        return MCPResponse(
+            id=req_id,
+            result={"content": [{"type": "text", "text": message}], "isError": True},
+        )
 
     def _tools_call(self, req: MCPRequest, identity: ServerIdentity) -> MCPResponse:
-        name = req.params.get("name")
+        # a raw JSON field: any client-sent shape reaches the .get lookup unchanged
+        # (a non-string name simply resolves no handler → the -32602 reply below)
+        name: Any = req.params.get("name")
         args = req.params.get("arguments", {}) or {}
         handler = self._tool_handlers.get(name)
-        if handler is None:                                  # unknown tool → JSON-RPC error
-            _log.warning("mcp.unknown_tool", extra={"event": "mcp.unknown_tool",
-                         "tool": name, "agent_id": identity.agent_id})
+        if handler is None:  # unknown tool → JSON-RPC error
+            _log.warning(
+                "mcp.unknown_tool",
+                extra={
+                    "event": "mcp.unknown_tool",
+                    "tool": name,
+                    "agent_id": identity.agent_id,
+                },
+            )
             return MCPResponse(id=req.id, error=_err(-32602, f"unknown tool: {name}"))
         # ── BELT 1: schema validation BEFORE any port is touched (mut #1) ──
         verr = _validate_args(name, args)
         if verr is not None:
-            _log.info("mcp.schema_reject", extra={"event": "mcp.schema_reject",
-                      "tool": name, "reason": verr, "agent_id": identity.agent_id})
+            _log.info(
+                "mcp.schema_reject",
+                extra={
+                    "event": "mcp.schema_reject",
+                    "tool": name,
+                    "reason": verr,
+                    "agent_id": identity.agent_id,
+                },
+            )
             return self._tool_error(req.id, f"invalid arguments: {verr}")
         try:
-            content = handler(args, identity)        # per-request identity → the handler
+            content = handler(args, identity)  # per-request identity → the handler
             return self._tool_result(req.id, content, is_error=False)
         except SecretRefused:
             # only hive_write raises this and it returns its own refused envelope;
             # reaching here means a defensive double-raise — treat as a tool error.
             raise
-        except Exception as e:                               # loop survives; stack → log, NOT agent
-            _log.error("mcp.tool_raised", extra={"event": "mcp.tool_raised",
-                       "tool": name, "agent_id": identity.agent_id,
-                       "error_type": type(e).__name__}, exc_info=True)
+        except Exception as e:  # loop survives; stack → log, NOT agent
+            _log.error(
+                "mcp.tool_raised",
+                extra={
+                    "event": "mcp.tool_raised",
+                    "tool": name,
+                    "agent_id": identity.agent_id,
+                    "error_type": type(e).__name__,
+                },
+                exc_info=True,
+            )
             return self._tool_error(req.id, f"error: {type(e).__name__}: {e}")
 
     # ── the §3.2 retirement-evidence gate feeds (assembled HERE, judged in-domain) ──
@@ -423,10 +519,9 @@ class HiveMCPServer:
         """The injected registry-membership predicate ``normalize_anchors``/
         ``normalize_repos`` consume — lazy, so a call with no scope args never reads
         the registry."""
-        return lambda name: any(row.name == name
-                                for row in self.store.repo_registry())
+        return lambda name: any(row.name == name for row in self.store.repo_registry())
 
-    def _gate_conflict_pairs(self, ep) -> tuple:
+    def _gate_conflict_pairs(self, ep: Episode) -> tuple[ConflictNote, ...]:
         """§3.2 clause 3 feed: mechanical near-dup pairs detected AT GATE TIME between
         the target and the co-servable field (contradiction or redundancy — both are
         machine evidence). The target is appended when not itself servable (e.g. a
@@ -436,36 +531,49 @@ class HiveMCPServer:
         now = int(self.now())
         ttl_s = int(self.autonomy.provisional_ttl_days) * _DAY_S
         labeled = self.store.scan_servable_labeled(now=now, provisional_ttl_s=ttl_s)
-        items = [ConflictItem(episode_id=int(eid), vector=value, polarity=polarity,
-                              anchor=anchor, ts=int(ts), trust=trust)
-                 for eid, value, polarity, anchor, ts, trust in labeled]
+        items = [
+            ConflictItem(
+                episode_id=int(eid),
+                vector=value,
+                polarity=polarity,
+                anchor=anchor,
+                ts=int(ts),
+                trust=trust,
+            )
+            for eid, value, polarity, anchor, ts, trust in labeled
+        ]
         if int(ep.id) not in {it.episode_id for it in items} and ep.value is not None:
-            items.append(ConflictItem(
-                episode_id=int(ep.id), vector=ep.value, polarity=ep.polarity,
-                anchor=(ep.anchors[0].anchor if ep.anchors else ""),
-                ts=int(ep.ts), trust=ep.trust))
+            items.append(
+                ConflictItem(
+                    episode_id=int(ep.id),
+                    vector=ep.value,
+                    polarity=ep.polarity,
+                    anchor=(ep.anchors[0].anchor if ep.anchors else ""),
+                    ts=int(ep.ts),
+                    trust=ep.trust,
+                )
+            )
         if len(items) < 2:
             return ()
-        cap = max(1, len(items) * (len(items) - 1) // 2)   # never top_n-starved
+        cap = max(1, len(items) * (len(items) - 1) // 2)  # never top_n-starved
         notes = detect_conflicts(items, tau=float(self.conflict.tau), top_n=cap)
-        return tuple(n for n in notes
-                     if n.a_id == int(ep.id) or n.b_id == int(ep.id))
+        return tuple(n for n in notes if n.a_id == int(ep.id) or n.b_id == int(ep.id))
 
-    def _gate_drift_verdicts(self, ep) -> list[str]:
+    def _gate_drift_verdicts(self, ep: Episode) -> list[str]:
         """§3.2 clause 1a feed: the materialized drift verdicts for the target's anchors
         at each anchor repo's CANONICAL tip (the sync watermark meta key). An unknown
         tip / un-materialized anchor contributes nothing (absence never qualifies).
         Raises freely — the caller owns the fail-closed."""
         verdicts: list[str] = []
         if not ep.anchors:
-            return verdicts                       # general/scope-only: drift is n/a
+            return verdicts  # general/scope-only: drift is n/a
         by_repo: dict[str, list[str]] = {}
         for a in ep.anchors:
             by_repo.setdefault(a.repo, []).append(a.anchor)
         for repo, anchors in by_repo.items():
             row = self.store.conn.execute(
-                "SELECT value FROM meta WHERE key=?",
-                (canonical_tip_key(repo),)).fetchone()
+                "SELECT value FROM meta WHERE key=?", (canonical_tip_key(repo),)
+            ).fetchone()
             tip = row["value"] if row is not None else None
             if not isinstance(tip, str) or not tip:
                 continue
@@ -475,8 +583,9 @@ class HiveMCPServer:
                     verdicts.append(str(entry[0]))
         return verdicts
 
-    def _retirement_eligibility(self, ep, caller_identity: str,
-                                winner=None) -> Eligibility:
+    def _retirement_eligibility(
+        self, ep: Episode, caller_identity: str, winner: Optional[Episode] = None
+    ) -> Eligibility:
         """Assemble every §3.2 gate feed and run the ONE pure owner
         ``retirement_evidence``. ``winner`` (supersede only): the boundary owns the
         ``conflict.tau`` threshold (Law 4 — config never reaches the pure gate), so
@@ -497,44 +606,65 @@ class HiveMCPServer:
                 if c is not None and c >= float(self.conflict.tau):
                     winner_cosine = c
             return retirement_evidence(
-                episode=ep, caller_identity=caller_identity,
-                drift_verdicts=drift_verdicts, evidence_rows=rows,
-                conflict_pairs=pairs, winner_cosine=winner_cosine)
-        except Exception:                          # noqa: BLE001 — undecidable ⇒ noop
-            _log.warning("mcp.retirement_gate_feed_failed", extra={
-                "event": "mcp.retirement_gate_feed_failed",
-                "episode_id": int(getattr(ep, "id", -1))}, exc_info=True)
+                episode=ep,
+                caller_identity=caller_identity,
+                drift_verdicts=drift_verdicts,
+                evidence_rows=rows,
+                conflict_pairs=pairs,
+                winner_cosine=winner_cosine,
+            )
+        except Exception:  # noqa: BLE001 — undecidable ⇒ noop
+            _log.warning(
+                "mcp.retirement_gate_feed_failed",
+                extra={
+                    "event": "mcp.retirement_gate_feed_failed",
+                    "episode_id": int(getattr(ep, "id", -1)),
+                },
+                exc_info=True,
+            )
             return _INELIGIBLE
 
-    def _stamp_retirement_audit(self, episode_id: int, kind: str, actor: str,
-                                signals: tuple) -> None:
+    def _stamp_retirement_audit(
+        self, episode_id: int, kind: str, actor: str, signals: tuple[str, ...]
+    ) -> None:
         """Stamp exactly WHICH machine signal(s) authorized a retirement into the
         ledger (one server-written row beside the store's own supersede/prune row).
         Runs only AFTER a successful retire; a stamp fault propagates loudly rather
         than leaving a silently-unattributed retirement."""
-        self.store.insert_audit(int(episode_id), kind, actor, int(self.now()),
-                                json.dumps({"signals": list(signals)}))
+        self.store.insert_audit(
+            int(episode_id),
+            kind,
+            actor,
+            int(self.now()),
+            json.dumps({"signals": list(signals)}),
+        )
 
     # ── tool handlers: (args, identity); args read permissively, _validate_args is the only
     #    required-field guard. ``identity`` is the per-request caller resolved by the transport
     #    (HTTP daemon) or the process default (stdio) — attribution lives HERE (D1). ──
-    def _handle_write(self, args: dict, identity: ServerIdentity) -> dict:
+    def _handle_write(
+        self, args: dict[str, Any], identity: ServerIdentity
+    ) -> dict[str, Any]:
         text = args.get("text")
         # proposed_by is ALWAYS the authenticated caller — INV-2: no client field to assert it
         # (``proposed_by`` is gone from the write schema). Deliberate mutation: read self.identity here.
         proposed_by = identity.agent_id
-        polarity = args.get("polarity", "neutral")  # do|dont|neutral (schema-enum-checked)
-        kind = args.get("kind", DEFAULT_KIND)     # registry vocabulary (schema-enum-checked)
+        polarity = args.get(
+            "polarity", "neutral"
+        )  # do|dont|neutral (schema-enum-checked)
+        kind = args.get(
+            "kind", DEFAULT_KIND
+        )  # registry vocabulary (schema-enum-checked)
         try:
-            meta = normalize_meta(args.get("meta"))   # the ONE grammar gate (meta.py)
+            meta = normalize_meta(args.get("meta"))  # the ONE grammar gate (meta.py)
         except BadMeta as e:
             return {"status": "refused", "reason": f"bad meta: {e}"}
         try:
-            known = self._known_repos()           # the scope grammar gate (anchors.py)
+            known = self._known_repos()  # the scope grammar gate (anchors.py)
             anchors = normalize_anchors(args.get("anchors"), known_repos=known)
             scope = normalize_repos(args.get("repos"), known_repos=known)
         except BadAnchors as e:
-            return {"status": "refused", "reason": str(e)}   # nothing stored
+            return {"status": "refused", "reason": str(e)}  # nothing stored
         repos = [name for name, _branch in scope]
 
         # ── the §3.2 replaces= retirement rider, gated BEFORE any store mutation.
@@ -551,80 +681,127 @@ class HiveMCPServer:
             if target is not None:
                 gate = self._retirement_eligibility(target, identity.agent_id)
                 if not gate.eligible:
-                    rider = None                  # target untouched; the write proceeds
+                    rider = None  # target untouched; the write proceeds
         try:
-            res = self.admission.write(text, proposed_by=proposed_by, replaces=rider,
-                                       polarity=polarity, kind=kind, anchors=anchors,
-                                       repos=repos, meta=meta)
+            res = self.admission.write(
+                text,
+                proposed_by=proposed_by,
+                replaces=rider,
+                polarity=polarity,
+                kind=kind,
+                anchors=anchors,
+                repos=repos,
+                meta=meta,
+            )
         except SecretRefused as e:
             # REFUSE: nothing written (0 rows). Envelope carries rule NAMES, never bytes.
-            return {"status": "refused", "reason": str(e),
-                    "scan": {"action": "refuse", "rules": e.rules,
-                             "n_findings": e.n_findings}}
+            return {
+                "status": "refused",
+                "reason": str(e),
+                "scan": {
+                    "action": "refuse",
+                    "rules": e.rules,
+                    "n_findings": e.n_findings,
+                },
+            }
         # CLEAN/REDACT both land servable NOW as trust=provisional (v3 §3.1); the
         # envelope labels the row's ACTUAL trust (a dedup onto an established row
         # honestly reads established — a write never demotes).
-        ep = self.store.get_episode(res.episode_id) if res.episode_id is not None else None
-        out: dict = {"status": res.status, "id": res.episode_id,
-                     "trust": (ep.trust if ep is not None else None),
-                     "scan": _scan_report(res.scan), "deduped": res.deduped}
+        ep = (
+            self.store.get_episode(res.episode_id)
+            if res.episode_id is not None
+            else None
+        )
+        out: dict[str, Any] = {
+            "status": res.status,
+            "id": res.episode_id,
+            "trust": (ep.trust if ep is not None else None),
+            "scan": _scan_report(res.scan),
+            "deduped": res.deduped,
+        }
         if replaces is not None:
-            out["superseded"] = res.superseded    # int when retired, else null
+            out["superseded"] = res.superseded  # int when retired, else null
             if gate is not None and not gate.eligible:
                 out["supersede_noop"] = GATE_NOOP_SIGNAL
             elif gate is not None and res.superseded is not None:
-                self._stamp_retirement_audit(res.superseded, EK_SUPERSEDE,
-                                             identity.agent_id, gate.signals)
+                self._stamp_retirement_audit(
+                    res.superseded, EK_SUPERSEDE, identity.agent_id, gate.signals
+                )
         if res.status == "redacted" and res.scan.redacted_text is not None:
             out["redacted_preview"] = _preview(res.scan.redacted_text)
         return out
 
-    def _handle_capture(self, args: dict, identity: ServerIdentity) -> dict:
+    def _handle_capture(
+        self, args: dict[str, Any], identity: ServerIdentity
+    ) -> dict[str, Any]:
         text = args.get("text")
-        polarity = args.get("polarity", "neutral")  # do|dont|neutral (schema-enum-checked)
-        kind = args.get("kind", DEFAULT_KIND)     # registry vocabulary (schema-enum-checked)
+        polarity = args.get(
+            "polarity", "neutral"
+        )  # do|dont|neutral (schema-enum-checked)
+        kind = args.get(
+            "kind", DEFAULT_KIND
+        )  # registry vocabulary (schema-enum-checked)
         try:
-            meta = normalize_meta(args.get("meta"))   # the ONE grammar gate (meta.py)
+            meta = normalize_meta(args.get("meta"))  # the ONE grammar gate (meta.py)
         except BadMeta as e:
             return {"status": "refused", "reason": f"bad meta: {e}"}
         try:
-            known = self._known_repos()           # the scope grammar gate (anchors.py)
+            known = self._known_repos()  # the scope grammar gate (anchors.py)
             anchors = normalize_anchors(args.get("anchors"), known_repos=known)
             scope = normalize_repos(args.get("repos"), known_repos=known)
         except BadAnchors as e:
-            return {"status": "refused", "reason": str(e)}   # nothing stored
+            return {"status": "refused", "reason": str(e)}  # nothing stored
         try:
-            res = self.admission.capture(text, proposed_by=identity.agent_id,
-                                         polarity=polarity, kind=kind,
-                                         anchors=anchors,
-                                         repos=[name for name, _b in scope],
-                                         meta=meta)
+            res = self.admission.capture(
+                text,
+                proposed_by=identity.agent_id,
+                polarity=polarity,
+                kind=kind,
+                anchors=anchors,
+                repos=[name for name, _b in scope],
+                meta=meta,
+            )
         except SecretRefused as e:
             # REFUSE: nothing written (0 rows). Envelope carries rule NAMES, never bytes.
-            return {"status": "refused", "reason": str(e),
-                    "scan": {"action": "refuse", "rules": e.rules,
-                             "n_findings": e.n_findings}}
-        if res.status == "disabled":             # autonomy off — nothing written
+            return {
+                "status": "refused",
+                "reason": str(e),
+                "scan": {
+                    "action": "refuse",
+                    "rules": e.rules,
+                    "n_findings": e.n_findings,
+                },
+            }
+        if res.status == "disabled":  # autonomy off — nothing written
             return {"status": "disabled"}
-        return {"status": res.status, "id": res.episode_id,
-                "scan": _scan_report(res.scan), "deduped": res.deduped}
+        return {
+            "status": res.status,
+            "id": res.episode_id,
+            "scan": _scan_report(res.scan),
+            "deduped": res.deduped,
+        }
 
-    def _handle_recall(self, args: dict, identity: ServerIdentity) -> dict:
+    def _handle_recall(
+        self, args: dict[str, Any], identity: ServerIdentity
+    ) -> dict[str, Any]:
         query = args.get("query") or ""
         # ── the v3 partition ask (§3.3): each repos entry is ``name`` or ``name@branch``
         # (the branch names the drift tip only). An unregistered name is a clean refusal;
         # omitted/empty scope keeps the legacy GLOBAL read (no scope argument passed, so
         # a scope-less recall double stays byte-compatible).
         try:
-            scope_pairs = normalize_repos(args.get("repos"),
-                                          known_repos=self._known_repos())
+            scope_pairs = normalize_repos(
+                args.get("repos"), known_repos=self._known_repos()
+            )
         except BadAnchors as e:
             return {"status": "refused", "reason": str(e)}
         anchor_prefix = args.get("anchor_prefix") or ""
         if scope_pairs or anchor_prefix:
             result = self.recall.recall(
-                query, agent_id=identity.agent_id,
-                scope=RecallScope(repos=scope_pairs, anchor_prefix=anchor_prefix))
+                query,
+                agent_id=identity.agent_id,
+                scope=RecallScope(repos=scope_pairs, anchor_prefix=anchor_prefix),
+            )
         else:
             result = self.recall.recall(query, agent_id=identity.agent_id)
         # ── BELT 2: servable-only re-filter, independent of the index (mut #2).
@@ -633,24 +810,38 @@ class HiveMCPServer:
         # even before the sweep materializes its death.
         now = int(self.now())
         belt_ttl_s = int(self.autonomy.provisional_ttl_days) * _DAY_S
-        hits: list[dict] = []
+        hits: list[dict[str, Any]] = []
         for h in result.hits:
             ep = self.store.get_episode(h.episode_id)
-            if ep is None or not is_servable(                # ← delete this guard ⇒ mut #2
-                    status=ep.status, trust=ep.trust,
-                    last_active_ts=ep.last_active_ts, now=now,
-                    provisional_ttl_s=belt_ttl_s):
-                _log.warning("mcp.recall_belt_drop", extra={"event": "mcp.recall_belt_drop",
-                             "trace_id": result.trace_id, "episode_id": h.episode_id})
+            if ep is None or not is_servable(  # ← delete this guard ⇒ mut #2
+                status=ep.status,
+                trust=ep.trust,
+                last_active_ts=ep.last_active_ts,
+                now=now,
+                provisional_ttl_s=belt_ttl_s,
+            ):
+                _log.warning(
+                    "mcp.recall_belt_drop",
+                    extra={
+                        "event": "mcp.recall_belt_drop",
+                        "trace_id": result.trace_id,
+                        "episode_id": h.episode_id,
+                    },
+                )
                 continue
-            hit = {"episode_id": h.episode_id, "text": h.text,
-                   "sim": float(h.sim), "trust": h.trust, "ts": h.ts,
-                   "polarity": h.polarity, "kind": h.kind,
-                   # §3.4: repos/anchors ride EVERY hit ([] = general/scope-only)
-                   "repos": list(h.repos),
-                   "anchors": [{"repo": a.repo, "anchor": a.anchor}
-                               for a in h.anchors]}
-            if h.meta:            # omit-when-empty: the no-meta envelope is byte-inert
+            hit = {
+                "episode_id": h.episode_id,
+                "text": h.text,
+                "sim": float(h.sim),
+                "trust": h.trust,
+                "ts": h.ts,
+                "polarity": h.polarity,
+                "kind": h.kind,
+                # §3.4: repos/anchors ride EVERY hit ([] = general/scope-only)
+                "repos": list(h.repos),
+                "anchors": [{"repo": a.repo, "anchor": a.anchor} for a in h.anchors],
+            }
+            if h.meta:  # omit-when-empty: the no-meta envelope is byte-inert
                 hit["meta"] = h.meta
             hits.append(hit)
         # §3.4 drift enrichment — the ONE owner is hive.app.drift.attach_drift:
@@ -667,28 +858,41 @@ class HiveMCPServer:
             try:
                 lv = self.store.last_verification(
                     [h["episode_id"] for h in hits],
-                    canonical_ref=self.canonical_ref or None)
+                    canonical_ref=self.canonical_ref or None,
+                )
                 for hit in hits:
                     stamp = lv.get(hit["episode_id"])
-                    if stamp is not None:            # absent ⇒ no key, never null
+                    if stamp is not None:  # absent ⇒ no key, never null
                         verified_ts, sha, state = stamp
-                        hit["last_verified"] = {"ts": verified_ts, "sha": sha,
-                                                "state": state}
+                        hit["last_verified"] = {
+                            "ts": verified_ts,
+                            "sha": sha,
+                            "state": state,
+                        }
                         # server-side rider: a hit the ledger already knows is stale carries its
                         # remediation options on EVERY harness (advisory text, O7-safe — detection +
                         # guidance, never an autonomous retirement). STALE-ONLY: a current hit stays
                         # byte-inert. The edge's own point-verify verdict, when present, wins over it.
                         if state == "stale":
                             hit["remediation"] = REMEDIATION_NOTICE
-            except Exception:                        # noqa: BLE001 — side-channel only
-                _log.warning("mcp.recall_last_verified_failed", extra={
-                    "event": "mcp.recall_last_verified_failed",
-                    "trace_id": result.trace_id}, exc_info=True)
+            except Exception:  # noqa: BLE001 — side-channel only
+                _log.warning(
+                    "mcp.recall_last_verified_failed",
+                    extra={
+                        "event": "mcp.recall_last_verified_failed",
+                        "trace_id": result.trace_id,
+                    },
+                    exc_info=True,
+                )
         # an empty post-belt set is an ABSTAIN, never a confident-empty (never-hallucinate)
         abstained = (result.state != CONFIDENT) or (not hits)
-        env: dict = {"reference_context": hits, "abstained": abstained,
-                     "trace_id": result.trace_id, "state": result.state,
-                     "top_cos": float(result.top_cos)}
+        env: dict[str, Any] = {
+            "reference_context": hits,
+            "abstained": abstained,
+            "trace_id": result.trace_id,
+            "state": result.state,
+            "top_cos": float(result.top_cos),
+        }
         # conflict carrier: a DISTINCT envelope key referencing IDS ONLY (never text, never
         # reference_context — Law 4). The pure pipeline detects over the PRE-select servable
         # field, so a near-dup the decorrelated serve dropped is still surfaced. Byte-inert when
@@ -696,50 +900,93 @@ class HiveMCPServer:
         if getattr(self.conflict, "enabled", False) and result.conflicts:
             env["conflicts"] = [_conflict_note_to_wire(n) for n in result.conflicts]
         if abstained:
-            _log.info("mcp.recall_abstain", extra={"event": "mcp.recall_abstain",
-                      "trace_id": result.trace_id, "state": result.state,
-                      "top_cos": float(result.top_cos)})
+            _log.info(
+                "mcp.recall_abstain",
+                extra={
+                    "event": "mcp.recall_abstain",
+                    "trace_id": result.trace_id,
+                    "state": result.state,
+                    "top_cos": float(result.top_cos),
+                },
+            )
             env["note"] = _abstain_note(result.state)
         return env
 
-    def _handle_supersede(self, args: dict, identity: ServerIdentity) -> dict:
+    def _handle_supersede(
+        self, args: dict[str, Any], identity: ServerIdentity
+    ) -> dict[str, Any]:
         """Retirement-with-replacement, agent-called but MACHINE-GATED (§3.2, no
         approver exists): the gate feeds + ``retirement_evidence`` run BEFORE any store
         mutation — unqualified ⇒ the exact §3.2 noop envelope (isError=false, nothing
         retired); qualified ⇒ ``store.supersede`` retires the loser and the audit
         stamps WHICH signal(s) qualified. Unknown-id / self-supersede keep today's
         distinct noop shape; a gate-feed reader fault fails CLOSED to noop."""
-        loser = int(args.get("loser"))               # required+integer (schema belt)
-        winner = int(args.get("winner"))
+        raw_loser: Any = args.get("loser")  # required+integer (schema belt)
+        loser = int(raw_loser)
+        raw_winner: Any = args.get("winner")
+        winner = int(raw_winner)
         loser_ep = self.store.get_episode(loser)
         winner_ep = self.store.get_episode(winner)
         if loser == winner or loser_ep is None or winner_ep is None:
-            return {"status": "noop", "loser": loser, "winner": winner,
-                    "reason": "unknown id or self-supersede — nothing retired"}
+            return {
+                "status": "noop",
+                "loser": loser,
+                "winner": winner,
+                "reason": "unknown id or self-supersede — nothing retired",
+            }
         if loser_ep.trust == DEPRECATED and loser_ep.superseded_by == winner:
             # idempotent re-run: already retired in favor of THIS winner — echo the
             # success without a duplicate audit (mirrors store.supersede's guard).
-            return {"status": "superseded", "loser": loser, "winner": winner,
-                    "signals": []}
-        elig = self._retirement_eligibility(loser_ep, identity.agent_id,
-                                            winner=winner_ep)
-        if not elig.eligible:                        # §3.2: benign noop, never an error
-            return {"status": "noop", "loser": loser, "winner": winner,
-                    "reason": GATE_NOOP_REASON, "signals": []}
-        ok = self.store.supersede(loser, winner, actor=identity.agent_id,
-                                  ts=int(self.now()))
+            return {
+                "status": "superseded",
+                "loser": loser,
+                "winner": winner,
+                "signals": [],
+            }
+        elig = self._retirement_eligibility(
+            loser_ep, identity.agent_id, winner=winner_ep
+        )
+        if not elig.eligible:  # §3.2: benign noop, never an error
+            return {
+                "status": "noop",
+                "loser": loser,
+                "winner": winner,
+                "reason": GATE_NOOP_REASON,
+                "signals": [],
+            }
+        ok = self.store.supersede(
+            loser, winner, actor=identity.agent_id, ts=int(self.now())
+        )
         if not ok:
-            return {"status": "noop", "loser": loser, "winner": winner,
-                    "reason": "unknown id or self-supersede — nothing retired"}
-        self._stamp_retirement_audit(loser, EK_SUPERSEDE, identity.agent_id,
-                                     elig.signals)
-        _log.info("mcp.superseded", extra={"event": "mcp.superseded",
-                  "loser": loser, "winner": winner, "agent_id": identity.agent_id,
-                  "signals": list(elig.signals)})
-        return {"status": "superseded", "loser": loser, "winner": winner,
-                "signals": list(elig.signals)}
+            return {
+                "status": "noop",
+                "loser": loser,
+                "winner": winner,
+                "reason": "unknown id or self-supersede — nothing retired",
+            }
+        self._stamp_retirement_audit(
+            loser, EK_SUPERSEDE, identity.agent_id, elig.signals
+        )
+        _log.info(
+            "mcp.superseded",
+            extra={
+                "event": "mcp.superseded",
+                "loser": loser,
+                "winner": winner,
+                "agent_id": identity.agent_id,
+                "signals": list(elig.signals),
+            },
+        )
+        return {
+            "status": "superseded",
+            "loser": loser,
+            "winner": winner,
+            "signals": list(elig.signals),
+        }
 
-    def _handle_prune(self, args: dict, identity: ServerIdentity) -> dict:
+    def _handle_prune(
+        self, args: dict[str, Any], identity: ServerIdentity
+    ) -> dict[str, Any]:
         """The bare-retirement verb (the SECOND retirement owner beside hive_supersede),
         agent-called but MACHINE-GATED (§3.2, no approver exists): the gate feeds +
         ``retirement_evidence`` run BEFORE any store mutation — unqualified ⇒ the exact
@@ -748,29 +995,53 @@ class HiveMCPServer:
         WHICH signal(s) qualified. Unknown-id / already-retired keep today's distinct
         noop shape (never a double audit); a gate-feed reader fault fails CLOSED to
         noop."""
-        episode_id = int(args.get("episode_id"))     # required+integer (schema belt)
+        raw_episode_id: Any = args.get("episode_id")  # required+integer (schema belt)
+        episode_id = int(raw_episode_id)
         ep = self.store.get_episode(episode_id)
         if ep is None or ep.status != "approved" or ep.trust == DEPRECATED:
-            return {"status": "noop", "episode_id": episode_id,
-                    "reason": "unknown id or already retired — nothing pruned"}
+            return {
+                "status": "noop",
+                "episode_id": episode_id,
+                "reason": "unknown id or already retired — nothing pruned",
+            }
         elig = self._retirement_eligibility(ep, identity.agent_id)
-        if not elig.eligible:                        # §3.2: benign noop, never an error
-            return {"status": "noop", "episode_id": episode_id,
-                    "reason": GATE_NOOP_REASON, "signals": []}
-        ok = self.store.deprecate(episode_id, actor=identity.agent_id,
-                                  ts=int(self.now()))
+        if not elig.eligible:  # §3.2: benign noop, never an error
+            return {
+                "status": "noop",
+                "episode_id": episode_id,
+                "reason": GATE_NOOP_REASON,
+                "signals": [],
+            }
+        ok = self.store.deprecate(
+            episode_id, actor=identity.agent_id, ts=int(self.now())
+        )
         if not ok:
-            return {"status": "noop", "episode_id": episode_id,
-                    "reason": "unknown id or already retired — nothing pruned"}
-        self._stamp_retirement_audit(episode_id, EK_PRUNE, identity.agent_id,
-                                     elig.signals)
-        _log.info("mcp.pruned", extra={"event": "mcp.pruned",
-                  "episode_id": episode_id, "agent_id": identity.agent_id,
-                  "signals": list(elig.signals)})
-        return {"status": "pruned", "episode_id": episode_id,
-                "signals": list(elig.signals)}
+            return {
+                "status": "noop",
+                "episode_id": episode_id,
+                "reason": "unknown id or already retired — nothing pruned",
+            }
+        self._stamp_retirement_audit(
+            episode_id, EK_PRUNE, identity.agent_id, elig.signals
+        )
+        _log.info(
+            "mcp.pruned",
+            extra={
+                "event": "mcp.pruned",
+                "episode_id": episode_id,
+                "agent_id": identity.agent_id,
+                "signals": list(elig.signals),
+            },
+        )
+        return {
+            "status": "pruned",
+            "episode_id": episode_id,
+            "signals": list(elig.signals),
+        }
 
-    def _handle_outcome(self, args: dict, identity: ServerIdentity) -> dict:
+    def _handle_outcome(
+        self, args: dict[str, Any], identity: ServerIdentity
+    ) -> dict[str, Any]:
         """The PURE evidence verb: an agent reports which recalled episode_ids materially HELPED
         or HURT its task. Records one ``outcome_helped`` / ``outcome_hurt`` evidence_events audit
         per KNOWN id (unknown ids are skipped — never a forged audit, never a raise), carrying
@@ -781,7 +1052,7 @@ class HiveMCPServer:
         Defensively coerces ids (a non-int item is skipped, fail-open side-channel)."""
         now = int(self.now())
         actor = identity.agent_id
-        empty = json.dumps({})                        # no memory text rides the audit (Law 4)
+        empty = json.dumps({})  # no memory text rides the audit (Law 4)
 
         def _record(raw: Any, kind: str) -> list[int]:
             recorded: list[int] = []
@@ -789,20 +1060,29 @@ class HiveMCPServer:
                 try:
                     eid = int(x)
                 except (TypeError, ValueError):
-                    continue                          # skip a non-coercible id (fail-open)
+                    continue  # skip a non-coercible id (fail-open)
                 if self.store.get_episode(eid) is None:
-                    continue                          # skip an unknown id (never forge an audit)
+                    continue  # skip an unknown id (never forge an audit)
                 self.store.insert_audit(eid, kind, actor, now, empty)
                 recorded.append(eid)
             return recorded
 
         helped = _record(args.get("helped"), EK_OUTCOME_HELPED)
         hurt = _record(args.get("hurt"), EK_OUTCOME_HURT)
-        _log.info("mcp.outcome", extra={"event": "mcp.outcome", "agent_id": actor,
-                  "n_helped": len(helped), "n_hurt": len(hurt)})
+        _log.info(
+            "mcp.outcome",
+            extra={
+                "event": "mcp.outcome",
+                "agent_id": actor,
+                "n_helped": len(helped),
+                "n_hurt": len(hurt),
+            },
+        )
         return {"status": "recorded", "helped": helped, "hurt": hurt}
 
-    def _handle_flag(self, args: dict, identity: ServerIdentity) -> dict:
+    def _handle_flag(
+        self, args: dict[str, Any], identity: ServerIdentity
+    ) -> dict[str, Any]:
         """The advisory Layer-2 verb (gated by conflict.enabled). Records an UNTRUSTED
         conflict/supersedes marker via the ConflictFlagService — it NEVER retires (resolution
         stays the human hive_supersede). ``proposed_by`` is the transport identity (INV-2,
@@ -810,38 +1090,62 @@ class HiveMCPServer:
         the resolution is ``refused`` (0 rows)."""
         if self.flag_service is None:
             return {"status": "disabled"}
-        a = int(args.get("a"))                       # required+integer (schema belt)
-        b = int(args.get("b"))
+        raw_a: Any = args.get("a")  # required+integer (schema belt)
+        a = int(raw_a)
+        raw_b: Any = args.get("b")
+        b = int(raw_b)
         winner = args.get("winner")
         try:
             res = self.flag_service.flag(
-                kind=args.get("kind"), a_id=a, b_id=b,
+                kind=args.get("kind"),
+                a_id=a,
+                b_id=b,
                 winner_id=(int(winner) if winner is not None else None),
                 resolution=args.get("resolution") or "",
-                proposed_by=identity.agent_id)
+                proposed_by=identity.agent_id,
+            )
         except SecretRefused as e:
-            return {"status": "refused", "reason": str(e),
-                    "scan": {"action": "refuse", "rules": e.rules,
-                             "n_findings": e.n_findings}}
+            return {
+                "status": "refused",
+                "reason": str(e),
+                "scan": {
+                    "action": "refuse",
+                    "rules": e.rules,
+                    "n_findings": e.n_findings,
+                },
+            }
         except ValueError as e:
             return {"status": "rejected", "reason": str(e)}
         if res.status == "disabled":
             return {"status": "disabled"}
-        return {"status": res.status, "kind": res.kind, "recorded": res.recorded,
-                "a": a, "b": b}
+        return {
+            "status": res.status,
+            "kind": res.kind,
+            "recorded": res.recorded,
+            "a": a,
+            "b": b,
+        }
 
-    def _handle_health(self, args: dict, identity: ServerIdentity) -> dict:
+    def _handle_health(
+        self, args: dict[str, Any], identity: ServerIdentity
+    ) -> dict[str, Any]:
         try:
-            n_episodes, n_pending = self.store.counts()      # probe: store + (below) embedder
-            snap: dict = {
-                "ok": True, "tenant_id": self.identity.tenant_id, "db_path": self.db_path,
-                "db_size_bytes": self._db_size(), "n_episodes": n_episodes,
+            n_episodes, n_pending = (
+                self.store.counts()
+            )  # probe: store + (below) embedder
+            snap: dict[str, Any] = {
+                "ok": True,
+                "tenant_id": self.identity.tenant_id,
+                "db_path": self.db_path,
+                "db_size_bytes": self._db_size(),
+                "n_episodes": n_episodes,
                 "n_pending": n_pending,
                 "embedder": str(getattr(self.embedder, "name", "unknown")),
                 "embedder_loaded": bool(getattr(self.embedder, "loaded", True)),
                 "d": int(getattr(self.embedder, "d", 0)),
                 "index_authoritative": bool(self.recall.index.is_authoritative()),
-                "uptime_s": max(0, int(self.now()) - self.started_ts)}
+                "uptime_s": max(0, int(self.now()) - self.started_ts),
+            }
             if not self.secret_scan_enabled:
                 # the credential floor is OFF (operator opt-out) — surface the loosened posture so
                 # it is never silent. Present ONLY when disabled ⇒ the default envelope is
@@ -858,15 +1162,19 @@ class HiveMCPServer:
             try:
                 snap["trust_counts"] = self.store.trust_counts()
                 snap["n_misses_7d"] = self.store.miss_count_since(
-                    int(self.now()) - 7 * _DAY_S)
-            except Exception:                                # noqa: BLE001 — telemetry only
-                _log.warning("mcp.health_trust_probe_failed", extra={
-                    "event": "mcp.health_trust_probe_failed"}, exc_info=True)
-            hint = self._solo_hint()                         # stalls self-describe
+                    int(self.now()) - 7 * _DAY_S
+                )
+            except Exception:  # noqa: BLE001 — telemetry only
+                _log.warning(
+                    "mcp.health_trust_probe_failed",
+                    extra={"event": "mcp.health_trust_probe_failed"},
+                    exc_info=True,
+                )
+            hint = self._solo_hint()  # stalls self-describe
             if hint is not None:
                 snap["solo_hint"] = hint
             if args.get("include_trends"):
-                snap["trends"] = self._trends_report()       # CV4: the convergence KPI
+                snap["trends"] = self._trends_report()  # CV4: the convergence KPI
             if args.get("include_gaps"):
                 snap["gaps"] = self._gap_report()
             # the conflict worklist is gated by BOTH the request flag AND conflict.enabled
@@ -897,12 +1205,21 @@ class HiveMCPServer:
             # v3: NO include_onboarding — the install-payload channel is deleted; the
             # usage contract is served fresh at every connect (initialize instructions).
             return snap
-        except Exception as e:                               # fail-closed subset ONLY
-            _log.error("mcp.health_probe_fail", extra={"event": "mcp.health_probe_fail",
-                       "error_type": type(e).__name__, "db_path": self.db_path},
-                       exc_info=True)
-            return {"ok": False, "error": f"{type(e).__name__}: {e}",
-                    "db_path": self.db_path}
+        except Exception as e:  # fail-closed subset ONLY
+            _log.error(
+                "mcp.health_probe_fail",
+                extra={
+                    "event": "mcp.health_probe_fail",
+                    "error_type": type(e).__name__,
+                    "db_path": self.db_path,
+                },
+                exc_info=True,
+            )
+            return {
+                "ok": False,
+                "error": f"{type(e).__name__}: {e}",
+                "db_path": self.db_path,
+            }
 
     # ── health helpers ────────────────────────────────────────────────────────
     def _solo_hint(self) -> Optional[str]:
@@ -918,20 +1235,25 @@ class HiveMCPServer:
                 return None
             window_s = int(self.autonomy.demand_window_days) * _DAY_S
             misses = self.store.misses_window(int(self.now()) - window_s)
-            if len(misses) < int(self.autonomy.demand_m):    # ← the wasted-demand floor
+            if len(misses) < int(self.autonomy.demand_m):  # ← the wasted-demand floor
                 return None
             if len({m.agent_id for m in misses}) > 1:
                 return None
-            return ("single-identity traffic: demand-promotion is inert under the "
-                    "anti-gaming rule because your agents share one identity — "
-                    "register each agent via `hive connect` so every session carries "
-                    "a distinct X-Hive-Agent-Id (remote seats: one token each).")
-        except Exception:                                    # noqa: BLE001 — telemetry only
-            _log.warning("mcp.solo_hint_probe_failed", extra={
-                "event": "mcp.solo_hint_probe_failed"}, exc_info=True)
+            return (
+                "single-identity traffic: demand-promotion is inert under the "
+                "anti-gaming rule because your agents share one identity — "
+                "register each agent via `hive connect` so every session carries "
+                "a distinct X-Hive-Agent-Id (remote seats: one token each)."
+            )
+        except Exception:  # noqa: BLE001 — telemetry only
+            _log.warning(
+                "mcp.solo_hint_probe_failed",
+                extra={"event": "mcp.solo_hint_probe_failed"},
+                exc_info=True,
+            )
             return None
 
-    def _gap_report(self) -> list[dict]:
+    def _gap_report(self) -> list[dict[str, Any]]:
         """The clustered demand-gap report (deterministic, capped window, top-10).
         Window + cosine neighborhood mirror what the promotion rule sees, so a
         reported gap is exactly un-served demand. v3: each miss's REPO scope rides
@@ -943,12 +1265,15 @@ class HiveMCPServer:
             rows = self.store.misses_detail_window(since)
             self._attach_miss_scope(rows, since)
             return cluster_misses(rows, tau=float(self.autonomy.demand_tau))
-        except Exception:                                    # noqa: BLE001 — telemetry only
-            _log.warning("mcp.gap_report_failed", extra={
-                "event": "mcp.gap_report_failed"}, exc_info=True)
+        except Exception:  # noqa: BLE001 — telemetry only
+            _log.warning(
+                "mcp.gap_report_failed",
+                extra={"event": "mcp.gap_report_failed"},
+                exc_info=True,
+            )
             return []
 
-    def _attach_miss_scope(self, rows: list, since: int) -> None:
+    def _attach_miss_scope(self, rows: list[dict[str, Any]], since: int) -> None:
         """Zip each miss row's stored repo scope onto the ``misses_detail_window``
         feed. The store method predates the v3 ``repos`` column, so the scope is read
         in the SAME frame (``ts > since``, id order) and positionally zipped — a
@@ -957,15 +1282,18 @@ class HiveMCPServer:
         gap report still serves."""
         try:
             raw = self.store.conn.execute(
-                "SELECT repos FROM recall_misses WHERE ts>? ORDER BY id",
-                (int(since),)).fetchall()
+                "SELECT repos FROM recall_misses WHERE ts>? ORDER BY id", (int(since),)
+            ).fetchall()
             for row, extra in zip(rows, raw):
                 row["repos"] = _parse_repos_json(extra["repos"])
-        except Exception:                                    # noqa: BLE001 — telemetry only
-            _log.warning("mcp.miss_scope_attach_failed", extra={
-                "event": "mcp.miss_scope_attach_failed"}, exc_info=True)
+        except Exception:  # noqa: BLE001 — telemetry only
+            _log.warning(
+                "mcp.miss_scope_attach_failed",
+                extra={"event": "mcp.miss_scope_attach_failed"},
+                exc_info=True,
+            )
 
-    def _trends_report(self) -> dict:
+    def _trends_report(self) -> dict[str, Any]:
         """CV4: current-vs-previous 7d windows over existing tables — the
         demand-health KPI (confident_rate ↑, demand_entropy ↓). The ONLY window
         into silent fail-open rot (THEORY §8 tension #3). Composes the gaps clustering;
@@ -973,14 +1301,19 @@ class HiveMCPServer:
         try:
             tau = float(self.autonomy.demand_tau)
             return compute_trends(
-                self.store, lambda rows: cluster_misses(rows, tau=tau),
-                now=int(self.now()))
-        except Exception:                                    # noqa: BLE001 — telemetry only
-            _log.warning("mcp.trends_report_failed", extra={
-                "event": "mcp.trends_report_failed"}, exc_info=True)
+                self.store,
+                lambda rows: cluster_misses(rows, tau=tau),
+                now=int(self.now()),
+            )
+        except Exception:  # noqa: BLE001 — telemetry only
+            _log.warning(
+                "mcp.trends_report_failed",
+                extra={"event": "mcp.trends_report_failed"},
+                exc_info=True,
+            )
             return {}
 
-    def _conflict_report(self) -> list[dict]:
+    def _conflict_report(self) -> list[dict[str, Any]]:
         """The conflict/redundancy worklist (THEORY I1/I2 — detection, never resolution):
         mechanical near-dup detections over the SERVABLE set, v3-bucketed by (repo,
         anchor) BINDING — an episode joins one bucket per anchor binding, unanchored
@@ -1003,32 +1336,43 @@ class HiveMCPServer:
             buckets: dict[tuple[str, str], list[ConflictItem]] = {}
             for eid, value, polarity, _anchor, ts, trust in labeled:
                 _repos, anchor_pairs = scopes.get(int(eid), (frozenset(), ()))
-                for repo, anchor in (anchor_pairs or (("", ""),)):
-                    buckets.setdefault((repo, anchor), []).append(ConflictItem(
-                        episode_id=eid, vector=value, polarity=polarity,
-                        anchor=anchor, ts=ts, trust=trust))
+                for repo, anchor in anchor_pairs or (("", ""),):
+                    buckets.setdefault((repo, anchor), []).append(
+                        ConflictItem(
+                            episode_id=eid,
+                            vector=value,
+                            polarity=polarity,
+                            anchor=anchor,
+                            ts=ts,
+                            trust=trust,
+                        )
+                    )
             top_n = int(self.conflict.top_n)
-            scored: list[tuple[float, dict]] = []
+            scored: list[tuple[float, dict[str, Any]]] = []
             for (repo, anchor), items in buckets.items():
-                for note in detect_conflicts(items, tau=float(self.conflict.tau),
-                                             top_n=top_n):
+                for note in detect_conflicts(
+                    items, tau=float(self.conflict.tau), top_n=top_n
+                ):
                     wire = _conflict_note_to_wire(note)
-                    wire["repo"] = repo              # v3: the bucket rides the entry
+                    wire["repo"] = repo  # v3: the bucket rides the entry
                     wire["anchor"] = anchor
                     scored.append((note.cosine, wire))
-            scored.sort(key=lambda t: -t[0])         # global cap across all buckets
+            scored.sort(key=lambda t: -t[0])  # global cap across all buckets
             out = [wire for _c, wire in scored[:top_n]]
             # merge open advisory flags, filtered to both-episodes-still-servable
             for flag in self.store.open_conflict_flags():
                 if flag["a_id"] in servable_ids and flag["b_id"] in servable_ids:
                     out.append(_flag_to_wire(flag))
             return out
-        except Exception:                                # noqa: BLE001 — telemetry only
-            _log.warning("mcp.conflict_report_failed", extra={
-                "event": "mcp.conflict_report_failed"}, exc_info=True)
+        except Exception:  # noqa: BLE001 — telemetry only
+            _log.warning(
+                "mcp.conflict_report_failed",
+                extra={"event": "mcp.conflict_report_failed"},
+                exc_info=True,
+            )
             return []
 
-    def _suspect_consensus_report(self) -> list[dict]:
+    def _suspect_consensus_report(self) -> list[dict[str, Any]]:
         """The suspect-consensus worklist (THEORY §10 O7 — detection, never resolution):
         PROVISIONAL promotions whose stamped demand had thin EFFECTIVE INDEPENDENCE
         (``n_eff / k`` below the floor) — the confidently-wrong-but-popular failure mode. Scans
@@ -1053,29 +1397,53 @@ class HiveMCPServer:
             ttl_s = int(self.autonomy.provisional_ttl_days) * _DAY_S
             labeled = self.store.scan_servable_labeled(now=now, provisional_ttl_s=ttl_s)
             # (id, value, polarity, anchor, ts, trust) — keep provisional (demand-promoted) only
-            anchor_by_id = {row[0]: row[3] for row in labeled if row[5] == "provisional"}
+            anchor_by_id = {
+                row[0]: row[3] for row in labeled if row[5] == "provisional"
+            }
             prov = self.store.promotion_provenance(list(anchor_by_id))
-            settled = self.store.settled_wins(list(prov))    # ids with >= 1 self-reported helped
-            items = [SuspectConsensusItem(
-                        episode_id=eid, rho_bar=rho_bar, n_eff=n_eff, k=k,
-                        has_settled_win=(eid in settled), anchor=anchor_by_id.get(eid, ""))
-                     for eid, (rho_bar, n_eff, k) in prov.items()]
+            settled = self.store.settled_wins(
+                list(prov)
+            )  # ids with >= 1 self-reported helped
+            items = [
+                SuspectConsensusItem(
+                    episode_id=eid,
+                    rho_bar=rho_bar,
+                    n_eff=n_eff,
+                    k=k,
+                    has_settled_win=(eid in settled),
+                    anchor=anchor_by_id.get(eid, ""),
+                )
+                for eid, (rho_bar, n_eff, k) in prov.items()
+            ]
             notes = detect_suspect_consensus(
-                items, n_eff_frac_max=float(self.suspect_consensus.n_eff_frac_max),
-                top_n=int(self.suspect_consensus.top_n))
-            return [{"episode_id": n.episode_id, "rho_bar": round(float(n.rho_bar), 4),
-                     "n_eff": round(float(n.n_eff), 4), "k": n.k,
-                     "martingale_warning": n.martingale_warning,
-                     "note": ("provisional promoted on thin effective-independence demand "
-                              "(correlated asks) — re-examine; resolve via hive_supersede "
-                              "(replace) or hive_prune (retire if wrong)")}
-                    for n in notes]
-        except Exception:                                # noqa: BLE001 — telemetry only
-            _log.warning("mcp.suspect_consensus_report_failed", extra={
-                "event": "mcp.suspect_consensus_report_failed"}, exc_info=True)
+                items,
+                n_eff_frac_max=float(self.suspect_consensus.n_eff_frac_max),
+                top_n=int(self.suspect_consensus.top_n),
+            )
+            return [
+                {
+                    "episode_id": n.episode_id,
+                    "rho_bar": round(float(n.rho_bar), 4),
+                    "n_eff": round(float(n.n_eff), 4),
+                    "k": n.k,
+                    "martingale_warning": n.martingale_warning,
+                    "note": (
+                        "provisional promoted on thin effective-independence demand "
+                        "(correlated asks) — re-examine; resolve via hive_supersede "
+                        "(replace) or hive_prune (retire if wrong)"
+                    ),
+                }
+                for n in notes
+            ]
+        except Exception:  # noqa: BLE001 — telemetry only
+            _log.warning(
+                "mcp.suspect_consensus_report_failed",
+                extra={"event": "mcp.suspect_consensus_report_failed"},
+                exc_info=True,
+            )
             return []
 
-    def _stale_suspects_report(self) -> list[dict]:
+    def _stale_suspects_report(self) -> list[dict[str, Any]]:
         """The graph-propagated staleness worklist (detection, never resolution): per
         SERVABLE episode, the newest ``stale_suspect`` ledger row — written by the census
         ingest when the episode's anchor sat in a breaking/removed change's blast radius
@@ -1089,44 +1457,61 @@ class HiveMCPServer:
             now = int(self.now())
             ttl_s = int(self.autonomy.provisional_ttl_days) * _DAY_S
             anchor_by_id = {
-                row[0]: row[3] for row in self.store.scan_servable_labeled(
-                    now=now, provisional_ttl_s=ttl_s)}
-            out: list[dict] = []
+                row[0]: row[3]
+                for row in self.store.scan_servable_labeled(
+                    now=now, provisional_ttl_s=ttl_s
+                )
+            }
+            out: list[dict[str, Any]] = []
             for eid, ts, payload in self.store.stale_suspect_rows():
                 if eid not in anchor_by_id:
-                    continue                             # non-servable: dropped
+                    continue  # non-servable: dropped
                 try:
                     doc = json.loads(payload)
                 except ValueError:
-                    continue                             # malformed: under-claim
+                    continue  # malformed: under-claim
                 if not isinstance(doc, dict):
                     continue
                 seed, drift = doc.get("seed"), doc.get("drift")
                 stamp = doc.get("stamp")
                 head_sha = stamp.get("head_sha") if isinstance(stamp, dict) else None
                 if not all(isinstance(v, str) and v for v in (seed, drift, head_sha)):
-                    continue                             # half-shaped: under-claim
-                out.append({"episode_id": eid, "anchor": anchor_by_id[eid],
-                            "seed": seed, "drift": drift, "head_sha": head_sha,
-                            "ts": int(ts)})
+                    continue  # half-shaped: under-claim
+                out.append(
+                    {
+                        "episode_id": eid,
+                        "anchor": anchor_by_id[eid],
+                        "seed": seed,
+                        "drift": drift,
+                        "head_sha": head_sha,
+                        "ts": int(ts),
+                    }
+                )
             out.sort(key=lambda r: (r["anchor"], r["episode_id"]))
             return out
-        except Exception:                                # noqa: BLE001 — telemetry only
-            _log.warning("mcp.stale_suspects_report_failed", extra={
-                "event": "mcp.stale_suspects_report_failed"}, exc_info=True)
+        except Exception:  # noqa: BLE001 — telemetry only
+            _log.warning(
+                "mcp.stale_suspects_report_failed",
+                extra={"event": "mcp.stale_suspects_report_failed"},
+                exc_info=True,
+            )
             return []
 
     def _db_size(self) -> int:
         try:
-            return os.path.getsize(self.db_path) if self.db_path and \
-                os.path.exists(self.db_path) else 0
+            return (
+                os.path.getsize(self.db_path)
+                if self.db_path and os.path.exists(self.db_path)
+                else 0
+            )
         except OSError:
             return 0
 
 
 # ── stdio loop (PORT verbatim; stderr-clean so stdout JSON-RPC is unpolluted) ──
 
-def run_stdio(server: HiveMCPServer, in_stream, out_stream) -> None:
+
+def run_stdio(server: HiveMCPServer, in_stream: TextIO, out_stream: TextIO) -> None:
     """Read newline-delimited JSON-RPC requests from ``in_stream``, write replies to
     ``out_stream``. A parse error replies -32700; a non-object payload replies -32600;
     a request with no ``id`` is a notification (no reply); a non-object ``params`` is
@@ -1140,31 +1525,65 @@ def run_stdio(server: HiveMCPServer, in_stream, out_stream) -> None:
         try:
             payload = json.loads(line)
         except json.JSONDecodeError as e:
-            _log.warning("mcp.parse_error", extra={"event": "mcp.parse_error",
-                         "line_len": len(line)})
-            out_stream.write(json.dumps({"jsonrpc": "2.0", "id": None,
-                             "error": {"code": -32700, "message": f"parse error: {e}"}}) + "\n")
+            _log.warning(
+                "mcp.parse_error",
+                extra={"event": "mcp.parse_error", "line_len": len(line)},
+            )
+            out_stream.write(
+                json.dumps(
+                    {
+                        "jsonrpc": "2.0",
+                        "id": None,
+                        "error": {"code": -32700, "message": f"parse error: {e}"},
+                    }
+                )
+                + "\n"
+            )
             out_stream.flush()
             continue
-        if not isinstance(payload, dict):                    # batch array / bare scalar
-            _log.warning("mcp.invalid_request", extra={"event": "mcp.invalid_request",
-                         "payload_type": type(payload).__name__})
-            out_stream.write(json.dumps({"jsonrpc": "2.0", "id": None, "error":
-                             {"code": -32600, "message": "invalid request: expected a JSON object"}}) + "\n")
+        if not isinstance(payload, dict):  # batch array / bare scalar
+            _log.warning(
+                "mcp.invalid_request",
+                extra={
+                    "event": "mcp.invalid_request",
+                    "payload_type": type(payload).__name__,
+                },
+            )
+            out_stream.write(
+                json.dumps(
+                    {
+                        "jsonrpc": "2.0",
+                        "id": None,
+                        "error": {
+                            "code": -32600,
+                            "message": "invalid request: expected a JSON object",
+                        },
+                    }
+                )
+                + "\n"
+            )
             out_stream.flush()
             continue
-        if "id" not in payload:                              # notification → no response
+        if "id" not in payload:  # notification → no response
             continue
         raw_params = payload.get("params")
-        params = raw_params if isinstance(raw_params, dict) else {}  # never let .get crash
-        req = MCPRequest(id=payload.get("id"), method=payload.get("method", ""),
-                         params=params)
+        params = (
+            raw_params if isinstance(raw_params, dict) else {}
+        )  # never let .get crash
+        req = MCPRequest(
+            id=payload.get("id"), method=payload.get("method", ""), params=params
+        )
         try:
             resp = server.handle(req)
-        except Exception as e:                               # last-resort guard: loop survives
-            _log.error("mcp.handle_crash", extra={"event": "mcp.handle_crash",
-                       "error_type": type(e).__name__}, exc_info=True)
-            resp = MCPResponse(id=req.id, error=_err(-32603, f"internal error: {type(e).__name__}"))
+        except Exception as e:  # last-resort guard: loop survives
+            _log.error(
+                "mcp.handle_crash",
+                extra={"event": "mcp.handle_crash", "error_type": type(e).__name__},
+                exc_info=True,
+            )
+            resp = MCPResponse(
+                id=req.id, error=_err(-32603, f"internal error: {type(e).__name__}")
+            )
         out_stream.write(resp.to_json() + "\n")
         out_stream.flush()
 
@@ -1204,26 +1623,37 @@ def _configure_logging(level: int = logging.INFO) -> None:
     JSON-RPC channel). Idempotent; a logging-setup failure NEVER aborts the boot. // O(1)."""
     try:
         from hive.app.observability import configure_json_logging  # noqa: PLC0415 — lazy
+
         configure_json_logging(level=int(level), stream=True)
-    except Exception as exc:                       # noqa: BLE001 — logging setup never aborts boot
+    except Exception as exc:  # noqa: BLE001 — logging setup never aborts boot
         _log.warning("mcp_server.log_config_failed kind=%s", type(exc).__name__)
 
 
-def _resolve_identity(tenant: Optional[str], db: Optional[str], agent: Optional[str],
-                      env: Mapping[str, str]) -> tuple[str, str, str]:
+def _resolve_identity(
+    tenant: Optional[str],
+    db: Optional[str],
+    agent: Optional[str],
+    env: Mapping[str, str],
+) -> tuple[str, str, str]:
     """Resolve ``(tenant_id, db_path, agent_id)`` — CLI arg takes precedence, then env, then a
     safe default for all three. ``tenant_id`` is a constant label (never a query filter — the
     single-tenant boundary), defaulting to ``"default"`` when unset so the server boots
     zero-config. NEVER echoes an env *value* (secret-safe). // O(1)."""
-    tenant_id = (tenant or env.get("HIVE_TENANT_ID") or "").strip() or _DEFAULT_TENANT_ID
+    tenant_id = (
+        tenant or env.get("HIVE_TENANT_ID") or ""
+    ).strip() or _DEFAULT_TENANT_ID
     db_path = (db or env.get("HIVE_STORE__DB_PATH") or "").strip() or _DEFAULT_DB_PATH
     agent_id = (agent or env.get("HIVE_AGENT_ID") or "").strip() or _DEFAULT_AGENT_ID
     return tenant_id, db_path, agent_id
 
 
-def main(argv: Optional[list[str]] = None, *, env: Optional[Mapping[str, str]] = None,
-         build_container_fn: Optional[Callable[..., Any]] = None,
-         serve: Optional[Callable[[Any], None]] = None) -> int:
+def main(
+    argv: Optional[list[str]] = None,
+    *,
+    env: Optional[Mapping[str, str]] = None,
+    build_container_fn: Optional[Callable[..., Any]] = None,
+    serve: Optional[Callable[[Any], None]] = None,
+) -> int:
     """Boot a PER-SESSION ``HiveMCPServer`` and serve it on stdio; return a sysexits exit code.
 
     Boot order MIRRORS the container entrypoint MINUS the readiness markers:
@@ -1235,89 +1665,137 @@ def main(argv: Optional[list[str]] = None, *, env: Optional[Mapping[str, str]] =
     marker-INERT policy are unit-testable with no torch and no real stdio. Never raises out of
     the boot path — every failure is logged and converted to an exit code so stdout (the
     JSON-RPC channel) stays clean. // O(1) control flow."""
-    import argparse                              # stdlib; lazy keeps the module-import surface light
+    import argparse  # stdlib; lazy keeps the module-import surface light
 
     env = os.environ if env is None else env
     parser = argparse.ArgumentParser(
         prog="hive.app.mcp_server",
-        description="Per-session Hive MCP server (stdio), exec'd inside the warm container.")
-    parser.add_argument("--db", default=None,
-                        help="shared SQLite store path (default: $HIVE_STORE__DB_PATH or /data/shared.db)")
-    parser.add_argument("--tenant", default=None,
-                        help="tenant id label (default: $HIVE_TENANT_ID or 'default')")
-    parser.add_argument("--agent", default=None,
-                        help="agent id, stamped as proposed_by (default: $HIVE_AGENT_ID or default-agent)")
+        description="Per-session Hive MCP server (stdio), exec'd inside the warm container.",
+    )
+    parser.add_argument(
+        "--db",
+        default=None,
+        help="shared SQLite store path (default: $HIVE_STORE__DB_PATH or /data/shared.db)",
+    )
+    parser.add_argument(
+        "--tenant",
+        default=None,
+        help="tenant id label (default: $HIVE_TENANT_ID or 'default')",
+    )
+    parser.add_argument(
+        "--agent",
+        default=None,
+        help="agent id, stamped as proposed_by (default: $HIVE_AGENT_ID or default-agent)",
+    )
     args = parser.parse_args(argv)
 
-    _configure_logging()                          # JSON→stderr before anything can fail
+    _configure_logging()  # JSON→stderr before anything can fail
 
     # ── config.loaded (EX_CONFIG on Config validation failure) ──
-    tenant_id, db_path, agent_id = _resolve_identity(args.tenant, args.db, args.agent, env)
+    tenant_id, db_path, agent_id = _resolve_identity(
+        args.tenant, args.db, args.agent, env
+    )
 
     # Lazy imports: ``container`` imports THIS module (HiveMCPServer/ServerIdentity), so a
     # module-level ``from hive.app.container import build_container`` would be a circular import.
     try:
-        from hive.app.config import Config        # noqa: PLC0415 — lazy
-    except Exception as exc:                       # noqa: BLE001
-        _log.error("mcp_server.config_import_failed kind=%s code=%d", type(exc).__name__, EX_SOFTWARE)
+        from hive.app.config import Config  # noqa: PLC0415 — lazy
+    except Exception as exc:  # noqa: BLE001
+        _log.error(
+            "mcp_server.config_import_failed kind=%s code=%d",
+            type(exc).__name__,
+            EX_SOFTWARE,
+        )
         return EX_SOFTWARE
     try:
         cfg = Config.load(db_path=db_path, env=env, runtime={"tenant_id": tenant_id})
-    except Exception as exc:                       # noqa: BLE001 — bad config is EX_CONFIG
-        _log.error("mcp_server.config_invalid kind=%s code=%d", type(exc).__name__, EX_CONFIG)
+    except Exception as exc:  # noqa: BLE001 — bad config is EX_CONFIG
+        _log.error(
+            "mcp_server.config_invalid kind=%s code=%d", type(exc).__name__, EX_CONFIG
+        )
         return EX_CONFIG
-    _configure_logging(int(getattr(cfg.obs, "log_level", logging.INFO)))  # operator level now live
+    _configure_logging(
+        int(getattr(cfg.obs, "log_level", logging.INFO))
+    )  # operator level now live
     _log.info("mcp_server.config_loaded tenant_id=%s db_path=%s", tenant_id, db_path)
 
     if build_container_fn is None:
         try:
             from hive.app.container import build_container  # noqa: PLC0415 — lazy (breaks the cycle)
-        except Exception as exc:                   # noqa: BLE001
-            _log.error("mcp_server.container_import_failed kind=%s code=%d",
-                       type(exc).__name__, EX_SOFTWARE)
+        except Exception as exc:  # noqa: BLE001
+            _log.error(
+                "mcp_server.container_import_failed kind=%s code=%d",
+                type(exc).__name__,
+                EX_SOFTWARE,
+            )
             return EX_SOFTWARE
         build_container_fn = build_container
     try:
         container = build_container_fn(cfg, tenant_id=tenant_id, agent_id=agent_id)
-    except Exception as exc:                       # noqa: BLE001 — assembler failure
-        _log.error("mcp_server.assemble_failed kind=%s code=%d", type(exc).__name__, EX_SOFTWARE)
+    except Exception as exc:  # noqa: BLE001 — assembler failure
+        _log.error(
+            "mcp_server.assemble_failed kind=%s code=%d",
+            type(exc).__name__,
+            EX_SOFTWARE,
+        )
         return EX_SOFTWARE
 
     # ── boot the per-session server. NO _invalidate_ready / _mark_ready around this sequence —
     #    see the banner above. The boot readiness markers belong to PID 1 (the ENTRYPOINT). ──
     try:
-        container.migrate()                        # idempotent verify vs the already-migrated shared DB
-    except Exception as exc:                       # noqa: BLE001
-        _log.error("mcp_server.migrate_failed kind=%s code=%d", type(exc).__name__, EX_SOFTWARE)
+        container.migrate()  # idempotent verify vs the already-migrated shared DB
+    except Exception as exc:  # noqa: BLE001
+        _log.error(
+            "mcp_server.migrate_failed kind=%s code=%d", type(exc).__name__, EX_SOFTWARE
+        )
         return EX_SOFTWARE
     try:
-        container.build_index()                    # THIS process's own in-RAM index, from approved rows
-    except Exception as exc:                       # noqa: BLE001
-        _log.error("mcp_server.index_failed kind=%s code=%d", type(exc).__name__, EX_SOFTWARE)
+        container.build_index()  # THIS process's own in-RAM index, from approved rows
+    except Exception as exc:  # noqa: BLE001
+        _log.error(
+            "mcp_server.index_failed kind=%s code=%d", type(exc).__name__, EX_SOFTWARE
+        )
         return EX_SOFTWARE
     try:
-        embedder = container.warm_embedder()       # THIS process's own embedder, warmed once
-    except Exception as exc:                       # noqa: BLE001 — dead embedder
-        _log.error("mcp_server.embedder_warm_failed kind=%s code=%d",
-                   type(exc).__name__, EX_UNAVAILABLE)
+        embedder = container.warm_embedder()  # THIS process's own embedder, warmed once
+    except Exception as exc:  # noqa: BLE001 — dead embedder
+        _log.error(
+            "mcp_server.embedder_warm_failed kind=%s code=%d",
+            type(exc).__name__,
+            EX_UNAVAILABLE,
+        )
         return EX_UNAVAILABLE
-    if not bool(getattr(embedder, "loaded", False)):   # healthy ≡ resident — a cold embedder cannot serve
+    if not bool(
+        getattr(embedder, "loaded", False)
+    ):  # healthy ≡ resident — a cold embedder cannot serve
         _log.error("mcp_server.embedder_not_resident code=%d", EX_UNAVAILABLE)
         return EX_UNAVAILABLE
     try:
         server = container.make_server()
-    except Exception as exc:                       # noqa: BLE001
-        _log.error("mcp_server.make_server_failed kind=%s code=%d", type(exc).__name__, EX_SOFTWARE)
+    except Exception as exc:  # noqa: BLE001
+        _log.error(
+            "mcp_server.make_server_failed kind=%s code=%d",
+            type(exc).__name__,
+            EX_SOFTWARE,
+        )
         return EX_SOFTWARE
 
-    _log.info("mcp_server.serving tenant_id=%s db_path=%s agent_id=%s (per-session; markers untouched)",
-              tenant_id, db_path, agent_id)
+    _log.info(
+        "mcp_server.serving tenant_id=%s db_path=%s agent_id=%s (per-session; markers untouched)",
+        tenant_id,
+        db_path,
+        agent_id,
+    )
     if serve is None:
-        def serve(s: Any) -> None:                 # default seam: blocking real-stdio serve
+
+        def serve(s: Any) -> None:  # default seam: blocking real-stdio serve
             run_stdio(s, sys.stdin, sys.stdout)
+
     serve(server)
     return EX_OK
 
 
-if __name__ == "__main__":  # pragma: no cover — module entry (``python -m hive.app.mcp_server``)
+if (
+    __name__ == "__main__"
+):  # pragma: no cover — module entry (``python -m hive.app.mcp_server``)
     raise SystemExit(main(sys.argv[1:]))

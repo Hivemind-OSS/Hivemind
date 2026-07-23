@@ -34,7 +34,9 @@ def sqlfluff_run(*results: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def finding(level: str | None, rule: str = "CP01", line: int = 12, col: int = 8) -> dict[str, Any]:
+def finding(
+    level: str | None, rule: str = "CP01", line: int = 12, col: int = 8
+) -> dict[str, Any]:
     result: dict[str, Any] = {
         "ruleId": rule,
         "message": {"text": "Keywords must be consistently upper case."},
@@ -60,7 +62,11 @@ class TestSarifCounts:
         assert classify(ingested)[0] == "passed"
 
     def test_sarif_red_error_result_with_location(self) -> None:
-        raw = sarif(sqlfluff_run(finding("error"), finding("warning", rule="LT01", line=3, col=1)))
+        raw = sarif(
+            sqlfluff_run(
+                finding("error"), finding("warning", rule="LT01", line=3, col=1)
+            )
+        )
         ingested = ingest_sarif(raw, exit_code=1)
         assert (ingested.passed, ingested.failed) == (0, 1)
         assert classify(ingested)[0] == "failed"
@@ -96,7 +102,12 @@ class TestSarifCounts:
     def test_sarif_zero_runs_is_not_run(self) -> None:
         # runs: [] means nothing was analyzed — never a clean pass.
         ingested = ingest_sarif(sarif(), exit_code=0)
-        assert (ingested.passed, ingested.failed, ingested.errored, ingested.skipped) == (
+        assert (
+            ingested.passed,
+            ingested.failed,
+            ingested.errored,
+            ingested.skipped,
+        ) == (
             0,
             0,
             0,

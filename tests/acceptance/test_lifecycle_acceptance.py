@@ -14,6 +14,7 @@ The injected embedder is hash-per-text (identical text ⇒ identical vector), so
 "demand matching the capture" is modeled with identical strings — the geometry of
 the rule (cosine ≥ demand_tau) is what is under test, not semantic quality (that
 is the real-embedder acceptance suite's job)."""
+
 from __future__ import annotations
 
 from hive.app.config import Config
@@ -29,13 +30,25 @@ T0 = 10_000_000
 
 
 def _build(*, enabled: bool = True, t0: int = T0):
-    cfg = Config.load(db_path=":memory:", env={},
-                      autonomy={"enabled": enabled, "demand_m": 3,
-                                "demand_window_days": 14, "demand_tau": 0.75,
-                                "competitor_tau": 0.85})
+    cfg = Config.load(
+        db_path=":memory:",
+        env={},
+        autonomy={
+            "enabled": enabled,
+            "demand_m": 3,
+            "demand_window_days": 14,
+            "demand_tau": 0.75,
+            "competitor_tau": 0.85,
+        },
+    )
     clock = FakeClock(t0)
-    c = build_container(cfg, tenant_id="acc", agent_id="acc-agent",
-                        embedder=FakeWarmProvider(d=D, loaded=True), clock=clock)
+    c = build_container(
+        cfg,
+        tenant_id="acc",
+        agent_id="acc-agent",
+        embedder=FakeWarmProvider(d=D, loaded=True),
+        clock=clock,
+    )
     c.migrate()
     c.build_index()
     c.warm_embedder()
@@ -43,8 +56,10 @@ def _build(*, enabled: bool = True, t0: int = T0):
 
 
 def _call(server, agent_id: str, name: str, args: dict):
-    resp = server.handle(MCPRequest(1, "tools/call", {"name": name, "arguments": args}),
-                         identity=ServerIdentity("acc", agent_id))
+    resp = server.handle(
+        MCPRequest(1, "tools/call", {"name": name, "arguments": args}),
+        identity=ServerIdentity("acc", agent_id),
+    )
     return content(resp)
 
 
@@ -69,7 +84,8 @@ def test_acceptance_demand_promotion_e2e():
     assert ep.trust == PROVISIONAL
     audit = c.conn.execute(
         "SELECT * FROM evidence_events WHERE episode_id=? AND kind='promote'",
-        (cap["id"],)).fetchall()
+        (cap["id"],),
+    ).fetchall()
     assert len(audit) == 1
     # the next recall SERVES it, labeled with its provenance
     served = _call(server, "agent-B", "hive_recall", {"query": q})
@@ -88,7 +104,7 @@ def test_acceptance_writer_only_demand_never_serves():
         assert r["abstained"] is True
     cap = _call(server, "agent-C", "hive_capture", {"text": q})
     assert cap["status"] == "quarantined"
-    assert c.store.get_episode(cap["id"]).trust == QUARANTINED   # NOT promoted
+    assert c.store.get_episode(cap["id"]).trust == QUARANTINED  # NOT promoted
     again = _call(server, "agent-C", "hive_recall", {"query": q})
     assert again["abstained"] is True and again["reference_context"] == []
 
@@ -98,14 +114,16 @@ def test_acceptance_disabled_byte_stable():
     c, server, clock = _build(enabled=False)
     # capture refused cleanly, before anything touches the store
     cap = _call(server, "agent-A", "hive_capture", {"text": "anything"})
-    assert cap == {"status": "disabled"}          # v3: no beacon key exists
+    assert cap == {"status": "disabled"}  # v3: no beacon key exists
     assert _count(c, "episodes") == 0
     # the write→recall path behaves exactly as today (v3: serve-now provisional)
     w = _call(server, "agent-A", "hive_write", {"text": "the canonical fact"})
     assert w["status"] == "approved"
     hit = _call(server, "agent-B", "hive_recall", {"query": "the canonical fact"})
     assert hit["abstained"] is False
-    assert hit["reference_context"][0]["trust"] == "provisional"  # labels: additive only
+    assert (
+        hit["reference_context"][0]["trust"] == "provisional"
+    )  # labels: additive only
     # an unanswered recall leaves NO trace: the read path writes zero new rows
     _call(server, "agent-B", "hive_recall", {"query": "an unanswered question"})
     assert _count(c, "recall_misses") == 0
@@ -124,8 +142,10 @@ def test_boot_sweep_runs_before_index_build():
     events: list[str] = []
     orig_sweep, orig_rebuild = c.store.sweep_decayed, c.store.rebuild_index_from_store
     c.store.sweep_decayed = lambda **kw: (events.append("sweep"), orig_sweep(**kw))[1]
-    c.store.rebuild_index_from_store = \
-        lambda **kw: (events.append("rebuild"), orig_rebuild(**kw))[1]
+    c.store.rebuild_index_from_store = lambda **kw: (
+        events.append("rebuild"),
+        orig_rebuild(**kw),
+    )[1]
     c.build_index()
     assert events == ["sweep", "rebuild"]
     # and the effect: the lapsed row was materialized dead BEFORE warming, so the
@@ -137,25 +157,41 @@ def test_boot_sweep_runs_before_index_build():
 
 def test_acceptance_supersession_through_tools():
     import json as _json
+
     c, server, clock = _build()
     old = _call(server, "agent-A", "hive_write", {"text": "deploy with make deploy"})
     # v3: the replaces= rider is MACHINE-GATED — evidence-less, the write lands and
     # the target stays (the §3.2 benign rider-noop)...
-    miss = _call(server, "agent-A", "hive_write",
-                 {"text": "deploy with ship.sh since the migration",
-                  "replaces": old["id"]})
+    miss = _call(
+        server,
+        "agent-A",
+        "hive_write",
+        {"text": "deploy with ship.sh since the migration", "replaces": old["id"]},
+    )
     assert miss["status"] == "approved" and miss["superseded"] is None
     assert miss["supersede_noop"] == "no qualifying machine signal"
     # ...and with a qualifying machine signal (a server-written verified-hurt row)
     # the SAME rider retires the target in one call.
-    c.store.insert_audit(old["id"], "outcome_verified_hurt", "census",
-                         int(clock.now()), _json.dumps({"stamp": {"head_sha": "c" * 40}}))
-    new = _call(server, "agent-A", "hive_write",
-                {"text": "deploy with ship.sh (the migration landed)",
-                 "replaces": old["id"]})
+    c.store.insert_audit(
+        old["id"],
+        "outcome_verified_hurt",
+        "census",
+        int(clock.now()),
+        _json.dumps({"stamp": {"head_sha": "c" * 40}}),
+    )
+    new = _call(
+        server,
+        "agent-A",
+        "hive_write",
+        {"text": "deploy with ship.sh (the migration landed)", "replaces": old["id"]},
+    )
     assert new["superseded"] == old["id"]
     # the retired version is out of serving; the correction serves provisional
-    r = _call(server, "agent-B", "hive_recall",
-              {"query": "deploy with ship.sh (the migration landed)"})
+    r = _call(
+        server,
+        "agent-B",
+        "hive_recall",
+        {"query": "deploy with ship.sh (the migration landed)"},
+    )
     assert r["reference_context"][0]["episode_id"] == new["id"]
     assert r["reference_context"][0]["trust"] == "provisional"

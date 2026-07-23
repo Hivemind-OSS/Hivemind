@@ -2,6 +2,7 @@
 stderr handler onto the global `hive` logger (with propagate=False). Snapshot + restore
 that logger around every container test so the global mutation cannot leak into other test
 files (e.g. break a caplog assertion on `hive.*` elsewhere)."""
+
 from __future__ import annotations
 
 import logging
@@ -12,7 +13,11 @@ import pytest
 @pytest.fixture(autouse=True)
 def _isolate_hive_logger():
     lg = logging.getLogger("hive")
-    saved_handlers, saved_level, saved_propagate = list(lg.handlers), lg.level, lg.propagate
+    saved_handlers, saved_level, saved_propagate = (
+        list(lg.handlers),
+        lg.level,
+        lg.propagate,
+    )
     try:
         yield
     finally:

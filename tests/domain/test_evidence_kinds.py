@@ -5,6 +5,7 @@ Pins the EXACT stored vocabulary: ``evidence_events.kind`` has no DDL CHECK (unl
 matching only while the constants stay byte-identical. Distinct from ``hive.domain.kinds``
 (the served MEMORY taxonomy, contract-guard watched); this registry serves the ledger only.
 """
+
 from __future__ import annotations
 
 import ast
@@ -30,17 +31,28 @@ def test_exact_values_pin_the_stored_vocabulary():
 
 
 def test_membership_set_is_exactly_the_twelve_constants():
-    assert ek.EVIDENCE_KINDS == frozenset({
-        "promote", "supersede", "prune", "ttl_expired",
-        "outcome_helped", "outcome_hurt", "change_outcome",
-        "outcome_verified_helped", "outcome_verified_hurt",
-        "verify_current", "verify_stale", "stale_suspect"})
+    assert ek.EVIDENCE_KINDS == frozenset(
+        {
+            "promote",
+            "supersede",
+            "prune",
+            "ttl_expired",
+            "outcome_helped",
+            "outcome_hurt",
+            "change_outcome",
+            "outcome_verified_helped",
+            "outcome_verified_hurt",
+            "verify_current",
+            "verify_stale",
+            "stale_suspect",
+        }
+    )
 
 
 def test_pure_data_module_imports_nothing():
     # a pure-data registry (the hive.domain.kinds pattern) — only __future__ imports
     tree = ast.parse(inspect.getsource(ek))
-    imports = [n for n in ast.walk(tree)
-               if isinstance(n, (ast.Import, ast.ImportFrom))]
-    assert all(isinstance(n, ast.ImportFrom) and n.module == "__future__"
-               for n in imports), "evidence_kinds must stay pure data (no runtime imports)"
+    imports = [n for n in ast.walk(tree) if isinstance(n, (ast.Import, ast.ImportFrom))]
+    assert all(
+        isinstance(n, ast.ImportFrom) and n.module == "__future__" for n in imports
+    ), "evidence_kinds must stay pure data (no runtime imports)"

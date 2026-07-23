@@ -15,7 +15,7 @@ rows from this block; nothing on either side retires a memory.
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from hive.census.engines import GraphPair, node_subject
 
@@ -32,7 +32,7 @@ def propagation_block(
     graphs: GraphPair,
     *,
     cap_neighbors: int = 32,
-) -> list[dict]:
+) -> list[dict[str, Any]]:
     """One entry per breaking/removed seed with >= 1 head-resolvable neighbour.
 
     Every cross-carrier field is read defensively (a malformed finding simply
@@ -49,7 +49,7 @@ def propagation_block(
     # repo-relative dialect episode anchors join on (BUG-038); a carrier
     # without one degrades to "" — the graph dialect, the pre-bridge bytes.
     head_offset = str(getattr(graphs, "head_offset", "") or "")
-    entries: list[dict] = []
+    entries: list[dict[str, Any]] = []
     for finding in findings or ():
         drift = str(getattr(finding, "drift", "") or "")
         if drift not in _PROPAGATION_DRIFTS:

@@ -53,15 +53,25 @@ _PROBE_TAILS = ("--version", "version")
 
 def _ok(argv, stdout=b"", stderr=b"", exit_code=0, truncated=False) -> SpawnResult:
     return SpawnResult(
-        argv=tuple(argv), exit_code=exit_code, stdout=stdout, stderr=stderr,
-        timed_out=False, truncated=truncated, duration_s=0.01,
+        argv=tuple(argv),
+        exit_code=exit_code,
+        stdout=stdout,
+        stderr=stderr,
+        timed_out=False,
+        truncated=truncated,
+        duration_s=0.01,
     )
 
 
 def _timed_out(argv) -> SpawnResult:
     return SpawnResult(
-        argv=tuple(argv), exit_code=None, stdout=b"", stderr=b"",
-        timed_out=True, truncated=False, duration_s=0.01,
+        argv=tuple(argv),
+        exit_code=None,
+        stdout=b"",
+        stderr=b"",
+        timed_out=True,
+        truncated=False,
+        duration_s=0.01,
     )
 
 
@@ -99,7 +109,10 @@ class ScriptedSpawn:
         argv = tuple(str(part) for part in argv)
         self.calls.append(
             SimpleNamespace(
-                argv=argv, cwd=Path(cwd), timeout_s=timeout_s, extra_env=tuple(extra_env)
+                argv=argv,
+                cwd=Path(cwd),
+                timeout_s=timeout_s,
+                extra_env=tuple(extra_env),
             )
         )
         if argv[-1] in _PROBE_TAILS:
@@ -344,7 +357,9 @@ def test_probe_gate_never_spawns_an_absent_tool(tmp_path: Path) -> None:
 
 
 def test_spawn_timeout_is_errored_never_passed(tmp_path: Path) -> None:
-    spawn = ScriptedSpawn(recipe_overrides={"pyright": lambda argv, cwd: _timed_out(argv)})
+    spawn = ScriptedSpawn(
+        recipe_overrides={"pyright": lambda argv, cwd: _timed_out(argv)}
+    )
     result = _py_verify(tmp_path, spawn)
     assert result.typecheck.state == "errored"
     assert result.typecheck.reason is not None
@@ -376,7 +391,9 @@ def test_absent_report_file_is_errored_not_a_crash(tmp_path: Path) -> None:
 def test_truncated_stdout_report_is_errored(tmp_path: Path) -> None:
     spawn = ScriptedSpawn(
         recipe_overrides={
-            "pyright": lambda argv, cwd: _ok(argv, stdout=_PYRIGHT_GREEN, truncated=True)
+            "pyright": lambda argv, cwd: _ok(
+                argv, stdout=_PYRIGHT_GREEN, truncated=True
+            )
         }
     )
     result = _py_verify(tmp_path, spawn)
@@ -454,9 +471,7 @@ def test_errored_member_is_never_shadowed_by_a_passed_one(tmp_path: Path) -> Non
     # THE fail-closed assembly invariant: one language erroring drags the
     # merged class to errored no matter how green its siblings are.
     repo = _mkrepo(tmp_path, "pyproject.toml", "src/app.py", "mod/go.mod", "mod/a.go")
-    spawn = ScriptedSpawn(
-        recipe_overrides={"go": lambda argv, cwd: _timed_out(argv)}
-    )
+    spawn = ScriptedSpawn(recipe_overrides={"go": lambda argv, cwd: _timed_out(argv)})
     result = verify(
         repo,
         TouchedSet(
@@ -574,14 +589,32 @@ def test_invalid_arguments_raise(tmp_path: Path) -> None:
     spawn = ScriptedSpawn()
     with pytest.raises(ValueError):
         verify(
-            tmp_path / "nope", _PY_TOUCHED, base_sha="b", head_sha="h",
-            engine=nx.DiGraph(), spawn=spawn,
+            tmp_path / "nope",
+            _PY_TOUCHED,
+            base_sha="b",
+            head_sha="h",
+            engine=nx.DiGraph(),
+            spawn=spawn,
         )
     repo = _mkrepo(tmp_path, *_PY_FILES)
     with pytest.raises(ValueError):
-        verify(repo, _PY_TOUCHED, base_sha="", head_sha="h", engine=nx.DiGraph(), spawn=spawn)
+        verify(
+            repo,
+            _PY_TOUCHED,
+            base_sha="",
+            head_sha="h",
+            engine=nx.DiGraph(),
+            spawn=spawn,
+        )
     with pytest.raises(ValueError):
-        verify(repo, _PY_TOUCHED, base_sha="b", head_sha="", engine=nx.DiGraph(), spawn=spawn)
+        verify(
+            repo,
+            _PY_TOUCHED,
+            base_sha="b",
+            head_sha="",
+            engine=nx.DiGraph(),
+            spawn=spawn,
+        )
     with pytest.raises(ValueError):
         VerifyOptions(depth=0)
 

@@ -8,9 +8,9 @@ reference is `HIVE-ADMIN.md` (and `OPERATIONS.md` for the tuning evidence).
 |---|---|
 | [`hive-bringup`](hive-bringup/SKILL.md) | start / stop / restart / health-check the server; diagnose a boot crash-loop |
 | [`hive-connect-team`](hive-connect-team/SKILL.md) | connect a local agent or a remote teammate (loopback / tunnel / SSH); mint & revoke seat tokens |
-| [`hive-connect-repo`](hive-connect-repo/SKILL.md) | arm the server-side automatic census feed against a GitHub repo (`HIVE_SYNC__*`) and test the connection works; auto-detects the default branch |
+| [`hive-connect-repo`](hive-connect-repo/SKILL.md) | register repos with the server-side census sync (`hive repo add` — picked up next tick, no restart) and verify each repo's change-outcome feed is live |
 | [`hive-backup-restore`](hive-backup-restore/SKILL.md) | snapshot, reset (recoverable clean-start), or restore the data store |
-| [`hive-operate`](hive-operate/SKILL.md) | read the convergence KPIs over MCP and turn the recall / safety knobs; watch the server-side automatic census feed (`HIVE_SYNC__*`) and feed manual receipts (`hive ingest`); open the loopback browser dashboard (`hive ui`) |
+| [`hive-operate`](hive-operate/SKILL.md) | read the convergence KPIs over MCP and turn the recall / safety knobs; manage the synced-repo registry (`hive repo add/remove`, `hive repos`); watch the per-repo automatic census feed and feed manual receipts (`hive ingest`); open the loopback browser dashboard (`hive ui`) |
 
 Each is a self-contained `SKILL.md` with trigger-style frontmatter (`name` + `description`).
 

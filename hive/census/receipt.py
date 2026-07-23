@@ -21,7 +21,7 @@ from __future__ import annotations
 
 from functools import cache
 from importlib import metadata
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from hive.census.diff import ChangeSet
 from hive.census.engines import GraphPair
@@ -66,10 +66,10 @@ def _subject(path: str, symbol: str) -> str:
     return f"{path}::{symbol}"
 
 
-def _node_lines(verdict: combdrift.ChangeVerdict) -> list[dict]:
+def _node_lines(verdict: combdrift.ChangeVerdict) -> list[dict[str, Any]]:
     from combdrift import tag_for_reason
 
-    lines: list[dict] = []
+    lines: list[dict[str, Any]] = []
     for change in getattr(verdict, "symbols", ()) or ():
         path = str(getattr(change, "path", "") or "")
         symbol = str(getattr(change, "symbol", "") or "")
@@ -108,7 +108,7 @@ def _node_lines(verdict: combdrift.ChangeVerdict) -> list[dict]:
     return lines
 
 
-def _blast_lines(findings: tuple[RegressionFinding, ...]) -> list[dict]:
+def _blast_lines(findings: tuple[RegressionFinding, ...]) -> list[dict[str, Any]]:
     return [
         {
             "class": "blast-radius",
@@ -128,7 +128,9 @@ def _blast_lines(findings: tuple[RegressionFinding, ...]) -> list[dict]:
     ]
 
 
-def _regression_lines(findings: tuple[RegressionFinding, ...]) -> list[dict]:
+def _regression_lines(
+    findings: tuple[RegressionFinding, ...],
+) -> list[dict[str, Any]]:
     return [
         {
             "class": "regression",
@@ -149,8 +151,8 @@ def _regression_lines(findings: tuple[RegressionFinding, ...]) -> list[dict]:
 
 
 def _execution_lines(
-    execution: tuple[ExecutionClassLine, ExecutionClassLine]
-) -> list[dict]:
+    execution: tuple[ExecutionClassLine, ExecutionClassLine],
+) -> list[dict[str, Any]]:
     return [
         {
             "class": line.cls,
@@ -169,7 +171,7 @@ def _execution_lines(
     ]
 
 
-def _differential_line() -> dict:
+def _differential_line() -> dict[str, Any]:
     # Class 4 has no producer; the constant line surfaces that honestly.
     return {
         "class": "differential",
@@ -202,16 +204,16 @@ def _precision_counts(
     }
 
 
-def _verifier_version_block(verdict: combdrift.ChangeVerdict) -> dict:
+def _verifier_version_block(verdict: combdrift.ChangeVerdict) -> dict[str, str | None]:
     stamp = getattr(verdict, "verifier_version", None)
-    block: dict = {}
+    block: dict[str, str | None] = {}
     for field in ("combdrift_version", "fingerprint_version", "base_sha", "head_sha"):
         value = getattr(stamp, field, None)
         block[field] = str(value) if value is not None else None
     return block
 
 
-def _stamp_block(stamp: object) -> dict:
+def _stamp_block(stamp: object) -> dict[str, str | int]:
     return {
         "graph_sha256": str(getattr(stamp, "graph_sha256", "") or ""),
         "commit_sha": str(getattr(stamp, "commit_sha", "") or ""),
@@ -222,7 +224,9 @@ def _stamp_block(stamp: object) -> dict:
     }
 
 
-def _context_block(context: Sequence[MemoryContext]) -> list[dict]:
+def _context_block(
+    context: Sequence[MemoryContext],
+) -> list[dict[str, str | int | float]]:
     # Reference entries rendered whole, labels verbatim: the tag names what
     # they are, and nothing downstream mistakes them for evidence lines.
     return [
@@ -247,15 +251,15 @@ def build_receipt(
     verdict: combdrift.ChangeVerdict,
     findings: tuple[RegressionFinding, ...],
     execution: tuple[ExecutionClassLine, ExecutionClassLine],
-    verifier_stamp: dict | None,
+    verifier_stamp: dict[str, Any] | None,
     graphs: GraphPair,
     precision_budget: float,
     depth: int,
     context: Sequence[MemoryContext] = (),
-    propagation: Sequence[dict] = (),
+    propagation: Sequence[dict[str, Any]] = (),
     ref: str | None = None,
     repo: str | None = None,
-) -> dict:
+) -> dict[str, Any]:
     """Assemble the complete receipt document and refuse an off-schema one.
 
     Lines ride in a fixed order (node, blast-radius, regression, execution,
@@ -293,7 +297,7 @@ def build_receipt(
     for line in lines:
         if line["class"] in shown_not_gated:
             line["gating"] = False
-    provenance = {
+    provenance: dict[str, Any] = {
         "base_sha": touched.base_sha,
         "head_sha": touched.head_sha,
         # marker: writing `ref` or `repo` unconditionally (empty/None included) is a
@@ -312,7 +316,7 @@ def build_receipt(
     }
     if verifier_stamp is not None:
         provenance["verifier"] = dict(verifier_stamp)
-    doc = {
+    doc: dict[str, Any] = {
         "schema_version": SCHEMA_VERSION,
         "provenance": provenance,
         "lines": lines,

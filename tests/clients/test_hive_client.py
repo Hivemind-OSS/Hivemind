@@ -11,6 +11,7 @@ client puts on the wire and that no failure layer ever yields a partial dict.
 The vendorability contract is enforced, not prose: importing ``hive.client`` pulls in
 nothing outside the stdlib (transitively, subprocess-asserted), and a COPIED ``client.py``
 imports standalone from a temp dir."""
+
 from __future__ import annotations
 
 import json
@@ -54,14 +55,18 @@ def _canned(body: bytes, *, ctype: str = "application/json", status: int = 200):
         httpd.shutdown()
         httpd.server_close()
         th.join(timeout=5)
+
     return url, stop
 
 
 def _tool_body(payload: dict) -> bytes:
     """A valid JSON-RPC tools/call reply carrying ``payload`` as the tool's JSON text."""
     return json.dumps(
-        {"jsonrpc": "2.0", "id": 1,
-         "result": {"content": [{"type": "text", "text": json.dumps(payload)}]}}
+        {
+            "jsonrpc": "2.0",
+            "id": 1,
+            "result": {"content": [{"type": "text", "text": json.dumps(payload)}]},
+        }
     ).encode()
 
 
@@ -84,25 +89,49 @@ def test_write_minimal_sends_text_alone():
 
 def test_write_full_sends_replaces_labels_and_scope():
     c, sent = _intercepted()
-    c.write("use port 9090 for the dev server", replaces=7, polarity="do", kind="env_fact",
-            anchors=[{"repo": "hivemind", "anchor": "hive/app/config.py:SyncConfig"}],
-            repos=["hivemind", "hive-edge"])
-    assert sent[-1] == ("hive_write", {
-        "text": "use port 9090 for the dev server", "replaces": 7,
-        "polarity": "do", "kind": "env_fact",
-        "anchors": [{"repo": "hivemind", "anchor": "hive/app/config.py:SyncConfig"}],
-        "repos": ["hivemind", "hive-edge"]})
+    c.write(
+        "use port 9090 for the dev server",
+        replaces=7,
+        polarity="do",
+        kind="env_fact",
+        anchors=[{"repo": "hivemind", "anchor": "hive/app/config.py:SyncConfig"}],
+        repos=["hivemind", "hive-edge"],
+    )
+    assert sent[-1] == (
+        "hive_write",
+        {
+            "text": "use port 9090 for the dev server",
+            "replaces": 7,
+            "polarity": "do",
+            "kind": "env_fact",
+            "anchors": [
+                {"repo": "hivemind", "anchor": "hive/app/config.py:SyncConfig"}
+            ],
+            "repos": ["hivemind", "hive-edge"],
+        },
+    )
 
 
 def test_capture_minimal_and_scoped():
     c, sent = _intercepted()
     c.capture("an insight")
     assert sent[-1] == ("hive_capture", {"text": "an insight"})
-    c.capture("a gotcha", polarity="dont", kind="gotcha",
-              anchors=[{"repo": "hivemind", "anchor": "hive/domain/recall.py:RecallPipeline"}])
+    c.capture(
+        "a gotcha",
+        polarity="dont",
+        kind="gotcha",
+        anchors=[
+            {"repo": "hivemind", "anchor": "hive/domain/recall.py:RecallPipeline"}
+        ],
+    )
     assert sent[-1][1] == {
-        "text": "a gotcha", "polarity": "dont", "kind": "gotcha",
-        "anchors": [{"repo": "hivemind", "anchor": "hive/domain/recall.py:RecallPipeline"}]}
+        "text": "a gotcha",
+        "polarity": "dont",
+        "kind": "gotcha",
+        "anchors": [
+            {"repo": "hivemind", "anchor": "hive/domain/recall.py:RecallPipeline"}
+        ],
+    }
     c.capture("a scope-only note", repos=["hivemind"])
     assert sent[-1][1] == {"text": "a scope-only note", "repos": ["hivemind"]}
 
@@ -111,11 +140,16 @@ def test_recall_minimal_is_global_and_scope_rides_only_when_set():
     c, sent = _intercepted()
     c.recall("what broke the sync tick")
     assert sent[-1] == ("hive_recall", {"query": "what broke the sync tick"})
-    c.recall("what broke the sync tick", repos=["hivemind", "hive-edge@dev"],
-             anchor_prefix="hive/app/")
-    assert sent[-1][1] == {"query": "what broke the sync tick",
-                           "repos": ["hivemind", "hive-edge@dev"],
-                           "anchor_prefix": "hive/app/"}
+    c.recall(
+        "what broke the sync tick",
+        repos=["hivemind", "hive-edge@dev"],
+        anchor_prefix="hive/app/",
+    )
+    assert sent[-1][1] == {
+        "query": "what broke the sync tick",
+        "repos": ["hivemind", "hive-edge@dev"],
+        "anchor_prefix": "hive/app/",
+    }
 
 
 def test_client_surface_carries_no_approver():
@@ -130,15 +164,23 @@ def test_client_surface_carries_no_approver():
 
 # ── parse: reference_context verbatim; tolerant of a missing key ───────────────
 def test_recall_returns_reference_context_verbatim_with_v3_hit_fields():
-    hits = [{"episode_id": 3, "text": "the tick is fail-open per repo", "sim": 0.91,
-             "trust": "established", "polarity": "do", "kind": "contract",
-             "repos": ["hivemind"],
-             "anchors": [{"repo": "hivemind", "anchor": "hive/app/sync.py:SyncService"}],
-             "drift": {"type": "fresh", "detail": {}}}]
+    hits = [
+        {
+            "episode_id": 3,
+            "text": "the tick is fail-open per repo",
+            "sim": 0.91,
+            "trust": "established",
+            "polarity": "do",
+            "kind": "contract",
+            "repos": ["hivemind"],
+            "anchors": [{"repo": "hivemind", "anchor": "hive/app/sync.py:SyncService"}],
+            "drift": {"type": "fresh", "detail": {}},
+        }
+    ]
     url, stop = _canned(_tool_body({"reference_context": hits, "abstained": False}))
     try:
         got = HiveClient(url, "t").recall("sync tick failure isolation")
-        assert got == hits                       # VERBATIM — no client-side reshaping
+        assert got == hits  # VERBATIM — no client-side reshaping
     finally:
         stop()
 
@@ -149,7 +191,7 @@ def test_recall_yields_empty_list_on_abstain_or_missing_key():
         assert HiveClient(url, "t").recall("anything") == []
     finally:
         stop()
-    c, _ = _intercepted()                        # {} payload: key absent entirely
+    c, _ = _intercepted()  # {} payload: key absent entirely
     assert c.recall("anything") == []
 
 
@@ -168,9 +210,11 @@ def test_client_never_partial_on_transport_error():
     finally:
         stop2()
     # (c) JSON-RPC protocol error envelope ⇒ HiveError carrying rpc_error
-    url3, stop3 = _canned(json.dumps(
-        {"jsonrpc": "2.0", "id": 1,
-         "error": {"code": -32601, "message": "nope"}}).encode())
+    url3, stop3 = _canned(
+        json.dumps(
+            {"jsonrpc": "2.0", "id": 1, "error": {"code": -32601, "message": "nope"}}
+        ).encode()
+    )
     try:
         with pytest.raises(HiveError) as ei:
             HiveClient(url3, "t").recall("x")
@@ -178,18 +222,27 @@ def test_client_never_partial_on_transport_error():
     finally:
         stop3()
     # (d) tool-level isError framing ⇒ HiveError, never a half-dict
-    url4, stop4 = _canned(json.dumps(
-        {"jsonrpc": "2.0", "id": 1,
-         "result": {"content": [{"type": "text", "text": "invalid arguments"}],
-                    "isError": True}}).encode())
+    url4, stop4 = _canned(
+        json.dumps(
+            {
+                "jsonrpc": "2.0",
+                "id": 1,
+                "result": {
+                    "content": [{"type": "text", "text": "invalid arguments"}],
+                    "isError": True,
+                },
+            }
+        ).encode()
+    )
     try:
         with pytest.raises(HiveError):
             HiveClient(url4, "t").capture("y")
     finally:
         stop4()
     # (e) malformed result shape (no content[0].text)
-    url5, stop5 = _canned(json.dumps(
-        {"jsonrpc": "2.0", "id": 1, "result": {"weird": True}}).encode())
+    url5, stop5 = _canned(
+        json.dumps({"jsonrpc": "2.0", "id": 1, "result": {"weird": True}}).encode()
+    )
     try:
         with pytest.raises(HiveError):
             HiveClient(url5, "t").recall("aa")
@@ -210,15 +263,20 @@ _STDLIB_PROBE = (
     "import sys, hive.client; "
     "bad = {'torch', 'sentence_transformers', 'numpy'} & "
     "{m.split('.')[0] for m in sys.modules}; "
-    "print(sorted(bad))")
+    "print(sorted(bad))"
+)
 
 
 def test_client_is_stdlib_only():
     # TRANSITIVE: importing hive.client (including via hive/__init__) must pull
     # in no ML/array dependency — the fence is the import graph, not prose.
-    out = subprocess.run([sys.executable, "-c", _STDLIB_PROBE],
-                         capture_output=True, text=True, timeout=60,
-                         cwd=str(pathlib.Path(__file__).resolve().parents[2]))
+    out = subprocess.run(
+        [sys.executable, "-c", _STDLIB_PROBE],
+        capture_output=True,
+        text=True,
+        timeout=60,
+        cwd=str(pathlib.Path(__file__).resolve().parents[2]),
+    )
     assert out.returncode == 0, out.stderr
     assert out.stdout.strip() == "[]"
 
@@ -229,9 +287,18 @@ def test_vendored_copy_imports_standalone(tmp_path):
     # cwd stays on sys.path so the copy itself is what resolves.
     shutil.copy(_CLIENT_SRC, tmp_path / "client.py")
     out = subprocess.run(
-        [sys.executable, "-E", "-s", "-c",
-         "import client; c = client.HiveClient('http://x', 't'); "
-         "print(type(c).__name__)"],
-        capture_output=True, text=True, timeout=60, cwd=str(tmp_path))
+        [
+            sys.executable,
+            "-E",
+            "-s",
+            "-c",
+            "import client; c = client.HiveClient('http://x', 't'); "
+            "print(type(c).__name__)",
+        ],
+        capture_output=True,
+        text=True,
+        timeout=60,
+        cwd=str(tmp_path),
+    )
     assert out.returncode == 0, out.stderr
     assert out.stdout.strip() == "HiveClient"

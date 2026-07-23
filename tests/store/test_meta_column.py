@@ -6,6 +6,7 @@ construction under the no-migration rule (a v3 store is a clean start; `hive res
 of a pre-v3 backup refuses identically). Connections come from the prod ``connect()``
 factory (deferred-isolation hand-rolled conns diverge from the BEGIN IMMEDIATE
 discipline the store is written against)."""
+
 from __future__ import annotations
 
 import pytest
@@ -49,17 +50,17 @@ def test_episode_meta_roundtrip_and_default():
     conn = connect(":memory:")
     s = SqliteEpisodeStore(conn)
     carrier = '{"combdrift/fp":"combdrift-fp/1:abc"}'
-    eid, deduped = s.stage(text="with meta", weight=1.0, proposed_by="a",
-                           meta=carrier)
+    eid, deduped = s.stage(text="with meta", weight=1.0, proposed_by="a", meta=carrier)
     assert not deduped
-    assert s.get_episode(eid).meta == carrier            # byte-equal roundtrip
+    assert s.get_episode(eid).meta == carrier  # byte-equal roundtrip
     eid2, _ = s.stage(text="without meta", weight=1.0, proposed_by="a")
-    assert s.get_episode(eid2).meta == ""                # absent ⇒ the "" default
+    assert s.get_episode(eid2).meta == ""  # absent ⇒ the "" default
     # the DDL default holds on a raw INSERT that names no meta column
     conn.execute(
         "INSERT INTO episodes(tenant_id, text, weight, ts, content_hash, status) "
         "VALUES('default', 'raw row', 1.0, 0, ?, 'pending')",
-        (content_hash("raw row"),))
+        (content_hash("raw row"),),
+    )
     r = conn.execute("SELECT meta FROM episodes WHERE text='raw row'").fetchone()
     assert r["meta"] == ""
     m = _cols(conn)["meta"]
@@ -72,10 +73,12 @@ def test_dedup_recapture_preserves_existing_meta_unmerged():
     # new meta needs new text or supersession).
     conn = connect(":memory:")
     s = SqliteEpisodeStore(conn)
-    eid, _ = s.stage(text="same text", weight=1.0, proposed_by="a",
-                     meta='{"a/b":"first"}')
-    eid2, deduped = s.stage(text="same text", weight=1.0, proposed_by="b",
-                            meta='{"a/b":"second"}')
+    eid, _ = s.stage(
+        text="same text", weight=1.0, proposed_by="a", meta='{"a/b":"first"}'
+    )
+    eid2, deduped = s.stage(
+        text="same text", weight=1.0, proposed_by="b", meta='{"a/b":"second"}'
+    )
     assert (eid2, deduped) == (eid, True)
     assert s.get_episode(eid).meta == '{"a/b":"first"}'
 
@@ -87,7 +90,9 @@ def test_pre_meta_table_is_refused_not_migrated():
     text = "an old row from before the meta column"
     conn.execute(
         "INSERT INTO episodes(tenant_id, text, weight, ts, content_hash, status) "
-        "VALUES('default', ?, 1.0, 5, ?, 'approved')", (text, content_hash(text)))
+        "VALUES('default', ?, 1.0, 5, ?, 'approved')",
+        (text, content_hash(text)),
+    )
     with pytest.raises(RuntimeError, match="migration"):
-        SqliteEpisodeStore(conn)                         # the additive path is DEAD
-    assert "meta" not in _cols(conn)                     # refused untouched, no bolt-on
+        SqliteEpisodeStore(conn)  # the additive path is DEAD
+    assert "meta" not in _cols(conn)  # refused untouched, no bolt-on

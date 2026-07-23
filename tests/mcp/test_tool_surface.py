@@ -4,6 +4,7 @@ hive_evidence), no approver/AGI/beacon apparatus anywhere, JSON-RPC error semant
 the schema-enforcement belt (malformed call never reaches a port — ★, now including
 array-ITEM object checking for the anchors grammar), and loop-survival on a raising
 handler (stack never returned to the agent)."""
+
 from __future__ import annotations
 
 import io
@@ -11,20 +12,48 @@ import json
 
 from hive.app.contract import BAD_VS_STALE, WRITE_VS_CAPTURE
 from hive.app.mcp_server import (
-    HiveMCPServer, MCPRequest, ServerIdentity, run_stdio,
+    HiveMCPServer,
+    MCPRequest,
+    ServerIdentity,
+    run_stdio,
 )
 from hive.app.tool_defs import TOOL_DEFINITIONS
 from hive.domain.admission import WriteResult
 from hive.domain.kinds import KIND_NAMES
 from hive.domain.secret_scan import scan as _scan
 from tests.fakes._fakes import FakeIndex
-from tests.mcp._helpers import build_real_server, content, is_error, tool_call, write_text
+from tests.mcp._helpers import (
+    build_real_server,
+    content,
+    is_error,
+    tool_call,
+    write_text,
+)
 
-_TOOLS = {"hive_write", "hive_capture", "hive_recall", "hive_supersede",
-          "hive_prune", "hive_outcome", "hive_flag", "hive_health"}
-_DROPPED = {"hive_init", "hive_fetch", "hive_pending", "hive_approve", "hive_reject",
-            "hive_evidence", "hive_consolidate", "hive_schemas", "hive_recall_cold",
-            "hive_restore_cold", "hive_reconsolidate", "hive_audit"}
+_TOOLS = {
+    "hive_write",
+    "hive_capture",
+    "hive_recall",
+    "hive_supersede",
+    "hive_prune",
+    "hive_outcome",
+    "hive_flag",
+    "hive_health",
+}
+_DROPPED = {
+    "hive_init",
+    "hive_fetch",
+    "hive_pending",
+    "hive_approve",
+    "hive_reject",
+    "hive_evidence",
+    "hive_consolidate",
+    "hive_schemas",
+    "hive_recall_cold",
+    "hive_restore_cold",
+    "hive_reconsolidate",
+    "hive_audit",
+}
 
 
 def test_tool_list_is_the_expected_verb_set():
@@ -41,28 +70,37 @@ def test_tool_list_is_the_expected_verb_set():
 def test_write_description_directs_recall_before_write():
     """The call-adjacent reminder: a write serves immediately, so recall the topic first
     to skip a duplicate and correct in place (replaces=) instead of adding a rival."""
-    desc = next(t["description"] for t in TOOL_DEFINITIONS if t["name"] == "hive_write").lower()
-    assert "recall the topic" in desc       # recall-before-write at the call site
-    assert "replaces" in desc               # correct in place rather than duplicate
+    desc = next(
+        t["description"] for t in TOOL_DEFINITIONS if t["name"] == "hive_write"
+    ).lower()
+    assert "recall the topic" in desc  # recall-before-write at the call site
+    assert "replaces" in desc  # correct in place rather than duplicate
 
 
 def test_capture_description_requires_verifiable_evidence():
-    desc = next(t["description"] for t in TOOL_DEFINITIONS if t["name"] == "hive_capture").lower()
+    desc = next(
+        t["description"] for t in TOOL_DEFINITIONS if t["name"] == "hive_capture"
+    ).lower()
     assert "verifiable evidence" in desc
 
 
 def test_write_and_capture_descriptions_carry_the_decision_rule():
     for name in ("hive_write", "hive_capture"):
         desc = next(t["description"] for t in TOOL_DEFINITIONS if t["name"] == name)
-        assert WRITE_VS_CAPTURE in desc, f"{name} missing the write-vs-capture decision rule"
+        assert WRITE_VS_CAPTURE in desc, (
+            f"{name} missing the write-vs-capture decision rule"
+        )
 
 
 def test_retirement_descriptions_diagnose_bad_vs_stale_and_the_gate():
     """prune handles BAD; supersede handles STALE — and BOTH call sites state the
     machine gate (unqualified = benign noop, never an error; no approver exists)."""
-    prune = next(t["description"] for t in TOOL_DEFINITIONS if t["name"] == "hive_prune")
-    supersede = next(t["description"] for t in TOOL_DEFINITIONS
-                     if t["name"] == "hive_supersede")
+    prune = next(
+        t["description"] for t in TOOL_DEFINITIONS if t["name"] == "hive_prune"
+    )
+    supersede = next(
+        t["description"] for t in TOOL_DEFINITIONS if t["name"] == "hive_supersede"
+    )
     assert "incorrect" in prune.lower() or "misleading" in prune.lower()
     assert "successor" in supersede.lower()
     assert BAD_VS_STALE in prune
@@ -75,8 +113,8 @@ def test_no_approver_or_agi_survives_in_any_schema_or_description():
     dumped = json.dumps(TOOL_DEFINITIONS)
     assert "approved_by" not in dumped
     assert "AGI" not in dumped
-    assert "proposed_by" not in dumped              # identity stays transport-resolved
-    assert "include_onboarding" not in dumped       # the install channel is deleted
+    assert "proposed_by" not in dumped  # identity stays transport-resolved
+    assert "include_onboarding" not in dumped  # the install channel is deleted
 
 
 def test_initialize_carries_server_instructions():
@@ -87,7 +125,7 @@ def test_initialize_carries_server_instructions():
     assert init.result["serverInfo"]["name"] == "hive"
     assert "protocolVersion" in init.result
     instr = init.result.get("instructions", "")
-    assert isinstance(instr, str) and instr                      # present + non-empty
+    assert isinstance(instr, str) and instr  # present + non-empty
     assert "hive_recall" in instr and "hive_capture" in instr and "hive_write" in instr
     for dead in ("approved_by", "AGI", "HIVEMIND-RULES", "contract_version"):
         assert dead not in instr
@@ -100,9 +138,13 @@ def test_tool_results_carry_no_contract_version_beacon():
     carry it (the contract reaches agents via initialize instructions instead)."""
     server, _ = build_real_server()
     write_text(server, "a beaconless fact")
-    for name, args in (("hive_health", {}), ("hive_recall", {"query": "a beaconless fact"}),
-                       ("hive_recall", {"query": "nothing matches this query at all"}),
-                       ("hive_capture", {"text": "an insight"}), ("hive_outcome", {})):
+    for name, args in (
+        ("hive_health", {}),
+        ("hive_recall", {"query": "a beaconless fact"}),
+        ("hive_recall", {"query": "nothing matches this query at all"}),
+        ("hive_capture", {"text": "an insight"}),
+        ("hive_outcome", {}),
+    ):
         env = content(tool_call(server, name, args))
         assert "contract_version" not in env, f"{name} still carries the beacon"
 
@@ -142,8 +184,13 @@ class _EmptyRegistryStore:
 
 def _server_with(admission):
     return HiveMCPServer(
-        admission=admission, recall=None, store=_EmptyRegistryStore(),
-        embedder=None, identity=ServerIdentity("t", "a"), now=lambda: 0)
+        admission=admission,
+        recall=None,
+        store=_EmptyRegistryStore(),
+        embedder=None,
+        identity=ServerIdentity("t", "a"),
+        now=lambda: 0,
+    )
 
 
 def test_malformed_call_rejected_before_port_touched():
@@ -167,7 +214,7 @@ def test_stale_approved_by_arg_is_ignored_extra():
 def test_bad_type_rejected_by_schema():
     adm = _CountingAdmission()
     server = _server_with(adm)
-    r = tool_call(server, "hive_write", {"text": 123})   # text must be string
+    r = tool_call(server, "hive_write", {"text": 123})  # text must be string
     assert is_error(r)
     assert adm.write_calls == 0
 
@@ -195,7 +242,7 @@ def test_capture_and_write_advertise_kind_enum_and_anchors_grammar():
         assert props["anchors"]["items"]["required"] == ["repo", "anchor"]
         assert props["repos"]["type"] == "array"
         assert "kind" not in schema["required"] and "anchors" not in schema["required"]
-        assert "anchor" not in props                # the v2 free-text anchor is gone
+        assert "anchor" not in props  # the v2 free-text anchor is gone
 
 
 def test_non_enum_kind_rejected_by_schema_belt():
@@ -215,9 +262,9 @@ def test_anchors_array_items_are_object_checked_by_the_belt():
     adm = _CountingAdmission()
     server = _server_with(adm)
     bad_shapes = (
-        ["not-an-object"],                                   # item type
-        [{"repo": "alpha"}],                                 # missing required anchor
-        [{"repo": 7, "anchor": "x.py::f"}],                  # mistyped repo
+        ["not-an-object"],  # item type
+        [{"repo": "alpha"}],  # missing required anchor
+        [{"repo": 7, "anchor": "x.py::f"}],  # mistyped repo
         [{"repo": "alpha", "anchor": "x.py::f", "extra": "k"}],  # unknown key
     )
     for anchors in bad_shapes:
@@ -226,12 +273,15 @@ def test_anchors_array_items_are_object_checked_by_the_belt():
     assert adm.write_calls == 0
     # a well-shaped item passes the BELT (registry membership is the grammar
     # gate's job downstream, a clean refusal — not a schema reject)
-    r = tool_call(server, "hive_write",
-                  {"text": "x", "anchors": [{"repo": "ghost", "anchor": "x.py::f"}]})
+    r = tool_call(
+        server,
+        "hive_write",
+        {"text": "x", "anchors": [{"repo": "ghost", "anchor": "x.py::f"}]},
+    )
     assert not is_error(r)
     env = content(r)
-    assert env["status"] == "refused"                # unregistered name refuses clean
-    assert adm.write_calls == 0                      # nothing reached admission
+    assert env["status"] == "refused"  # unregistered name refuses clean
+    assert adm.write_calls == 0  # nothing reached admission
 
 
 def test_repos_array_items_are_type_checked_by_the_belt():
@@ -254,28 +304,46 @@ def test_tool_exception_does_not_crash_loop():
     server, _ = build_real_server()
     server.recall = _RaisingRecall()
     out = io.StringIO()
-    lines = "\n".join([
-        json.dumps({"jsonrpc": "2.0", "id": 1, "method": "tools/call",
-                    "params": {"name": "hive_recall", "arguments": {"query": "q"}}}),
-        json.dumps({"jsonrpc": "2.0", "id": 2, "method": "ping", "params": {}}),
-    ]) + "\n"
+    lines = (
+        "\n".join(
+            [
+                json.dumps(
+                    {
+                        "jsonrpc": "2.0",
+                        "id": 1,
+                        "method": "tools/call",
+                        "params": {"name": "hive_recall", "arguments": {"query": "q"}},
+                    }
+                ),
+                json.dumps({"jsonrpc": "2.0", "id": 2, "method": "ping", "params": {}}),
+            ]
+        )
+        + "\n"
+    )
     run_stdio(server, io.StringIO(lines), out)
     raw = out.getvalue().splitlines()
-    assert len(raw) == 2                                   # loop survived to line 2
+    assert len(raw) == 2  # loop survived to line 2
     first = json.loads(raw[0])
     assert first["result"]["isError"] is True
-    assert "Traceback" not in raw[0]                       # stack not leaked to stdout
-    assert json.loads(raw[1])["result"] == {}              # ping answered after the raise
+    assert "Traceback" not in raw[0]  # stack not leaked to stdout
+    assert json.loads(raw[1])["result"] == {}  # ping answered after the raise
 
 
 def test_parse_error_replies_32700_and_continues():
     server, _ = build_real_server()
     out = io.StringIO()
-    run_stdio(server, io.StringIO("{not json}\n" + json.dumps(
-        {"jsonrpc": "2.0", "id": 7, "method": "ping", "params": {}}) + "\n"), out)
+    run_stdio(
+        server,
+        io.StringIO(
+            "{not json}\n"
+            + json.dumps({"jsonrpc": "2.0", "id": 7, "method": "ping", "params": {}})
+            + "\n"
+        ),
+        out,
+    )
     raw = out.getvalue().splitlines()
     assert json.loads(raw[0])["error"]["code"] == -32700
-    assert json.loads(raw[1])["id"] == 7                   # loop continued
+    assert json.loads(raw[1])["id"] == 7  # loop continued
 
 
 def test_non_dict_params_does_not_crash_loop():
@@ -283,24 +351,51 @@ def test_non_dict_params_does_not_crash_loop():
     (AUDIT wf_1943a559: AttributeError on req.params.get escaped to run_stdio)."""
     server, _ = build_real_server()
     out = io.StringIO()
-    run_stdio(server, io.StringIO("\n".join([
-        json.dumps({"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": [1, 2, 3]}),
-        json.dumps({"jsonrpc": "2.0", "id": 2, "method": "ping", "params": {}}),
-    ]) + "\n"), out)
+    run_stdio(
+        server,
+        io.StringIO(
+            "\n".join(
+                [
+                    json.dumps(
+                        {
+                            "jsonrpc": "2.0",
+                            "id": 1,
+                            "method": "tools/call",
+                            "params": [1, 2, 3],
+                        }
+                    ),
+                    json.dumps(
+                        {"jsonrpc": "2.0", "id": 2, "method": "ping", "params": {}}
+                    ),
+                ]
+            )
+            + "\n"
+        ),
+        out,
+    )
     raw = out.getvalue().splitlines()
-    assert len(raw) == 2                                   # loop survived the bad params
-    assert json.loads(raw[1])["result"] == {}              # ping answered after
+    assert len(raw) == 2  # loop survived the bad params
+    assert json.loads(raw[1])["result"] == {}  # ping answered after
 
 
 def test_scalar_payload_does_not_crash_loop():
     """A bare scalar JSON line (`5`) must not crash the `"id" not in payload` check."""
     server, _ = build_real_server()
     out = io.StringIO()
-    run_stdio(server, io.StringIO("5\n" + json.dumps(
-        {"jsonrpc": "2.0", "id": 9, "method": "ping", "params": {}}) + "\n"), out)
+    run_stdio(
+        server,
+        io.StringIO(
+            "5\n"
+            + json.dumps({"jsonrpc": "2.0", "id": 9, "method": "ping", "params": {}})
+            + "\n"
+        ),
+        out,
+    )
     raw = out.getvalue().splitlines()
-    assert json.loads(raw[0])["error"]["code"] == -32600   # invalid request (not an object)
-    assert json.loads(raw[1])["id"] == 9                   # loop continued
+    assert (
+        json.loads(raw[0])["error"]["code"] == -32600
+    )  # invalid request (not an object)
+    assert json.loads(raw[1])["id"] == 9  # loop continued
 
 
 def test_handle_internal_error_is_caught_by_loop():
@@ -309,10 +404,17 @@ def test_handle_internal_error_is_caught_by_loop():
 
     def _boom(_req):
         raise RuntimeError("unexpected")
+
     server.handle = _boom
     out = io.StringIO()
-    run_stdio(server, io.StringIO(json.dumps(
-        {"jsonrpc": "2.0", "id": 3, "method": "ping", "params": {}}) + "\n"), out)
+    run_stdio(
+        server,
+        io.StringIO(
+            json.dumps({"jsonrpc": "2.0", "id": 3, "method": "ping", "params": {}})
+            + "\n"
+        ),
+        out,
+    )
     err = json.loads(out.getvalue().splitlines()[0])["error"]
     assert err["code"] == -32603
-    assert "Traceback" not in out.getvalue()               # stack not leaked
+    assert "Traceback" not in out.getvalue()  # stack not leaked

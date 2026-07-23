@@ -30,7 +30,13 @@ _HUNK_RE = re.compile(r"@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@")
 _BINARY_RE = re.compile(r"Binary files (.+) and (.+) differ")
 
 # Extended header lines that carry nothing the carriers need.
-_NOOP_HEADERS = ("index ", "old mode ", "new mode ", "similarity index ", "dissimilarity index ")
+_NOOP_HEADERS = (
+    "index ",
+    "old mode ",
+    "new mode ",
+    "similarity index ",
+    "dissimilarity index ",
+)
 
 
 class DiffError(Exception):
@@ -55,7 +61,9 @@ class ChangeSet:
     def __post_init__(self) -> None:
         for name, sha in (("base_sha", self.base_sha), ("head_sha", self.head_sha)):
             if not _SHA_RE.fullmatch(sha):
-                raise ValueError(f"{name} must be a full 40-hex commit SHA, got {sha!r}")
+                raise ValueError(
+                    f"{name} must be a full 40-hex commit SHA, got {sha!r}"
+                )
 
 
 @dataclass(frozen=True, slots=True)
@@ -209,7 +217,9 @@ def _consume_hunk(
     need_removed, need_added = old_count, new_count
     while need_removed or need_added:
         if i >= len(lines):
-            raise DiffError("truncated hunk: diff ended before the announced line counts")
+            raise DiffError(
+                "truncated hunk: diff ended before the announced line counts"
+            )
         body = lines[i]
         if body.startswith("-") and need_removed:
             need_removed -= 1

@@ -65,10 +65,14 @@ def ingest_sarif(raw: bytes, *, exit_code: int) -> Ingested:
             diagnostics=tuple(diagnostics),
         )
     # One analyzed unit, clean — the non-vacuous pass classify() requires.
-    return Ingested(passed=1, failed=0, errored=0, skipped=0, diagnostics=tuple(diagnostics))
+    return Ingested(
+        passed=1, failed=0, errored=0, skipped=0, diagnostics=tuple(diagnostics)
+    )
 
 
-def _result_diagnostic(result: dict[str, Any], severity: Literal["error", "warning"]) -> Diagnostic:
+def _result_diagnostic(
+    result: dict[str, Any], severity: Literal["error", "warning"]
+) -> Diagnostic:
     message = result.get("message")
     text = message.get("text") if isinstance(message, dict) else None
     locations = result.get("locations")

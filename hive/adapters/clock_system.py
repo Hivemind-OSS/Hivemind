@@ -6,6 +6,7 @@ real monotonic-ish wall clock enters the system. Integer epoch seconds — the s
 the settlement schedule, the exposure ledger ``injected_ts``, and the producer
 watermark all compare against.
 """
+
 from __future__ import annotations
 
 import time

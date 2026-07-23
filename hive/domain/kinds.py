@@ -13,6 +13,7 @@ ride every recall hit, neither embedded): ``kind`` (here) = the category of know
 a recall filter (read-side scoping is out of scope); it labels hits and, because the writer
 puts the discriminating terms in the body, sharpens recall only via content similarity.
 """
+
 from __future__ import annotations
 
 # The fail-safe, under-claiming default: a capture that names no kind is a generic ``note``,
@@ -26,8 +27,10 @@ KINDS: dict[str, dict[str, str]] = {
     "bug": {
         "gloss": "a defect — what broke / is broken, why, and the fix or workaround",
         "default_polarity": "neutral",
-        "template": ("lead with OPEN — or RESOLVED —; then symptom -> root cause -> "
-                     "fix | workaround | (none yet, surrounding context only)"),
+        "template": (
+            "lead with OPEN — or RESOLVED —; then symptom -> root cause -> "
+            "fix | workaround | (none yet, surrounding context only)"
+        ),
     },
     "gotcha": {
         "gloss": "a surprising-but-correct behavior, footgun, or load-bearing invariant",

@@ -17,11 +17,12 @@ actually helped (outcome ground truth) is not measured by this report.
 Window semantics: half-open ``(lo, hi]`` — an event exactly at the boundary
 ``now − 7d`` belongs to the PREVIOUS window, so the two windows partition.
 """
+
 from __future__ import annotations
 
 import math
 from dataclasses import asdict, dataclass
-from typing import Callable, Sequence
+from typing import Any, Callable, Sequence
 
 import numpy as np
 
@@ -34,11 +35,14 @@ class TrendWindow:
     """One window's demand-health aggregates — the ONLY window into silent
     fail-open rot (THEORY §8 tension #3). Every field is total/zero-safe — an empty store
     yields a fully-populated window of zeros, never a raise."""
+
     recalls_confident: int
     misses_abstained: int
     misses_no_match: int
-    confident_rate: float                 # confident / (confident + misses); 0.0 on empty
-    demand_entropy: float                 # H over miss-cluster mass / ln(C) ∈ [0,1]; 0.0 if <2 clusters
+    confident_rate: float  # confident / (confident + misses); 0.0 on empty
+    demand_entropy: (
+        float  # H over miss-cluster mass / ln(C) ∈ [0,1]; 0.0 if <2 clusters
+    )
 
 
 def demand_entropy(cluster_masses: Sequence[int]) -> float:
@@ -55,8 +59,12 @@ def demand_entropy(cluster_masses: Sequence[int]) -> float:
     return max(0.0, min(1.0, h / math.log(c)))
 
 
-def compute_trends(store, gaps_clusterer: Callable[[list], list[dict]], *,
-                   now: int) -> dict:
+def compute_trends(
+    store: Any,
+    gaps_clusterer: Callable[[list[dict[str, Any]]], list[dict[str, Any]]],
+    *,
+    now: int,
+) -> dict[str, Any]:
     """``{"current", "previous", "deltas"}`` — current ``(now−7d, now]`` vs
     previous ``(now−14d, now−7d]``. ``gaps_clusterer`` is the existing miss
     clustering (rows → cluster dicts with ``miss_count``), injected so the
@@ -65,26 +73,45 @@ def compute_trends(store, gaps_clusterer: Callable[[list], list[dict]], *,
     A None-median delta is None, never a fake 0. // report-time SQL only."""
     t = int(now)
     cur = _window(store, gaps_clusterer, lo=t - WINDOW_DAYS * _DAY_S, hi=t)
-    prev = _window(store, gaps_clusterer, lo=t - 2 * WINDOW_DAYS * _DAY_S,
-                   hi=t - WINDOW_DAYS * _DAY_S)
-    deltas: dict = {}
+    prev = _window(
+        store,
+        gaps_clusterer,
+        lo=t - 2 * WINDOW_DAYS * _DAY_S,
+        hi=t - WINDOW_DAYS * _DAY_S,
+    )
+    deltas: dict[str, Any] = {}
     for k, c in asdict(cur).items():
         p = getattr(prev, k)
         deltas[k] = None if (c is None or p is None) else round(c - p, 6)
     return {"current": asdict(cur), "previous": asdict(prev), "deltas": deltas}
 
 
-def _window(store, gaps_clusterer, *, lo: int, hi: int) -> TrendWindow:
+def _window(
+    store: Any,
+    gaps_clusterer: Callable[[list[dict[str, Any]]], list[dict[str, Any]]],
+    *,
+    lo: int,
+    hi: int,
+) -> TrendWindow:
     conn = store.conn
 
     # confident recalls: one exposure batch per confident serve, keyed trace_id
-    confident = int(conn.execute(
-        "SELECT COUNT(DISTINCT trace_id) AS c FROM exposure "
-        "WHERE injected_ts>? AND injected_ts<=?", (lo, hi)).fetchone()["c"])
+    confident = int(
+        conn.execute(
+            "SELECT COUNT(DISTINCT trace_id) AS c FROM exposure "
+            "WHERE injected_ts>? AND injected_ts<=?",
+            (lo, hi),
+        ).fetchone()["c"]
+    )
 
-    by_type = {r["miss_type"]: int(r["c"]) for r in conn.execute(
-        "SELECT miss_type, COUNT(*) AS c FROM recall_misses "
-        "WHERE ts>? AND ts<=? GROUP BY miss_type", (lo, hi))}
+    by_type = {
+        r["miss_type"]: int(r["c"])
+        for r in conn.execute(
+            "SELECT miss_type, COUNT(*) AS c FROM recall_misses "
+            "WHERE ts>? AND ts<=? GROUP BY miss_type",
+            (lo, hi),
+        )
+    }
     abstained = by_type.get("abstained", 0)
     no_match = by_type.get("no_match", 0)
     denom = confident + abstained + no_match
@@ -93,17 +120,26 @@ def _window(store, gaps_clusterer, *, lo: int, hi: int) -> TrendWindow:
     # demand entropy over the window's vector-bearing misses, clustered by the
     # SAME machinery the gap report uses (refused rows carry no vector — they
     # are policy refusals, not coverage demand)
-    rows = [{"query_text": r["query_text"],
-             "vector": np.frombuffer(r["query_vector"], dtype=np.float32).copy(),
-             "miss_type": r["miss_type"], "ts": int(r["ts"])}
-            for r in conn.execute(
-                "SELECT query_text, query_vector, miss_type, ts FROM recall_misses "
-                "WHERE ts>? AND ts<=? AND query_vector IS NOT NULL ORDER BY id",
-                (lo, hi))]
+    rows = [
+        {
+            "query_text": r["query_text"],
+            "vector": np.frombuffer(r["query_vector"], dtype=np.float32).copy(),
+            "miss_type": r["miss_type"],
+            "ts": int(r["ts"]),
+        }
+        for r in conn.execute(
+            "SELECT query_text, query_vector, miss_type, ts FROM recall_misses "
+            "WHERE ts>? AND ts<=? AND query_vector IS NOT NULL ORDER BY id",
+            (lo, hi),
+        )
+    ]
     clusters = gaps_clusterer(rows) if rows else []
     entropy = demand_entropy([c.get("miss_count", 0) for c in clusters])
 
     return TrendWindow(
-        recalls_confident=confident, misses_abstained=abstained,
-        misses_no_match=no_match, confident_rate=round(confident_rate, 6),
-        demand_entropy=round(entropy, 6))
+        recalls_confident=confident,
+        misses_abstained=abstained,
+        misses_no_match=no_match,
+        confident_rate=round(confident_rate, 6),
+        demand_entropy=round(entropy, 6),
+    )

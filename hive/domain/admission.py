@@ -28,19 +28,30 @@ Secret-safety: on REFUSE nothing is written (0 rows, 0 blobs) and ``SecretRefuse
 carries only rule names; on REDACT only the masked text is stored; no log line ever
 contains the secret text (every field logged is a label/count/id) — #5a/#5b.
 """
+
 from __future__ import annotations
 
 import json
 import logging
 from dataclasses import dataclass
-from typing import Callable, Optional, Sequence
+from typing import Callable, Optional, Protocol, Sequence
+
+import numpy as np  # permitted in domain (compute carrier, not I/O)
 
 from hive.domain.errors import SecretRefused
 from hive.domain.evidence_kinds import EK_PROMOTE
 from hive.domain.kinds import DEFAULT_KIND
-from hive.domain.lifecycle import DEPRECATED, ESTABLISHED, PROVISIONAL, QUARANTINED
-from hive.domain.models import AnchorRef, content_hash
+from hive.domain.lifecycle import (
+    DEPRECATED,
+    ESTABLISHED,
+    PROVISIONAL,
+    QUARANTINED,
+    LifecycleService,
+)
+from hive.domain.models import AnchorRef, Episode, content_hash
 from hive.domain.secret_scan import REDACT, REFUSE, ScanVerdict
+
+from hive.domain.ports import EmbeddingProvider, SecretScanner
 
 _log = logging.getLogger("hive.admission")
 
@@ -60,6 +71,7 @@ class WriteResult:
     applied its retirement rider (the §3.2 machine-signal gating of that rider
     lives at the boundary, which passes ``replaces`` through only when the
     target qualifies)."""
+
     status: str
     episode_id: Optional[int]
     content_hash: Optional[str]  # hex; sha256(post-redaction stored text)
@@ -68,15 +80,62 @@ class WriteResult:
     superseded: Optional[int] = None
 
 
+class _AdmissionStore(Protocol):
+    """The store surface admission actually consumes (typing-only; the concrete
+    SqliteEpisodeStore satisfies it structurally). NOT a swap-seam port —
+    episode-CRUD deliberately stays off ports.py (see ports docstring)."""
+
+    def stage(
+        self,
+        *,
+        text: str,
+        weight: float,
+        proposed_by: str,
+        tenant_id: str = "default",
+        ts: int = 0,
+        polarity: str = "neutral",
+        kind: str = ...,
+        meta: str = "",
+        anchors: Sequence[tuple[str, str]] = (),
+        repos: Sequence[str] = (),
+    ) -> tuple[int, bool]: ...
+    def complete(
+        self,
+        episode_id: int,
+        value: "np.ndarray",
+        *,
+        expected_version: int,
+        trust: str,
+        last_active_ts: int = 0,
+    ) -> bool: ...
+    def reject(self, episode_id: int, *, keep: bool = False) -> None: ...
+    def set_trust(self, episode_id: int, new_trust: str, *, now: int) -> bool: ...
+    def supersede(
+        self, target_id: int, replacement_id: int, *, actor: str, ts: int
+    ) -> bool: ...
+    def get_episode(self, episode_id: int) -> Optional[Episode]: ...
+    def insert_audit(
+        self, episode_id: int, kind: str, actor: str, ts: int, payload: str
+    ) -> int: ...
+
+
 class AdmissionService:
     """Drives the M03 Store + M02 Index ports and the SecretScanner port. Owns the
     admission POLICY (non-swappable); owns no tables."""
 
-    def __init__(self, store, scanner, embedder, *, now: Callable[[], int],
-                 lifecycle=None, autonomy_enabled: bool = True) -> None:
-        self._store = store              # the store adapter (+ its warm VectorIndex)
-        self._scanner = scanner          # SecretScanner
-        self._embedder = embedder        # EmbeddingProvider (text -> value[d])
+    def __init__(
+        self,
+        store: "_AdmissionStore",
+        scanner: SecretScanner,
+        embedder: EmbeddingProvider,
+        *,
+        now: Callable[[], int],
+        lifecycle: Optional[LifecycleService] = None,
+        autonomy_enabled: bool = True,
+    ) -> None:
+        self._store = store  # the store adapter (+ its warm VectorIndex)
+        self._scanner = scanner
+        self._embedder = embedder  # text -> value[d]
         self._now = now
         # LifecycleService (or None): capture's synchronous promotion trigger +
         # decay-sweep piggyback. Its entry points are fail-open by contract, so a
@@ -86,28 +145,43 @@ class AdmissionService:
         self._autonomy_enabled = bool(autonomy_enabled)
 
     # ── shared gauntlet steps ──────────────────────────────────────────────────
-    def _scan_gate(self, text: str, *, proposed_by: str,
-                   request_id: str) -> ScanVerdict:
+    def _scan_gate(
+        self, text: str, *, proposed_by: str, request_id: str
+    ) -> ScanVerdict:
         """The ONE non-bypassable gate: deterministic secret scan BEFORE any
         persistence. REFUSE raises (0 rows, 0 blobs); REDACT returns the verdict
         whose masked text is the only thing that may be staged. Logged fields are
         rule names/counts only — never the matched bytes."""
         verdict = self._scanner.scan(text)
         if verdict.action == REFUSE:
-            _log.warning("admission.refused", extra={
-                "event": "admission.refused", "rules": [f.rule for f in verdict.findings],
-                "n_findings": len(verdict.findings), "proposed_by": proposed_by,
-                "text_len": len(text), "request_id": request_id})
+            _log.warning(
+                "admission.refused",
+                extra={
+                    "event": "admission.refused",
+                    "rules": [f.rule for f in verdict.findings],
+                    "n_findings": len(verdict.findings),
+                    "proposed_by": proposed_by,
+                    "text_len": len(text),
+                    "request_id": request_id,
+                },
+            )
             raise SecretRefused(
                 f"refused: credential detected ({len(verdict.findings)} finding(s), "
                 f"rules={[f.rule for f in verdict.findings]})",
                 rules=[f.rule for f in verdict.findings],
-                n_findings=len(verdict.findings))
+                n_findings=len(verdict.findings),
+            )
         if verdict.action == REDACT:
-            _log.info("admission.redacted", extra={
-                "event": "admission.redacted", "rules": [f.rule for f in verdict.findings],
-                "n_spans": len(verdict.findings), "proposed_by": proposed_by,
-                "request_id": request_id})
+            _log.info(
+                "admission.redacted",
+                extra={
+                    "event": "admission.redacted",
+                    "rules": [f.rule for f in verdict.findings],
+                    "n_spans": len(verdict.findings),
+                    "proposed_by": proposed_by,
+                    "request_id": request_id,
+                },
+            )
         return verdict
 
     def _meta_gate(self, meta: str, *, proposed_by: str, request_id: str) -> None:
@@ -119,19 +193,26 @@ class AdmissionService:
             return
         verdict = self._scanner.scan(meta)
         if verdict.findings:
-            _log.warning("admission.meta_refused", extra={
-                "event": "admission.meta_refused",
-                "rules": [f.rule for f in verdict.findings],
-                "n_findings": len(verdict.findings), "proposed_by": proposed_by,
-                "request_id": request_id})
+            _log.warning(
+                "admission.meta_refused",
+                extra={
+                    "event": "admission.meta_refused",
+                    "rules": [f.rule for f in verdict.findings],
+                    "n_findings": len(verdict.findings),
+                    "proposed_by": proposed_by,
+                    "request_id": request_id,
+                },
+            )
             raise SecretRefused(
                 f"refused: credential detected in meta ({len(verdict.findings)} "
                 f"finding(s), rules={[f.rule for f in verdict.findings]})",
                 rules=[f.rule for f in verdict.findings],
-                n_findings=len(verdict.findings))
+                n_findings=len(verdict.findings),
+            )
 
-    def _apply_supersession(self, replaces: Optional[int], new_id: int, *,
-                            actor: str, request_id: str) -> Optional[int]:
+    def _apply_supersession(
+        self, replaces: Optional[int], new_id: int, *, actor: str, request_id: str
+    ) -> Optional[int]:
         """Run the retirement rider AFTER the replacement landed. A refused
         supersede (self-supersede via dedup, or a target that vanished between
         validation and now) is benign — the new memory IS stored; both versions
@@ -140,16 +221,30 @@ class AdmissionService:
         through only for a qualifying target)."""
         if replaces is None:
             return None
-        ok = self._store.supersede(int(replaces), int(new_id), actor=actor,
-                                   ts=self._now())
+        ok = self._store.supersede(
+            int(replaces), int(new_id), actor=actor, ts=self._now()
+        )
         if ok:
-            _log.info("admission.superseded", extra={
-                "event": "admission.superseded", "target": int(replaces),
-                "replacement": int(new_id), "actor": actor, "request_id": request_id})
+            _log.info(
+                "admission.superseded",
+                extra={
+                    "event": "admission.superseded",
+                    "target": int(replaces),
+                    "replacement": int(new_id),
+                    "actor": actor,
+                    "request_id": request_id,
+                },
+            )
             return int(replaces)
-        _log.info("admission.supersede_noop", extra={
-            "event": "admission.supersede_noop", "target": int(replaces),
-            "replacement": int(new_id), "request_id": request_id})
+        _log.info(
+            "admission.supersede_noop",
+            extra={
+                "event": "admission.supersede_noop",
+                "target": int(replaces),
+                "replacement": int(new_id),
+                "request_id": request_id,
+            },
+        )
         return None
 
     @staticmethod
@@ -159,11 +254,20 @@ class AdmissionService:
         return [(a.repo, a.anchor) for a in anchors]
 
     # ── write: scan → (refuse 0-rows | redact-mask) → stage → embed → complete ──
-    def write(self, text: str, *, proposed_by: str, weight: float = 1.0,
-              request_id: str = "-", replaces: Optional[int] = None,
-              polarity: str = "neutral", kind: str = DEFAULT_KIND,
-              anchors: Sequence[AnchorRef] = (), repos: Sequence[str] = (),
-              meta: str = "") -> WriteResult:
+    def write(
+        self,
+        text: str,
+        *,
+        proposed_by: str,
+        weight: float = 1.0,
+        request_id: str = "-",
+        replaces: Optional[int] = None,
+        polarity: str = "neutral",
+        kind: str = DEFAULT_KIND,
+        anchors: Sequence[AnchorRef] = (),
+        repos: Sequence[str] = (),
+        meta: str = "",
+    ) -> WriteResult:
         """Store an insight in one call, servable NOW as ``trust='provisional'``
         (v3 §3.1: serve-as-provisional-then-heal — no approver exists; the top
         tier is reached only via canonical-line outcome verification). REFUSE
@@ -186,28 +290,49 @@ class AdmissionService:
         dedup hit the existing row is returned UNCHANGED — meta is NOT merged
         (immutability: a new meta needs new text or supersession). // O(1) DB ops + one embed."""
         if replaces is not None and self._store.get_episode(int(replaces)) is None:
-            _log.warning("admission.replaces_unknown_target", extra={
-                "event": "admission.replaces_unknown_target", "target": int(replaces),
-                "proposed_by": proposed_by, "request_id": request_id})
-            raise ValueError(f"replaces target {int(replaces)} does not exist — "
-                             "nothing stored, nothing retired")
+            _log.warning(
+                "admission.replaces_unknown_target",
+                extra={
+                    "event": "admission.replaces_unknown_target",
+                    "target": int(replaces),
+                    "proposed_by": proposed_by,
+                    "request_id": request_id,
+                },
+            )
+            raise ValueError(
+                f"replaces target {int(replaces)} does not exist — "
+                "nothing stored, nothing retired"
+            )
         self._meta_gate(meta, proposed_by=proposed_by, request_id=request_id)
-        verdict = self._scan_gate(text, proposed_by=proposed_by,
-                                  request_id=request_id)
-        staged_text = verdict.redacted_text if verdict.action == REDACT else text
+        verdict = self._scan_gate(text, proposed_by=proposed_by, request_id=request_id)
+        staged_text = (
+            (verdict.redacted_text or "") if verdict.action == REDACT else text
+        )
         status = "redacted" if verdict.action == REDACT else "approved"
 
         # stage the (post-redaction) row + blob + anchor/scope rows; dedup by content_hash.
         try:
             eid, deduped = self._store.stage(
-                text=staged_text, weight=weight,
-                proposed_by=proposed_by, ts=self._now(),
-                polarity=polarity, kind=kind, meta=meta,
-                anchors=self._anchor_tuples(anchors), repos=list(repos))
+                text=staged_text,
+                weight=weight,
+                proposed_by=proposed_by,
+                ts=self._now(),
+                polarity=polarity,
+                kind=kind,
+                meta=meta,
+                anchors=self._anchor_tuples(anchors),
+                repos=list(repos),
+            )
         except Exception:
-            _log.error("admission.stage_fail", extra={
-                "event": "admission.stage_fail", "proposed_by": proposed_by,
-                "request_id": request_id}, exc_info=True)
+            _log.error(
+                "admission.stage_fail",
+                extra={
+                    "event": "admission.stage_fail",
+                    "proposed_by": proposed_by,
+                    "request_id": request_id,
+                },
+                exc_info=True,
+            )
             raise
 
         h = content_hash(staged_text)
@@ -219,49 +344,103 @@ class AdmissionService:
             if ep.trust in (ESTABLISHED, PROVISIONAL):
                 # already servable → idempotent: no re-embed, no trust change (a
                 # re-write can never demote an established row back to provisional).
-                _log.info("admission.dedup_servable", extra={
-                    "event": "admission.dedup_servable", "episode_id": eid,
-                    "trust": ep.trust, "content_hash": h,
-                    "proposed_by": proposed_by, "request_id": request_id})
-                superseded = self._apply_supersession(replaces, eid, actor=proposed_by,
-                                                      request_id=request_id)
-                return WriteResult(status=status, episode_id=eid, content_hash=h,
-                                   scan=verdict, deduped=True, superseded=superseded)
+                _log.info(
+                    "admission.dedup_servable",
+                    extra={
+                        "event": "admission.dedup_servable",
+                        "episode_id": eid,
+                        "trust": ep.trust,
+                        "content_hash": h,
+                        "proposed_by": proposed_by,
+                        "request_id": request_id,
+                    },
+                )
+                superseded = self._apply_supersession(
+                    replaces, eid, actor=proposed_by, request_id=request_id
+                )
+                return WriteResult(
+                    status=status,
+                    episode_id=eid,
+                    content_hash=h,
+                    scan=verdict,
+                    deduped=True,
+                    superseded=superseded,
+                )
             if ep.trust == DEPRECATED:
                 # a retired row is never silently revived by re-writing its old text;
                 # re-establishment goes through replaces= only.
-                _log.info("admission.dedup_deprecated_norevive", extra={
-                    "event": "admission.dedup_deprecated_norevive", "episode_id": eid,
-                    "content_hash": h, "proposed_by": proposed_by, "request_id": request_id})
-                return WriteResult(status=status, episode_id=eid, content_hash=h,
-                                   scan=verdict, deduped=True)
+                _log.info(
+                    "admission.dedup_deprecated_norevive",
+                    extra={
+                        "event": "admission.dedup_deprecated_norevive",
+                        "episode_id": eid,
+                        "content_hash": h,
+                        "proposed_by": proposed_by,
+                        "request_id": request_id,
+                    },
+                )
+                return WriteResult(
+                    status=status,
+                    episode_id=eid,
+                    content_hash=h,
+                    scan=verdict,
+                    deduped=True,
+                )
             # quarantined: the write LIFTS the existing materialized row to
             # provisional in place (value already embedded, no re-embed) and
             # stamps the transition into the ledger.
             if not self._store.set_trust(eid, PROVISIONAL, now=self._now()):
-                _log.error("admission.dedup_lift_failed", extra={
-                    "event": "admission.dedup_lift_failed", "episode_id": eid,
-                    "request_id": request_id})
+                _log.error(
+                    "admission.dedup_lift_failed",
+                    extra={
+                        "event": "admission.dedup_lift_failed",
+                        "episode_id": eid,
+                        "request_id": request_id,
+                    },
+                )
                 raise RuntimeError(
-                    f"lift-on-dedup failed for episode {eid} (lost-update race)")
+                    f"lift-on-dedup failed for episode {eid} (lost-update race)"
+                )
             # marker: the dedup-lift AUDIT row — a quarantined→provisional lift
             # must land its evidence row, never flip trust silently. Dropping this
             # insert_audit is the named mutation: CT-1's audit assertion
             # (tests/contract/test_write_provisional.py, dedup-onto-quarantined
             # scenario) and its unit twin (tests/domain/test_admission.py::
             # test_write_dedup_onto_quarantined_lifts_with_audit) red.
-            self._store.insert_audit(eid, EK_PROMOTE, "server", self._now(),
-                                     json.dumps({"rule": "write_lift",
-                                                 "from": QUARANTINED,
-                                                 "proposed_by": proposed_by}))
-            _log.info("admission.dedup_lifted", extra={
-                "event": "admission.dedup_lifted", "episode_id": eid,
-                "content_hash": h, "proposed_by": proposed_by,
-                "request_id": request_id})
-            superseded = self._apply_supersession(replaces, eid, actor=proposed_by,
-                                                  request_id=request_id)
-            return WriteResult(status=status, episode_id=eid, content_hash=h,
-                               scan=verdict, deduped=True, superseded=superseded)
+            self._store.insert_audit(
+                eid,
+                EK_PROMOTE,
+                "server",
+                self._now(),
+                json.dumps(
+                    {
+                        "rule": "write_lift",
+                        "from": QUARANTINED,
+                        "proposed_by": proposed_by,
+                    }
+                ),
+            )
+            _log.info(
+                "admission.dedup_lifted",
+                extra={
+                    "event": "admission.dedup_lifted",
+                    "episode_id": eid,
+                    "content_hash": h,
+                    "proposed_by": proposed_by,
+                    "request_id": request_id,
+                },
+            )
+            superseded = self._apply_supersession(
+                replaces, eid, actor=proposed_by, request_id=request_id
+            )
+            return WriteResult(
+                status=status,
+                episode_id=eid,
+                content_hash=h,
+                scan=verdict,
+                deduped=True,
+                superseded=superseded,
+            )
 
         # embed (pure, no DB) then flip pending→approved as PROVISIONAL + index,
         # in store.complete's tx.
@@ -269,51 +448,105 @@ class AdmissionService:
             value = self._embedder.encode(staged_text)
         except Exception:
             # leave NO pending leak: drop the row we just staged (best-effort) and re-raise.
-            _log.error("admission.embed_fail", extra={
-                "event": "admission.embed_fail", "episode_id": eid,
-                "proposed_by": proposed_by, "request_id": request_id}, exc_info=True)
+            _log.error(
+                "admission.embed_fail",
+                extra={
+                    "event": "admission.embed_fail",
+                    "episode_id": eid,
+                    "proposed_by": proposed_by,
+                    "request_id": request_id,
+                },
+                exc_info=True,
+            )
             try:
                 self._store.reject(eid)
-            except Exception:                            # cleanup is best-effort
-                _log.error("admission.embed_fail_cleanup_failed", extra={
-                    "event": "admission.embed_fail_cleanup_failed", "episode_id": eid,
-                    "request_id": request_id}, exc_info=True)
+            except Exception:  # cleanup is best-effort
+                _log.error(
+                    "admission.embed_fail_cleanup_failed",
+                    extra={
+                        "event": "admission.embed_fail_cleanup_failed",
+                        "episode_id": eid,
+                        "request_id": request_id,
+                    },
+                    exc_info=True,
+                )
             raise
 
         ok = self._store.complete(
-            eid, value, expected_version=ep.version if ep is not None else 0,
-            trust=PROVISIONAL, last_active_ts=self._now())
+            eid,
+            value,
+            expected_version=ep.version if ep is not None else 0,
+            trust=PROVISIONAL,
+            last_active_ts=self._now(),
+        )
         if not ok:
             # On a FRESH stage the CAS version matches, so this is unreachable in the
             # single-writer path; a False here means a lost-update race left the row
             # NOT completed. Fail LOUD rather than return a silently-pending
             # (non-recallable) row the caller believes landed — and drop the dangling row.
-            _log.error("admission.complete_failed", extra={
-                "event": "admission.complete_failed", "episode_id": eid,
-                "proposed_by": proposed_by, "request_id": request_id})
+            _log.error(
+                "admission.complete_failed",
+                extra={
+                    "event": "admission.complete_failed",
+                    "episode_id": eid,
+                    "proposed_by": proposed_by,
+                    "request_id": request_id,
+                },
+            )
             try:
                 self._store.reject(eid)
             except Exception:
-                _log.error("admission.complete_failed_cleanup_failed", extra={
-                    "event": "admission.complete_failed_cleanup_failed",
-                    "episode_id": eid, "request_id": request_id}, exc_info=True)
+                _log.error(
+                    "admission.complete_failed_cleanup_failed",
+                    extra={
+                        "event": "admission.complete_failed_cleanup_failed",
+                        "episode_id": eid,
+                        "request_id": request_id,
+                    },
+                    exc_info=True,
+                )
             raise RuntimeError(
-                f"admission complete failed for episode {eid} (lost-update CAS race)")
+                f"admission complete failed for episode {eid} (lost-update CAS race)"
+            )
 
-        _log.info("admission.captured", extra={
-            "event": "admission.captured", "episode_id": eid, "content_hash": h,
-            "deduped": deduped, "status": status, "proposed_by": proposed_by,
-            "request_id": request_id})
-        superseded = self._apply_supersession(replaces, eid, actor=proposed_by,
-                                              request_id=request_id)
-        return WriteResult(status=status, episode_id=eid, content_hash=h,
-                           scan=verdict, deduped=deduped, superseded=superseded)
+        _log.info(
+            "admission.captured",
+            extra={
+                "event": "admission.captured",
+                "episode_id": eid,
+                "content_hash": h,
+                "deduped": deduped,
+                "status": status,
+                "proposed_by": proposed_by,
+                "request_id": request_id,
+            },
+        )
+        superseded = self._apply_supersession(
+            replaces, eid, actor=proposed_by, request_id=request_id
+        )
+        return WriteResult(
+            status=status,
+            episode_id=eid,
+            content_hash=h,
+            scan=verdict,
+            deduped=deduped,
+            superseded=superseded,
+        )
 
     # ── capture: the unclear-value tail — lands embedded but UNSERVABLE ────────
-    def capture(self, text: str, *, proposed_by: str, weight: float = 1.0,
-                request_id: str = "-", polarity: str = "neutral",
-                kind: str = DEFAULT_KIND, anchors: Sequence[AnchorRef] = (),
-                repos: Sequence[str] = (), meta: str = "") -> WriteResult:
+    def capture(
+        self,
+        text: str,
+        *,
+        proposed_by: str,
+        weight: float = 1.0,
+        request_id: str = "-",
+        polarity: str = "neutral",
+        kind: str = DEFAULT_KIND,
+        anchors: Sequence[AnchorRef] = (),
+        repos: Sequence[str] = (),
+        meta: str = "",
+    ) -> WriteResult:
         """Capture WITHOUT serving: scan → stage (dedup) → embed → complete
         ``trust='quarantined'`` (embedded but structurally unservable until
         measured demand promotes it) → synchronous promotion check → decay
@@ -327,26 +560,45 @@ class AdmissionService:
         ``anchors``/``repos`` are threaded to ``stage`` exactly as in ``write``.
         // O(1) DB ops + one embed + the O(Q·d) trigger."""
         if not self._autonomy_enabled:
-            _log.info("admission.capture_disabled", extra={
-                "event": "admission.capture_disabled", "proposed_by": proposed_by,
-                "request_id": request_id})
-            return WriteResult(status="disabled", episode_id=None,
-                               content_hash=None, scan=None)
+            _log.info(
+                "admission.capture_disabled",
+                extra={
+                    "event": "admission.capture_disabled",
+                    "proposed_by": proposed_by,
+                    "request_id": request_id,
+                },
+            )
+            return WriteResult(
+                status="disabled", episode_id=None, content_hash=None, scan=None
+            )
         self._meta_gate(meta, proposed_by=proposed_by, request_id=request_id)
-        verdict = self._scan_gate(text, proposed_by=proposed_by,
-                                  request_id=request_id)
-        staged_text = verdict.redacted_text if verdict.action == REDACT else text
+        verdict = self._scan_gate(text, proposed_by=proposed_by, request_id=request_id)
+        staged_text = (
+            (verdict.redacted_text or "") if verdict.action == REDACT else text
+        )
 
         try:
             eid, deduped = self._store.stage(
-                text=staged_text, weight=weight,
-                proposed_by=proposed_by, ts=self._now(),
-                polarity=polarity, kind=kind, meta=meta,
-                anchors=self._anchor_tuples(anchors), repos=list(repos))
+                text=staged_text,
+                weight=weight,
+                proposed_by=proposed_by,
+                ts=self._now(),
+                polarity=polarity,
+                kind=kind,
+                meta=meta,
+                anchors=self._anchor_tuples(anchors),
+                repos=list(repos),
+            )
         except Exception:
-            _log.error("admission.capture_stage_fail", extra={
-                "event": "admission.capture_stage_fail", "proposed_by": proposed_by,
-                "request_id": request_id}, exc_info=True)
+            _log.error(
+                "admission.capture_stage_fail",
+                extra={
+                    "event": "admission.capture_stage_fail",
+                    "proposed_by": proposed_by,
+                    "request_id": request_id,
+                },
+                exc_info=True,
+            )
             raise
 
         h = content_hash(staged_text)
@@ -355,52 +607,105 @@ class AdmissionService:
             # dedup onto an already-MATERIALIZED row (any trust): idempotent — a
             # capture never touches an existing row's trust (no re-embed, no
             # demotion, no promotion side door).
-            _log.info("admission.capture_dedup", extra={
-                "event": "admission.capture_dedup", "episode_id": eid,
-                "content_hash": h, "proposed_by": proposed_by,
-                "request_id": request_id})
-            return WriteResult(status="quarantined", episode_id=eid, content_hash=h,
-                               scan=verdict, deduped=True)
+            _log.info(
+                "admission.capture_dedup",
+                extra={
+                    "event": "admission.capture_dedup",
+                    "episode_id": eid,
+                    "content_hash": h,
+                    "proposed_by": proposed_by,
+                    "request_id": request_id,
+                },
+            )
+            return WriteResult(
+                status="quarantined",
+                episode_id=eid,
+                content_hash=h,
+                scan=verdict,
+                deduped=True,
+            )
 
         try:
             value = self._embedder.encode(staged_text)
         except Exception:
-            _log.error("admission.capture_embed_fail", extra={
-                "event": "admission.capture_embed_fail", "episode_id": eid,
-                "proposed_by": proposed_by, "request_id": request_id}, exc_info=True)
+            _log.error(
+                "admission.capture_embed_fail",
+                extra={
+                    "event": "admission.capture_embed_fail",
+                    "episode_id": eid,
+                    "proposed_by": proposed_by,
+                    "request_id": request_id,
+                },
+                exc_info=True,
+            )
             try:
                 self._store.reject(eid)
-            except Exception:                            # cleanup is best-effort
-                _log.error("admission.capture_embed_fail_cleanup_failed", extra={
-                    "event": "admission.capture_embed_fail_cleanup_failed",
-                    "episode_id": eid, "request_id": request_id}, exc_info=True)
+            except Exception:  # cleanup is best-effort
+                _log.error(
+                    "admission.capture_embed_fail_cleanup_failed",
+                    extra={
+                        "event": "admission.capture_embed_fail_cleanup_failed",
+                        "episode_id": eid,
+                        "request_id": request_id,
+                    },
+                    exc_info=True,
+                )
             raise
 
         ok = self._store.complete(
-            eid, value, expected_version=ep.version if ep is not None else 0,
-            trust=QUARANTINED, last_active_ts=self._now())
+            eid,
+            value,
+            expected_version=ep.version if ep is not None else 0,
+            trust=QUARANTINED,
+            last_active_ts=self._now(),
+        )
         if not ok:
-            _log.error("admission.capture_complete_failed", extra={
-                "event": "admission.capture_complete_failed", "episode_id": eid,
-                "proposed_by": proposed_by, "request_id": request_id})
+            _log.error(
+                "admission.capture_complete_failed",
+                extra={
+                    "event": "admission.capture_complete_failed",
+                    "episode_id": eid,
+                    "proposed_by": proposed_by,
+                    "request_id": request_id,
+                },
+            )
             try:
                 self._store.reject(eid)
             except Exception:
-                _log.error("admission.capture_complete_failed_cleanup_failed", extra={
-                    "event": "admission.capture_complete_failed_cleanup_failed",
-                    "episode_id": eid, "request_id": request_id}, exc_info=True)
+                _log.error(
+                    "admission.capture_complete_failed_cleanup_failed",
+                    extra={
+                        "event": "admission.capture_complete_failed_cleanup_failed",
+                        "episode_id": eid,
+                        "request_id": request_id,
+                    },
+                    exc_info=True,
+                )
             raise RuntimeError(
                 f"admission capture complete failed for episode {eid} "
-                "(lost-update CAS race)")
+                "(lost-update CAS race)"
+            )
 
-        _log.info("admission.capture_landed", extra={
-            "event": "admission.capture_landed", "episode_id": eid,
-            "content_hash": h, "deduped": deduped, "proposed_by": proposed_by,
-            "request_id": request_id})
+        _log.info(
+            "admission.capture_landed",
+            extra={
+                "event": "admission.capture_landed",
+                "episode_id": eid,
+                "content_hash": h,
+                "deduped": deduped,
+                "proposed_by": proposed_by,
+                "request_id": request_id,
+            },
+        )
         # synchronous lifecycle moments (both fail-open inside the service): does
         # existing demand already want this candidate, then the decay piggyback.
         if self._lifecycle is not None:
             self._lifecycle.on_capture(eid)
             self._lifecycle.sweep()
-        return WriteResult(status="quarantined", episode_id=eid, content_hash=h,
-                           scan=verdict, deduped=deduped)
+        return WriteResult(
+            status="quarantined",
+            episode_id=eid,
+            content_hash=h,
+            scan=verdict,
+            deduped=deduped,
+        )

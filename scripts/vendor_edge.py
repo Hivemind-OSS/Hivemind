@@ -19,6 +19,7 @@ Post-conditions enforced before it exits 0:
 Usage: python scripts/vendor_edge.py [--edge PATH]   (default: ../hive-edge)
 Dependencies: stdlib + the `uv` binary on PATH (build backend runner).
 """
+
 from __future__ import annotations
 
 import argparse
@@ -52,22 +53,31 @@ def _repin_uv_sources(wheels: dict[str, str]) -> None:
     """
     pyproject = REPO / "pyproject.toml"
     text = pyproject.read_text()
-    for dist, source_name in (("hive_edge", "hive-edge"),
-                              ("comb_drift", "comb-drift"),
-                              ("matrix", "matrix")):
-        pattern = rf'(?m)^{re.escape(source_name)} = \{{ path = "vendor/wheels/[^"]+" \}}$'
+    for dist, source_name in (
+        ("hive_edge", "hive-edge"),
+        ("comb_drift", "comb-drift"),
+        ("matrix", "matrix"),
+    ):
+        pattern = (
+            rf'(?m)^{re.escape(source_name)} = \{{ path = "vendor/wheels/[^"]+" \}}$'
+        )
         line = f'{source_name} = {{ path = "vendor/wheels/{dist}-{wheels[dist]}-py3-none-any.whl" }}'
         text, n = re.subn(pattern, line, text)
         if n != 1:
-            _die(f"expected exactly one [tool.uv.sources] wheel pin for {source_name!r} "
-                 f"in pyproject.toml, found {n} — restore the pin line, then re-run")
+            _die(
+                f"expected exactly one [tool.uv.sources] wheel pin for {source_name!r} "
+                f"in pyproject.toml, found {n} — restore the pin line, then re-run"
+            )
     pyproject.write_text(text)
 
 
 def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    parser.add_argument("--edge", default=str(REPO.parent / "hive-edge"),
-                        help="path to the hive-edge workspace checkout (default: ../hive-edge)")
+    parser.add_argument(
+        "--edge",
+        default=str(REPO.parent / "hive-edge"),
+        help="path to the hive-edge workspace checkout (default: ../hive-edge)",
+    )
     args = parser.parse_args(argv)
 
     edge_root = Path(args.edge).resolve()
@@ -80,7 +90,14 @@ def main(argv: list[str] | None = None) -> None:
 
     for source in MEMBERS.values():
         subprocess.run(
-            ["uv", "build", "--wheel", str(edge_root / source), "--out-dir", str(WHEELHOUSE)],
+            [
+                "uv",
+                "build",
+                "--wheel",
+                str(edge_root / source),
+                "--out-dir",
+                str(WHEELHOUSE),
+            ],
             check=True,
         )
 
@@ -90,21 +107,27 @@ def main(argv: list[str] | None = None) -> None:
     wheels = sorted(WHEELHOUSE.glob("*.whl"))
     built = {w.name.split("-")[0]: w.name.split("-")[1] for w in wheels}
     if set(built) != set(MEMBERS) or len(wheels) != len(MEMBERS):
-        _die(f"expected exactly one wheel per {sorted(MEMBERS)}, got {sorted(w.name for w in wheels)}")
+        _die(
+            f"expected exactly one wheel per {sorted(MEMBERS)}, got {sorted(w.name for w in wheels)}"
+        )
 
     if len(set(built.values())) != 1:
-        _die("workspace version drift in the built wheels: "
-             + ", ".join(f"{dist} {version}" for dist, version in sorted(built.items()))
-             + " — the hive-edge workspace ships ONE lockstep version; "
-             "bump every member to the same version, then re-run")
+        _die(
+            "workspace version drift in the built wheels: "
+            + ", ".join(f"{dist} {version}" for dist, version in sorted(built.items()))
+            + " — the hive-edge workspace ships ONE lockstep version; "
+            "bump every member to the same version, then re-run"
+        )
 
     _repin_uv_sources(built)
     subprocess.run(["uv", "lock"], cwd=REPO, check=True)
 
     for name, version in sorted(built.items()):
         print(f"vendored {name} {version}")
-    print(f"wheelhouse refreshed: {WHEELHOUSE.relative_to(REPO)} — commit the wheels, "
-          "pyproject.toml, and uv.lock together")
+    print(
+        f"wheelhouse refreshed: {WHEELHOUSE.relative_to(REPO)} — commit the wheels, "
+        "pyproject.toml, and uv.lock together"
+    )
 
 
 if __name__ == "__main__":

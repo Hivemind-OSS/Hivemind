@@ -12,15 +12,23 @@ PURE: stdlib + numpy via ``conflict._cosine`` only. The detector is total and pr
 This module is a cleanly-droppable sub-chunk: nothing else depends on it (provenance / n_eff /
 the suspect-consensus worklist do not import it).
 """
+
 from __future__ import annotations
 
-from typing import Sequence
+from typing import Optional, Sequence
+
+import numpy as np
 
 from hive.domain.conflict import _cosine
 
 
-def cluster_anomaly(candidate_vec, neighbors: Sequence, *, tau: float,
-                    min_cluster: int) -> bool:
+def cluster_anomaly(
+    candidate_vec: Optional[np.ndarray],
+    neighbors: Sequence[Optional[np.ndarray]],
+    *,
+    tau: float,
+    min_cluster: int,
+) -> bool:
     """True iff at least ``min_cluster`` neighbors lie within cosine >= ``tau`` of the
     candidate — an abnormally compact near-dup cluster. PURE cosine; an undecidable neighbor
     (None cosine) is SKIPPED, never counted (precision-first); total, never raises. A
@@ -30,7 +38,7 @@ def cluster_anomaly(candidate_vec, neighbors: Sequence, *, tau: float,
     n_close = 0
     for nb in neighbors:
         c = _cosine(candidate_vec, nb)
-        if c is None:                  # undecidable ⇒ skipped, never counted
+        if c is None:  # undecidable ⇒ skipped, never counted
             continue
         if c >= tau:
             n_close += 1

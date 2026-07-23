@@ -5,6 +5,7 @@ truncation point or it arrives clipped mid-word).
 Extended for U4-THIN-AGENT: the same table is also swept for the DELETED apparatus (no
 approver, no AGI vocabulary, no onboarding flag — the CT-11/CT-12 schema scenarios, mirrored
 at the module level) and pinned to the §3.3 v3 schema shapes."""
+
 from __future__ import annotations
 
 import json
@@ -42,38 +43,62 @@ def test_server_instructions_fit_metadata_limit():
 
 
 def test_all_tool_descriptions_fit_metadata_limit():
-    over = [(t["name"], len(t["description"])) for t in TOOL_DEFINITIONS
-            if len(t["description"]) > METADATA_FIELD_LIMIT]
+    over = [
+        (t["name"], len(t["description"]))
+        for t in TOOL_DEFINITIONS
+        if len(t["description"]) > METADATA_FIELD_LIMIT
+    ]
     assert over == [], f"over the metadata field limit: {over}"
 
 
 # ── B. the deletion sweep (CT-11/CT-12 mirror): no approver, no AGI, no onboarding ──
 def test_table_is_exactly_the_eight_verbs():
     assert TOOL_NAMES == frozenset(V3_VERBS)
-    assert len(TOOL_DEFINITIONS) == len(V3_VERBS)          # no duplicate rows
+    assert len(TOOL_DEFINITIONS) == len(V3_VERBS)  # no duplicate rows
 
 
 def test_schema_sweep_no_approver_agi_or_onboarding_anywhere():
     dumped = json.dumps(TOOL_DEFINITIONS)
-    for dead in ("approved_by", "approver", "AGI", "proposed_by", "include_onboarding",
-                 "hive-edge", "contract_version"):
+    for dead in (
+        "approved_by",
+        "approver",
+        "AGI",
+        "proposed_by",
+        "include_onboarding",
+        "hive-edge",
+        "contract_version",
+    ):
         assert dead not in dumped, f"deleted apparatus survives in the table: {dead!r}"
 
 
 # ── C. the §3.3 v3 schema shapes ──────────────────────────────────────────────
 def test_write_schema_v3():
     s = _schema("hive_write")
-    assert s["required"] == ["text"]                       # text ALONE — no approver
-    assert set(s["properties"]) == {"text", "replaces", "polarity", "kind",
-                                    "anchors", "repos", "meta"}
+    assert s["required"] == ["text"]  # text ALONE — no approver
+    assert set(s["properties"]) == {
+        "text",
+        "replaces",
+        "polarity",
+        "kind",
+        "anchors",
+        "repos",
+        "meta",
+    }
     assert s["properties"]["replaces"] == {"type": "integer"}
 
 
 def test_capture_schema_v3():
     s = _schema("hive_capture")
     assert s["required"] == ["text"]
-    assert set(s["properties"]) == {"text", "polarity", "kind", "anchors", "repos", "meta"}
-    assert "replaces" not in s["properties"]               # capture can retire nothing
+    assert set(s["properties"]) == {
+        "text",
+        "polarity",
+        "kind",
+        "anchors",
+        "repos",
+        "meta",
+    }
+    assert "replaces" not in s["properties"]  # capture can retire nothing
 
 
 def test_recall_schema_v3():
@@ -105,9 +130,15 @@ def test_outcome_and_flag_shapes_unchanged():
 
 def test_health_flags_v3_without_onboarding():
     props = set(_props("hive_health"))
-    assert props == {"include_gaps", "include_trends", "include_conflicts",
-                     "include_suspect_consensus", "include_stale_suspects",
-                     "include_census_health", "include_meta_versions"}
+    assert props == {
+        "include_gaps",
+        "include_trends",
+        "include_conflicts",
+        "include_suspect_consensus",
+        "include_stale_suspects",
+        "include_census_health",
+        "include_meta_versions",
+    }
 
 
 # ── D. the shared structured-anchor grammar ───────────────────────────────────

@@ -2,23 +2,26 @@
 
 This is the operator's posture for running Hivemind's shared memory well: which knobs
 move the outcome, which KPIs to watch, and which calls are yours to make. It is derived
-from a discrete-event Monte-Carlo simulation of **this exact trust lifecycle** —
-`hive_capture` → demand-promotion (`provisional`) → human `hive_write` (`established`),
-behind the absolute serve floor, with TTL decay and human supersession as the only
-removals. Every number below is a steady-state result from that model. Hivemind already
-*implements* the structure the model rewards; this doc is about **operating** it.
+from a discrete-event Monte-Carlo simulation of **this trust lifecycle's structure** —
+capture → quarantine → demand-promotion (`provisional`), the absolute serve floor, TTL
+decay, and retirement of established falsehoods as the only removals. Every number below
+is a steady-state result from that model. Hivemind already *implements* the structure the
+model rewards — in v3, `hive_write` also serves immediately as `provisional`, `established`
+is reached only by verified change outcomes on the canonical line, and retirement is
+machine-gated rather than discretionary; this doc is about **operating** it.
 
 ## The governing principle: usefulness is a flow, not a stock
 
 The store does not clean itself. The model's sharpest result is that the only forces
-removing harm are **TTL decay** (of unused, un-established rows) and **human
-supersession** (of established falsehoods). There is no on-contact cleaning — a memory
-served as truth is not re-examined by being served. Two consequences drive everything
-else:
+removing harm are **TTL decay** (of unused, un-established rows) and **retirement**
+(of established falsehoods — in v3, agent-called and machine-gated). There is no
+on-contact cleaning — a memory served as truth is not re-examined by being served. Two
+consequences drive everything else:
 
 - **Maintenance is the product, not overhead.** Left alone, a store degrades: good
   memories silently go stale faster than anything else erodes them, and nothing reverses
-  that without an operator in the loop.
+  that without deliberate upkeep — seeding answers and sweeping the worklists into
+  retirement calls.
 - **A bigger store is not a better one.** Past a point, dilution and rot outrun the fixed
   recall bandwidth. Hoarding lowers the value delivered per query.
 
@@ -55,8 +58,7 @@ unvetted is served. The cost of safety here is paid in latency, not in poison.
   suspect-consensus worklist flags promotions with thin *effective* independence
   (`HIVE_SUSPECT_CONSENSUS__N_EFF_FRAC_MAX`, 0.5).
 - **Operate:** make sure your agents really run as **distinct sessions** (that diversity is
-  what promotes good captures). Keep `HIVE_AGI__MODE` **off** unless you mean it — on, an
-  agent can self-authorize the human-gated trust actions. Audit
+  what promotes good captures). Audit
   `hive_health(include_suspect_consensus=true)` for the confidently-wrong-but-popular
   failure mode.
 
@@ -75,14 +77,18 @@ is the mechanism behind the 0.83 → 0.01 swing above. It is unconditional in re
 ### 3. Fight staleness on the established tier — it is the dominant decay
 Good memories quietly going out of date erodes the store faster than injected poison does;
 in the model the good→stale path is the single largest degradation. Established memories
-**never decay mechanically** — they are the one tier with no automatic cleaning.
-- **Levers:** every recall hit carries its `trust` and `ts`; the conflict worklist surfaces
-  contradictions among established rows; `hive_supersede` / `hive_write(replaces=<id>)` /
-  `hive_prune` retire them.
+**never decay mechanically** — no TTL cleans them; retirement is the only exit.
+- **Levers:** every recall hit carries its `trust`, `ts`, and a per-anchor `drift` verdict
+  (the sync daemon materializes drift at each repo's canonical tip);
+  `hive_health(include_stale_suspects=true)` surfaces servable memories whose anchor sat in
+  the blast radius of a breaking change; `hive_supersede` / `hive_write(replaces=<id>)` /
+  `hive_prune` retire — machine-gated, so the server retires only a target it can qualify
+  with a verified signal (anchor drift, hurt evidence from another identity or a verified
+  outcome, mechanical contradiction).
 - **Operate:** treat an old `ts` on an established hit as a staleness suspect, not a
-  guarantee. Periodically review the oldest established memories and the contested-memory
-  report; a fact that was true when written can rot. This is human-paced work and there is
-  no substitute for it.
+  guarantee. Sweep the stale-suspect and conflict worklists on a fixed cadence and resolve
+  them into retirement calls — an unqualified call is a benign no-op, so calling is safe;
+  the gate, not the caller, decides.
 
 ### 4. Keep it small; let unused memory expire
 With staleness present, there is an **optimal (small) store size** — in the model a tight
@@ -115,16 +121,18 @@ false-serve 0.01.
   (production code, security), raise it; if a missing answer wastes more time than a
   questionable one, lower it.
 
-### 7. Human establishment is the biggest positive lever; supersession only helps the established tier
-Seeding trusted answers via `hive_write` was the single strongest mover toward a clean,
-high-coverage store in the model. But supersession is **scope-specific**: it had *no*
+### 7. Seeding trusted answers is the biggest positive lever; retirement only helps the established tier
+Seeding good answers via `hive_write` was the single strongest mover toward a clean,
+high-coverage store in the model. But retirement is **scope-specific**: it had *no*
 effect when the poison lived in the provisional tier (TTL handled it) — it only pays off on
-**established** falsehoods, the tier nothing else cleans. There, human pruning cut the
+**established** falsehoods, the tier nothing else cleans. There, pruning cut the
 residual false-serve rate several-fold at no success cost.
-- **Levers:** `hive_write(approved_by=…)` to establish; `hive_supersede` /
-  `hive_write(replaces=…)` / `hive_prune` to retire established errors.
-- **Operate:** spend human review **on the established tier specifically**. Establishing a
-  good answer is high-leverage; chasing provisional churn with manual review is not.
+- **Levers:** `hive_write` to seed (it serves immediately as `provisional`; a verified
+  change outcome on the canonical line establishes it); `hive_supersede` /
+  `hive_write(replaces=…)` / `hive_prune` to retire established errors (machine-gated).
+- **Operate:** spend review attention **on the established tier specifically** — seed the
+  store's answers and resolve its worklists. Chasing provisional churn is not worth it
+  (TTL is already doing that work).
 
 ## What to watch — monitoring cadence
 
@@ -133,32 +141,36 @@ All read-only over MCP, off the warm store:
 | Signal | Call | Read it for | Acts on |
 |---|---|---|---|
 | `confident_rate`, `demand_entropy` (+ 7d deltas) | `hive_health(include_trends=true)` | silent fail-open rot; coverage starvation; demand diversity | `tau_serve`, `demand_m` |
-| demand-gap report | `hive_health(include_gaps=true)` | topics wanted but uncovered | `hive_write` those answers |
-| contested-memory report | `hive_health(include_conflicts=true)` | established rows with competing versions | `hive_supersede` the wrong one |
-| suspect-consensus worklist | `hive_health(include_suspect_consensus=true)` | promotions on thin *effective* independence | human audit / retire |
+| demand-gap report | `hive_health(include_gaps=true)` | topics wanted but uncovered (each gap names the repos that asked) | `hive_write` those answers |
+| contested-memory report | `hive_health(include_conflicts=true)` | established rows with competing versions, bucketed by repo and anchor | `hive_supersede` the wrong one |
+| suspect-consensus worklist | `hive_health(include_suspect_consensus=true)` | promotions on thin *effective* independence | re-examine / retire |
+| stale-suspect worklist | `hive_health(include_stale_suspects=true)` | servable memories in the blast radius of a breaking/removed change | re-verify against the code, then retire |
 | anomaly cluster flags | promote audit | compact near-identical clusters (flood signature) | investigate before trusting |
 
 The trends window is the **only** view into silent fail-open rot — keep it instrumented and
 read it on a fixed cadence (weekly is enough for a small team). Convert gaps into
-`hive_write`s and contested rows into supersessions in the same pass.
+`hive_write`s and contested rows into retirement calls in the same pass.
 
-The evidence ledger has two inputs. The automatic one is **server-side**: set
-`HIVE_SYNC__REPO_URL` (plus `HIVE_SYNC__TOKEN` for a private remote) and the server itself
-mirrors the repo and feeds every landing on the tracked branch (`HIVE_CENSUS__CANONICAL_REF`,
-else the origin default) into the ledger — one unsigned receipt per new watermark..tip range,
-ingested `post_merge` in-process. With `HIVE_SYNC__VERIFY_CANDIDATES` (default on) it also
-evaluates changed PR heads pre-merge — the stamped receipts that can emit
-`outcome_verified_helped` rows, which the verified-promotion rung
-(`HIVE_AUTONOMY__VERIFIED_PROMOTION`, default on) may use to promote a quarantined memory — and
-it backfills absent anchor fingerprints against the tracked tip. Everything is fail-open and
-detect-only (never a trust mutation); a push webhook (`HIVE_SYNC__WEBHOOK_SECRET`, HMAC-gated on
-the tunnel door) only wakes the poll early — the poll interval stays the correctness floor.
-Watch the feed via `hive_health(include_census_health=true)`: days since the last
-`change_outcome`, plus a `sync` block (`last_tip`, `last_error`, evaluation/backfill counters,
-and `status: "sync stalled"` only when configured yet dark). The manual escape hatch remains
-`hive ingest <receipt.json>`: append a hand-built unsigned receipt's SHA-bound change outcome —
-append-only, idempotent (an exact already-ingested `(repo, base, head, phase)` range is skipped
-whole and reported `range_skipped`), trust-untouched; see `skills/hive-operate/SKILL.md`.
+The evidence ledger has two inputs. The automatic one is **server-side and per-repo**:
+register each repo the fleet works on (`hive repo add <url> [--name <slug>] [--branch <ref>]
+[--token-env <ENVNAME>]`; `hive repos` lists, `hive repo remove <name>` stops) and the sync
+daemon — re-reading the registry every tick, so registration needs no restart — mirrors each
+registered repo and feeds every landing on its canonical branch into the ledger: one unsigned
+receipt per new watermark..tip range, ingested post-merge in-process, after which the
+verified-outcome `established` sweep runs (the only trust movement the feed drives). The same
+tick backfills absent anchor fingerprints against the canonical tip and materializes per-anchor
+drift verdicts (the canonical tip plus branch tips recall demanded). The SHA-bound verified rows
+it writes are also what the verified-promotion rung (`HIVE_AUTONOMY__VERIFIED_PROMOTION`,
+default on) uses to promote a quarantined memory. Every leg is fail-open per repo; a push
+webhook (`HIVE_SYNC__WEBHOOK_SECRET`, HMAC-gated on the tunnel door) only wakes the poll early —
+one nudge wakes all registered repos; the poll interval stays the correctness floor. Watch the
+feed via `hive_health(include_census_health=true)`: a per-repo block — days since the last
+`change_outcome`, plus the sync state (`tracked_ref`, `last_tip`, `last_error`, and
+`status: "sync stalled"` only when the feed is configured yet dark). The manual escape hatch
+remains `hive ingest <receipt.json>`: append a hand-built unsigned receipt's SHA-bound change
+outcome — append-only, idempotent (an exact already-ingested `(repo, base, head, phase)` range
+is skipped whole and reported `range_skipped`), trust-untouched; see
+`skills/hive-operate/SKILL.md`.
 
 For a browser view of the live picture, `hive ui` serves a loopback-only operator dashboard: the
 same status/seats/logs read plus the controls (backup, seat mint/revoke, non-blocking loopback-only
@@ -178,9 +190,8 @@ The model gives directions, not a single setpoint — these depend on your costs
 - **`tau_serve` / `k_min`** — how conservative the gate is; recalibrate on your corpus.
 - **`conflict.tau`** — the dedup near-duplicate floor; recalibrate on your corpus.
 - **TTL lengths** — how fast un-established memory drains. Shorter favors freshness.
-- **Supersession cadence and owner** — how much human review the established tier gets.
-- **`HIVE_AGI__MODE`** — default off. On, the fleet self-authorizes trust actions; it
-  loosens the one human gate, so opt in deliberately, not by default.
+- **Worklist cadence** — how often conflicts, stale suspects, and suspect consensus get
+  swept into resolution. The machine gate makes calling safe; the cadence is yours.
 - **`HIVE_SECRET_SCAN__ENABLED`** — default on (the credential floor). Off bypasses the
   pre-persist scan, so raw secrets get stored unscanned — it loosens a safety gate, logged at
   boot and shown in `hive_health`. Leave on unless you have a specific, risk-accepted reason.
@@ -195,13 +206,15 @@ leverage on the outcome, but part of the full surface.
 | Knob | Default | Controls |
 |---|---|---|
 | `HIVE_AUTONOMY__ENABLED` | `true` | master switch for the whole memory lifecycle; `false` ⇒ capture refused, no promotion/decay, no ledger writes (byte-inert with the pre-lifecycle build) |
+| `HIVE_AUTONOMY__VERIFIED_PROMOTION` | `true` | the verified-outcome rung out of quarantine (SHA-bound verified win ⇒ promote at the next demand tick, competitor veto retained); `false` ⇒ the rung is unreachable |
 | `HIVE_AUTONOMY__ANOMALY_TAU` | `0.95` | compact-cluster cosine floor for the promotion flood-anomaly flag (tighter than the near-dup floor; detection-only — it never blocks a promotion) |
 | `HIVE_AUTONOMY__ANOMALY_MIN_CLUSTER` | `5` | ≥ this many near-identical quarantined neighbors ⇒ flag the promotion in the audit (the flood signature) |
 | `HIVE_CONFLICT__ENABLED` | `true` | conflict detection (the recall `conflicts` carrier + the contested-memory worklist) and the `hive_flag` advisory verb; `false` ⇒ byte-inert |
 | `HIVE_CONFLICT__TOP_N` | `10` | cap on the contested-memory worklist |
 | `HIVE_SUSPECT_CONSENSUS__TOP_N` | `10` | cap on the suspect-consensus worklist |
-| `HIVE_SYNC__INTERVAL_S` | `60` | census-sync daemon poll cadence in seconds (floor 5; the daemon is off unless `HIVE_SYNC__REPO_URL` is set) |
-| `HIVE_SYNC__MIRROR_DIR` | `""` ⇒ `/data/sync/mirror` | where the sync daemon keeps its bare mirror (a rebuildable cache in the hive-data volume) |
+| `HIVE_SYNC__INTERVAL_S` | `60` | census-sync daemon poll cadence in seconds (floor 5; an empty repo registry is an inert tick) |
+| `HIVE_SYNC__WEBHOOK_SECRET` | *(unset)* | arms the `POST /census-webhook` nudge on the tunnel door — one nudge wakes the poll for all registered repos |
+| `HIVE_SYNC__MIRROR_DIR` | `""` ⇒ `/data/sync/mirror` | where the sync daemon keeps its per-repo mirrors (`<dir>/<name>` — rebuildable caches in the hive-data volume) |
 | `HIVE_HTTP_MAX_BODY_BYTES` | `1048576` | request-body cap in bytes on both HTTP doors (1 MiB) |
 | `HIVE_RETENTION__BACKUP_KEEP` | `30` | most-recent `hive backup` snapshots kept |
 | `HIVE_RETENTION__BACKUP_DIR` | `<db_dir>/backups` | where snapshots are written |
@@ -213,42 +226,31 @@ changing the model means rebuilding the image. The store path and tenant are set
 `HIVE_STORE__DB_PATH` and `HIVE_TENANT_ID` (you manage the `hive-data` volume, not the path), not
 recall/safety tuning.
 
-## Release runbook — a coupled hivemind + hive-edge release
+## Release runbook — cutting a release over
 
-The current instance: hive-edge **0.9.0** + contract **v.14** (the PyPI-free release: agents
-install the CLI from the public git repo via uv; 0.9.0 is the workspace-lockstep release, and
-the served floor now equals it). When a release moves the
-served contract and the edge-CLI floor together (a `CONTRACT_VERSION` + `MIN_EDGE_VERSION`
-bump), the human lands it in this order — every step is safe to stop after, and the fleet is
-never directed at an artifact that does not exist yet:
+A hivemind release has exactly one deploy target — the **server**. Agents are thin MCP clients
+with nothing installed, so no step in any release directs the fleet at anything; each session
+simply receives the served usage contract fresh at its next connect. Three concerns, each safe
+to stop after:
 
-1. **Land hive-edge** — the single lockstep workspace version: every member distribution
-   (hive-edge, matrix, comb-drift) is bumped as one to the identical version in the hive-edge
-   repository, whose guard test enforces the equality across the version sites.
-2. **Refresh the vendored wheelhouse** — `python scripts/vendor_edge.py` on the dev machine:
-   rebuilds `vendor/wheels/` from that checkout, refuses a half-bumped workspace (the three
-   wheel versions must be identical) or a hive_edge wheel below the floor the
-   server will serve, rewrites the `[tool.uv.sources]` wheel pins, and re-locks. There is no
-   package index or publish step — the committed wheelhouse IS the server's release artifact,
-   and the server host receives only the hivemind repo (zero interaction with a hive-edge
-   checkout). The one tag duty is agent-side: move the `release` tag in the hive-edge repo to
-   the shipped lockstep commit BEFORE the fleet re-onboards, so `uv tool upgrade hive-edge`
-   resolves to the version the served floor names.
-3. **Land hivemind** — the server change that serves the new contract (v.14) and pins the new
-   floor (`MIN_EDGE_VERSION = 0.9.0`), carrying the refreshed `vendor/wheels/` +
-   `pyproject.toml` + `uv.lock` in the same change.
-4. **Cut the live server over** — an in-place rebuild + restart of the running container from
-   the landed tree, preserving the `hive-data` volume (this is not `hive upgrade`, which moves
-   the checkout to a ref). **No compose change is required**: sync configuration rides `.env`
-   (`HIVE_SYNC__*`) and the mirror lives inside the existing `hive-data` volume (`/data/sync/`).
-5. **The fleet re-onboards itself — no action**: each agent's next tool result beacons
-   `contract_version` v.14; the installed-marker mismatch triggers the served re-onboard
-   procedure — the deterministic hook/allowlist reconcile, a session restart, and
-   `uv tool upgrade hive-edge` to meet the new floor (which is why the `release` tag moves in
-   step 2, before any agent re-onboards).
-6. **Archive what the release retired** — the retired `hive-census` + `hive-verifier` engine packages in the hive-edge workspace
-   (their engines now live in the server as `hive/census/` + `hive/verifier/`) — after the fleet
-   is over, never before.
+1. **Refresh the engine wheels (only when the anchor/census engines changed).** The server's
+   engines ship as the committed wheelhouse `vendor/wheels/`; `python scripts/vendor_edge.py`
+   on the dev machine rebuilds it from the engine-workspace checkout — it refuses a half-bumped
+   workspace (the wheel versions must be identical), rewrites the `[tool.uv.sources]` wheel
+   pins, and re-locks. There is no package index or publish step — the committed wheelhouse IS
+   the release artifact, and the server host receives only the hivemind repo.
+2. **Land hivemind** — the server change, carrying any refreshed `vendor/wheels/` +
+   `pyproject.toml` + `uv.lock` in the same change. The gate is `make check` (format check,
+   lint, strict typecheck, full test suite).
+3. **Cut the live server over** — `hive upgrade` to a vetted ref (backup-gated, auto-rollback
+   on failure), or an in-place rebuild + restart from the landed tree, preserving the
+   `hive-data` volume. **No compose change is required**: the sync knobs ride `.env`
+   (`HIVE_SYNC__*`), the repo registry rides the store, and the mirrors live inside the
+   existing volume (`/data/sync/`).
+
+A release that crosses a **schema generation** is a clean-store cutover instead: `hive reset`
+(snapshot-first, recoverable), then `hive repo add` each repo — never `hive upgrade`, whose
+health gate refuses the old-format store and auto-rolls back (HIVE-ADMIN §8).
 
 ## Provenance & caveats
 

@@ -12,6 +12,7 @@ default is what makes the zero-config token verbs work. Injection seams (`connec
 keep the wiring unit-testable without a real DB file. STDOUT carries only the token
 (machine-parseable); human metadata goes to STDERR so a pipe captures just the credential.
 """
+
 from __future__ import annotations
 
 import argparse
@@ -26,16 +27,20 @@ from hive.adapters.sqlite_db import connect
 EX_OK = 0
 EX_SOFTWARE = 70
 
-_DEFAULT_DB_PATH = "/data/shared.db"   # mirrors entrypoint/healthcheck/backupctl
+_DEFAULT_DB_PATH = "/data/shared.db"  # mirrors entrypoint/healthcheck/backupctl
 
 
-def main(argv: Optional[list[str]] = None, *, env: Optional[Mapping[str, str]] = None,
-         connect_fn: Optional[Callable[[str], Any]] = None,
-         out: Optional[TextIO] = None) -> int:
+def main(
+    argv: Optional[list[str]] = None,
+    *,
+    env: Optional[Mapping[str, str]] = None,
+    connect_fn: Optional[Callable[[str], Any]] = None,
+    out: Optional[TextIO] = None,
+) -> int:
     """Mint or revoke a device token; return a sysexits exit code. `connect_fn` (default the
     prod `connect`) and `out` (default stdout) are injection seams. NEVER echoes the env
     value (secret-safe). // O(1) DB ops."""
-    import os                                       # local: env default without a module global
+    import os  # local: env default without a module global
 
     env = os.environ if env is None else env
     connect_fn = connect_fn or connect
@@ -43,49 +48,73 @@ def main(argv: Optional[list[str]] = None, *, env: Optional[Mapping[str, str]] =
 
     parser = argparse.ArgumentParser(
         prog="hive.tools.authctl",
-        description="Mint / revoke per-device bearer tokens for the Hive HTTP daemon.")
-    parser.add_argument("--db", default=None,
-                        help="SQLite store path (default: $HIVE_STORE__DB_PATH)")
+        description="Mint / revoke per-device bearer tokens for the Hive HTTP daemon.",
+    )
+    parser.add_argument(
+        "--db", default=None, help="SQLite store path (default: $HIVE_STORE__DB_PATH)"
+    )
     sub = parser.add_subparsers(dest="cmd", required=True)
-    p_create = sub.add_parser("create", help="mint a token for a device label (printed ONCE)")
-    p_create.add_argument("label", help="device identity → proposed_by, e.g. alice-laptop")
-    p_revoke = sub.add_parser("revoke", help="delete a device's token (next request → 401)")
+    p_create = sub.add_parser(
+        "create", help="mint a token for a device label (printed ONCE)"
+    )
+    p_create.add_argument(
+        "label", help="device identity → proposed_by, e.g. alice-laptop"
+    )
+    p_revoke = sub.add_parser(
+        "revoke", help="delete a device's token (next request → 401)"
+    )
     p_revoke.add_argument("label", help="the device label to revoke")
-    sub.add_parser("list", help="print provisioned device labels, one per line (no hashes)")
+    sub.add_parser(
+        "list", help="print provisioned device labels, one per line (no hashes)"
+    )
     args = parser.parse_args(argv)
 
     # default to the in-container store path when unset (mirrors entrypoint/healthcheck/backupctl)
     # — the CLI execs authctl with no --db, so this default is what makes the zero-config token
     # verbs work; an operator's $HIVE_STORE__DB_PATH still overrides it, --db wins over both.
-    db_path = (args.db or env.get("HIVE_STORE__DB_PATH") or "").strip() or _DEFAULT_DB_PATH
+    db_path = (
+        args.db or env.get("HIVE_STORE__DB_PATH") or ""
+    ).strip() or _DEFAULT_DB_PATH
 
     store = SqliteTokenStore(connect_fn(db_path))
 
     if args.cmd == "create":
         try:
             token = store.create(args.label)
-        except sqlite3.IntegrityError:              # duplicate label (PK) — already provisioned
-            print(f"authctl: a token already exists for {args.label!r} "
-                  "(revoke it first to re-issue)", file=sys.stderr)
+        except sqlite3.IntegrityError:  # duplicate label (PK) — already provisioned
+            print(
+                f"authctl: a token already exists for {args.label!r} "
+                "(revoke it first to re-issue)",
+                file=sys.stderr,
+            )
             return EX_SOFTWARE
-        print(token, file=out)                      # the ONLY stdout line — the plaintext, shown once
-        print(f"authctl: created token for {args.label!r} (shown once above; "
-              "hand it over via a secret manager)", file=sys.stderr)
+        print(token, file=out)  # the ONLY stdout line — the plaintext, shown once
+        print(
+            f"authctl: created token for {args.label!r} (shown once above; "
+            "hand it over via a secret manager)",
+            file=sys.stderr,
+        )
         return EX_OK
 
     if args.cmd == "list":
-        for label in store.labels():                # sorted by the adapter (single-sourced query)
+        for label in store.labels():  # sorted by the adapter (single-sourced query)
             print(label, file=out)
         return EX_OK
 
     # args.cmd == "revoke" (subparsers are required, so no other value reaches here)
-    removed = store.revoke(args.label)              # ← claiming success without deleting is the mutation the tests catch
+    removed = store.revoke(
+        args.label
+    )  # ← claiming success without deleting is the mutation the tests catch
     if not removed:
-        print(f"authctl: no token for {args.label!r} (nothing revoked)", file=sys.stderr)
+        print(
+            f"authctl: no token for {args.label!r} (nothing revoked)", file=sys.stderr
+        )
         return EX_SOFTWARE
     print(f"authctl: revoked {args.label!r}", file=sys.stderr)
     return EX_OK
 
 
-if __name__ == "__main__":  # pragma: no cover — module entry (`python -m hive.tools.authctl`)
+if (
+    __name__ == "__main__"
+):  # pragma: no cover — module entry (`python -m hive.tools.authctl`)
     raise SystemExit(main(sys.argv[1:]))

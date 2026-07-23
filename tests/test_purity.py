@@ -9,6 +9,7 @@
 The gate has teeth: the mutation (add `import sqlite3` to a domain file)
 must turn test_domain_imports_no_io red.
 """
+
 from __future__ import annotations
 
 import ast
@@ -60,7 +61,8 @@ def test_client_is_stdlib_only_by_ast() -> None:
     imports = _module_imports(ROOT / "client.py")
     assert imports <= allowed, (
         f"hive/client.py must stay stdlib-only/vendorable; "
-        f"illegal imports: {imports - allowed}")
+        f"illegal imports: {imports - allowed}"
+    )
 
 
 def test_scripts_not_imported_by_runtime() -> None:
@@ -74,8 +76,11 @@ def test_scripts_not_imported_by_runtime() -> None:
         tree = ast.parse(path.read_text(), filename=str(path))
         hits = set()
         for node in ast.walk(tree):
-            if isinstance(node, ast.ImportFrom) and node.module and (
-                    node.module == "scripts" or node.module.startswith("scripts.")):
+            if (
+                isinstance(node, ast.ImportFrom)
+                and node.module
+                and (node.module == "scripts" or node.module.startswith("scripts."))
+            ):
                 hits.add(node.module)
             if isinstance(node, ast.Import):
                 for alias in node.names:
@@ -83,7 +88,9 @@ def test_scripts_not_imported_by_runtime() -> None:
                         hits.add(alias.name)
         if hits:
             offenders[str(path.relative_to(ROOT))] = hits
-    assert not offenders, f"runtime must not import the build-excluded scripts/ utilities: {offenders}"
+    assert not offenders, (
+        f"runtime must not import the build-excluded scripts/ utilities: {offenders}"
+    )
 
 
 def _dotted_imports(path: pathlib.Path) -> set[str]:
@@ -118,7 +125,9 @@ def test_domain_never_imports_census_or_verifier() -> None:
         bad = _imports_under(path, ("hive.census", "hive.verifier"))
         if bad:
             offenders[str(path.relative_to(ROOT))] = bad
-    assert not offenders, f"domain/ must not import the census/verifier engines: {offenders}"
+    assert not offenders, (
+        f"domain/ must not import the census/verifier engines: {offenders}"
+    )
 
 
 def test_engines_never_import_hive_domain_or_app() -> None:
@@ -127,10 +136,14 @@ def test_engines_never_import_hive_domain_or_app() -> None:
     # never on the hive server stack — the dependency arrow points one way.
     offenders: dict[str, set[str]] = {}
     for path in _full_module_paths("census", "verifier"):
-        bad = _imports_under(path, ("hive.domain", "hive.app", "hive.adapters", "hive.tools"))
+        bad = _imports_under(
+            path, ("hive.domain", "hive.app", "hive.adapters", "hive.tools")
+        )
         if bad:
             offenders[str(path.relative_to(ROOT))] = bad
-    assert not offenders, f"the engines must stay standalone of the server stack: {offenders}"
+    assert not offenders, (
+        f"the engines must stay standalone of the server stack: {offenders}"
+    )
 
 
 def test_no_module_imports_the_premove_engine_names() -> None:

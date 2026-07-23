@@ -22,7 +22,6 @@ from hive.census.engines import (
     attribute_symbols,
     build_graphs,
     ensure_scratch_matrix_out,
-    node_change,
 )
 
 SHA_A = "a" * 40
@@ -209,9 +208,7 @@ class TestAttributeSymbols:
         assert ("lib.py", "orphan") in touched_symbols
         assert "farewell()" not in _labels(graph_pair.head.nx)
 
-    def test_method_symbol_is_qualified_class_dot_method(
-        self, touched_symbols
-    ) -> None:
+    def test_method_symbol_is_qualified_class_dot_method(self, touched_symbols) -> None:
         assert ("lib.py", "Greeter.wave") in touched_symbols
 
     def test_deterministic_and_deduplicated(
@@ -238,9 +235,7 @@ class TestAttributeSymbols:
             source_file="poison.py",
             source_location="L2",
         )
-        base.add_node(
-            "ok_fn", label="fn()", source_file="ok.py", source_location="L1"
-        )
+        base.add_node("ok_fn", label="fn()", source_file="ok.py", source_location="L1")
         touched = ChangeSet(
             base_sha=SHA_A,
             head_sha=SHA_B,
@@ -296,9 +291,7 @@ class TestNodeChange:
         assert reasons[("lib.py", "greet")].startswith("signature_changed")
         assert ": " in reasons[("lib.py", "greet")]
 
-    def test_file_level_entries_produce_no_symbol_change(
-        self, change_verdict
-    ) -> None:
+    def test_file_level_entries_produce_no_symbol_change(self, change_verdict) -> None:
         paths_with_symbols = {s.path for s in change_verdict.symbols}
         assert "notes.txt" not in paths_with_symbols
         assert "lib2.py" not in paths_with_symbols

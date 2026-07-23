@@ -16,6 +16,7 @@ the remote tip with NO historical receipt.
 Every test drives a REAL tmp origin (bare + pushes) through ``SyncService.tick()``
 with the real sqlite store and REAL subprocess census builds.
 """
+
 from __future__ import annotations
 
 import logging
@@ -25,8 +26,16 @@ from hive.app.sync import META_LAST_SYNC_TS, default_run
 from hive.domain.change_evidence import ChangeEvidenceService
 
 from tests.sync.conftest import (
-    REPO, RecordingLifecycle, build_receipt, evidence_rows, git,
-    make_service, meta, payloads, register_repo, seed_episode,
+    REPO,
+    RecordingLifecycle,
+    build_receipt,
+    evidence_rows,
+    git,
+    make_service,
+    meta,
+    payloads,
+    register_repo,
+    seed_episode,
 )
 
 META_LAST_TIP = f"sync:{REPO}:last_tip"
@@ -44,7 +53,7 @@ def _baseline(origin, store, tmp_path, **kw):
     svc = make_service(store, tmp_path, **kw)
     svc.tick()
     tip = origin.origin_sha("refs/heads/main")
-    assert evidence_rows(store) == []            # ← a historical receipt here is the mutation
+    assert evidence_rows(store) == []  # ← a historical receipt here is the mutation
     assert meta(store, META_LAST_TIP) == tip
     return svc, tip
 
@@ -59,16 +68,16 @@ def test_push_lands_rows(origin, store, tmp_path):
     svc.tick()
 
     rows = evidence_rows(store)
-    assert len(rows) == 1                        # one matched episode, one outcome row
+    assert len(rows) == 1  # one matched episode, one outcome row
     body = payloads(store)[0]
     assert body["base_sha"] == base and body["head_sha"] == tip
     assert body["phase"] == "post_merge" and body["verdict"] == "pass"
     # nothing decided in a scratch repo ⇒ the landed-line parity tag, and the
     # §6.2.5 canary rule holds (no canary signal ⇒ never machine-checked)
     assert body["tag"] == "unverified-judgment"
-    assert body["ref"] == "main"                 # the explicitly-named measured line
-    assert body["repo"] == REPO                  # the REGISTRY NAME keys every row
-    assert meta(store, META_LAST_TIP) == tip     # the per-repo watermark advanced
+    assert body["ref"] == "main"  # the explicitly-named measured line
+    assert body["repo"] == REPO  # the REGISTRY NAME keys every row
+    assert meta(store, META_LAST_TIP) == tip  # the per-repo watermark advanced
     assert store.already_ingested_range(REPO, base, tip, "post_merge")
     assert meta(store, META_LAST_ERROR) is None
 
@@ -109,7 +118,7 @@ def test_coalesced_contiguous(origin, store, tmp_path):
 
     svc.tick()
     spans = {(b["base_sha"], b["head_sha"]) for b in payloads(store)}
-    assert spans == {(base, tip)}                # one contiguous range, no mid receipt
+    assert spans == {(base, tip)}  # one contiguous range, no mid receipt
     ranges = store.conn.execute("SELECT COUNT(*) FROM ingested_ranges").fetchone()[0]
     assert ranges == 1
 
@@ -127,7 +136,7 @@ def test_force_push_defensive(origin, store, tmp_path, caplog):
     doomed = origin.origin_sha("refs/heads/main")
     assert meta(store, META_LAST_TIP) == doomed
 
-    git(origin.work, "reset", "-q", "--hard", base)      # rewrite: drop the doomed commit
+    git(origin.work, "reset", "-q", "--hard", base)  # rewrite: drop the doomed commit
     origin.commit("app.py", _V4, "rewritten")
     origin.push(force=True)
     new_tip = origin.origin_sha("refs/heads/main")
@@ -136,9 +145,9 @@ def test_force_push_defensive(origin, store, tmp_path, caplog):
         svc.tick()
     assert any("discontinuity" in r.getMessage() for r in caplog.records)
     spans = {(b["base_sha"], b["head_sha"]) for b in payloads(store)}
-    assert (base, new_tip) in spans              # defensive receipt: merge-base..tip
+    assert (base, new_tip) in spans  # defensive receipt: merge-base..tip
     assert meta(store, META_LAST_TIP) == new_tip
-    svc.tick()                                   # the loop is alive after the reset
+    svc.tick()  # the loop is alive after the reset
     assert meta(store, META_LAST_TIP) == new_tip
 
 
@@ -180,15 +189,15 @@ def test_promote_established_runs_post_ingest(origin, store, tmp_path):
     lifecycle = RecordingLifecycle()
     register_repo(store, REPO, origin.url)
     svc = make_service(store, tmp_path, lifecycle=lifecycle)
-    svc.tick()                                   # first connect: baseline, no ingest
+    svc.tick()  # first connect: baseline, no ingest
     assert lifecycle.calls == 0
 
     origin.commit("app.py", _V2, "move the tip")
     origin.push()
-    svc.tick()                                   # one ingest ⇒ one sweep
+    svc.tick()  # one ingest ⇒ one sweep
     assert lifecycle.calls == 1
 
-    svc.tick()                                   # nothing moved ⇒ no ingest, no sweep
+    svc.tick()  # nothing moved ⇒ no ingest, no sweep
     assert lifecycle.calls == 1
 
 
@@ -202,24 +211,25 @@ def test_ledger_fault_does_not_advance_last_sync_ts(origin, store, tmp_path):
 
     def breaking_run(argv, env=None, timeout=None):
         if broken[0] and "hive.census.cli" in list(argv):
-            return subprocess.CompletedProcess(list(argv), 1, stdout="",
-                                               stderr="census build broken")
+            return subprocess.CompletedProcess(
+                list(argv), 1, stdout="", stderr="census build broken"
+            )
         return default_run(argv, env=env, timeout=timeout)
 
     register_repo(store, REPO, origin.url)
     svc = make_service(store, tmp_path, run=breaking_run, now=lambda: clock[0])
-    svc.tick()                                   # first connect: baseline only — clean
+    svc.tick()  # first connect: baseline only — clean
     assert meta(store, META_LAST_SYNC_TS) == "1000"
 
     origin.commit("app.py", _V2, "move the tip")
     origin.push()
     broken[0], clock[0] = True, 2_000
-    svc.tick()                                   # the build breaks → ledger-leg fault
+    svc.tick()  # the build breaks → ledger-leg fault
     assert meta(store, META_LAST_ERROR).startswith("ledger:")
-    assert meta(store, META_LAST_SYNC_TS) == "1000"   # ← the faulted tick held the stamp
+    assert meta(store, META_LAST_SYNC_TS) == "1000"  # ← the faulted tick held the stamp
 
     broken[0], clock[0] = False, 3_000
-    svc.tick()                                   # repaired: the clean tick advances it
+    svc.tick()  # repaired: the clean tick advances it
     assert meta(store, META_LAST_SYNC_TS) == "3000"
 
 
@@ -242,16 +252,21 @@ def test_legacy_overlap_never_blocks_the_sync_range(origin, store, tmp_path):
     c = origin.origin_sha("refs/heads/main")
 
     # the legacy path (hook/censusctl shape): receipts WITHOUT a repo identity
-    legacy = ChangeEvidenceService(reader=store, appender=store,
-                                   now=lambda: 424242, ranges=store)
+    legacy = ChangeEvidenceService(
+        reader=store, appender=store, now=lambda: 424242, ranges=store
+    )
     for lo, hi in ((a, b), (b, c)):
-        report = legacy.ingest(build_receipt(origin.work, lo, hi, tmp_path),
-                               phase="post_merge", verdict="pass", signal="none")
-        assert not report.range_skipped          # distinct exact keys — nothing absorbed
-        assert report.matched == 0               # ""-keyed: joins nothing in a v3 store
-    assert evidence_rows(store) == []            # zero rows ⇒ zero ranges recorded
+        report = legacy.ingest(
+            build_receipt(origin.work, lo, hi, tmp_path),
+            phase="post_merge",
+            verdict="pass",
+            signal="none",
+        )
+        assert not report.range_skipped  # distinct exact keys — nothing absorbed
+        assert report.matched == 0  # ""-keyed: joins nothing in a v3 store
+    assert evidence_rows(store) == []  # zero rows ⇒ zero ranges recorded
 
-    svc.tick()                                   # sync covers A..C on top of the overlap
+    svc.tick()  # sync covers A..C on top of the overlap
     sync_bodies = [x for x in payloads(store) if x.get("repo") == REPO]
     assert {(x["base_sha"], x["head_sha"]) for x in sync_bodies} == {(a, c)}
     assert store.already_ingested_range(REPO, a, c, "post_merge")

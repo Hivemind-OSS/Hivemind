@@ -25,10 +25,13 @@ existence for the caller (NEVER raises — Law 6, side-channels fail open) and e
 guards itself: an evidence fault can never break the sync leg, nor vice versa; a
 registry fault degrades to ``{}``.
 """
+
 from __future__ import annotations
 
 import json
+import sqlite3
 import time
+from typing import Any
 
 from hive.domain.evidence_kinds import EK_CHANGE_OUTCOME
 
@@ -41,21 +44,22 @@ _SYNC_STR_FIELDS = ("tracked_ref", "last_tip", "last_sync_ts", "last_error")
 _SYNC_COUNTER_FIELDS = ("candidates_evaluated", "backfilled_total")
 
 
-def _counter(raw) -> int:
+def _counter(raw: str | None) -> int:
     """A ``sync:*`` string-int counter, with the daemon's own bump tolerance: absent or
     non-digit reads 0 — a count is never invented from junk."""
     return int(raw) if raw and str(raw).isdigit() else 0
 
 
-def _last_outcome_ts_by_repo(conn) -> dict[str, int]:
+def _last_outcome_ts_by_repo(conn: sqlite3.Connection) -> dict[str, int]:
     """MAX(ts) of ``change_outcome`` evidence per attributed repo (the canonical
     payload's ``repo`` key). Malformed / repo-less payloads attribute to nobody
     (under-claim). Fail-open: any fault reads as an empty map."""
     out: dict[str, int] = {}
     try:
         for row in conn.execute(
-                "SELECT ts, payload FROM evidence_events WHERE kind = ?",
-                (EK_CHANGE_OUTCOME,)):
+            "SELECT ts, payload FROM evidence_events WHERE kind = ?",
+            (EK_CHANGE_OUTCOME,),
+        ):
             try:
                 doc = json.loads(row["payload"])
             except (TypeError, ValueError):
@@ -71,25 +75,26 @@ def _last_outcome_ts_by_repo(conn) -> dict[str, int]:
     return out
 
 
-def _sync_meta_by_repo(conn) -> dict[str, dict[str, str]]:
+def _sync_meta_by_repo(conn: sqlite3.Connection) -> dict[str, dict[str, str]]:
     """Every per-repo ``sync:<name>:<field>`` meta row, grouped by repo name. The
     legacy 2-part global keys carry no repo name and are skipped. Fail-open: any
     fault (e.g. a store predating the ``meta`` table) reads as an empty map."""
     out: dict[str, dict[str, str]] = {}
     try:
         for key, value in conn.execute(
-                "SELECT key, value FROM meta WHERE key LIKE 'sync:%'"):
-            body = str(key)[len(_SYNC_PREFIX):]
+            "SELECT key, value FROM meta WHERE key LIKE 'sync:%'"
+        ):
+            body = str(key)[len(_SYNC_PREFIX) :]
             repo, sep, field = body.partition(":")
             if not sep or not repo or not field:
-                continue                      # legacy global key — belongs to no repo
+                continue  # legacy global key — belongs to no repo
             out.setdefault(repo, {})[field] = str(value)
     except Exception:
         return {}
     return out
 
 
-def census_health_report(store) -> dict:
+def census_health_report(store: Any) -> dict[str, Any]:
     """``{repo_name: block}`` for every REGISTERED repo (``{}`` on an empty registry
     or any registry fault). Each block: ``{"days_since_last_change_outcome": int |
     None}`` plus a ``sync`` sub-block iff the daemon has left ``sync:<name>:*`` meta
@@ -105,15 +110,15 @@ def census_health_report(store) -> dict:
     last_ts = _last_outcome_ts_by_repo(conn)
     sync_meta = _sync_meta_by_repo(conn)
     now = int(time.time())
-    report: dict = {}
+    report: dict[str, Any] = {}
     for name in names:
-        block: dict = {"days_since_last_change_outcome": None}
+        block: dict[str, Any] = {"days_since_last_change_outcome": None}
         ts = last_ts.get(name)
         if ts is not None:
             block["days_since_last_change_outcome"] = (now - int(ts)) // _DAY_S
         meta = sync_meta.get(name)
         if meta:
-            sync_block: dict = {"configured": True}
+            sync_block: dict[str, Any] = {"configured": True}
             for field in _SYNC_STR_FIELDS:
                 sync_block[field] = meta.get(field)
             for field in _SYNC_COUNTER_FIELDS:

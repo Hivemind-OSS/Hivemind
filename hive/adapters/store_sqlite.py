@@ -13,6 +13,7 @@ The ``exposure`` table is the recall side-channel (``record_exposure`` / ``recor
 WHO was served WHAT and which queries got no answer — the demand signal that drives
 promotion. Episode-CRUD / admission is below.
 """
+
 from __future__ import annotations
 
 import json
@@ -20,20 +21,32 @@ import logging
 import re
 import sqlite3
 from dataclasses import dataclass
-from typing import Mapping, Optional, Sequence
+from typing import Any, Iterable, Mapping, Optional, Protocol, Sequence
 
 import numpy as np
 
 from hive.adapters.sqlite_db import tx
 from hive.domain.evidence_kinds import (
-    EK_OUTCOME_HELPED, EK_OUTCOME_VERIFIED_HELPED, EK_PROMOTE, EK_PRUNE,
-    EK_STALE_SUSPECT, EK_SUPERSEDE, EK_TTL_EXPIRED, EK_VERIFY_CURRENT,
+    EK_OUTCOME_HELPED,
+    EK_OUTCOME_VERIFIED_HELPED,
+    EK_PROMOTE,
+    EK_PRUNE,
+    EK_STALE_SUSPECT,
+    EK_SUPERSEDE,
+    EK_TTL_EXPIRED,
+    EK_VERIFY_CURRENT,
     EK_VERIFY_STALE,
 )
 from hive.domain.kinds import DEFAULT_KIND, KIND_NAMES
 from hive.domain.lifecycle import (
-    DEPRECATED, ESTABLISHED, PROVISIONAL, QUARANTINED, TRUST_STATES,
-    MissRow, decayed, is_servable,
+    DEPRECATED,
+    ESTABLISHED,
+    PROVISIONAL,
+    QUARANTINED,
+    TRUST_STATES,
+    MissRow,
+    decayed,
+    is_servable,
 )
 from hive.domain.meta import meta_version_histogram, normalize_meta
 from hive.domain.models import AnchorRef, Episode, content_hash
@@ -54,8 +67,10 @@ _FAR_FUTURE = 1 << 62
 # vocabulary cannot drift from hive.domain.kinds — the single source every surface projects.
 # Injected by sentinel below because _SCHEMA stays a plain string (it carries a literal
 # JSON '{}' default that an f-string would misread).
-_KIND_COLUMN_DDL = ("kind TEXT NOT NULL DEFAULT '%s' CHECK(kind IN (%s))" % (
-    DEFAULT_KIND, ", ".join(f"'{k}'" for k in sorted(KIND_NAMES))))
+_KIND_COLUMN_DDL = "kind TEXT NOT NULL DEFAULT '%s' CHECK(kind IN (%s))" % (
+    DEFAULT_KIND,
+    ", ".join(f"'{k}'" for k in sorted(KIND_NAMES)),
+)
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS blobs(
@@ -137,7 +152,7 @@ CREATE TABLE IF NOT EXISTS ingested_ranges(
 # migration exists — the operator starts from a clean store/volume.
 _LEGACY_EPISODE_COLUMNS = ("anchor", "approved_by", "approved_ts", "provenance", "tags")
 _V3_EPISODE_COLUMNS = ("trust", "polarity", "kind", "meta")
-_NO_MIGRATION_HINT = ("this build has no migration — start from a clean store/volume")
+_NO_MIGRATION_HINT = "this build has no migration — start from a clean store/volume"
 
 # Registry names ride filesystem paths (mirror dirs) and scope labels — slug only.
 _REPO_NAME_RE = re.compile(r"^[a-z0-9._-]+$")
@@ -148,6 +163,7 @@ class RepoRow:
     """One durable repo-registry row (operational data, the authctl-seat pattern).
     ``token_env`` is the NAME of the env var holding the git token ('' ⇒ the
     ``HIVE_SYNC__TOKEN`` default) — NEVER a secret byte."""
+
     name: str
     url: str
     canonical_ref: str
@@ -155,10 +171,31 @@ class RepoRow:
     added_ts: int
 
 
+class _WarmIndex(Protocol):
+    """The warm-cache surface this store drives (typing-only): the
+    MutableVectorIndex write side plus the upsert alias ``sync_approved``
+    (= ``add``) the exhaustive index exposes."""
+
+    def sync_approved(self, episode_id: int, value: "np.ndarray") -> None: ...
+    def remove(self, episode_id: int) -> None: ...
+    def rebuild_from_store(self, rows: Iterable[tuple[int, "np.ndarray"]]) -> None: ...
+
+
+def _rowid(cur: sqlite3.Cursor) -> int:
+    """``lastrowid`` immediately after a successful INSERT is always an int; the
+    Optional in the sqlite3 stubs covers statements that produce no rowid."""
+    rid = cur.lastrowid
+    if rid is None:  # pragma: no cover — unreachable right after an INSERT
+        raise RuntimeError("INSERT produced no rowid")
+    return int(rid)
+
+
 class SqliteEpisodeStore:
-    def __init__(self, conn: sqlite3.Connection, index=None) -> None:
+    def __init__(
+        self, conn: sqlite3.Connection, index: "Optional[_WarmIndex]" = None
+    ) -> None:
         self.conn = conn
-        self.index = index            # MutableVectorIndex (warm cache); None in ledger-only tests
+        self.index = index  # MutableVectorIndex (warm cache); None in ledger-only tests
         # No in-place migration path exists — schema v3 starts from a clean, empty
         # store (prior-format memories are not carried over). CREATE IF NOT EXISTS
         # would leave an old-format episodes table untouched and limp to a cryptic
@@ -171,28 +208,44 @@ class SqliteEpisodeStore:
                 _log.error("store.schema_pre_v3 legacy_columns=%s", ",".join(legacy))
                 raise RuntimeError(
                     f"episodes table carries the retired column(s) "
-                    f"{', '.join(legacy)}; {_NO_MIGRATION_HINT}")
+                    f"{', '.join(legacy)}; {_NO_MIGRATION_HINT}"
+                )
             missing = next((c for c in _V3_EPISODE_COLUMNS if c not in cols), None)
             if missing:
                 _log.error("store.schema_predates_v3 missing_column=%s", missing)
                 raise RuntimeError(
                     f"episodes table predates schema v3 (no {missing} column); "
-                    f"{_NO_MIGRATION_HINT}")
-            if conn.execute(
+                    f"{_NO_MIGRATION_HINT}"
+                )
+            if (
+                conn.execute(
                     "SELECT 1 FROM sqlite_master WHERE type='table' "
-                    "AND name='episode_anchors'").fetchone() is None:
+                    "AND name='episode_anchors'"
+                ).fetchone()
+                is None
+            ):
                 _log.error("store.schema_missing_episode_anchors")
                 raise RuntimeError(
                     "store carries an episodes table but no episode_anchors table; "
-                    f"{_NO_MIGRATION_HINT}")
+                    f"{_NO_MIGRATION_HINT}"
+                )
         conn.executescript(_SCHEMA)
 
     # ── episodes / blob group (admission CAS state machine) ───────────────────
-    def stage(self, *, text: str, weight: float, proposed_by: str,
-              tenant_id: str = "default", ts: int = 0,
-              polarity: str = "neutral", kind: str = DEFAULT_KIND, meta: str = "",
-              anchors: Sequence[tuple[str, str]] = (),
-              repos: Sequence[str] = ()) -> tuple[int, bool]:
+    def stage(
+        self,
+        *,
+        text: str,
+        weight: float,
+        proposed_by: str,
+        tenant_id: str = "default",
+        ts: int = 0,
+        polarity: str = "neutral",
+        kind: str = DEFAULT_KIND,
+        meta: str = "",
+        anchors: Sequence[tuple[str, str]] = (),
+        repos: Sequence[str] = (),
+    ) -> tuple[int, bool]:
         """Insert a PENDING row (value NULL — not recallable, not indexed) + its blob
         + its ``episode_anchors`` rows, all in the SAME tx. Dedup by content_hash: a
         repeat of identical text returns the existing id, deduped=True, no second row
@@ -208,17 +261,20 @@ class SqliteEpisodeStore:
         h = content_hash(text)
         with tx(self.conn):
             existing = self.conn.execute(
-                "SELECT id FROM episodes WHERE content_hash=? LIMIT 1", (h,)).fetchone()
+                "SELECT id FROM episodes WHERE content_hash=? LIMIT 1", (h,)
+            ).fetchone()
             if existing is not None:
                 return int(existing["id"]), True
             self.conn.execute(
-                "INSERT OR IGNORE INTO blobs(content_hash, text) VALUES(?,?)", (h, text))
+                "INSERT OR IGNORE INTO blobs(content_hash, text) VALUES(?,?)", (h, text)
+            )
             cur = self.conn.execute(
                 "INSERT INTO episodes(tenant_id, text, value, weight, ts, "
                 "content_hash, status, proposed_by, version, polarity, kind, meta) "
                 "VALUES(?,?,NULL,?,?,?,'pending',?,0,?,?,?)",
-                (tenant_id, text, weight, ts, h, proposed_by, polarity, kind, meta))
-            eid = int(cur.lastrowid)
+                (tenant_id, text, weight, ts, h, proposed_by, polarity, kind, meta),
+            )
+            eid = _rowid(cur)
             pairs: list[tuple[str, str]] = []
             seen: set[tuple[str, str]] = set()
             for repo, anchor in anchors:
@@ -229,18 +285,29 @@ class SqliteEpisodeStore:
             for repo, anchor in pairs:
                 self.conn.execute(
                     "INSERT INTO episode_anchors(episode_id, repo, anchor) "
-                    "VALUES(?,?,?)", (eid, repo, anchor))
+                    "VALUES(?,?,?)",
+                    (eid, repo, anchor),
+                )
             covered = {repo for repo, _anchor in pairs}
             for repo in dict.fromkeys(str(r) for r in repos):
                 if repo in covered:
                     continue
                 self.conn.execute(
                     "INSERT INTO episode_anchors(episode_id, repo, anchor) "
-                    "VALUES(?,?,'')", (eid, repo))
+                    "VALUES(?,?,'')",
+                    (eid, repo),
+                )
             return eid, False
 
-    def complete(self, episode_id: int, value: "np.ndarray", *, expected_version: int,
-                 trust: str, last_active_ts: int = 0) -> bool:
+    def complete(
+        self,
+        episode_id: int,
+        value: "np.ndarray",
+        *,
+        expected_version: int,
+        trust: str,
+        last_active_ts: int = 0,
+    ) -> bool:
         """CAS-flip pending→approved (materialized: value written) with an explicit
         trust state, THEN best-effort index sync after commit [B3] — the index add
         happens IFF the row lands in a servable trust state (established/provisional;
@@ -254,17 +321,21 @@ class SqliteEpisodeStore:
         vbytes = np.ascontiguousarray(np.asarray(value, dtype=np.float32)).tobytes()
         with tx(self.conn):
             row = self.conn.execute(
-                "SELECT status FROM episodes WHERE id=?", (episode_id,)).fetchone()
+                "SELECT status FROM episodes WHERE id=?", (episode_id,)
+            ).fetchone()
             if row is not None and row["status"] == "approved":
-                return True   # idempotent
+                return True  # idempotent
             n = self.conn.execute(
                 "UPDATE episodes SET status='approved', "
                 "value=?, trust=?, last_active_ts=?, version=version+1 "
                 "WHERE id=? AND version=? AND status='pending'",
-                (vbytes, trust, last_active_ts, episode_id, expected_version)).rowcount
+                (vbytes, trust, last_active_ts, episode_id, expected_version),
+            ).rowcount
         if n == 1 and trust in (ESTABLISHED, PROVISIONAL) and self.index is not None:
             try:
-                self.index.sync_approved(episode_id, np.asarray(value, dtype=np.float32))
+                self.index.sync_approved(
+                    episode_id, np.asarray(value, dtype=np.float32)
+                )
             except Exception:
                 # best-effort warm cache [B3]: durable truth is the row;
                 # rebuild_index_from_store() on boot recovers the divergence.
@@ -279,29 +350,42 @@ class SqliteEpisodeStore:
             return
         with tx(self.conn):
             cur = self.conn.execute(
-                "DELETE FROM episodes WHERE id=? AND status='pending'", (episode_id,))
+                "DELETE FROM episodes WHERE id=? AND status='pending'", (episode_id,)
+            )
             if cur.rowcount:
                 self.conn.execute(
-                    "DELETE FROM episode_anchors WHERE episode_id=?", (episode_id,))
+                    "DELETE FROM episode_anchors WHERE episode_id=?", (episode_id,)
+                )
 
-    def scan_servable(self, *, now: int,
-                      provisional_ttl_s: int) -> list[tuple[int, "np.ndarray"]]:
+    def scan_servable(
+        self, *, now: int, provisional_ttl_s: int
+    ) -> list[tuple[int, "np.ndarray"]]:
         """The ONLY candidate source for recall. SQL prefilters to materialized rows
         (_RECALL_PREDICATE); the full decision per row is the ONE pure predicate
         ``lifecycle.is_servable`` — established always, provisional iff fresh,
         quarantined/deprecated never.  // O(N) time."""
         out: list[tuple[int, np.ndarray]] = []
         for r in self.conn.execute(
-                f"SELECT id, value, status, trust, last_active_ts "
-                f"FROM episodes WHERE {_RECALL_PREDICATE}"):
-            if is_servable(status=r["status"], trust=r["trust"],
-                           last_active_ts=r["last_active_ts"], now=now,
-                           provisional_ttl_s=provisional_ttl_s):
-                out.append((r["id"], np.frombuffer(r["value"], dtype=np.float32).copy()))
+            f"SELECT id, value, status, trust, last_active_ts "
+            f"FROM episodes WHERE {_RECALL_PREDICATE}"
+        ):
+            if is_servable(
+                status=r["status"],
+                trust=r["trust"],
+                last_active_ts=r["last_active_ts"],
+                now=now,
+                provisional_ttl_s=provisional_ttl_s,
+            ):
+                out.append(
+                    (r["id"], np.frombuffer(r["value"], dtype=np.float32).copy())
+                )
         return out
 
     def scan_servable_labeled(
-            self, *, now: int, provisional_ttl_s: int,
+        self,
+        *,
+        now: int,
+        provisional_ttl_s: int,
     ) -> list[tuple[int, "np.ndarray", str, str, int, str]]:
         """The conflict scan's candidate source: every SERVABLE row with the labels the
         detector classifies by — ``(id, value, polarity, anchor, ts, trust)``. Same SQL
@@ -314,17 +398,29 @@ class SqliteEpisodeStore:
         // O(N) time."""
         out: list[tuple[int, np.ndarray, str, str, int, str]] = []
         for r in self.conn.execute(
-                f"SELECT id, value, status, trust, last_active_ts, polarity, ts, "
-                f"(SELECT ea.anchor FROM episode_anchors ea "
-                f" WHERE ea.episode_id = episodes.id AND ea.anchor != '' "
-                f" ORDER BY ea.repo, ea.anchor LIMIT 1) AS anchor "
-                f"FROM episodes WHERE {_RECALL_PREDICATE}"):
-            if is_servable(status=r["status"], trust=r["trust"],
-                           last_active_ts=r["last_active_ts"], now=now,
-                           provisional_ttl_s=provisional_ttl_s):
-                out.append((r["id"],
-                            np.frombuffer(r["value"], dtype=np.float32).copy(),
-                            r["polarity"], r["anchor"] or "", int(r["ts"]), r["trust"]))
+            f"SELECT id, value, status, trust, last_active_ts, polarity, ts, "
+            f"(SELECT ea.anchor FROM episode_anchors ea "
+            f" WHERE ea.episode_id = episodes.id AND ea.anchor != '' "
+            f" ORDER BY ea.repo, ea.anchor LIMIT 1) AS anchor "
+            f"FROM episodes WHERE {_RECALL_PREDICATE}"
+        ):
+            if is_servable(
+                status=r["status"],
+                trust=r["trust"],
+                last_active_ts=r["last_active_ts"],
+                now=now,
+                provisional_ttl_s=provisional_ttl_s,
+            ):
+                out.append(
+                    (
+                        r["id"],
+                        np.frombuffer(r["value"], dtype=np.float32).copy(),
+                        r["polarity"],
+                        r["anchor"] or "",
+                        int(r["ts"]),
+                        r["trust"],
+                    )
+                )
         return out
 
     def scan_approved(self) -> list[tuple[int, "np.ndarray"]]:
@@ -333,8 +429,9 @@ class SqliteEpisodeStore:
         so this returns established-only (never over-serves)."""
         return self.scan_servable(now=_FAR_FUTURE, provisional_ttl_s=0)
 
-    def rebuild_index_from_store(self, *, now: Optional[int] = None,
-                                 provisional_ttl_s: Optional[int] = None) -> None:
+    def rebuild_index_from_store(
+        self, *, now: Optional[int] = None, provisional_ttl_s: Optional[int] = None
+    ) -> None:
         """Divergence-recovery guarantee [B3]: rebuild the warm cache from the
         servable set. Callers with a clock (the boot path) pass ``now`` +
         ``provisional_ttl_s`` so fresh provisional rows are included; with no clock
@@ -345,36 +442,60 @@ class SqliteEpisodeStore:
             self.index.rebuild_from_store(self.scan_approved())
         else:
             self.index.rebuild_from_store(
-                self.scan_servable(now=now, provisional_ttl_s=provisional_ttl_s))
+                self.scan_servable(now=now, provisional_ttl_s=provisional_ttl_s)
+            )
 
     def get_episode(self, episode_id: int) -> Optional[Episode]:
-        r = self.conn.execute("SELECT * FROM episodes WHERE id=?", (episode_id,)).fetchone()
+        r = self.conn.execute(
+            "SELECT * FROM episodes WHERE id=?", (episode_id,)
+        ).fetchone()
         if r is None:
             return None
-        value = np.frombuffer(r["value"], dtype=np.float32).copy() if r["value"] is not None else None
+        value = (
+            np.frombuffer(r["value"], dtype=np.float32).copy()
+            if r["value"] is not None
+            else None
+        )
         arows = self.conn.execute(
             "SELECT repo, anchor, fp_meta FROM episode_anchors WHERE episode_id=? "
-            "ORDER BY repo, anchor", (episode_id,)).fetchall()
+            "ORDER BY repo, anchor",
+            (episode_id,),
+        ).fetchall()
         # the carrier projection: repos = sorted unique union of every row's repo
         # (anchor + scope-only rows); anchors = the non-empty-anchor rows only.
         repos = tuple(sorted({a["repo"] for a in arows}))
         anchors = tuple(
             AnchorRef(repo=a["repo"], anchor=a["anchor"], fp_meta=a["fp_meta"])
-            for a in arows if a["anchor"])
+            for a in arows
+            if a["anchor"]
+        )
         return Episode(
-            id=r["id"], tenant_id=r["tenant_id"], text=r["text"], value=value,
-            weight=r["weight"], ts=r["ts"],
-            content_hash=r["content_hash"], status=r["status"],
-            proposed_by=r["proposed_by"] or "", version=r["version"],
-            trust=r["trust"], superseded_by=r["superseded_by"],
-            last_active_ts=r["last_active_ts"], polarity=r["polarity"],
-            kind=r["kind"], meta=r["meta"], repos=repos, anchors=anchors)
+            id=r["id"],
+            tenant_id=r["tenant_id"],
+            text=r["text"],
+            value=value,
+            weight=r["weight"],
+            ts=r["ts"],
+            content_hash=r["content_hash"],
+            status=r["status"],
+            proposed_by=r["proposed_by"] or "",
+            version=r["version"],
+            trust=r["trust"],
+            superseded_by=r["superseded_by"],
+            last_active_ts=r["last_active_ts"],
+            polarity=r["polarity"],
+            kind=r["kind"],
+            meta=r["meta"],
+            repos=repos,
+            anchors=anchors,
+        )
 
     def counts(self) -> tuple[int, int]:
         """(n_approved, n_pending) for hive_health — one grouped scan.  // O(N) time."""
         approved = pending = 0
         for r in self.conn.execute(
-                "SELECT status, COUNT(*) AS c FROM episodes GROUP BY status"):
+            "SELECT status, COUNT(*) AS c FROM episodes GROUP BY status"
+        ):
             if r["status"] == "approved":
                 approved = int(r["c"])
             elif r["status"] == "pending":
@@ -382,8 +503,12 @@ class SqliteEpisodeStore:
         return approved, pending
 
     # ── repo scope reads (RepoScopeReader + the promotion rung's id feed) ──────
-    def servable_scopes(self, *, now: int, provisional_ttl_s: int,
-                        ) -> dict[int, tuple[frozenset[str], tuple[tuple[str, str], ...]]]:
+    def servable_scopes(
+        self,
+        *,
+        now: int,
+        provisional_ttl_s: int,
+    ) -> dict[int, tuple[frozenset[str], tuple[tuple[str, str], ...]]]:
         """RepoScopeReader: every SERVABLE episode id → ``(repo scope, anchor pairs)``
         — the partition map recall filtering and the partition-scoped competitor read
         consume. Servability is the SAME two-step decision as ``scan_servable`` (SQL
@@ -394,19 +519,25 @@ class SqliteEpisodeStore:
         ``(repo, anchor)`` in (repo, anchor) order.  // O(N + rows)."""
         out: dict[int, tuple[frozenset[str], tuple[tuple[str, str], ...]]] = {}
         for r in self.conn.execute(
-                f"SELECT id, status, trust, last_active_ts "
-                f"FROM episodes WHERE {_RECALL_PREDICATE}"):
-            if is_servable(status=r["status"], trust=r["trust"],
-                           last_active_ts=r["last_active_ts"], now=now,
-                           provisional_ttl_s=provisional_ttl_s):
+            f"SELECT id, status, trust, last_active_ts "
+            f"FROM episodes WHERE {_RECALL_PREDICATE}"
+        ):
+            if is_servable(
+                status=r["status"],
+                trust=r["trust"],
+                last_active_ts=r["last_active_ts"],
+                now=now,
+                provisional_ttl_s=provisional_ttl_s,
+            ):
                 out[int(r["id"])] = (frozenset(), ())
         if not out:
             return out
         scopes: dict[int, set[str]] = {}
         pairs: dict[int, list[tuple[str, str]]] = {}
         for r in self.conn.execute(
-                "SELECT episode_id, repo, anchor FROM episode_anchors "
-                "ORDER BY episode_id, repo, anchor"):
+            "SELECT episode_id, repo, anchor FROM episode_anchors "
+            "ORDER BY episode_id, repo, anchor"
+        ):
             eid = int(r["episode_id"])
             if eid not in out:
                 continue
@@ -420,9 +551,13 @@ class SqliteEpisodeStore:
     def provisional_ids(self) -> list[int]:
         """The established rung's candidate feed (lifecycle.promote_established):
         every materialized PROVISIONAL row id, ascending. Read-only, no DDL."""
-        return [int(r["id"]) for r in self.conn.execute(
-            "SELECT id FROM episodes WHERE status='approved' AND trust=? ORDER BY id",
-            (PROVISIONAL,))]
+        return [
+            int(r["id"])
+            for r in self.conn.execute(
+                "SELECT id FROM episodes WHERE status='approved' AND trust=? ORDER BY id",
+                (PROVISIONAL,),
+            )
+        ]
 
     # ── trust lifecycle (promotion / supersession / decay) ────────────────────
     def set_trust(self, episode_id: int, new_trust: str, *, now: int) -> bool:
@@ -438,31 +573,37 @@ class SqliteEpisodeStore:
         servable_states = (ESTABLISHED, PROVISIONAL)
         with tx(self.conn):
             r = self.conn.execute(
-                "SELECT status, trust, value FROM episodes WHERE id=?",
-                (episode_id,)).fetchone()
+                "SELECT status, trust, value FROM episodes WHERE id=?", (episode_id,)
+            ).fetchone()
             if r is None or r["status"] != "approved":
                 return False
             old_trust = r["trust"]
             if new_trust in servable_states:
                 self.conn.execute(
                     "UPDATE episodes SET trust=?, last_active_ts=? WHERE id=?",
-                    (new_trust, now, episode_id))
+                    (new_trust, now, episode_id),
+                )
             else:
                 self.conn.execute(
-                    "UPDATE episodes SET trust=? WHERE id=?", (new_trust, episode_id))
+                    "UPDATE episodes SET trust=? WHERE id=?", (new_trust, episode_id)
+                )
         if self.index is not None:
             try:
                 if new_trust in servable_states and r["value"] is not None:
                     self.index.sync_approved(
-                        episode_id, np.frombuffer(r["value"], dtype=np.float32).copy())
+                        episode_id, np.frombuffer(r["value"], dtype=np.float32).copy()
+                    )
                 elif old_trust in servable_states and new_trust not in servable_states:
                     self.index.remove(episode_id)
-            except Exception:                      # noqa: BLE001 — warm cache only [B3]
-                _log.warning("store.set_trust_index_sync_failed episode_id=%s", episode_id)
+            except Exception:  # noqa: BLE001 — warm cache only [B3]
+                _log.warning(
+                    "store.set_trust_index_sync_failed episode_id=%s", episode_id
+                )
         return True
 
-    def supersede(self, target_id: int, replacement_id: int, *, actor: str,
-                  ts: int) -> bool:
+    def supersede(
+        self, target_id: int, replacement_id: int, *, actor: str, ts: int
+    ) -> bool:
         """The ONE owner of retirement-with-replacement: retire (deprecated) + stamp
         ``superseded_by`` + ONE audit row, in ONE tx; de-index after commit. Guards:
         self-supersede refused; unknown target/replacement refused; idempotent re-run
@@ -474,29 +615,45 @@ class SqliteEpisodeStore:
             return False
         with tx(self.conn):
             t = self.conn.execute(
-                "SELECT superseded_by FROM episodes WHERE id=?", (target_id,)).fetchone()
+                "SELECT superseded_by FROM episodes WHERE id=?", (target_id,)
+            ).fetchone()
             if t is None:
                 return False
-            if self.conn.execute("SELECT 1 FROM episodes WHERE id=?",
-                                 (replacement_id,)).fetchone() is None:
+            if (
+                self.conn.execute(
+                    "SELECT 1 FROM episodes WHERE id=?", (replacement_id,)
+                ).fetchone()
+                is None
+            ):
                 return False
             if t["superseded_by"] == replacement_id:
-                return True                        # idempotent re-run: no duplicate audit
+                return True  # idempotent re-run: no duplicate audit
             self.conn.execute(
                 "UPDATE episodes SET trust=?, superseded_by=? WHERE id=?",
-                (DEPRECATED, replacement_id, target_id))
+                (DEPRECATED, replacement_id, target_id),
+            )
             self.conn.execute(
                 "INSERT INTO evidence_events(episode_id, kind, actor, ts, payload) "
                 "VALUES(?,?,?,?,?)",
-                (target_id, EK_SUPERSEDE, actor, ts,
-                 json.dumps({"replacement_id": replacement_id})))
+                (
+                    target_id,
+                    EK_SUPERSEDE,
+                    actor,
+                    ts,
+                    json.dumps({"replacement_id": replacement_id}),
+                ),
+            )
         if self.index is not None:
             try:
                 self.index.remove(target_id)
-            except Exception:                      # noqa: BLE001 — warm cache only [B3]
+            except Exception:  # noqa: BLE001 — warm cache only [B3]
                 _log.warning("store.supersede_deindex_failed episode_id=%s", target_id)
-        _log.info("store.superseded target=%s replacement=%s actor=%s",
-                  target_id, replacement_id, actor)
+        _log.info(
+            "store.superseded target=%s replacement=%s actor=%s",
+            target_id,
+            replacement_id,
+            actor,
+        )
         return True
 
     def deprecate(self, episode_id: int, *, actor: str, ts: int) -> bool:
@@ -512,98 +669,139 @@ class SqliteEpisodeStore:
         row. Deleting the trust flip is the prune mutation (the flip test reds)."""
         with tx(self.conn):
             r = self.conn.execute(
-                "SELECT status, trust FROM episodes WHERE id=?", (episode_id,)).fetchone()
+                "SELECT status, trust FROM episodes WHERE id=?", (episode_id,)
+            ).fetchone()
             if r is None or r["status"] != "approved":
                 return False
             old_trust = r["trust"]
             if old_trust == DEPRECATED:
-                return False                       # idempotent: already retired, no duplicate audit
+                return False  # idempotent: already retired, no duplicate audit
             self.conn.execute(
-                "UPDATE episodes SET trust=? WHERE id=?", (DEPRECATED, episode_id))
+                "UPDATE episodes SET trust=? WHERE id=?", (DEPRECATED, episode_id)
+            )
             self.conn.execute(
                 "INSERT INTO evidence_events(episode_id, kind, actor, ts, payload) "
                 "VALUES(?,?,?,?,?)",
-                (episode_id, EK_PRUNE, actor, ts, json.dumps({"from": old_trust})))
+                (episode_id, EK_PRUNE, actor, ts, json.dumps({"from": old_trust})),
+            )
         if self.index is not None and old_trust in (ESTABLISHED, PROVISIONAL):
-            try:                                   # quarantined rows were never indexed
+            try:  # quarantined rows were never indexed
                 self.index.remove(episode_id)
-            except Exception:                      # noqa: BLE001 — warm cache only [B3]
+            except Exception:  # noqa: BLE001 — warm cache only [B3]
                 _log.warning("store.deprecate_deindex_failed episode_id=%s", episode_id)
-        _log.info("store.deprecated episode_id=%s actor=%s from=%s",
-                  episode_id, actor, old_trust)
+        _log.info(
+            "store.deprecated episode_id=%s actor=%s from=%s",
+            episode_id,
+            actor,
+            old_trust,
+        )
         return True
 
-    def sweep_decayed(self, *, now: int, q_ttl_s: int, p_ttl_s: int) -> dict:
+    def sweep_decayed(self, *, now: int, q_ttl_s: int, p_ttl_s: int) -> dict[str, int]:
         """Materialize the lazy ``lifecycle.decayed`` rule: TTL-lapsed quarantined/
         provisional rows flip to deprecated, each with ONE ``ttl_expired`` audit row,
         in ONE tx; lapsed provisional rows are de-indexed after commit. Idempotent
         (deprecated rows never re-match); bounded by the live quarantined+provisional
         count.  // O(live) time."""
-        flips: list[tuple[int, str]] = []          # (episode_id, old_trust)
+        flips: list[tuple[int, str]] = []  # (episode_id, old_trust)
         with tx(self.conn):
             for r in self.conn.execute(
-                    "SELECT id, trust, ts, last_active_ts FROM episodes "
-                    "WHERE trust IN (?,?)", (QUARANTINED, PROVISIONAL)):
-                if decayed(trust=r["trust"], last_active_ts=r["last_active_ts"],
-                           created_ts=r["ts"], now=now,
-                           quarantine_ttl_s=q_ttl_s, provisional_ttl_s=p_ttl_s):
+                "SELECT id, trust, ts, last_active_ts FROM episodes "
+                "WHERE trust IN (?,?)",
+                (QUARANTINED, PROVISIONAL),
+            ):
+                if decayed(
+                    trust=r["trust"],
+                    last_active_ts=r["last_active_ts"],
+                    created_ts=r["ts"],
+                    now=now,
+                    quarantine_ttl_s=q_ttl_s,
+                    provisional_ttl_s=p_ttl_s,
+                ):
                     flips.append((int(r["id"]), r["trust"]))
             for eid, old_trust in flips:
                 self.conn.execute(
-                    "UPDATE episodes SET trust=? WHERE id=?", (DEPRECATED, eid))
+                    "UPDATE episodes SET trust=? WHERE id=?", (DEPRECATED, eid)
+                )
                 self.conn.execute(
                     "INSERT INTO evidence_events(episode_id, kind, actor, ts, payload) "
                     "VALUES(?,?,?,?,?)",
-                    (eid, EK_TTL_EXPIRED, "server", now,
-                     json.dumps({"from": old_trust})))
+                    (
+                        eid,
+                        EK_TTL_EXPIRED,
+                        "server",
+                        now,
+                        json.dumps({"from": old_trust}),
+                    ),
+                )
         if self.index is not None:
             for eid, old_trust in flips:
-                if old_trust == PROVISIONAL:       # quarantined rows were never indexed
+                if old_trust == PROVISIONAL:  # quarantined rows were never indexed
                     try:
                         self.index.remove(eid)
-                    except Exception:              # noqa: BLE001 — warm cache only [B3]
+                    except Exception:  # noqa: BLE001 — warm cache only [B3]
                         _log.warning("store.sweep_deindex_failed episode_id=%s", eid)
         out = {QUARANTINED: 0, PROVISIONAL: 0}
         for _eid, old_trust in flips:
             out[old_trust] += 1
         if flips:
-            _log.info("store.sweep_decayed quarantined=%d provisional=%d now=%d",
-                      out[QUARANTINED], out[PROVISIONAL], now)
+            _log.info(
+                "store.sweep_decayed quarantined=%d provisional=%d now=%d",
+                out[QUARANTINED],
+                out[PROVISIONAL],
+                now,
+            )
         return out
 
     def quarantined_candidates(
-            self, *, now: int, quarantine_ttl_s: int,
+        self,
+        *,
+        now: int,
+        quarantine_ttl_s: int,
     ) -> list[tuple[int, "np.ndarray", str, int, int]]:
         """Live (non-decayed) quarantined rows — the promotion scan's candidate set:
         ``(id, value, proposed_by, ts, last_active_ts)``. Death is decided by the
         ONE pure ``lifecycle.decayed`` rule (don't promote the dead)."""
         out: list[tuple[int, np.ndarray, str, int, int]] = []
         for r in self.conn.execute(
-                "SELECT id, value, proposed_by, ts, last_active_ts FROM episodes "
-                "WHERE trust=? AND status='approved' AND value IS NOT NULL",
-                (QUARANTINED,)):
-            if not decayed(trust=QUARANTINED, last_active_ts=r["last_active_ts"],
-                           created_ts=r["ts"], now=now,
-                           quarantine_ttl_s=quarantine_ttl_s,
-                           provisional_ttl_s=0):  # unused on the quarantined branch
-                out.append((int(r["id"]),
-                            np.frombuffer(r["value"], dtype=np.float32).copy(),
-                            r["proposed_by"] or "", int(r["ts"]),
-                            int(r["last_active_ts"])))
+            "SELECT id, value, proposed_by, ts, last_active_ts FROM episodes "
+            "WHERE trust=? AND status='approved' AND value IS NOT NULL",
+            (QUARANTINED,),
+        ):
+            if not decayed(
+                trust=QUARANTINED,
+                last_active_ts=r["last_active_ts"],
+                created_ts=r["ts"],
+                now=now,
+                quarantine_ttl_s=quarantine_ttl_s,
+                provisional_ttl_s=0,
+            ):  # unused on the quarantined branch
+                out.append(
+                    (
+                        int(r["id"]),
+                        np.frombuffer(r["value"], dtype=np.float32).copy(),
+                        r["proposed_by"] or "",
+                        int(r["ts"]),
+                        int(r["last_active_ts"]),
+                    )
+                )
         return out
 
-    def insert_audit(self, episode_id: int, kind: str, actor: str, ts: int,
-                     payload: str) -> int:
+    def insert_audit(
+        self, episode_id: int, kind: str, actor: str, ts: int, payload: str
+    ) -> int:
         """One server-written audit row (evidence_events is server-written ONLY —
         no tool writes here). Returns the row id."""
         with tx(self.conn):
             cur = self.conn.execute(
                 "INSERT INTO evidence_events(episode_id, kind, actor, ts, payload) "
-                "VALUES(?,?,?,?,?)", (episode_id, kind, actor, ts, payload))
-            return int(cur.lastrowid)
+                "VALUES(?,?,?,?,?)",
+                (episode_id, kind, actor, ts, payload),
+            )
+            return _rowid(cur)
 
     def promotion_provenance(
-            self, episode_ids: Sequence[int]
+        self, episode_ids: Sequence[int]
     ) -> dict[int, tuple[float, float, int]]:
         """PromotionProvenanceReader: the newest ``promote`` audit's stamped
         ``demand_independence`` per episode → ``{eid: (rho_bar, n_eff, k)}``. Read-only, no DDL.
@@ -617,19 +815,21 @@ class SqliteEpisodeStore:
         placeholders = ",".join("?" for _ in ids)
         # newest-first per episode: ORDER BY ts DESC, id DESC, take the first stamp we can parse.
         for r in self.conn.execute(
-                f"SELECT episode_id, payload FROM evidence_events "
-                f"WHERE kind=? AND episode_id IN ({placeholders}) "
-                f"ORDER BY episode_id, ts DESC, id DESC", [EK_PROMOTE, *ids]):
+            f"SELECT episode_id, payload FROM evidence_events "
+            f"WHERE kind=? AND episode_id IN ({placeholders}) "
+            f"ORDER BY episode_id, ts DESC, id DESC",
+            [EK_PROMOTE, *ids],
+        ):
             eid = int(r["episode_id"])
             if eid in out:
-                continue                                  # already have the newest for this id
+                continue  # already have the newest for this id
             try:
                 di = json.loads(r["payload"]).get("demand_independence")
                 if not isinstance(di, dict):
-                    continue                              # pre-stamp row ⇒ omit (under-claim)
+                    continue  # pre-stamp row ⇒ omit (under-claim)
                 out[eid] = (float(di["rho_bar"]), float(di["n_eff"]), int(di["k"]))
             except (TypeError, ValueError, KeyError, json.JSONDecodeError):
-                continue                                  # malformed ⇒ skip, never raise
+                continue  # malformed ⇒ skip, never raise
         return out
 
     def settled_wins(self, episode_ids: Sequence[int]) -> set[int]:
@@ -645,10 +845,14 @@ class SqliteEpisodeStore:
         if not ids:
             return set()
         placeholders = ",".join("?" for _ in ids)
-        return {int(r["episode_id"]) for r in self.conn.execute(
-            f"SELECT DISTINCT episode_id FROM evidence_events "
-            f"WHERE kind IN (?,?) AND episode_id IN ({placeholders})",
-            [EK_OUTCOME_HELPED, EK_OUTCOME_VERIFIED_HELPED, *ids])}
+        return {
+            int(r["episode_id"])
+            for r in self.conn.execute(
+                f"SELECT DISTINCT episode_id FROM evidence_events "
+                f"WHERE kind IN (?,?) AND episode_id IN ({placeholders})",
+                [EK_OUTCOME_HELPED, EK_OUTCOME_VERIFIED_HELPED, *ids],
+            )
+        }
 
     def verified_wins(self, episode_ids: Sequence[int]) -> set[int]:
         """The verified-ONLY settled-win read (no port — consumed by the composition
@@ -660,14 +864,18 @@ class SqliteEpisodeStore:
         if not ids:
             return set()
         placeholders = ",".join("?" for _ in ids)
-        return {int(r["episode_id"]) for r in self.conn.execute(
-            f"SELECT DISTINCT episode_id FROM evidence_events "
-            f"WHERE kind=? AND episode_id IN ({placeholders})",
-            [EK_OUTCOME_VERIFIED_HELPED, *ids])}
+        return {
+            int(r["episode_id"])
+            for r in self.conn.execute(
+                f"SELECT DISTINCT episode_id FROM evidence_events "
+                f"WHERE kind=? AND episode_id IN ({placeholders})",
+                [EK_OUTCOME_VERIFIED_HELPED, *ids],
+            )
+        }
 
-    def last_verification(self, episode_ids: Sequence[int], *,
-                          canonical_ref: Optional[str] = None
-                          ) -> dict[int, tuple[int, str, str]]:
+    def last_verification(
+        self, episode_ids: Sequence[int], *, canonical_ref: Optional[str] = None
+    ) -> dict[int, tuple[int, str, str]]:
         """LastVerificationReader: the newest ``verify_current``/``verify_stale``
         ledger row per requested id → ``{eid: (ts, head_sha, state)}``, state derived
         from the kind. Read-only, no DDL. DEFENSIVE payload parse (the
@@ -686,29 +894,34 @@ class SqliteEpisodeStore:
         placeholders = ",".join("?" for _ in ids)
         # newest-first per episode: ORDER BY ts DESC, id DESC, first parseable wins.
         for r in self.conn.execute(
-                f"SELECT episode_id, kind, ts, payload FROM evidence_events "
-                f"WHERE kind IN (?,?) AND episode_id IN ({placeholders}) "
-                f"ORDER BY episode_id, ts DESC, id DESC",
-                [EK_VERIFY_CURRENT, EK_VERIFY_STALE, *ids]):
+            f"SELECT episode_id, kind, ts, payload FROM evidence_events "
+            f"WHERE kind IN (?,?) AND episode_id IN ({placeholders}) "
+            f"ORDER BY episode_id, ts DESC, id DESC",
+            [EK_VERIFY_CURRENT, EK_VERIFY_STALE, *ids],
+        ):
             eid = int(r["episode_id"])
             if eid in out:
-                continue                              # already have the newest for this id
+                continue  # already have the newest for this id
             try:
-                payload = json.loads(r["payload"])    # stamp AND ref read from ONE parse
+                payload = json.loads(r["payload"])  # stamp AND ref read from ONE parse
                 # marker: skipping legacy ref-less rows under a set canonical_ref is a
                 # mutation (the absence rule) — only a PRESENT, DIFFERENT ref is foreign.
                 row_ref = payload.get("ref")
-                if (canonical_ref and isinstance(row_ref, str) and row_ref
-                        and row_ref != canonical_ref):
-                    continue                          # measured a foreign line ⇒ skip
+                if (
+                    canonical_ref
+                    and isinstance(row_ref, str)
+                    and row_ref
+                    and row_ref != canonical_ref
+                ):
+                    continue  # measured a foreign line ⇒ skip
                 stamp = payload.get("stamp")
                 head_sha = stamp.get("head_sha") if isinstance(stamp, dict) else None
                 if not isinstance(head_sha, str) or not head_sha:
-                    continue                          # stamp-less row ⇒ skip (under-claim)
+                    continue  # stamp-less row ⇒ skip (under-claim)
                 state = "current" if r["kind"] == EK_VERIFY_CURRENT else "stale"
                 out[eid] = (int(r["ts"]), head_sha, state)
             except (TypeError, ValueError, json.JSONDecodeError):
-                continue                              # malformed ⇒ skip, never raise
+                continue  # malformed ⇒ skip, never raise
         return out
 
     def stale_suspect_rows(self) -> list[tuple[int, int, str]]:
@@ -721,11 +934,13 @@ class SqliteEpisodeStore:
         out: list[tuple[int, int, str]] = []
         seen: set[int] = set()
         for r in self.conn.execute(
-                "SELECT episode_id, ts, payload FROM evidence_events WHERE kind=? "
-                "ORDER BY episode_id, ts DESC, id DESC", [EK_STALE_SUSPECT]):
+            "SELECT episode_id, ts, payload FROM evidence_events WHERE kind=? "
+            "ORDER BY episode_id, ts DESC, id DESC",
+            [EK_STALE_SUSPECT],
+        ):
             eid = int(r["episode_id"])
             if eid in seen:
-                continue                              # already have the newest for this id
+                continue  # already have the newest for this id
             seen.add(eid)
             out.append((eid, int(r["ts"]), r["payload"]))
         return out
@@ -738,15 +953,19 @@ class SqliteEpisodeStore:
         several). ALL trust states included (mirrors hive_outcome's known-id rule:
         evidence on a deprecated row is honest ledger history); polarity rides for the
         verified-outcome classification only. Read-only, no DDL. // O(rows)."""
-        return [(int(r["episode_id"]), r["repo"], r["anchor"], r["polarity"])
-                for r in self.conn.execute(
-                    "SELECT ea.episode_id, ea.repo, ea.anchor, e.polarity "
-                    "FROM episode_anchors ea JOIN episodes e ON e.id = ea.episode_id "
-                    "WHERE e.status='approved' AND ea.anchor != '' "
-                    "ORDER BY ea.episode_id, ea.repo, ea.anchor")]
+        return [
+            (int(r["episode_id"]), r["repo"], r["anchor"], r["polarity"])
+            for r in self.conn.execute(
+                "SELECT ea.episode_id, ea.repo, ea.anchor, e.polarity "
+                "FROM episode_anchors ea JOIN episodes e ON e.id = ea.episode_id "
+                "WHERE e.status='approved' AND ea.anchor != '' "
+                "ORDER BY ea.episode_id, ea.repo, ea.anchor"
+            )
+        ]
 
-    def evidence_rows_for(self, episode_id: int,
-                          kinds: Sequence[str]) -> list[tuple[str, str, int]]:
+    def evidence_rows_for(
+        self, episode_id: int, kinds: Sequence[str]
+    ) -> list[tuple[str, str, int]]:
         """The retirement gate's ledger feed: the target's ``(kind, actor, ts)`` rows
         restricted to ``kinds``, in insertion order — exactly the 3-sequence shape
         ``retirement.retirement_evidence`` consumes. Empty ``kinds`` → [] (the caller
@@ -756,13 +975,18 @@ class SqliteEpisodeStore:
         if not ks:
             return []
         placeholders = ",".join("?" for _ in ks)
-        return [(r["kind"], r["actor"], int(r["ts"])) for r in self.conn.execute(
-            f"SELECT kind, actor, ts FROM evidence_events "
-            f"WHERE episode_id=? AND kind IN ({placeholders}) ORDER BY id",
-            [int(episode_id), *ks])]
+        return [
+            (r["kind"], r["actor"], int(r["ts"]))
+            for r in self.conn.execute(
+                f"SELECT kind, actor, ts FROM evidence_events "
+                f"WHERE episode_id=? AND kind IN ({placeholders}) ORDER BY id",
+                [int(episode_id), *ks],
+            )
+        ]
 
-    def append_evidence(self, rows: Sequence[tuple[int, str, str, int, str]]
-                        ) -> tuple[list[int], int]:
+    def append_evidence(
+        self, rows: Sequence[tuple[int, str, str, int, str]]
+    ) -> tuple[list[int], int]:
         """ChangeEvidenceAppender: batch-append ``(episode_id, kind, actor, ts, payload)``
         rows in ONE ``tx()`` — an atomic receipt (a fault on ANY row rolls back ALL;
         ``tx()`` is non-reentrant, so looping ``insert_audit`` could never be made atomic
@@ -778,47 +1002,63 @@ class SqliteEpisodeStore:
                 dup = self.conn.execute(
                     "SELECT 1 FROM evidence_events "
                     "WHERE episode_id=? AND kind=? AND payload=? LIMIT 1",
-                    (episode_id, kind, payload)).fetchone()
+                    (episode_id, kind, payload),
+                ).fetchone()
                 if dup is not None:
                     skipped += 1
                     continue
                 cur = self.conn.execute(
                     "INSERT INTO evidence_events(episode_id, kind, actor, ts, payload) "
-                    "VALUES(?,?,?,?,?)", (episode_id, kind, actor, ts, payload))
-                inserted.append(int(cur.lastrowid))
+                    "VALUES(?,?,?,?,?)",
+                    (episode_id, kind, actor, ts, payload),
+                )
+                inserted.append(_rowid(cur))
         if inserted or skipped:
-            _log.info("store.append_evidence inserted=%d skipped=%d",
-                      len(inserted), skipped)
+            _log.info(
+                "store.append_evidence inserted=%d skipped=%d", len(inserted), skipped
+            )
         return inserted, skipped
 
     # ── RangeLedger port (the census feed's durable range-dedupe seam) ─────────
-    def already_ingested_range(self, repo: str, base_sha: str, head_sha: str,
-                               phase: str) -> bool:
+    def already_ingested_range(
+        self, repo: str, base_sha: str, head_sha: str, phase: str
+    ) -> bool:
         """RangeLedger: has this EXACT ``(repo, base_sha, head_sha, phase)`` range
         already been ingested? Exact-key equality only — no subsumption/overlap
         reasoning (legacy A..B + B..C and a sync A..C are distinct keys; transition
         noise all lands). Read-only, no DDL. // O(1) (PK probe)."""
-        return self.conn.execute(
-            "SELECT 1 FROM ingested_ranges "
-            "WHERE repo=? AND base_sha=? AND head_sha=? AND phase=? LIMIT 1",
-            (repo, base_sha, head_sha, phase)).fetchone() is not None
+        return (
+            self.conn.execute(
+                "SELECT 1 FROM ingested_ranges "
+                "WHERE repo=? AND base_sha=? AND head_sha=? AND phase=? LIMIT 1",
+                (repo, base_sha, head_sha, phase),
+            ).fetchone()
+            is not None
+        )
 
-    def record_ingested_range(self, repo: str, base_sha: str, head_sha: str,
-                              phase: str, ts: int) -> bool:
+    def record_ingested_range(
+        self, repo: str, base_sha: str, head_sha: str, phase: str, ts: int
+    ) -> bool:
         """RangeLedger: durably record one ingested range, idempotent on the exact key.
         True iff a NEW row was written; a repeat is a no-op False (the first write
         stands — its ts is never refreshed). Existence is checked explicitly (not
         INSERT OR IGNORE) so any other IntegrityError still RAISES rather than being
         silently swallowed (the record_conflict_flag idiom). ONE tx. // O(1)."""
         with tx(self.conn):
-            if self.conn.execute(
+            if (
+                self.conn.execute(
                     "SELECT 1 FROM ingested_ranges "
                     "WHERE repo=? AND base_sha=? AND head_sha=? AND phase=?",
-                    (repo, base_sha, head_sha, phase)).fetchone() is not None:
+                    (repo, base_sha, head_sha, phase),
+                ).fetchone()
+                is not None
+            ):
                 return False
             self.conn.execute(
                 "INSERT INTO ingested_ranges(repo, base_sha, head_sha, phase, ts) "
-                "VALUES(?,?,?,?,?)", (repo, base_sha, head_sha, phase, int(ts)))
+                "VALUES(?,?,?,?,?)",
+                (repo, base_sha, head_sha, phase, int(ts)),
+            )
         return True
 
     # ── the backfill-mint seam (duck-typed app reads/writes — no port) ─────────
@@ -830,15 +1070,21 @@ class SqliteEpisodeStore:
         out of the sweep, so a human/edge pin structurally cannot be revisited. ALL
         trust states included (the anchored_episodes twin — the consumer owns any
         further filtering). Read-only, no DDL. // O(rows)."""
-        return [(int(r["episode_id"]), r["anchor"]) for r in self.conn.execute(
-            "SELECT ea.episode_id, ea.anchor FROM episode_anchors ea "
-            "JOIN episodes e ON e.id = ea.episode_id "
-            "WHERE ea.repo=? AND ea.anchor != '' AND ea.fp_meta='' "
-            "AND e.status='approved' "
-            "ORDER BY ea.episode_id, ea.anchor", (repo,))]
+        return [
+            (int(r["episode_id"]), r["anchor"])
+            for r in self.conn.execute(
+                "SELECT ea.episode_id, ea.anchor FROM episode_anchors ea "
+                "JOIN episodes e ON e.id = ea.episode_id "
+                "WHERE ea.repo=? AND ea.anchor != '' AND ea.fp_meta='' "
+                "AND e.status='approved' "
+                "ORDER BY ea.episode_id, ea.anchor",
+                (repo,),
+            )
+        ]
 
-    def fill_anchor_fp(self, episode_id: int, repo: str, anchor: str,
-                       additions: Mapping[str, str]) -> int:
+    def fill_anchor_fp(
+        self, episode_id: int, repo: str, anchor: str, additions: Mapping[str, str]
+    ) -> int:
         """Absent-only fingerprint merge into ONE ``episode_anchors.fp_meta`` carrier,
         in ONE tx: parse the current carrier ('' ⇒ {}), fold ``additions`` in UNDER
         it, write back canonical (``normalize_meta`` stays the one grammar gate — a
@@ -856,14 +1102,16 @@ class SqliteEpisodeStore:
             row = self.conn.execute(
                 "SELECT fp_meta FROM episode_anchors "
                 "WHERE episode_id=? AND repo=? AND anchor=?",
-                (int(episode_id), repo, anchor)).fetchone()
+                (int(episode_id), repo, anchor),
+            ).fetchone()
             if row is None:
                 return 0
             current = json.loads(row["fp_meta"]) if row["fp_meta"] else {}
             if not isinstance(current, dict):
                 raise ValueError(
                     f"anchor ({episode_id}, {repo!r}, {anchor!r}) fp_meta carrier "
-                    "is not a map — refusing to merge")
+                    "is not a map — refusing to merge"
+                )
             merged = {**dict(additions), **current}
             added = len(merged) - len(current)
             if added == 0:
@@ -871,20 +1119,34 @@ class SqliteEpisodeStore:
             self.conn.execute(
                 "UPDATE episode_anchors SET fp_meta=? "
                 "WHERE episode_id=? AND repo=? AND anchor=?",
-                (normalize_meta(merged), int(episode_id), repo, anchor))
+                (normalize_meta(merged), int(episode_id), repo, anchor),
+            )
             return added
 
     # ── the repo registry (operational data — the authctl-seat pattern) ────────
     def repo_registry(self) -> list[RepoRow]:
         """Every registered repo, name-ordered. The sync daemon re-reads this each
         tick (registering a repo needs no restart). Read-only, no DDL. // O(n)."""
-        return [RepoRow(name=r["name"], url=r["url"],
-                        canonical_ref=r["canonical_ref"],
-                        token_env=r["token_env"], added_ts=int(r["added_ts"]))
-                for r in self.conn.execute("SELECT * FROM repos ORDER BY name")]
+        return [
+            RepoRow(
+                name=r["name"],
+                url=r["url"],
+                canonical_ref=r["canonical_ref"],
+                token_env=r["token_env"],
+                added_ts=int(r["added_ts"]),
+            )
+            for r in self.conn.execute("SELECT * FROM repos ORDER BY name")
+        ]
 
-    def repo_add(self, *, name: str, url: str, canonical_ref: str = "",
-                 token_env: str = "", added_ts: int) -> None:
+    def repo_add(
+        self,
+        *,
+        name: str,
+        url: str,
+        canonical_ref: str = "",
+        token_env: str = "",
+        added_ts: int,
+    ) -> None:
         """Register one repo. ``name`` is slug-checked ([a-z0-9._-]+ — it rides mirror
         paths and scope labels); a bad slug, empty url, or duplicate name RAISES
         ValueError with the reason (nothing written — repoctl maps it to a non-zero
@@ -894,17 +1156,23 @@ class SqliteEpisodeStore:
         if not isinstance(name, str) or _REPO_NAME_RE.match(name) is None:
             raise ValueError(
                 f"bad repo name {name!r} — want a [a-z0-9._-]+ slug "
-                "(it rides mirror paths and scope labels)")
+                "(it rides mirror paths and scope labels)"
+            )
         if not url:
             raise ValueError("repo url must be non-empty")
         with tx(self.conn):
-            if self.conn.execute(
-                    "SELECT 1 FROM repos WHERE name=?", (name,)).fetchone() is not None:
+            if (
+                self.conn.execute(
+                    "SELECT 1 FROM repos WHERE name=?", (name,)
+                ).fetchone()
+                is not None
+            ):
                 raise ValueError(f"repo {name!r} is already registered")
             self.conn.execute(
                 "INSERT INTO repos(name, url, canonical_ref, token_env, added_ts) "
                 "VALUES(?,?,?,?,?)",
-                (name, url, canonical_ref, token_env, int(added_ts)))
+                (name, url, canonical_ref, token_env, int(added_ts)),
+            )
         _log.info("store.repo_added name=%s token_env=%s", name, token_env or "-")
 
     def repo_remove(self, name: str) -> bool:
@@ -919,8 +1187,9 @@ class SqliteEpisodeStore:
         return cur.rowcount > 0
 
     # ── the materialized drift cache (rebuildable, Law 5) ──────────────────────
-    def drift_get(self, repo: str, tip_sha: str,
-                  anchors: Sequence[str]) -> dict[str, tuple[str, str]]:
+    def drift_get(
+        self, repo: str, tip_sha: str, anchors: Sequence[str]
+    ) -> dict[str, tuple[str, str]]:
         """The recall-side drift read: the materialized ``(verdict, detail)`` per
         requested anchor at EXACTLY ``(repo, tip_sha)``. An un-materialized anchor is
         simply ABSENT — the caller reads absence as ``unverifiable`` (fail-safe: never
@@ -931,10 +1200,14 @@ class SqliteEpisodeStore:
         if not names:
             return {}
         placeholders = ",".join("?" for _ in names)
-        return {r["anchor"]: (r["verdict"], r["detail"]) for r in self.conn.execute(
-            f"SELECT anchor, verdict, detail FROM anchor_drift "
-            f"WHERE repo=? AND tip_sha=? AND anchor IN ({placeholders})",
-            [repo, tip_sha, *names])}
+        return {
+            r["anchor"]: (r["verdict"], r["detail"])
+            for r in self.conn.execute(
+                f"SELECT anchor, verdict, detail FROM anchor_drift "
+                f"WHERE repo=? AND tip_sha=? AND anchor IN ({placeholders})",
+                [repo, tip_sha, *names],
+            )
+        }
 
     def drift_put(self, rows: Sequence[tuple[str, str, str, str, str, int]]) -> None:
         """Materialize drift verdicts — ``(repo, tip_sha, anchor, verdict,
@@ -950,7 +1223,8 @@ class SqliteEpisodeStore:
                     "VALUES(?,?,?,?,?,?) "
                     "ON CONFLICT(repo, tip_sha, anchor) DO UPDATE SET "
                     "verdict=excluded.verdict, detail=excluded.detail, ts=excluded.ts",
-                    (repo, tip_sha, anchor, verdict, detail, int(ts)))
+                    (repo, tip_sha, anchor, verdict, detail, int(ts)),
+                )
 
     def drift_prune(self, repo: str, keep_tips: Sequence[str]) -> int:
         """Drop a repo's materialized verdicts for every tip NOT in ``keep_tips``
@@ -964,10 +1238,12 @@ class SqliteEpisodeStore:
                 cur = self.conn.execute(
                     f"DELETE FROM anchor_drift "
                     f"WHERE repo=? AND tip_sha NOT IN ({placeholders})",
-                    [repo, *keep])
+                    [repo, *keep],
+                )
             else:
                 cur = self.conn.execute(
-                    "DELETE FROM anchor_drift WHERE repo=?", (repo,))
+                    "DELETE FROM anchor_drift WHERE repo=?", (repo,)
+                )
         return int(cur.rowcount)
 
     # ── ref requests (recall-touched refs wanting materialization) ─────────────
@@ -981,15 +1257,21 @@ class SqliteEpisodeStore:
                 "INSERT INTO ref_requests(repo, ref, last_requested_ts) VALUES(?,?,?) "
                 "ON CONFLICT(repo, ref) DO UPDATE SET "
                 "last_requested_ts=MAX(last_requested_ts, excluded.last_requested_ts)",
-                (repo, ref, int(ts)))
+                (repo, ref, int(ts)),
+            )
 
     def requested_refs(self, repo: str, since_ts: int) -> list[str]:
         """The refs of ``repo`` touched STRICTLY after ``since_ts`` (the miss-window
         convention), ref-ordered — the materializer's per-tick work list. Read-only,
         no DDL. // O(n)."""
-        return [r["ref"] for r in self.conn.execute(
-            "SELECT ref FROM ref_requests WHERE repo=? AND last_requested_ts>? "
-            "ORDER BY ref", (repo, int(since_ts)))]
+        return [
+            r["ref"]
+            for r in self.conn.execute(
+                "SELECT ref FROM ref_requests WHERE repo=? AND last_requested_ts>? "
+                "ORDER BY ref",
+                (repo, int(since_ts)),
+            )
+        ]
 
     # ── health reads ───────────────────────────────────────────────────────────
     def trust_counts(self) -> dict[str, int]:
@@ -997,24 +1279,32 @@ class SqliteEpisodeStore:
         (a zero is signal: quarantine pile-up must be visible, never silent)."""
         out = {t: 0 for t in TRUST_STATES}
         for r in self.conn.execute(
-                "SELECT trust, COUNT(*) AS c FROM episodes GROUP BY trust"):
+            "SELECT trust, COUNT(*) AS c FROM episodes GROUP BY trust"
+        ):
             if r["trust"] in out:
                 out[r["trust"]] = int(r["c"])
         return out
 
-    def meta_version_counts(self) -> dict[str, dict]:
+    def meta_version_counts(self) -> dict[str, dict[str, Any]]:
         """Per-meta-key token-version histogram for hive_health, over the LIVE corpus
         (status='approved' AND trust != 'deprecated' — servable + quarantined, retired
         tombstones excluded). Pure fold lives in domain meta.meta_version_histogram; this
         method only streams the rows (the ONE sanctioned prefix-only meta read — THEORY §5)."""
         rows = self.conn.execute(
             "SELECT meta FROM episodes WHERE status='approved' AND trust != ?",
-            (DEPRECATED,))
+            (DEPRECATED,),
+        )
         return meta_version_histogram(r["meta"] for r in rows)
 
     # ── ExposureLedger port (the recall side-channel writer) ──────────────────
-    def record_exposure(self, trace_id: str, items: Sequence[tuple[int, float]],
-                        *, agent_id: str, ts: int) -> None:
+    def record_exposure(
+        self,
+        trace_id: str,
+        items: Sequence[tuple[int, float]],
+        *,
+        agent_id: str,
+        ts: int,
+    ) -> None:
         """Persist WHO was served WHAT and refresh the served rows' liveness clocks
         — ONE tx, so an exposure can never land without its last_active bump (a
         served provisional row that failed to refresh would decay while in use)."""
@@ -1023,14 +1313,23 @@ class SqliteEpisodeStore:
                 self.conn.execute(
                     "INSERT INTO exposure(trace_id, episode_id, recall_margin, "
                     "injected_ts, agent_id) VALUES(?,?,?,?,?)",
-                    (trace_id, int(eid), float(margin), ts, agent_id))
+                    (trace_id, int(eid), float(margin), ts, agent_id),
+                )
             for eid, _margin in items:
                 self.conn.execute(
-                    "UPDATE episodes SET last_active_ts=? WHERE id=?", (ts, int(eid)))
+                    "UPDATE episodes SET last_active_ts=? WHERE id=?", (ts, int(eid))
+                )
 
-    def record_miss(self, query_text: str, query_vector: Optional[bytes],
-                    agent_id: str, miss_type: str, *, ts: int,
-                    repos_json: str = "") -> None:
+    def record_miss(
+        self,
+        query_text: str,
+        query_vector: Optional[bytes],
+        agent_id: str,
+        miss_type: str,
+        *,
+        ts: int,
+        repos_json: str = "",
+    ) -> None:
         """Persist one non-answer (the demand signal). The CALLER owns the secret
         floor — a refused query arrives here already stripped (empty text, None
         vector); a redacted one arrives masked with a vector re-encoded from the
@@ -1042,26 +1341,40 @@ class SqliteEpisodeStore:
             self.conn.execute(
                 "INSERT INTO recall_misses(query_text, query_vector, agent_id, "
                 "miss_type, ts, repos) VALUES(?,?,?,?,?,?)",
-                (query_text, query_vector, agent_id, miss_type, ts, repos_json))
+                (query_text, query_vector, agent_id, miss_type, ts, repos_json),
+            )
 
     def miss_count_since(self, since_ts: int) -> int:
         """Misses recorded strictly after ``since_ts`` (hive_health telemetry)."""
-        return int(self.conn.execute(
-            "SELECT COUNT(*) AS c FROM recall_misses WHERE ts>?",
-            (since_ts,)).fetchone()["c"])
+        return int(
+            self.conn.execute(
+                "SELECT COUNT(*) AS c FROM recall_misses WHERE ts>?", (since_ts,)
+            ).fetchone()["c"]
+        )
 
-    def misses_detail_window(self, since_ts: int) -> list[dict]:
+    def misses_detail_window(self, since_ts: int) -> list[dict[str, Any]]:
         """Full miss rows (text + type + ts + optional vector) for the demand-gap
         report — unlike ``misses_window`` this INCLUDES vector-less secret_refused
         rows (they count in telemetry; they can never drive promotion)."""
-        out: list[dict] = []
+        out: list[dict[str, Any]] = []
         for r in self.conn.execute(
-                "SELECT query_text, query_vector, miss_type, ts FROM recall_misses "
-                "WHERE ts>? ORDER BY id", (since_ts,)):
-            vec = (np.frombuffer(r["query_vector"], dtype=np.float32).copy()
-                   if r["query_vector"] is not None else None)
-            out.append({"query_text": r["query_text"], "vector": vec,
-                        "miss_type": r["miss_type"], "ts": int(r["ts"])})
+            "SELECT query_text, query_vector, miss_type, ts FROM recall_misses "
+            "WHERE ts>? ORDER BY id",
+            (since_ts,),
+        ):
+            vec = (
+                np.frombuffer(r["query_vector"], dtype=np.float32).copy()
+                if r["query_vector"] is not None
+                else None
+            )
+            out.append(
+                {
+                    "query_text": r["query_text"],
+                    "vector": vec,
+                    "miss_type": r["miss_type"],
+                    "ts": int(r["ts"]),
+                }
+            )
         return out
 
     @staticmethod
@@ -1084,17 +1397,32 @@ class SqliteEpisodeStore:
         """The demand-window slice: misses STRICTLY after ``since_ts`` that carry a
         vector (secret-refused rows persist none and can never drive promotion).
         Each row carries its repo scope (v3 §3.6) — ``()`` = a global miss."""
-        return [MissRow(vector=np.frombuffer(r["query_vector"], dtype=np.float32).copy(),
-                        agent_id=r["agent_id"], ts=int(r["ts"]),
-                        repos=self._parse_miss_repos(r["repos"]))
-                for r in self.conn.execute(
-                    "SELECT query_vector, agent_id, ts, repos FROM recall_misses "
-                    "WHERE ts>? AND query_vector IS NOT NULL ORDER BY id", (since_ts,))]
+        return [
+            MissRow(
+                vector=np.frombuffer(r["query_vector"], dtype=np.float32).copy(),
+                agent_id=r["agent_id"],
+                ts=int(r["ts"]),
+                repos=self._parse_miss_repos(r["repos"]),
+            )
+            for r in self.conn.execute(
+                "SELECT query_vector, agent_id, ts, repos FROM recall_misses "
+                "WHERE ts>? AND query_vector IS NOT NULL ORDER BY id",
+                (since_ts,),
+            )
+        ]
 
     # ── advisory conflict flags (ConflictFlagStore port + the worklist read) ──
-    def record_conflict_flag(self, *, kind: str, a_id: int, b_id: int,
-                             winner_id: Optional[int], resolution: str,
-                             proposed_by: str, ts: int) -> bool:
+    def record_conflict_flag(
+        self,
+        *,
+        kind: str,
+        a_id: int,
+        b_id: int,
+        winner_id: Optional[int],
+        resolution: str,
+        proposed_by: str,
+        ts: int,
+    ) -> bool:
         """Record ONE advisory conflict flag, idempotent on the canonical (a_id, b_id, kind).
         Returns True iff a NEW row was written; a re-flag of the same pair+kind is a no-op
         (the first write stands — no overwrite). Existence is checked explicitly (not
@@ -1102,32 +1430,55 @@ class SqliteEpisodeStore:
         silently swallowed. The caller (ConflictFlagService) owns canonicalization + the
         resolution secret scan. NEVER touches an episode's trust — this is advisory only."""
         with tx(self.conn):
-            if self.conn.execute(
+            if (
+                self.conn.execute(
                     "SELECT 1 FROM conflict_flags WHERE a_id=? AND b_id=? AND kind=?",
-                    (int(a_id), int(b_id), kind)).fetchone() is not None:
+                    (int(a_id), int(b_id), kind),
+                ).fetchone()
+                is not None
+            ):
                 return False
             self.conn.execute(
                 "INSERT INTO conflict_flags(kind, a_id, b_id, winner_id, resolution, "
                 "proposed_by, ts) VALUES(?,?,?,?,?,?,?)",
-                (kind, int(a_id), int(b_id),
-                 None if winner_id is None else int(winner_id),
-                 resolution, proposed_by, int(ts)))
+                (
+                    kind,
+                    int(a_id),
+                    int(b_id),
+                    None if winner_id is None else int(winner_id),
+                    resolution,
+                    proposed_by,
+                    int(ts),
+                ),
+            )
         return True
 
-    def open_conflict_flags(self) -> list[dict]:
+    def open_conflict_flags(self) -> list[dict[str, Any]]:
         """All status='open' advisory flags (the health worklist's advisory channel),
         ordered by id. Duck-typed app read (the misses_detail_window convention), NOT a
         domain port. A flag auto-clears from the worklist when either episode goes
         non-servable — that filter lives in the app report, so status keeps only the
         operator-driven 'dismissed'."""
-        return [{"id": r["id"], "kind": r["kind"], "a_id": r["a_id"], "b_id": r["b_id"],
-                 "winner_id": r["winner_id"], "resolution": r["resolution"],
-                 "proposed_by": r["proposed_by"], "ts": int(r["ts"])}
-                for r in self.conn.execute(
-                    "SELECT * FROM conflict_flags WHERE status='open' ORDER BY id")]
+        return [
+            {
+                "id": r["id"],
+                "kind": r["kind"],
+                "a_id": r["a_id"],
+                "b_id": r["b_id"],
+                "winner_id": r["winner_id"],
+                "resolution": r["resolution"],
+                "proposed_by": r["proposed_by"],
+                "ts": int(r["ts"]),
+            }
+            for r in self.conn.execute(
+                "SELECT * FROM conflict_flags WHERE status='open' ORDER BY id"
+            )
+        ]
 
     # ── meta watermark kv (write seam; reads go through raw SQL at healthcheck) ──
     def meta_set(self, key: str, value: str) -> None:
         self.conn.execute(
             "INSERT INTO meta(key, value) VALUES(?,?) "
-            "ON CONFLICT(key) DO UPDATE SET value=excluded.value", (key, value))
+            "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+            (key, value),
+        )

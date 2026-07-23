@@ -6,6 +6,7 @@ migrate schema/WAL assertion, the approved-only index warm, and — the load-bea
 fact — the SqliteUtilityStore-before-SqliteEpisodeStore order that guardrail-2 needs.
 The real-embedder end-to-end geometry gates live in tests/acceptance/*.
 """
+
 from __future__ import annotations
 
 import json
@@ -24,8 +25,12 @@ def _cfg(tmp_path=None, **over) -> Config:
 
 
 def _build(tmp_path=None, *, embedder=None, **over) -> Container:
-    return build_container(_cfg(tmp_path, **over), tenant_id="t1", agent_id="a1",
-                           embedder=embedder or FakeWarmProvider(d=768))
+    return build_container(
+        _cfg(tmp_path, **over),
+        tenant_id="t1",
+        agent_id="a1",
+        embedder=embedder or FakeWarmProvider(d=768),
+    )
 
 
 def _call(server, name, args):
@@ -41,7 +46,14 @@ def test_build_container_is_boot_conformant():
     c = _build()
     # token_store added to the Boot surface (the HTTP daemon's verify seam) — the REAL adapter
     # (Container) must carry it, not only the entrypoint fake (the protocol-widening trap).
-    for attr in ("store", "token_store", "migrate", "build_index", "warm_embedder", "make_server"):
+    for attr in (
+        "store",
+        "token_store",
+        "migrate",
+        "build_index",
+        "warm_embedder",
+        "make_server",
+    ):
         assert hasattr(c, attr)
     assert callable(c.migrate) and callable(c.build_index)
     assert callable(c.warm_embedder) and callable(c.make_server)
@@ -83,7 +95,7 @@ def test_select_served_wired_from_config():
     # single-owned by ConflictConfig.tau (dup_tau); the recall conflict carrier is gated by
     # conflict.enabled. The overscan pool size is the one selection knob.
     c = _build()
-    assert not hasattr(c.recall, "select")        # the select toggle is gone
+    assert not hasattr(c.recall, "select")  # the select toggle is gone
     assert c.recall.overscan == c.cfg.recall.overscan
     assert c.recall.dup_tau == c.cfg.conflict.tau
     assert c.recall.conflict_enabled == c.cfg.conflict.enabled
@@ -97,6 +109,7 @@ def test_conflict_config_has_no_suppress_knob():
     # the serve-time suppress switch was folded into the default-ON select_served stage —
     # ConflictConfig no longer carries it (re-adding the field REDS this).
     from hive.app.config import ConflictConfig
+
     assert not hasattr(ConflictConfig(), "suppress")
 
 
@@ -127,6 +140,7 @@ def test_no_global_canonical_ref_threads_to_the_server():
 # ── secret floor threads cfg → scanner + make_server (default ON; OFF only when opted out) ──
 def test_secret_floor_on_by_default():
     from hive.domain.secret_scan import REFUSE
+
     c = _build()
     assert c.cfg.secret_scan.enabled is True
     assert c.make_server().secret_scan_enabled is True
@@ -136,6 +150,7 @@ def test_secret_floor_on_by_default():
 
 def test_build_container_threads_secret_scan_disabled():
     from hive.domain.secret_scan import CLEAN
+
     c = _build(secret_scan={"enabled": False})
     assert c.make_server().secret_scan_enabled is False
     # the one flag flows to the wired scanner: a credential scans CLEAN (floor bypassed)
@@ -147,17 +162,20 @@ def test_build_container_warns_on_ephemeral_store(caplog):
     """A store left at the :memory: default loses all captured memory on restart. Like the
     disabled secret floor, this loss-prone posture is surfaced loudly at boot (a WARN)."""
     import logging
+
     with caplog.at_level(logging.WARNING, logger="hive.container"):
-        _build()                                   # default cfg db = ":memory:"
-    assert any("store_ephemeral" in r.getMessage() for r in caplog.records), \
+        _build()  # default cfg db = ":memory:"
+    assert any("store_ephemeral" in r.getMessage() for r in caplog.records), (
         "an in-memory store must warn loudly at boot (memory is lost on restart)"
+    )
 
 
 def test_build_container_no_ephemeral_warn_on_persistent_store(tmp_path, caplog):
     """A persistent db_path (a file in the volume) is the intended posture — no WARN fires."""
     import logging
+
     with caplog.at_level(logging.WARNING, logger="hive.container"):
-        _build(tmp_path)                           # _cfg(tmp_path) → a real file db
+        _build(tmp_path)  # _cfg(tmp_path) → a real file db
     assert not any("store_ephemeral" in r.getMessage() for r in caplog.records)
 
 
@@ -171,7 +189,7 @@ def test_warm_embedder_sets_loaded(tmp_path):
 
 def test_migrate_ok_and_wal_active_on_file_db(tmp_path):
     c = _build(tmp_path)
-    c.migrate()                                                 # no raise → schema complete
+    c.migrate()  # no raise → schema complete
     assert c.conn.execute("PRAGMA journal_mode").fetchone()[0].lower() == "wal"
 
 
@@ -193,8 +211,9 @@ def test_migrate_raises_on_missing_ingested_ranges_table(tmp_path):
         c.migrate()
 
 
-@pytest.mark.parametrize("table", ["episode_anchors", "repos", "anchor_drift",
-                                   "ref_requests"])
+@pytest.mark.parametrize(
+    "table", ["episode_anchors", "repos", "anchor_drift", "ref_requests"]
+)
 def test_migrate_asserts_the_v3_partition_tables(tmp_path, table):
     """The v3 repo-partition set (anchor bindings, repo registry, drift cache,
     branch-demand list) is boot-asserted like every required table — a store missing
@@ -208,9 +227,11 @@ def test_migrate_asserts_the_v3_partition_tables(tmp_path, table):
 def test_migrate_passes_with_the_full_v3_table_set(tmp_path):
     # the positive twin: a fresh store carries every asserted table, migrate is clean.
     c = _build(tmp_path)
-    c.migrate()                                                # no raise
-    present = {r["name"] for r in c.conn.execute(
-        "SELECT name FROM sqlite_master WHERE type='table'")}
+    c.migrate()  # no raise
+    present = {
+        r["name"]
+        for r in c.conn.execute("SELECT name FROM sqlite_master WHERE type='table'")
+    }
     for required in ("episode_anchors", "repos", "anchor_drift", "ref_requests"):
         assert required in present
 
@@ -219,7 +240,7 @@ def test_migrate_passes_dim_guard_on_fresh_store(tmp_path):
     """A fresh store (no persisted vectors) trivially passes the stored-vector dim guard —
     the fresh-start path the swap targets."""
     c = _build(tmp_path)
-    c.migrate()                                                # no raise
+    c.migrate()  # no raise
 
 
 def test_migrate_raises_on_stored_vector_dim_mismatch(tmp_path):
@@ -228,11 +249,18 @@ def test_migrate_raises_on_stored_vector_dim_mismatch(tmp_path):
     fails fast (→ EX_SOFTWARE) rather than silently serving/searching mixed-dim garbage
     (Law 5 + Law 6)."""
     import numpy as np
-    c = _build(tmp_path)                  # FakeWarmProvider d=768: an arbitrary test width, not native 1024
-    wrong = np.zeros(256, dtype=np.float32).tobytes()          # 256-wide blob != the embedder's 768
+
+    c = _build(
+        tmp_path
+    )  # FakeWarmProvider d=768: an arbitrary test width, not native 1024
+    wrong = np.zeros(
+        256, dtype=np.float32
+    ).tobytes()  # 256-wide blob != the embedder's 768
     c.conn.execute(
         "INSERT INTO episodes (tenant_id, text, value, weight, ts, content_hash, status) "
-        "VALUES ('default','t',?,1.0,0,'h','approved')", (wrong,))
+        "VALUES ('default','t',?,1.0,0,'h','approved')",
+        (wrong,),
+    )
     with pytest.raises(RuntimeError, match="different geometry|stored vector dim"):
         c.migrate()
 
@@ -240,11 +268,12 @@ def test_migrate_raises_on_stored_vector_dim_mismatch(tmp_path):
 def test_build_index_warms_from_servable_only():
     c = _build()
     c.warm_embedder()
-    c.admission.write("a durable memory about cache eviction",
-                      proposed_by="a1")                        # v3: lands provisional, servable NOW
-    c.index.rebuild_from_store([])                              # clear the warm cache
+    c.admission.write(
+        "a durable memory about cache eviction", proposed_by="a1"
+    )  # v3: lands provisional, servable NOW
+    c.index.rebuild_from_store([])  # clear the warm cache
     assert c.index.size() == 0
-    c.build_index()                                            # rebuild from the store
+    c.build_index()  # rebuild from the store
     assert c.index.size() == 1
 
 
@@ -255,10 +284,14 @@ def test_make_server_round_trips_write_recall():
     server = c.make_server()
     assert isinstance(server, HiveMCPServer)
     text = "the WAL transaction runs under one BEGIN IMMEDIATE"
-    w = _content(_call(server, "hive_write", {"text": text}))     # v3: no approver anywhere
-    assert w["status"] == "approved"                              # servable NOW (provisional)
+    w = _content(
+        _call(server, "hive_write", {"text": text})
+    )  # v3: no approver anywhere
+    assert w["status"] == "approved"  # servable NOW (provisional)
     c.build_index()
-    r = _content(_call(server, "hive_recall", {"query": text}))   # identical text ⇒ confident hit
+    r = _content(
+        _call(server, "hive_recall", {"query": text})
+    )  # identical text ⇒ confident hit
     assert r["abstained"] is False
     assert any(h["text"] == text for h in r["reference_context"])
 
@@ -303,6 +336,7 @@ def test_shadow_knobs_removed():
 
     from hive.app.config import RecallConfig
     from hive.domain import recall as recall_mod
+
     assert not hasattr(RecallConfig(), "shadow")
     assert not hasattr(RecallConfig(), "shadow_tau")
     params = inspect.signature(recall_mod.RecallPipeline.__init__).parameters
@@ -317,6 +351,7 @@ def test_real_store_satisfies_quarantine_reader_port():
     # runtime_checkable Protocol only checks name-presence, so a port that goes green
     # with fake-backed tests alone can leave the real adapter incomplete.
     from hive.domain.ports import QuarantineReader
+
     c = _build()
     assert isinstance(c.store, QuarantineReader)
 
@@ -325,6 +360,7 @@ def test_recall_config_has_no_co_access_knobs():
     # the co-access + associations channels are GONE — neither knob exists on the
     # frozen RecallConfig (re-adding either field REDS this).
     from hive.app.config import RecallConfig
+
     assert not hasattr(RecallConfig(), "co_access")
     assert not hasattr(RecallConfig(), "associations")
 
@@ -333,6 +369,7 @@ def test_recall_config_is_the_absolute_relevance_knob_set():
     # the entropy-gate knobs are GONE; the absolute-relevance gate carries exactly tau_serve
     # + k_min (re-adding a deleted knob, or dropping a new one, REDS this).
     from hive.app.config import RecallConfig
+
     rc = RecallConfig()
     for gone in ("H_frac_max", "softmax_beta", "tau_top1", "tau_thresh"):
         assert not hasattr(rc, gone), gone

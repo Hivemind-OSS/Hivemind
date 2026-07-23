@@ -3,6 +3,7 @@ provisional + recallable, REDACT lands provisional with MASKED text (no raw secr
 bytes, hash over post-redaction text), REFUSE writes NOTHING (0 rows). The secret scan
 is the SOLE always-on gate — a planted credential is refused on the direct path exactly
 as before (the chunk's mutation pin)."""
+
 from __future__ import annotations
 
 from hive.domain.models import content_hash
@@ -19,9 +20,9 @@ def test_write_clean_lands_provisional():
     assert out["status"] == "approved"
     assert isinstance(out["id"], int)
     assert out["trust"] == "provisional"
-    assert "approved_by" not in out                        # no approver exists in v3
+    assert "approved_by" not in out  # no approver exists in v3
     assert out["scan"]["action"] == "clean"
-    assert server.store.counts() == (1, 0)                 # 1 approved, 0 pending
+    assert server.store.counts() == (1, 0)  # 1 approved, 0 pending
 
 
 def test_write_redact_stores_masked_text_no_raw_secret():
@@ -43,21 +44,26 @@ def test_write_redact_stores_masked_text_no_raw_secret():
 
 
 def test_write_planted_secret_refused_before_write():
-    server, _ = build_real_server(scanner=FakeScanner())   # default: REFUSE
+    server, _ = build_real_server(scanner=FakeScanner())  # default: REFUSE
     out = content(tool_call(server, "hive_write", {"text": _SECRET}))
     assert out["status"] == "refused"
     assert out["scan"]["action"] == "refuse"
-    assert out["scan"]["rules"]                             # named rule(s)
+    assert out["scan"]["rules"]  # named rule(s)
     assert out["scan"]["n_findings"] >= 1
     # NOTHING written: 0 rows, and the secret is in no blob
     assert server.store.counts() == (0, 0)
-    assert server.store.conn.execute(
-        "SELECT 1 FROM blobs WHERE content_hash=?", (content_hash(_SECRET),)).fetchone() is None
+    assert (
+        server.store.conn.execute(
+            "SELECT 1 FROM blobs WHERE content_hash=?", (content_hash(_SECRET),)
+        ).fetchone()
+        is None
+    )
 
 
 def test_refused_envelope_carries_no_secret_bytes():
     server, _ = build_real_server(scanner=FakeScanner())
     out = content(tool_call(server, "hive_write", {"text": _SECRET}))
     import json as _json
+
     blob = _json.dumps(out)
     assert "sk-ABCDEFGHIJKLMNOPQRSTUVWXYZ012345" not in blob

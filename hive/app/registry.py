@@ -11,6 +11,7 @@ structurally; M11).
 The heavy adapter import is LAZY: Config validation is cheap and torch-free, while the
 SentenceTransformer load happens when `build_embedder` actually invokes.
 """
+
 from __future__ import annotations
 
 import logging
@@ -19,50 +20,58 @@ from typing import TYPE_CHECKING
 from hive.adapters import index_exhaustive
 from hive.domain.recall import AbsoluteRelevanceGate
 
-if TYPE_CHECKING:                       # avoid an import cycle (config lazily imports us)
+if TYPE_CHECKING:  # avoid an import cycle (config lazily imports us)
+    # typing-only: the concrete adapter class named in return annotations without
+    # paying the heavy (torch-adjacent) import at module load
+    from hive.adapters.embedding.local_st import LocalSTEmbedder
     from hive.app.config import Config
 
 _log = logging.getLogger("hive.registry")
 
 
 # ── embedder seam (C1) ────────────────────────────────────────────────────────
-def _build_local_st(cfg: "Config"):
+def _build_local_st(cfg: "Config") -> "LocalSTEmbedder":
     """Default embedder (M01 LocalSTEmbedder, Qwen3-Embedding-0.6B). Lazy: the factory import
     is torch-free and the heavy SentenceTransformer load is deferred to ``load()``/warm, so
     Config validation + ``build_container`` construction stay light."""
     try:
         from hive.adapters.embedding.factory import build_provider  # noqa: PLC0415 — lazy
     except ImportError as exc:
-        _log.error("registry.embedder_unavailable provider=local_st reason=%s",
-                   type(exc).__name__)
+        _log.error(
+            "registry.embedder_unavailable provider=local_st reason=%s",
+            type(exc).__name__,
+        )
         raise RuntimeError(
             "embedding.provider='local_st' needs sentence-transformers; install hive[embed] "
-            "(the M01 adapter), or register another provider") from exc
+            "(the M01 adapter), or register another provider"
+        ) from exc
     return build_provider(cfg)
 
 
-def build_embedder(cfg: "Config"):
+def build_embedder(cfg: "Config") -> "LocalSTEmbedder":
     """Construct the configured embedder; fail fast (ValueError) on any provider other than
     the one measured-right default — the likely agent typo, caught at startup not at first
     recall. A test that needs an embedder double injects it directly at the composition root
     (``build_container(embedder=...)``), not through here — the registry only selects + fails fast."""
     name = cfg.embedding.provider
     if name != "local_st":
-        raise ValueError(
-            f"unknown embedding provider {name!r}; valid=['local_st']")
+        raise ValueError(f"unknown embedding provider {name!r}; valid=['local_st']")
     _log.info("registry.build_embedder provider=%s model=%s", name, cfg.embedding.model)
     return _build_local_st(cfg)
 
 
 # ── vector-index seam (C5/C3) ─────────────────────────────────────────────────
-def build_index(*, dim: int):
+def build_index(*, dim: int) -> index_exhaustive.ExhaustiveCosineIndex:
     """Construct the exhaustive index at the embedder's native ``dim``; ASSERT the
     authoritative-index property holds (exhaustive never silently flips to ANN — the
     build-time closure of the approx_threshold trap; Law 5 never-flip-to-ANN guard)."""
-    idx = index_exhaustive.build_index("exhaustive", dim)
+    idx: index_exhaustive.ExhaustiveCosineIndex = index_exhaustive.build_index(
+        "exhaustive", dim
+    )
     if idx.is_authoritative() is not True:
         raise AssertionError(
-            "build_index postcondition violated: exhaustive backend is not authoritative")
+            "build_index postcondition violated: exhaustive backend is not authoritative"
+        )
     return idx
 
 

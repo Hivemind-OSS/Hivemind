@@ -35,6 +35,7 @@ floor; and (d) the human approval gate sees every staged write. This is the
 "named, not solved" posture: the floor targets accidental high-entropy credential
 pastes, not adversarial low-entropy evasion (explicitly out of scope).
 """
+
 from __future__ import annotations
 
 import math
@@ -59,6 +60,7 @@ _REDACTION = "[REDACTED]"
 class SecretFinding:
     """A fired rule. ``rule`` is a label (e.g. ``"aws_akia"``); ``span`` is the
     ``[start, end)`` char offset into the ORIGINAL text — NEVER the matched bytes."""
+
     rule: str
     span: tuple[int, int]
 
@@ -70,6 +72,7 @@ class ScanVerdict:
     ``action`` ∈ {clean, redact, refuse}. ``redacted_text`` is present iff
     ``action == redact`` (the masked payload safe to stage). ``findings`` names
     the rules that fired (never the secret value)."""
+
     action: ScanAction
     redacted_text: Optional[str]
     findings: tuple[SecretFinding, ...]
@@ -97,10 +100,15 @@ _PATTERNS: tuple[tuple[str, "re.Pattern[str]"], ...] = (
     ("pypi_token", re.compile(r"\bpypi-[A-Za-z0-9_-]{12,}\b")),
     ("github_pat", re.compile(r"\bghp_[A-Za-z0-9]{20,}\b")),
     ("slack_token", re.compile(r"\bxox[baprs]-[A-Za-z0-9-]{10,}\b")),
-    ("jwt", re.compile(r"\beyJ[A-Za-z0-9_-]{5,}\.[A-Za-z0-9_-]{5,}\.[A-Za-z0-9_-]{5,}\b")),
+    (
+        "jwt",
+        re.compile(r"\beyJ[A-Za-z0-9_-]{5,}\.[A-Za-z0-9_-]{5,}\.[A-Za-z0-9_-]{5,}\b"),
+    ),
     ("pem_private_key", re.compile(r"-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----")),
-    ("connection_string",
-     re.compile(r"\b[a-zA-Z][a-zA-Z0-9+.\-]*://[^\s:/@]+:[^\s:/@]+@[^\s/]+")),
+    (
+        "connection_string",
+        re.compile(r"\b[a-zA-Z][a-zA-Z0-9+.\-]*://[^\s:/@]+:[^\s:/@]+@[^\s/]+"),
+    ),
 )
 # A run of credential-charset bytes (base64 / url-safe). The entropy gate looks
 # at these tokens only — punctuation/whitespace are natural token boundaries.
@@ -148,9 +156,13 @@ def _mask(text: str, findings: tuple[SecretFinding, ...]) -> str:
     return "".join(out)
 
 
-def scan(text: str, *, mode: str = REFUSE,
-         entropy_min_len: int = DEFAULT_ENTROPY_MIN_LEN,
-         entropy_bits_floor: float = DEFAULT_ENTROPY_BITS_FLOOR) -> ScanVerdict:
+def scan(
+    text: str,
+    *,
+    mode: str = REFUSE,
+    entropy_min_len: int = DEFAULT_ENTROPY_MIN_LEN,
+    entropy_bits_floor: float = DEFAULT_ENTROPY_BITS_FLOOR,
+) -> ScanVerdict:
     """Deterministic credential scan.  // O(n·r) time (r = rule count), O(f) space.
 
     Runs named rules first, then the entropy catch-all on any high-entropy token
@@ -177,6 +189,7 @@ def scan(text: str, *, mode: str = REFUSE,
         return ScanVerdict(action=CLEAN, redacted_text=None, findings=())
     findings_t = tuple(findings)
     if mode == REDACT:
-        return ScanVerdict(action=REDACT, redacted_text=_mask(text, findings_t),
-                           findings=findings_t)
+        return ScanVerdict(
+            action=REDACT, redacted_text=_mask(text, findings_t), findings=findings_t
+        )
     return ScanVerdict(action=REFUSE, redacted_text=None, findings=findings_t)
