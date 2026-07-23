@@ -214,5 +214,6 @@ THIRD_PARTY_NOTICES.md / LICENSES/   embedding-model attribution + license (the 
 Contributions are welcome. All work lands on the `development` branch; `master` is updated
 only through a `development → master` pull request — a required check enforces that source,
 and direct pushes to `master` are rejected. The canonical mechanical gate is **`make check`**
-(ruff format check, ruff lint, `mypy hive/ --strict`, the full pytest suite) — a change is done
+(ruff format check, ruff lint, `mypy hive/ --strict`, the default pytest suite — the heavy
+`embed` tier is opt-in: run it with `-m embed` and the `embed` extra) — a change is done
 when it passes. See **[CONTRIBUTING.md](CONTRIBUTING.md)** for the full workflow.

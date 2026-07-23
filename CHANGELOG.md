@@ -40,13 +40,15 @@ All notable changes to this project are documented here.
   / `.claude/settings.json`; the served tool descriptions change and sessions pick them
   up on reconnect.
 - `make check` — the repo's canonical mechanical gate (create-on-first-touch):
-  `ruff format --check .` + `ruff check .` + `mypy hive/ --strict` + `pytest` (full
-  suite), non-zero on the first failing leg, each leg runnable alone (`make format` /
+  `ruff format --check .` + `ruff check .` + `mypy hive/ --strict` +
+  `pytest -m "not embed"` (the default suite — the heavy `embed` tier is opt-in),
+  non-zero on the first failing leg, each leg runnable alone (`make format` /
   `lint` / `typecheck` / `test`). Legs run through `uv run --extra dev`, so a fresh
   clone needs nothing beyond uv; the dev extra gains `ruff`, `mypy`, and the
   `types-jsonschema` / `types-defusedxml` / `types-networkx` stubs. `[tool.mypy]` pins
-  `python_version` 3.12 with per-module `ignore_missing_imports` ONLY for the vendored
-  stub-less `combdrift.*` / `matrix.*` engines; the whole `hive/` tree now passes
+  `python_version` 3.12 with per-module `ignore_missing_imports` ONLY for stub-less
+  deps — the vendored `combdrift.*` / `matrix.*` engines and the embed-only
+  `sentence_transformers.*`; the whole `hive/` tree now passes
   strict mypy, and the tree is ruff-formatted end to end.
 - `hive-connect-repo` operator skill (`skills/hive-connect-repo/SKILL.md`): a guided runbook that
   arms and tests the server-side census feed against a GitHub repo — it checks the prerequisites

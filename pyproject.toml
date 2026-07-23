@@ -105,6 +105,16 @@ python_version = "3.12"
 module = ["combdrift.*", "matrix.*"]
 ignore_missing_imports = true
 
+[[tool.mypy.overrides]]
+# sentence-transformers is the heavy `embed`-only dependency (~1.2 GB with its model
+# stack), deliberately kept out of the gate env — `make check` installs only the `dev`
+# extra. It ships no py.typed marker and no types-* stubs package exists, so its lazy
+# imports (hive/tools/bake_model.py, hive/adapters/embedding/local_st.py) resolve as
+# Any under the gate. Override is stub-availability-only — never add first-party hive
+# modules here.
+module = ["sentence_transformers.*"]
+ignore_missing_imports = true
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-q"

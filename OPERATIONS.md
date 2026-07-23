@@ -241,7 +241,7 @@ to stop after:
    the release artifact, and the server host receives only the hivemind repo.
 2. **Land hivemind** — the server change, carrying any refreshed `vendor/wheels/` +
    `pyproject.toml` + `uv.lock` in the same change. The gate is `make check` (format check,
-   lint, strict typecheck, full test suite).
+   lint, strict typecheck, the default pytest suite — the heavy `embed` tier is opt-in).
 3. **Cut the live server over** — `hive upgrade` to a vetted ref (backup-gated, auto-rollback
    on failure), or an in-place rebuild + restart from the landed tree, preserving the
    `hive-data` volume. **No compose change is required**: the sync knobs ride `.env`
