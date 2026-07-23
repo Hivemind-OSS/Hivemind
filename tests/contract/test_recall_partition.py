@@ -25,7 +25,7 @@ from tests.contract.conftest import (
 )
 from tests.fakes._fakes import FakeClusterProvider
 
-Q = "cid=5 how does the shared retry helper behave"
+Q = "cid=50 how does the shared retry helper behave"
 
 
 @pytest.fixture
@@ -37,29 +37,36 @@ def bare(tmp_path):
 
 def seed_partitions(rig):
     """One memory per partition class: alpha-anchored (x2), beta-scoped, general,
-    and alpha+beta shared."""
+    and alpha+beta shared — each in its OWN embedding cluster (genuinely
+    distinct content, pairwise cos ≈ 0, safely under the default near-dup
+    ``dup_tau`` floor), so the served set is decided by PARTITION MEMBERSHIP,
+    never by dedup collapse. The general memory alone shares the query's
+    cluster (cid=50): it belongs to every partition, so it clears ``tau_serve``
+    and opens the gate under every scope, and the in-partition rest serve
+    full-K alongside it (default ``recall_top_n`` exceeds any partition here).
+    """
     for name in ("alpha", "beta", "gamma"):
         register_repo(rig.store, name, f"https://example.invalid/{name}.git")
     ids = {
         "a": write_ok(
             rig.server,
-            "cid=5 alpha: the retry helper doubles its backoff",
+            "cid=51 alpha: the retry helper doubles its backoff",
             anchors=[{"repo": "alpha", "anchor": "hive/app/retry.py::backoff"}],
         ),
         "a2": write_ok(
             rig.server,
-            "cid=5 alpha: the retry helper caps at five attempts",
+            "cid=52 alpha: the retry helper caps at five attempts",
             anchors=[{"repo": "alpha", "anchor": "hive/domain/policy.py::cap"}],
         ),
         "b": write_ok(
             rig.server,
-            "cid=5 beta: the retry helper jitters its delay",
+            "cid=53 beta: the retry helper jitters its delay",
             repos=["beta"],
         ),
-        "g": write_ok(rig.server, "cid=5 general: retries must be idempotent"),
+        "g": write_ok(rig.server, "cid=50 general: retries must be idempotent"),
         "ab": write_ok(
             rig.server,
-            "cid=5 shared: the retry helper is vendored in both",
+            "cid=54 shared: the retry helper is vendored in both",
             repos=["alpha", "beta"],
         ),
     }

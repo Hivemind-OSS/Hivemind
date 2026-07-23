@@ -154,9 +154,15 @@ def test_cap_carries_over(sync_store, tmp_path):
 def test_per_repo_baselining(sync_store, tmp_path):
     origin_a = _origin(tmp_path, "remote-a")
     origin_b = _origin(tmp_path, "remote-b")
-    # diverge B's tree so the same anchor fingerprints differently there
+    # diverge B's tree at the INTERFACE — greet gains a parameter — so the same
+    # anchor genuinely fingerprints differently there. A body-only string edit
+    # sits below the mint engine's sensitivity floor (interface- and
+    # call-graph-identical trees emit byte-identical tokens — BUG-048), so the
+    # divergence must change the anchored function's signature.
     origin_b.commit(
-        "app.py", 'def greet(name):\n    return "yo " + name + "!"\n', "diverge"
+        "app.py",
+        'def greet(name, punct="!"):\n    return "hi " + name + punct\n',
+        "diverge",
     )
     origin_b.push()
     register_repo(sync_store, "alpha", origin_a.url, canonical_ref="main")
