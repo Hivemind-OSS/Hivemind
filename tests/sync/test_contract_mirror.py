@@ -6,13 +6,18 @@ ALL-branches (``+refs/heads/*:refs/remotes/origin/*``) under ``clean_git_env``
 children — the BUG-034 shape). An unreachable remote or an absent row-named
 token var is a LOGGED PER-REPO SKIP: the fault lands under
 ``sync:<name>:last_error``, the OTHER repos and the serve path never feel it,
-and the next tick retries. An EMPTY registry is an INERT tick — no git, no
-mirror dir, no engine spawn. The credential never escapes the mirror's remote
-config — logs and the error meta are redacted.
+and the next tick retries. An EMPTY registry is an INERT tick — no git spawn,
+no engine, and the mirrors dir is never CREATED (pruning a leftover mirror is
+the one allowed filesystem act). A DEREGISTERED repo loses its mirror on the
+next tick (BUG-050): the reconciliation prune deletes only direct, slug-named,
+non-symlink children of the configured mirrors dir, fails open per name, and
+runs BEFORE the empty-registry early-return. The credential never escapes the
+mirror's remote config — logs and the error meta are redacted.
 """
 from __future__ import annotations
 
 import logging
+import shutil
 
 from hive.app.sync import META_LAST_SYNC_TS
 
@@ -153,14 +158,103 @@ def test_registry_reread_each_tick_no_restart(origin, store, tmp_path):
 
 def test_empty_registry_tick_is_inert(store, tmp_path):
     """The unit twin of CT-9's inert test: an EMPTY registry tick spawns nothing
-    (no git, no clone, no engine), creates no mirror dir, and stamps no
-    last_sync_ts (nothing synced — the stamp must not lie)."""
+    (no git, no clone, no engine), never CREATES the mirror dir (the leftover
+    prune is delete-only), and stamps no last_sync_ts (nothing synced — the
+    stamp must not lie)."""
     run = RecordingRun()
     svc = make_service(store, tmp_path, run=run, now=lambda: 999)
     svc.tick()
     assert run.calls == []                           # ← cloning here is the mutation
     assert not (tmp_path / "mirrors").exists()
     assert meta(store, META_LAST_SYNC_TS) is None
+
+
+def test_deregistered_repo_mirror_pruned_next_tick(store, tmp_path):
+    """The ``repo remove`` promise (BUG-050): deregistration stops the feed AND
+    the next tick prunes ``mirrors/<name>/``; the sibling repo's mirror and its
+    sync are untouched, and a clean prune is silent (no error key)."""
+    a = Origin(tmp_path / "remote-a")
+    b = Origin(tmp_path / "remote-b")
+    register_repo(store, "alpha", a.url)
+    register_repo(store, "beta", b.url)
+    svc = make_service(store, tmp_path)
+    svc.tick()
+    assert (tmp_path / "mirrors" / "alpha").is_dir()
+    assert (tmp_path / "mirrors" / "beta").is_dir()
+
+    assert store.repo_remove("alpha")
+    svc.tick()
+    assert not (tmp_path / "mirrors" / "alpha").exists()   # ← the prune
+    assert (tmp_path / "mirrors" / "beta").is_dir()        # sibling mirror kept
+    assert meta(store, "sync:beta:last_tip") == b.origin_sha("refs/heads/main")
+    assert meta(store, "sync:alpha:last_error") is None    # a clean prune is silent
+
+
+def test_emptied_registry_tick_prunes_leftover_spawn_free(origin, store, tmp_path):
+    """Deregistering the LAST repo still prunes its mirror: the reconciliation
+    runs BEFORE the empty-registry early-return — and the emptied-registry tick
+    stays spawn-inert (no git, no engine) while it deletes."""
+    run = RecordingRun()
+    register_repo(store, "alpha", origin.url)
+    svc = make_service(store, tmp_path, run=run)
+    svc.tick()
+    assert (tmp_path / "mirrors" / "alpha").is_dir()
+
+    assert store.repo_remove("alpha")
+    run.calls.clear()
+    svc.tick()
+    assert run.calls == []                          # ← still no spawn on empty registry
+    assert not (tmp_path / "mirrors" / "alpha").exists()   # ← but the leftover is gone
+
+
+def test_prune_skips_slug_invalid_and_symlink_children(store, tmp_path):
+    """The prune's scope guard: a child the registry grammar could never have
+    named is NEVER rmtree'd, and a slug-named symlink is never followed (nothing
+    outside the mirrors dir can be deleted) — both silent skips, not faults,
+    and the empty-registry tick stays spawn-free throughout."""
+    mirrors = tmp_path / "mirrors"
+    mirrors.mkdir(parents=True)
+    stray = mirrors / "Not A Slug"                  # uppercase + spaces: not ours
+    stray.mkdir()
+    (stray / "x.txt").write_text("x")
+    outside = tmp_path / "outside"                  # a slug-named link escaping the base
+    outside.mkdir()
+    (outside / "data.txt").write_text("precious")
+    link = mirrors / "linked"
+    link.symlink_to(outside)
+    run = RecordingRun()
+    svc = make_service(store, tmp_path, run=run)
+    svc.tick()
+    assert run.calls == []
+    assert stray.is_dir() and (stray / "x.txt").exists()   # slug-invalid: untouched
+    assert link.is_symlink()                               # link skipped, not followed
+    assert (outside / "data.txt").exists()                 # the target survives whole
+    assert meta(store, "sync:linked:last_error") is None   # a skip is silent, not a fault
+
+
+def test_prune_fault_fails_open_tick_continues(store, tmp_path, monkeypatch, caplog):
+    """A prune fault is a logged per-name skip under ``sync:<name>:last_error``:
+    the tick lives on, the registered repo's legs still run, and — like every
+    fault — the clean ``sync:last_sync_ts`` stamp is withheld."""
+    healthy = Origin(tmp_path / "remote-b")
+    register_repo(store, "beta", healthy.url)
+    leftover = tmp_path / "mirrors" / "gone"
+    leftover.mkdir(parents=True)
+
+    def boom(path, *args, **kwargs):
+        raise OSError(f"device busy: {path}")
+
+    monkeypatch.setattr(shutil, "rmtree", boom)
+    svc = make_service(store, tmp_path, now=lambda: 31_337)
+    with caplog.at_level(logging.WARNING, logger="hive.sync"):
+        svc.tick()                       # ← raising here breaks the tick fail-open
+    assert leftover.is_dir()             # the fault left it in place (next tick retries)
+    assert "prune" in (meta(store, "sync:gone:last_error") or "")
+    assert meta(store, "sync:beta:last_tip") == healthy.origin_sha("refs/heads/main")
+    assert meta(store, "sync:beta:last_error") is None
+    assert meta(store, META_LAST_SYNC_TS) is None    # a faulted tick never stamps
+    joined = "\n".join(r.getMessage() for r in caplog.records)
+    assert "repo=gone" in joined and "leg=prune" in joined
 
 
 def test_clean_tick_stamps_last_sync_ts_via_now_seam(origin, store, tmp_path):

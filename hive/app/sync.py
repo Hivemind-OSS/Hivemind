@@ -30,7 +30,14 @@ under its OWN fail-open guard, runs three legs against that repo's mirror at
 
 Named safe directions (Law 6):
 - AN EMPTY REGISTRY IS INERT: no git, no clone, no engine import — the tick
-  returns after the registry read alone.
+  returns after the registry read and the leftover-mirror prune alone (the
+  prune is pure local filesystem, delete-only, and never CREATES the mirrors
+  dir).
+- A DEREGISTERED REPO LOSES ITS MIRROR (BUG-050): every tick reconciles the
+  mirrors dir against the live registry — ``repo_remove`` stops the feed, the
+  next tick deletes ``mirrors/<name>/``. Only direct, slug-named, non-symlink
+  children resolving strictly under the configured base are ever deleted, each
+  under its own fail-open guard.
 - THE SIDE-CHANNEL FAILS OPEN PER REPO, THE SERVE NEVER DOES: every repo runs
   under its own guard (fault → log + ``sync:<name>:last_error``; the OTHER
   repos are untouched), every leg under its own guard inside that, and the
@@ -67,6 +74,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -88,6 +96,10 @@ META_LAST_SYNC_TS = "sync:last_sync_ts"   # ts of the last fault-free tick (via 
 META_BACKFILLED_TOTAL = "sync:backfilled_total"   # anchor carriers fp-backfilled, ever
 _DEFAULT_MIRROR_DIR = "/data/sync/mirror"         # the base dir; mirrors live at <base>/<name>
 _DEFAULT_TOKEN_ENV = "HIVE_SYNC__TOKEN"           # the fleet-default credential var (D2)
+# The registry name grammar (store_sqlite.repo_add's gate, mirrored): only names
+# the registry could ever have minted are prune candidates — anything else in
+# the mirrors dir was never this daemon's mirror and is never deleted.
+_REPO_SLUG_RE = re.compile(r"^[a-z0-9._-]+$")
 _BACKFILL_PER_TICK = 50              # fp-mint cap per repo per tick; the rest carry over
 _DRIFT_PER_TICK = 50                 # verify cap per repo per tick; the rest carry over
 _REF_REQUEST_WINDOW_S = 7 * 86_400   # recall demand keeps a branch on the work list this long
@@ -204,23 +216,30 @@ class SyncService:
 
     def tick(self) -> None:
         """ONE poll cycle: re-read the registry (a just-registered repo is picked up
-        with no restart — D2), then run every repo under its OWN fail-open guard —
-        one repo's fault never blocks another, and nothing raises past this method.
-        ``sync:last_sync_ts`` — stamped through the injected ``now`` seam — advances
-        only when EVERY repo ran fault-free, so it reads as "the last fully-clean
-        sync" against the sticky per-repo ``sync:<name>:last_error``."""
+        with no restart — D2), prune the mirrors of DEREGISTERED repos (the
+        ``repo_remove`` promise — BUG-050), then run every repo under its OWN
+        fail-open guard — one repo's fault never blocks another, and nothing
+        raises past this method. ``sync:last_sync_ts`` — stamped through the
+        injected ``now`` seam — advances only when the prune AND every repo ran
+        fault-free, so it reads as "the last fully-clean sync" against the
+        sticky per-repo ``sync:<name>:last_error``."""
         try:
             with self._lock:
                 rows = self._store.repo_registry()
         except Exception as exc:  # noqa: BLE001 — the shell fails open too
             self._note_error("registry", exc)
             return
+        # Reconciliation BEFORE the inert early-return: deregistering the LAST
+        # repo must still prune its leftover mirror. (A failed registry read
+        # returned above — the live set is unknown, so nothing may be deleted.)
+        clean = self._prune_mirrors({row.name for row in rows})
         if not rows:
-            # marker: doing ANY work here (a clone, a fetch, an engine spawn) reds
-            # CT-9's test_empty_registry_is_inert — an empty registry tick is
-            # byte-inert: no git, no mirror dir, no engine import.
+            # marker: spawning ANYTHING here (a clone, a fetch, an engine spawn)
+            # or creating the mirrors dir reds CT-9's test_empty_registry_is_inert
+            # — an empty registry tick stays inert: no git, no engine import, no
+            # mirror dir made. The leftover-mirror prune above (pure local
+            # filesystem, delete-only) is the ONE act allowed before this return.
             return
-        clean = True
         for row in rows:
             clean = self._repo_tick(row) and clean
         if clean:
@@ -281,6 +300,44 @@ class SyncService:
         if row.token_env:
             return os.environ[row.token_env]
         return os.environ.get(_DEFAULT_TOKEN_ENV, "")
+
+    # ── registry reconciliation: a deregistered repo loses its mirror ──────────
+    def _prune_mirrors(self, live: set[str]) -> bool:
+        """Delete ``<mirror_dir>/<name>/`` for every name NO LONGER in the live
+        registry — ``repo_remove`` stops the feed; THIS is where the mirror goes
+        away (BUG-050; ``repo_remove``'s docstring names this tick). Guard
+        rails: the mirrors dir is never created (absent ⇒ no-op, so the
+        empty-registry tick stays inert); only DIRECT children named by the
+        registry slug grammar are candidates (anything else was never this
+        daemon's mirror, so it is not ours to delete); a symlink, a
+        non-directory, or a child resolving outside the base is skipped — never
+        followed, never deleted — so nothing outside the configured mirrors dir
+        can ever be rmtree'd; and each deletion runs under its own fail-open
+        guard. Returns True iff every prune ran fault-free — a prune fault
+        withholds ``sync:last_sync_ts`` exactly like a repo-leg fault."""
+        try:
+            children = sorted(self.mirror_base.iterdir())
+        except OSError:            # absent (or unreadable) base: nothing to prune
+            return True
+        base = self.mirror_base.resolve()
+        clean = True
+        for child in children:
+            name = child.name
+            if name in live or _REPO_SLUG_RE.match(name) is None:
+                continue
+            try:
+                if (child.is_symlink() or not child.is_dir()
+                        or child.resolve().parent != base):
+                    continue       # never through a link, never outside the base
+                shutil.rmtree(child)
+                _log.info("sync.mirror_pruned repo=%s dir=%s", name, child)
+            except Exception as exc:  # noqa: BLE001 — marker: raising here breaks
+                # test_prune_fault_fails_open_tick_continues — a stuck leftover
+                # is a logged per-name skip; the repos, the tick, and the serve
+                # path never feel it.
+                self._note_repo_error(name, "prune", exc, "")
+                clean = False
+        return clean
 
     # ── the mirror (a rebuildable cache — never the durable truth) ─────────────
     def ensure_mirror(self, repo, token: str = "") -> Path:
