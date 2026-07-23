@@ -1,18 +1,18 @@
 """M06 hive_health: the happy snapshot, the fail-closed {ok,error,db_path}-only
-subset on a probe failure, and the no-secret invariant on the serialized envelope."""
+subset on a probe failure, the no-secret invariant on the serialized envelope, and
+the v3 deletions (no contract_version beacon, no include_onboarding channel)."""
 from __future__ import annotations
 
 import json
 
-from hive.app.onboard_ref import CONTRACT_VERSION
 from tests.mcp._helpers import build_real_server, content, tool_call, write_text
 
 
 def test_health_happy_snapshot():
     server, _ = build_real_server()
-    # client-gated writes land approved directly — no pending queue, so n_pending stays 0
-    write_text(server, "first approved memory")
-    write_text(server, "second approved memory")
+    # v3 writes land approved+provisional directly — no pending queue, n_pending stays 0
+    write_text(server, "first written memory")
+    write_text(server, "second written memory")
     snap = content(tool_call(server, "hive_health", {}))
     assert snap["ok"] is True
     assert snap["tenant_id"] == "default"
@@ -21,6 +21,7 @@ def test_health_happy_snapshot():
     assert snap["embedder_loaded"] is True
     assert snap["d"] == 64
     assert snap["uptime_s"] >= 0
+    assert "contract_version" not in snap           # the beacon is DELETED (v3)
 
 
 def test_health_fail_closed_subset():
@@ -31,10 +32,9 @@ def test_health_fail_closed_subset():
     server.store.counts = _boom
     snap = content(tool_call(server, "hive_health", {}))
     assert snap["ok"] is False
-    # fail-closed subset ONLY (the leak guard) + the unconditional beacon stamp. EXACT, never a
-    # subset: the beacon is the single additive key; no db internals may join it.
-    assert set(snap.keys()) == {"ok", "error", "db_path", "contract_version"}
-    assert snap["contract_version"] == CONTRACT_VERSION
+    # fail-closed subset ONLY (the leak guard). EXACT, never a superset: no db
+    # internals — and no beacon (v3) — may join it.
+    assert set(snap.keys()) == {"ok", "error", "db_path"}
 
 
 def test_health_snapshot_has_no_secret_substring():
@@ -100,8 +100,8 @@ def test_health_meta_versions_histogram_end_to_end():
     # Seed through the REAL capture/write path: mixed versions, a malformed value, bare
     # rows, and a deprecated (retired) carrier — the histogram counts the LIVE corpus
     # (servable + quarantined), buckets per version prefix, and never reads a body.
-    server, _ = build_real_server()
-    write_text(server, "established v1 carrier",
+    server, clock = build_real_server()
+    write_text(server, "provisional v1 carrier",
                meta={"matrix/subgraph_fp": "matrix-subgraph-fp/1:aaa"})
     content(tool_call(server, "hive_capture", {                       # quarantined counts too
         "text": "quarantined v1 carrier",
@@ -113,8 +113,9 @@ def test_health_meta_versions_histogram_end_to_end():
     winner = write_text(server, "the superseding successor")["id"]
     loser = write_text(server, "retired v1 carrier",
                        meta={"matrix/subgraph_fp": "matrix-subgraph-fp/1:zzz"})["id"]
-    content(tool_call(server, "hive_supersede",
-                      {"loser": loser, "winner": winner, "approved_by": "user"}))
+    # retire at the STORE layer (the tool verb is machine-gated; the histogram's
+    # live-corpus exclusion is what is under test here, not the gate)
+    assert server.store.supersede(loser, winner, actor="test", ts=int(clock.now()))
     snap = content(tool_call(server, "hive_health", {"include_meta_versions": True}))
     assert snap["ok"] is True
     # deprecated excluded (else "1" would read 3); absent counts the two bare live rows;
@@ -131,13 +132,12 @@ def test_health_meta_versions_empty_corpus():
     assert snap["meta_versions"] == {}
 
 
-def test_health_onboarding_absent_by_default_present_on_flag():
-    # BUG-023's uncapped escape channel: byte-inert by default (dropping the flag ⇒ the
-    # always-emits mutation this guards against), a complete install payload when requested.
+def test_health_include_onboarding_channel_is_gone():
+    # v3 (CT-11 twin): the install-payload channel is DELETED — the flag is not
+    # advertised, and passing it anyway serves NO onboarding key (ignored-extra).
+    from hive.app.tool_defs import TOOL_DEFINITIONS
+    health = next(t for t in TOOL_DEFINITIONS if t["name"] == "hive_health")
+    assert "include_onboarding" not in health["inputSchema"]["properties"]
     server, _ = build_real_server()
-    assert "onboarding" not in content(tool_call(server, "hive_health", {}))
     snap = content(tool_call(server, "hive_health", {"include_onboarding": True}))
-    payload = snap["onboarding"]
-    for key in ("contract_version", "rules_block", "procedure", "hooks", "allowlist",
-                "edge_cli", "identity", "kind_taxonomy"):
-        assert key in payload, f"missing onboarding payload key: {key!r}"
+    assert "onboarding" not in snap

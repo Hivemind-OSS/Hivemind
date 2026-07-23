@@ -19,7 +19,6 @@ from __future__ import annotations
 from hive.app.config import Config
 from hive.app.container import build_container
 from hive.app.mcp_server import MCPRequest, ServerIdentity
-from hive.app.onboard_ref import CONTRACT_VERSION
 from hive.domain.lifecycle import PROVISIONAL, QUARANTINED
 from tests.fakes._fakes import FakeClock, FakeWarmProvider
 from tests.mcp._helpers import content
@@ -99,17 +98,14 @@ def test_acceptance_disabled_byte_stable():
     c, server, clock = _build(enabled=False)
     # capture refused cleanly, before anything touches the store
     cap = _call(server, "agent-A", "hive_capture", {"text": "anything"})
-    # autonomy-disabled is byte-stable vs the pre-lifecycle build EXCEPT for the unconditional
-    # contract_version beacon, which stamps every envelope orthogonally to any feature flag.
-    assert cap == {"status": "disabled", "contract_version": CONTRACT_VERSION}
+    assert cap == {"status": "disabled"}          # v3: no beacon key exists
     assert _count(c, "episodes") == 0
-    # the human write→recall path behaves exactly as today
-    w = _call(server, "agent-A", "hive_write",
-              {"text": "the canonical fact", "approved_by": "human"})
+    # the write→recall path behaves exactly as today (v3: serve-now provisional)
+    w = _call(server, "agent-A", "hive_write", {"text": "the canonical fact"})
     assert w["status"] == "approved"
     hit = _call(server, "agent-B", "hive_recall", {"query": "the canonical fact"})
     assert hit["abstained"] is False
-    assert hit["reference_context"][0]["trust"] == "established"  # labels: additive only
+    assert hit["reference_context"][0]["trust"] == "provisional"  # labels: additive only
     # an unanswered recall leaves NO trace: the read path writes zero new rows
     _call(server, "agent-B", "hive_recall", {"query": "an unanswered question"})
     assert _count(c, "recall_misses") == 0
@@ -140,15 +136,26 @@ def test_boot_sweep_runs_before_index_build():
 
 
 def test_acceptance_supersession_through_tools():
+    import json as _json
     c, server, clock = _build()
-    old = _call(server, "agent-A", "hive_write",
-                {"text": "deploy with make deploy", "approved_by": "human"})
+    old = _call(server, "agent-A", "hive_write", {"text": "deploy with make deploy"})
+    # v3: the replaces= rider is MACHINE-GATED — evidence-less, the write lands and
+    # the target stays (the §3.2 benign rider-noop)...
+    miss = _call(server, "agent-A", "hive_write",
+                 {"text": "deploy with ship.sh since the migration",
+                  "replaces": old["id"]})
+    assert miss["status"] == "approved" and miss["superseded"] is None
+    assert miss["supersede_noop"] == "no qualifying machine signal"
+    # ...and with a qualifying machine signal (a server-written verified-hurt row)
+    # the SAME rider retires the target in one call.
+    c.store.insert_audit(old["id"], "outcome_verified_hurt", "census",
+                         int(clock.now()), _json.dumps({"stamp": {"head_sha": "c" * 40}}))
     new = _call(server, "agent-A", "hive_write",
-                {"text": "deploy with ship.sh since the migration",
-                 "approved_by": "human", "replaces": old["id"]})
+                {"text": "deploy with ship.sh (the migration landed)",
+                 "replaces": old["id"]})
     assert new["superseded"] == old["id"]
-    # the retired version is out of serving; the correction serves established
+    # the retired version is out of serving; the correction serves provisional
     r = _call(server, "agent-B", "hive_recall",
-              {"query": "deploy with ship.sh since the migration"})
+              {"query": "deploy with ship.sh (the migration landed)"})
     assert r["reference_context"][0]["episode_id"] == new["id"]
-    assert r["reference_context"][0]["trust"] == "established"
+    assert r["reference_context"][0]["trust"] == "provisional"

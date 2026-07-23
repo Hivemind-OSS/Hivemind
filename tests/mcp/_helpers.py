@@ -1,9 +1,9 @@
 """Shared builders for the M06 MCP-surface tests. ``build_real_server`` wires the
 REAL stack (sqlite :memory: store + authoritative ExhaustiveCosineIndex + the real
 AdmissionService + RecallPipeline) behind the boundary, so a tool call exercises the
-true write→recall→fetch path (a clean write lands APPROVED in one call); targeted
-doubles (a counting admission, a stub recall, a counts-raising store) are monkeypatched
-onto the built server per test.
+true write→recall→fetch path (a clean v3 write lands trust=provisional, servable
+NOW, in one call); targeted doubles (a counting admission, a stub recall, a
+counts-raising store) are monkeypatched onto the built server per test.
 """
 from __future__ import annotations
 
@@ -25,7 +25,7 @@ _DAY_S = 86_400
 def build_real_server(*, d: int = 64, tau_serve: float = 0.70, k_min: int = 1,
                       top_n: int = 10, t0: int = 1000,
                       scanner=None, autonomy=None, embedder=None, conflict=None,
-                      suspect_consensus=None, agi_mode: bool = False,
+                      suspect_consensus=None,
                       secret_scan_enabled: bool = True, canonical_ref: str = ""):
     """Return (server, clock). ``clock`` is mutable so tests can stamp distinct ts.
     The FULL trust-lifecycle is wired (real DemandRule + LifecycleService on the
@@ -77,7 +77,7 @@ def build_real_server(*, d: int = 64, tau_serve: float = 0.70, k_min: int = 1,
         identity=ServerIdentity("default", "agent"),
         now=clock.now, started_ts=t0, db_path="", autonomy=aut,
         conflict=conflict, flag_service=flag_service,
-        suspect_consensus=suspect_consensus, agi_mode=agi_mode,
+        suspect_consensus=suspect_consensus,
         secret_scan_enabled=secret_scan_enabled, canonical_ref=canonical_ref)
     return server, clock
 
@@ -97,7 +97,14 @@ def is_error(resp) -> bool:
     return bool(resp.result.get("isError"))
 
 
-def write_text(server, text, approved_by="user", **kw):
-    """Client-gated write: approved_by is required by the schema belt, so default it
-    here (callers can override via kw)."""
-    return content(tool_call(server, "hive_write", {"text": text, "approved_by": approved_by, **kw}))
+def write_text(server, text, **kw):
+    """The v3 write: ``hive_write {text, ...}`` — no approver field exists; the row
+    lands trust=provisional and serves NOW."""
+    return content(tool_call(server, "hive_write", {"text": text, **kw}))
+
+
+def register_repo(server, name: str, *, canonical_ref: str = "", ts: int = 0):
+    """Register a repo through the v3 store surface so anchors/repos scope args pass
+    the boundary grammar gate."""
+    server.store.repo_add(name=name, url=f"https://example.invalid/{name}.git",
+                          canonical_ref=canonical_ref, added_ts=int(ts))

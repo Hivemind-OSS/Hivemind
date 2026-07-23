@@ -35,7 +35,7 @@ def _call(server, name, args, agent="agent-A"):
 
 
 def _write(server, text, **kw):
-    return _call(server, "hive_write", {"text": text, "approved_by": "human", **kw})
+    return _call(server, "hive_write", {"text": text, **kw})
 
 
 def _mech(snap):
@@ -51,9 +51,9 @@ def test_e2e_contradiction_surfaced_in_both_surfaces_then_resolved(embedder_v1):
     c = build_acc(embedder_v1, recall=_PERMISSIVE, conflict=_CONF)
     server = c.make_server()
     do = _write(server, "Always run the container as a non-root user.",
-                polarity="do", anchor="Dockerfile")["id"]
+                polarity="do")["id"]
     dont = _write(server, "Run the container as root for simplicity.",
-                  polarity="dont", anchor="Dockerfile")["id"]
+                  polarity="dont")["id"]
     c.build_index()
 
     # (1) the health worklist surfaces the contradiction (gate-independent scan)
@@ -67,9 +67,9 @@ def test_e2e_contradiction_surfaced_in_both_surfaces_then_resolved(embedder_v1):
     assert any({p["a_id"], p["b_id"]} == {do, dont} and p["relation"] == "contradiction"
                for p in r.get("conflicts", []))
 
-    # (3) a human resolves it: keep the 'do', retire the 'dont'
-    out = _call(server, "hive_supersede",
-                {"loser": dont, "winner": do, "approved_by": "human"})
+    # (3) resolve it: keep the 'do', retire the 'dont' — the near-dup contradiction
+    # is itself the qualifying machine signal (no approver exists in v3)
+    out = _call(server, "hive_supersede", {"loser": dont, "winner": do})
     assert out["status"] == "superseded"
     c.build_index()
 
@@ -87,10 +87,10 @@ def test_e2e_redundancy_loser_hint_points_at_older(embedder_v1):
     c = build_acc(embedder_v1, clock=clock, recall=_PERMISSIVE, conflict=_CONF)
     server = c.make_server()
     older = _write(server, "Use connection pooling for the database; never open a "
-                           "connection per request.", anchor="db.py")["id"]
+                           "connection per request.")["id"]
     clock.advance(10_000)                       # the second write is newer
     newer = _write(server, "Reuse database connections through a pool instead of opening "
-                           "one each request.", anchor="db.py")["id"]
+                           "one each request.")["id"]
     c.build_index()
     snap = _call(server, "hive_health", {"include_conflicts": True})
     red = [m for m in _mech(snap)
@@ -105,10 +105,8 @@ def test_e2e_advisory_flag_surfaces_then_autoclears(embedder_v1):
     c = build_acc(embedder_v1, recall=_PERMISSIVE, conflict=_CONF)
     server = c.make_server()
     # two semantically DISTINCT memories (no mechanical near-dup) an agent judges to conflict
-    a = _write(server, "Cache eviction policy should protect queue keys.",
-               anchor="redis.conf")["id"]
-    b = _write(server, "Deploys must run database migrations in a separate step.",
-               anchor="deploy.py")["id"]
+    a = _write(server, "Cache eviction policy should protect queue keys.")["id"]
+    b = _write(server, "Deploys must run database migrations in a separate step.")["id"]
     c.build_index()
     flagged = _call(server, "hive_flag",
                     {"a": a, "b": b, "kind": "supersedes", "winner": b,
@@ -116,8 +114,11 @@ def test_e2e_advisory_flag_surfaces_then_autoclears(embedder_v1):
     assert flagged["status"] == "flagged"
     snap = _call(server, "hive_health", {"include_conflicts": True})
     assert any({x["a_id"], x["b_id"]} == {a, b} for x in _adv(snap))
-    # resolving (retiring a) auto-clears the advisory via the servable-both filter
-    _call(server, "hive_supersede", {"loser": a, "winner": b, "approved_by": "human"})
+    # resolving (retiring a) auto-clears the advisory via the servable-both filter.
+    # The flag itself NEVER qualifies the machine gate — plant real hurt evidence
+    # from ANOTHER identity so the supersede qualifies (§3.2 clause 2).
+    _call(server, "hive_outcome", {"hurt": [a]}, agent="agent-B")
+    _call(server, "hive_supersede", {"loser": a, "winner": b})
     c.build_index()
     snap2 = _call(server, "hive_health", {"include_conflicts": True})
     assert _adv(snap2) == []

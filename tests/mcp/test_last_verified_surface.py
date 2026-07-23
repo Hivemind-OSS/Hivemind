@@ -17,7 +17,7 @@ import json
 
 import numpy as np
 
-from hive.app.onboard_ref import CONTRACT_VERSION, REMEDIATION_NOTICE
+from hive.app.contract import REMEDIATION_NOTICE
 from hive.domain.evidence_kinds import EK_VERIFY_CURRENT, EK_VERIFY_STALE
 from tests.fakes._fakes import FakeProvider
 from tests.mcp._helpers import build_real_server, content, tool_call
@@ -38,7 +38,7 @@ def _verify_payload(head_sha: str = _HEAD) -> str:
 
 
 def _write_and_recall(server, text, *, plant=None):
-    wr = content(tool_call(server, "hive_write", {"text": text, "approved_by": "user"}))
+    wr = content(tool_call(server, "hive_write", {"text": text}))
     if plant is not None:
         plant(int(wr["id"]))
     return content(tool_call(server, "hive_recall", {"query": text}))
@@ -84,9 +84,9 @@ class _TwinProvider(FakeProvider):
 def test_mixed_hits_only_the_verified_one_carries_the_stamp():
     server, _ = build_real_server(embedder=_TwinProvider(d=64))
     verified = content(tool_call(server, "hive_write", {
-        "text": "the flange gasket lesson", "approved_by": "user"}))
+        "text": "the flange gasket lesson"}))
     content(tool_call(server, "hive_write", {
-        "text": "the flange rotation lesson", "approved_by": "user"}))
+        "text": "the flange rotation lesson"}))
     server.store.append_evidence([
         (int(verified["id"]), EK_VERIFY_CURRENT, "census", 100, _verify_payload())])
     env = content(tool_call(server, "hive_recall",
@@ -234,13 +234,12 @@ def test_recall_rider_scoped_no_answerable_row_means_no_rider():
     assert "last_verified" not in hit and "remediation" not in hit
 
 
-# ── the contract-version beacon (intent 11: a version bump IS the re-onboard trigger) ──
-def test_recall_envelope_beacon_carries_the_live_contract_version():
-    """Every served recall envelope beacons the LIVE CONTRACT_VERSION — single-sourced from
-    onboard_ref, never a literal here, so this pin can never lag a bump: when the contract
-    version flips (v.12 -> v.13), an agent whose installed HIVEMIND-RULES marker differs sees
-    the flip on its very next tool result and re-onboards. (The all-verbs beacon sweep lives in
-    test_tool_surface; this pins the enrichment-heavy recall envelope this file owns.)"""
+# ── v3: no beacon — the enrichment-heavy recall envelope carries no version key ──
+def test_recall_envelope_carries_no_contract_version_beacon():
+    """The per-result contract-version beacon is DELETED in v3 (the contract is served
+    fresh at every connect via initialize instructions). The enrichment-heavy recall
+    envelope this file owns must not carry it either (the all-verbs sweep lives in
+    test_tool_surface)."""
     server, _ = build_real_server()
-    env = _write_and_recall(server, "a lesson served with the version beacon")
-    assert env["contract_version"] == CONTRACT_VERSION
+    env = _write_and_recall(server, "a lesson served without any version beacon")
+    assert "contract_version" not in env

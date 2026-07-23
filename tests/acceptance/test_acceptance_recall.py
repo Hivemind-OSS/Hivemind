@@ -78,7 +78,7 @@ def test_acceptance_secret_write_refused_and_never_recallable(embedder_v1):
     secret_topic = ("rotate the leaked key AKIAIOSFODNN7EXAMPLE noted in the moonshot "
                     "quarterly revenue review")
     with pytest.raises(SecretRefused):
-        c.admission.write(secret_topic, proposed_by="acc", approved_by="acc")
+        c.admission.write(secret_topic, proposed_by="acc")
     c.build_index()
     ids, r = _topk_ids(c, secret_topic, 5)            # query its EXACT text
     assert ids == []                                  # nothing written ⇒ nothing recallable

@@ -2,12 +2,15 @@
 never reference_context — Law 4), byte-inert when OFF, and fail-OPEN (a detector fault never
 breaks the read). Near-dups are modeled with FakeClusterProvider (cid-tagged texts cluster);
 a cid-matched query embeds at cosine≈1 to both, clearing the absolute-relevance floor so a
-confident recall returns the co-present near-dups."""
+confident recall returns the co-present near-dups. Plus C5: the hive_health worklist, v3 —
+mechanical entries bucket by (repo, anchor) BINDING and carry both."""
 from __future__ import annotations
 
 from hive.app.config import ConflictConfig
 from tests.fakes._fakes import FakeClusterProvider
-from tests.mcp._helpers import build_real_server, content, tool_call, write_text
+from tests.mcp._helpers import (
+    build_real_server, content, register_repo, tool_call, write_text,
+)
 
 D = 64
 
@@ -18,22 +21,29 @@ def _srv(*, enabled=True, tau_serve=0.70):
     # carrier/worklist classify); a non-matching query stays absolutely weak and abstains. The
     # carrier detects over the PRE-select resolved field, so it surfaces the pair even when
     # select_served decorrelates the served set (drops one near-dup twin).
-    return build_real_server(d=D, tau_serve=tau_serve,
-                             embedder=FakeClusterProvider(d=D),
-                             conflict=ConflictConfig(enabled=enabled))
+    server, clock = build_real_server(d=D, tau_serve=tau_serve,
+                                      embedder=FakeClusterProvider(d=D),
+                                      conflict=ConflictConfig(enabled=enabled))
+    register_repo(server, "alpha")
+    register_repo(server, "beta")
+    return server, clock
 
 
 def _write(server, text, **kw):
     return write_text(server, text, **kw)
 
 
+def _anchored(repo, anchor):
+    return [{"repo": repo, "anchor": anchor}]
+
+
 # ── ON: opposing polarity near-dups → a contradiction in the carrier ───────────
 def test_recall_surfaces_contradiction_for_opposing_near_dups():
     server, _ = _srv(enabled=True)
     a = _write(server, "cid=1 run database migrations during deploy",
-               polarity="do", anchor="deploy.py")["id"]
+               polarity="do", anchors=_anchored("alpha", "deploy.py"))["id"]
     b = _write(server, "cid=1 never run migrations during a deploy window",
-               polarity="dont", anchor="deploy.py")["id"]
+               polarity="dont", anchors=_anchored("alpha", "deploy.py"))["id"]
     r = content(tool_call(server, "hive_recall", {"query": "cid=1 migrations on deploy"}))
     assert r["abstained"] is False
     assert "conflicts" in r
@@ -50,7 +60,7 @@ def test_recall_surfaces_redundancy_with_loser_hint():
     pair = r["conflicts"][0]
     assert pair["relation"] == "redundancy"
     assert pair["loser_hint"] in (a, b)            # a directional retire candidate
-    assert "hive_supersede" in pair["note"]         # the human resolution path is named
+    assert "hive_supersede" in pair["note"]         # the resolution path is named
 
 
 # ── Law 4: conflicts carries IDS ONLY, never enters reference_context ───────────
@@ -111,40 +121,60 @@ def test_detector_fault_fails_read_closed():
     assert r["reference_context"] == [] and "conflicts" not in r
 
 
-# ── C5: the health conflict worklist (include_conflicts) ───────────────────────
-def test_health_report_surfaces_mechanical_redundancy():
+# ── C5: the health conflict worklist (include_conflicts, v3 buckets) ───────────
+def test_health_report_surfaces_mechanical_redundancy_with_repo_and_anchor():
     server, _ = _srv(enabled=True)
-    a = _write(server, "cid=7 cache evictions hurt the queue", anchor="redis.conf")["id"]
-    b = _write(server, "cid=7 queue keys must not be evicted", anchor="redis.conf")["id"]
+    a = _write(server, "cid=7 cache evictions hurt the queue",
+               anchors=_anchored("alpha", "redis.conf"))["id"]
+    b = _write(server, "cid=7 queue keys must not be evicted",
+               anchors=_anchored("alpha", "redis.conf"))["id"]
     snap = content(tool_call(server, "hive_health", {"include_conflicts": True}))
     assert "conflicts" in snap
     mech = [c for c in snap["conflicts"] if c["source"] == "mechanical"]
-    assert any({c["a_id"], c["b_id"]} == {a, b} for c in mech)
+    entry = next(c for c in mech if {c["a_id"], c["b_id"]} == {a, b})
+    # v3: every mechanical entry carries its (repo, anchor) bucket
+    assert entry["repo"] == "alpha" and entry["anchor"] == "redis.conf"
 
 
-def test_health_report_anchor_scopes_buckets():
-    # the offline report compares WITHIN an anchor bucket: same cluster but DIFFERENT
-    # anchors is NOT a mechanical conflict here (it would still surface at recall time).
+def test_health_report_buckets_by_repo_and_anchor():
+    # the offline report compares WITHIN a (repo, anchor) BINDING bucket: the same
+    # cluster under DIFFERENT anchors — or the SAME anchor split across two repos —
+    # is NOT a mechanical conflict here (it still surfaces at recall time).
     server, _ = _srv(enabled=True)
-    _write(server, "cid=8 first about deploys", anchor="deploy.py")
-    _write(server, "cid=8 second about deploys", anchor="ci.yml")
+    _write(server, "cid=8 first about deploys", anchors=_anchored("alpha", "deploy.py"))
+    _write(server, "cid=8 second about deploys", anchors=_anchored("alpha", "ci.yml"))
+    _write(server, "cid=22 do vendor the schema file", polarity="do",
+           anchors=_anchored("alpha", "pkg/schema.py::load"))
+    _write(server, "cid=22 dont vendor the schema file", polarity="dont",
+           anchors=_anchored("beta", "pkg/schema.py::load"))
     snap = content(tool_call(server, "hive_health", {"include_conflicts": True}))
     mech = [c for c in snap.get("conflicts", []) if c["source"] == "mechanical"]
-    assert mech == []                                # different anchors ⇒ different buckets
+    assert mech == [], (
+        "different anchors / different repos ⇒ different buckets ⇒ no entry")
+
+
+def test_health_unanchored_near_dups_share_the_general_bucket():
+    server, _ = _srv(enabled=True)
+    a = _write(server, "cid=16 general near dup one")["id"]
+    b = _write(server, "cid=16 general near dup two")["id"]
+    snap = content(tool_call(server, "hive_health", {"include_conflicts": True}))
+    mech = [c for c in snap["conflicts"] if c["source"] == "mechanical"]
+    entry = next(c for c in mech if {c["a_id"], c["b_id"]} == {a, b})
+    assert entry["repo"] == "" and entry["anchor"] == ""
 
 
 def test_health_conflicts_absent_unless_requested():
     server, _ = _srv(enabled=True)
-    _write(server, "cid=9 a memory", anchor="x.py")
-    _write(server, "cid=9 another memory", anchor="x.py")
+    _write(server, "cid=9 a memory", anchors=_anchored("alpha", "x.py"))
+    _write(server, "cid=9 another memory", anchors=_anchored("alpha", "x.py"))
     snap = content(tool_call(server, "hive_health", {}))   # no include_conflicts
     assert "conflicts" not in snap                          # ← drop the gate ⇒ this REDs
 
 
 def test_health_conflicts_absent_when_disabled():
     server, _ = _srv(enabled=False)
-    _write(server, "cid=10 a memory", anchor="x.py")
-    _write(server, "cid=10 another memory", anchor="x.py")
+    _write(server, "cid=10 a memory", anchors=_anchored("alpha", "x.py"))
+    _write(server, "cid=10 another memory", anchors=_anchored("alpha", "x.py"))
     snap = content(tool_call(server, "hive_health", {"include_conflicts": True}))
     assert "conflicts" not in snap                          # OFF ⇒ byte-inert
 
@@ -152,8 +182,8 @@ def test_health_conflicts_absent_when_disabled():
 def test_health_report_merges_open_advisory_flag():
     server, _ = _srv(enabled=True)
     # two DISTINCT-cluster memories (no mechanical near-dup) flagged advisory by an agent
-    a = _write(server, "cid=11 deploy uses make", anchor="deploy.py")["id"]
-    b = _write(server, "cid=12 deploy uses ship.sh", anchor="release.md")["id"]
+    a = _write(server, "cid=11 deploy uses make", anchors=_anchored("alpha", "deploy.py"))["id"]
+    b = _write(server, "cid=12 deploy uses ship.sh", anchors=_anchored("alpha", "release.md"))["id"]
     lo, hi = sorted((a, b))
     server.store.record_conflict_flag(kind="conflict", a_id=lo, b_id=hi, winner_id=None,
                                       resolution="agent thinks these disagree",
@@ -164,14 +194,15 @@ def test_health_report_merges_open_advisory_flag():
 
 
 def test_advisory_flag_autoclears_when_episode_retired():
-    server, _ = _srv(enabled=True)
-    a = _write(server, "cid=13 alpha", anchor="a.py")["id"]
-    b = _write(server, "cid=14 beta", anchor="b.py")["id"]
+    server, clock = _srv(enabled=True)
+    a = _write(server, "cid=13 alpha", anchors=_anchored("alpha", "a.py"))["id"]
+    b = _write(server, "cid=14 beta", anchors=_anchored("alpha", "b.py"))["id"]
     lo, hi = sorted((a, b))
     server.store.record_conflict_flag(kind="supersedes", a_id=lo, b_id=hi, winner_id=hi,
                                       resolution="", proposed_by="agent-A", ts=1)
-    # retire one side → the flag must drop off the worklist (read-time servable-both filter)
-    tool_call(server, "hive_supersede", {"loser": a, "winner": b, "approved_by": "human"})
+    # retire one side → the flag must drop off the worklist (read-time servable-both
+    # filter). Store-level retire: the read-side auto-clear is what is under test.
+    assert server.store.supersede(a, b, actor="test", ts=int(clock.now()))
     snap = content(tool_call(server, "hive_health", {"include_conflicts": True}))
     adv = [c for c in snap.get("conflicts", []) if c["source"] == "advisory"]
     assert adv == []                                       # auto-cleared (no status flip needed)
@@ -179,8 +210,8 @@ def test_advisory_flag_autoclears_when_episode_retired():
 
 def test_health_report_fail_open_returns_empty_conflicts():
     server, _ = _srv(enabled=True)
-    _write(server, "cid=15 a", anchor="z.py")
-    _write(server, "cid=15 b", anchor="z.py")
+    _write(server, "cid=15 a", anchors=_anchored("alpha", "z.py"))
+    _write(server, "cid=15 b", anchors=_anchored("alpha", "z.py"))
 
     def _boom(*a, **k):
         raise RuntimeError("scan exploded")

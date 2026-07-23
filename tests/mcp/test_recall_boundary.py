@@ -65,10 +65,10 @@ def test_recall_filters_to_approved_only():
     an empty post-belt set is an ABSTAIN, never a confident-empty. Deleting the
     belt guard surfaces the pending row ⇒ this assertion fails (mutation #2)."""
     server, _ = build_real_server()
-    # a genuine PENDING row via the store substrate (the tool path always approves now);
-    # the belt must still drop a non-approved candidate the stub recall surfaces.
+    # a genuine PENDING row via the store substrate (the tool path always materializes);
+    # the belt must still drop a non-materialized candidate the stub recall surfaces.
     eid, _ = server.store.stage(text="staged but NOT approved", weight=1.0,
-                                tags="", proposed_by="x")
+                                proposed_by="x")
     server.recall = _StubRecall(_confident(eid, "staged but NOT approved"))
     env = content(tool_call(server, "hive_recall", {"query": "q"}))
     assert env["reference_context"] == []                  # pending row filtered out
@@ -95,13 +95,15 @@ def test_recall_framed_as_reference_context_not_instructions():
     assert "instructions" not in env and "command" not in env
     assert env["abstained"] is False
     hit = env["reference_context"][0]
-    # trust + ts are the additive lifecycle labels (consumers discount provisional
-    # content and order coexisting versions by them); polarity (do|dont|neutral), kind
-    # (its category), and anchor (the WHERE) are the carried-not-interpreted labels.
+    # trust + ts are the lifecycle labels (consumers discount provisional content and
+    # order coexisting versions by them); polarity/kind are carried-not-interpreted;
+    # repos/anchors/drift are the v3 §3.4 scope + staleness carriers on EVERY hit.
     assert set(hit) == {"episode_id", "text", "sim", "trust", "ts", "polarity",
-                        "kind", "anchor"}
+                        "kind", "repos", "anchors", "drift"}
     assert hit["polarity"] == "neutral"             # defaults when unset on write
-    assert hit["kind"] == "note" and hit["anchor"] == ""
+    assert hit["kind"] == "note"
+    assert hit["repos"] == [] and hit["anchors"] == []
+    assert hit["drift"] == {"type": "n/a", "detail": {"per_anchor": []}}
 
 
 def test_recall_trace_id_present_on_hit_and_abstain():

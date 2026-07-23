@@ -85,12 +85,12 @@ def build_acc(embedder, *, db_path: str = ":memory:", clock=None,
 
 
 def seed_corpus(container, texts=CORPUS) -> list[int]:
-    """Write every text (client-gated: each lands APPROVED in one call) and return the
-    approved episode ids (corpus index → eid). Rebuilds the warm index so the rows are
-    immediately recallable."""
+    """Write every text (v3: each lands trust=provisional, servable NOW, in one call)
+    and return the episode ids (corpus index → eid). Rebuilds the warm index so the
+    rows are immediately recallable."""
     eids: list[int] = []
     for t in texts:
-        res = container.admission.write(t, proposed_by="seed", approved_by="curator")
+        res = container.admission.write(t, proposed_by="seed")
         eids.append(res.episode_id)
     container.build_index()
     return eids

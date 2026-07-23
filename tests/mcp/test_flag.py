@@ -5,7 +5,6 @@ resolution is secret-scanned."""
 from __future__ import annotations
 
 from hive.app.config import ConflictConfig
-from hive.app.onboard_ref import CONTRACT_VERSION
 from tests.mcp._helpers import build_real_server, content, is_error, tool_call, write_text
 
 _AKIA = "AKIAIOSFODNN7EXAMPLE"
@@ -72,12 +71,13 @@ def test_flag_disabled_returns_disabled_when_feature_off():
     a = write_text(server, "alpha")["id"]
     b = write_text(server, "beta")["id"]
     out = content(tool_call(server, "hive_flag", {"a": a, "b": b, "kind": "conflict"}))
-    assert out == {"status": "disabled", "contract_version": CONTRACT_VERSION}
+    assert out == {"status": "disabled"}      # v3: no beacon key exists
 
 
 def test_flag_never_retires_either_episode():
     # the load-bearing guarantee at the tool boundary: a supersedes-flag records an advisory
-    # note but leaves BOTH episodes fully servable (resolution is the human hive_supersede).
+    # note but leaves BOTH episodes fully servable (resolution stays the machine-gated
+    # hive_supersede — and a flag NEVER qualifies that gate).
     server, _ = _on()
     a, b = _two(server)
     out = content(tool_call(server, "hive_flag",
@@ -86,7 +86,7 @@ def test_flag_never_retires_either_episode():
     assert out["status"] == "flagged"
     for eid in (a, b):
         ep = server.store.get_episode(eid)
-        assert ep.trust == "established" and ep.superseded_by is None
+        assert ep.trust == "provisional" and ep.superseded_by is None
     # and it is still recallable (nothing retired)
     r = content(tool_call(server, "hive_recall", {"query": "deploy uses make deploy"}))
     assert any(h["episode_id"] == a for h in r["reference_context"])

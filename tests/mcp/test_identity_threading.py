@@ -14,10 +14,9 @@ from hive.app.mcp_server import MCPRequest, ServerIdentity
 from tests.mcp._helpers import build_real_server, content
 
 
-def _write_req(text: str, approved_by: str = "user") -> MCPRequest:
+def _write_req(text: str) -> MCPRequest:
     return MCPRequest(1, "tools/call",
-                      {"name": "hive_write",
-                       "arguments": {"text": text, "approved_by": approved_by}})
+                      {"name": "hive_write", "arguments": {"text": text}})
 
 
 def test_write_attributes_proposed_by_to_passed_identity():

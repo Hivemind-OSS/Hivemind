@@ -19,12 +19,12 @@ def _srv(*, n_eff_frac_max=0.5, top_n=10):
     return build_real_server(d=D, suspect_consensus=sc)
 
 
-def _seed_provisional(server, clock, text, *, rho_bar, n_eff, k, anchor=""):
-    """Write a memory (lands established), flip it to provisional, and stamp a promote
-    audit carrying demand_independence — a servable provisional with known thin/independent
+def _seed_provisional(server, clock, text, *, rho_bar, n_eff, k):
+    """Write a memory (v3: lands provisional directly) and stamp a promote audit
+    carrying demand_independence — a servable provisional with known thin/independent
     demand, exactly the row the worklist reads."""
-    eid = write_text(server, text, anchor=anchor)["id"]
-    assert server.store.set_trust(eid, "provisional", now=int(clock.now()))
+    eid = write_text(server, text)["id"]
+    assert server.store.get_episode(eid).trust == "provisional"
     server.store.insert_audit(eid, "promote", "server", int(clock.now()), json.dumps({
         "rule": "demand", "n_misses": k,
         "demand_independence": {"rho_bar": rho_bar, "n_eff": n_eff, "k": k}}))
@@ -54,7 +54,7 @@ def test_bare_server_surfaces_worklist_when_requested():
 def test_surfaces_thin_provisional_ids_only():
     server, clock = _srv()
     eid = _seed_provisional(server, clock, "popular but correlated insight",
-                            rho_bar=0.95, n_eff=1.0, k=4, anchor="hot.py")
+                            rho_bar=0.95, n_eff=1.0, k=4)
     snap = content(tool_call(server, "hive_health", {"include_suspect_consensus": True}))
     assert "suspect_consensus" in snap
     work = snap["suspect_consensus"]
@@ -98,10 +98,11 @@ def test_fully_independent_provisional_not_flagged():
 
 
 def test_established_promotion_not_in_worklist():
-    # the worklist runs on PROVISIONAL only — an established (human-vouched) memory with a
-    # stamped audit is never surfaced (it left the demand-promoted population).
+    # the worklist runs on PROVISIONAL only — an established (outcome-verified) memory
+    # with a stamped audit is never surfaced (it left the demand-promoted population).
     server, clock = _srv()
-    eid = write_text(server, "human vouched fact")["id"]     # established by write
+    eid = write_text(server, "an outcome-verified fact")["id"]
+    assert server.store.set_trust(eid, "established", now=int(clock.now()))
     server.store.insert_audit(eid, "promote", "server", int(clock.now()), json.dumps({
         "rule": "demand", "n_misses": 4,
         "demand_independence": {"rho_bar": 0.95, "n_eff": 1.0, "k": 4}}))
