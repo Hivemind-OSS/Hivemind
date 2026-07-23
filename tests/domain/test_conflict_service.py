@@ -136,12 +136,12 @@ def test_flag_never_retires_episode_state_unchanged():
     conn = connect(":memory:")
     store = SqliteEpisodeStore(conn, index=ExhaustiveCosineIndex(4))
     vec = np.eye(4, dtype=np.float32)[0]
-    a, _ = store.stage(text="A: deploy with make", weight=1.0, tags="",
-                       proposed_by="w")
-    store.approve(a, "human", vec, expected_version=0, approved_ts=10)
-    b, _ = store.stage(text="B: deploy with ship.sh", weight=1.0, tags="",
-                       proposed_by="w")
-    store.approve(b, "human", vec, expected_version=0, approved_ts=10)
+    a, _ = store.stage(text="A: deploy with make", weight=1.0, proposed_by="w")
+    store.complete(a, vec, expected_version=0, trust="established",
+                   last_active_ts=10)
+    b, _ = store.stage(text="B: deploy with ship.sh", weight=1.0, proposed_by="w")
+    store.complete(b, vec, expected_version=0, trust="established",
+                   last_active_ts=10)
 
     # tripwire: if the service ever reaches for retirement, this raises
     def _boom(*a, **k):

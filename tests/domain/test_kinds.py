@@ -1,10 +1,10 @@
 """The kind registry is the single source for the structured-memory vocabulary; these pin
-its shape so the projections (tool_defs enum, onboard_ref prose, store CHECK, models
+its shape so the projections (tool_defs enum + glosses, store CHECK, models
 validation) cannot silently lose a kind or a required field."""
 from __future__ import annotations
 
 from hive.domain.kinds import (
-    DEFAULT_KIND, KINDS, KIND_NAMES, QUERY_GUIDANCE, render_taxonomy,
+    DEFAULT_KIND, KINDS, KIND_NAMES, QUERY_GUIDANCE,
 )
 
 _POLARITIES = {"do", "dont", "neutral"}
@@ -31,14 +31,6 @@ def test_every_kind_has_gloss_template_and_valid_default_polarity():
         assert spec["gloss"], f"{name} missing gloss"
         assert spec["template"], f"{name} missing template"
         assert spec["default_polarity"] in _POLARITIES, f"{name} bad default_polarity"
-
-
-def test_render_taxonomy_names_every_kind_and_both_rules():
-    rendered = render_taxonomy()
-    for name in KIND_NAMES:
-        assert name in rendered, f"{name} dropped from served taxonomy"
-    assert "POLAR LANGUAGE:" in rendered
-    assert "DENSITY:" in rendered
 
 
 def test_query_guidance_warns_about_abstention():

@@ -154,7 +154,7 @@ def test_never_verified_hit_carries_no_remediation_rider():
     assert "remediation" not in hit
 
 
-# ── canonical-ref rider scoping (HIVE_CENSUS__CANONICAL_REF → the recall rider) ──
+# ── canonical-ref rider scoping (the server's canonical_ref → the recall rider) ──
 def _reffed_payload(head_sha: str, ref: str | None) -> str:
     body = json.loads(_verify_payload(head_sha))
     if ref is not None:

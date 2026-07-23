@@ -2,9 +2,9 @@
 
 PURE DATA: this module imports nothing (the purity gate forbids sqlite3|torch|subprocess|
 os|git|time anywhere in hive/domain/; pure constants are fine). Every surface that needs the
-vocabulary PROJECTS from here — tool_defs builds the ``kind`` enum, onboard_ref renders the
-served prose, the store builds its CHECK clause, models/admission validate against
-``KIND_NAMES`` — so the advertised, enforced, served, and stored copies cannot drift.
+vocabulary PROJECTS from here — tool_defs builds the ``kind`` enum + glosses, the store
+builds its CHECK clause, models/admission validate against ``KIND_NAMES`` — so the
+advertised, enforced, and stored copies cannot drift.
 
 Two orthogonal axes carry a memory's structure (both carried-not-interpreted labels that
 ride every recall hit, neither embedded): ``kind`` (here) = the category of knowledge;
@@ -20,8 +20,8 @@ from __future__ import annotations
 DEFAULT_KIND = "note"
 
 # kind -> {gloss, default_polarity, template}. ``gloss`` = the one-line "question it answers"
-# (the compact call-adjacent guidance); ``template`` = the body shape an agent fills (the
-# served reference); ``default_polarity`` = the valence the kind usually carries.
+# (the compact call-adjacent guidance); ``template`` = the body shape an agent fills;
+# ``default_polarity`` = the valence the kind usually carries.
 KINDS: dict[str, dict[str, str]] = {
     "bug": {
         "gloss": "a defect — what broke / is broken, why, and the fix or workaround",
@@ -69,21 +69,6 @@ KINDS: dict[str, dict[str, str]] = {
 # The single membership set every enforcer reads (tool schema enum, DDL CHECK, __post_init__).
 KIND_NAMES: frozenset[str] = frozenset(KINDS)
 
-POLAR_LANGUAGE_RULE = (
-    "Use hard, unambiguous polar language so a reader separates directive from context by "
-    "verb class alone: positive = do/always/use/prefer/apply; negative = don't/never/avoid; "
-    "strictly neutral = is/exists/lives in/relates to (no action verb). Condition directives "
-    "with neutral context, condition first: 'In <context>, always <directive>.' Set polarity "
-    "to the primary valence; neutral means the memory prescribes no action."
-)
-
-DENSITY_RULE = (
-    "Write one sharp, self-contained fact: WHAT + WHERE (file/module/symbol) + WHY (the "
-    "non-obvious bit). Be dense and specific (name the symbol/error/condition); do NOT pad or "
-    "repeat boilerplate -- shared scaffolding and verbosity flatten the embeddings and make "
-    "recall abstain. One sharp fact beats a paragraph."
-)
-
 QUERY_GUIDANCE = (
     "Writing a hive_recall query: search the CONTENT, not the label -- recall matches your "
     "query against the stored body (kind/anchor are NOT embedded), so 'bug' will not surface "
@@ -96,17 +81,3 @@ QUERY_GUIDANCE = (
     "reference; empty = no confident match, so proceed, never invent. Honor each hit's "
     "polarity (never follow a 'dont' as a 'do'), kind, and anchor."
 )
-
-
-def render_taxonomy() -> str:
-    """Assemble the served write-side discipline (the kinds + their body templates + the polar
-    and density rules) from ``KINDS``, so every served surface reads ONE renderer and cannot
-    drift from the enforced enum."""
-    lines = ["WHAT TO CAPTURE — pick a kind (it rides every recall hit; it is NOT a recall filter):"]
-    for name, spec in KINDS.items():
-        lines.append(f"- {name}: {spec['gloss']}")
-        lines.append(f"    body: {spec['template']}")
-    lines.append("")
-    lines.append("POLAR LANGUAGE: " + POLAR_LANGUAGE_RULE)
-    lines.append("DENSITY: " + DENSITY_RULE)
-    return "\n".join(lines)

@@ -44,11 +44,10 @@ def _trends(s, now=NOW):
     return compute_trends(s, _clusterer, now=now)
 
 
-def _episode(s, text, *, ts, approver=None, vec=U) -> int:
-    eid, _ = s.stage(text=text, weight=1.0, tags="",
-                     proposed_by="writer", ts=ts)
+def _episode(s, text, *, ts, vec=U) -> int:
+    eid, _ = s.stage(text=text, weight=1.0, proposed_by="writer", ts=ts)
     assert s.complete(eid, vec, expected_version=0, trust="established",
-                      approver=approver, approved_ts=ts, last_active_ts=ts)
+                      last_active_ts=ts)
     return eid
 
 
@@ -125,8 +124,8 @@ def test_rates_zero_safe():
 
 def test_confident_rate_and_miss_counts():
     s = _store()
-    eid = _episode(s, "x" * 40, ts=NOW - 5 * DAY, approver="h")
-    cap = _episode(s, "captured row", ts=NOW - 5 * DAY)       # approver=None ⇒ capture
+    eid = _episode(s, "x" * 40, ts=NOW - 5 * DAY)
+    cap = _episode(s, "captured row", ts=NOW - 5 * DAY)
     # two confident recalls (distinct traces), one of them serving both rows
     s.record_exposure("t-1", [(eid, 0.5)], agent_id="a", ts=NOW - 4 * DAY)
     s.record_exposure("t-2", [(eid, 0.5), (cap, 0.4)], agent_id="b", ts=NOW - 3 * DAY)

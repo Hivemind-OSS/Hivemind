@@ -133,8 +133,8 @@ def test_config_invalid_detail_scrubs_credential_values():
     env = {"HIVE_SYNC__TOKEN": "sekrit-value", "HIVE_SYNC__WEBHOOK_SECRET": "hook-value"}
     assert (E._scrub_secret_values("boom sekrit-value and hook-value end", env)
             == "boom *** and *** end")
-    assert (E._scrub_secret_values("set HIVE_SYNC__REPO_URL or unset HIVE_SYNC__TOKEN", env)
-            == "set HIVE_SYNC__REPO_URL or unset HIVE_SYNC__TOKEN")
+    assert (E._scrub_secret_values("set HIVE_SYNC__WEBHOOK_SECRET or unset HIVE_SYNC__TOKEN", env)
+            == "set HIVE_SYNC__WEBHOOK_SECRET or unset HIVE_SYNC__TOKEN")
     assert E._scrub_secret_values("unchanged", {}) == "unchanged"
 
 

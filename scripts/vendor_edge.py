@@ -12,9 +12,6 @@ Post-conditions enforced before it exits 0:
   * the three wheel versions are IDENTICAL — the hive-edge workspace ships ONE
     lockstep version across all its distributions, so a half-bumped workspace
     is refused here before it can reach the committed wheelhouse;
-  * the hive_edge wheel's version satisfies the MIN_EDGE_VERSION floor the
-    server serves to agents (hive/app/onboard_ref.py) — the server's own mint
-    tooling may never lag the floor it tells the fleet to meet;
   * the [tool.uv.sources] wheel-path pins in pyproject.toml are rewritten to
     the freshly built filenames and `uv lock` re-resolves — wheelhouse,
     pyproject, and lockfile leave this script coherent as one unit.
@@ -32,7 +29,6 @@ from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[1]
 WHEELHOUSE = REPO / "vendor" / "wheels"
-ONBOARD_REF = REPO / "hive" / "app" / "onboard_ref.py"
 
 # workspace-relative source dirs, keyed by the wheel's normalized dist prefix
 MEMBERS = {
@@ -44,19 +40,6 @@ MEMBERS = {
 
 def _die(msg: str) -> "NoReturn":  # noqa: F821 — py<3.11 spelling unneeded; runtime is 3.12
     sys.exit(f"vendor_edge: {msg}")
-
-
-def _version_tuple(version: str) -> tuple[int, ...]:
-    if not re.fullmatch(r"\d+(\.\d+)*", version):
-        _die(f"non-release version {version!r} — vendor only clean X.Y.Z builds")
-    return tuple(int(p) for p in version.split("."))
-
-
-def _min_edge_version() -> tuple[int, ...]:
-    m = re.search(r'MIN_EDGE_VERSION:\s*str\s*=\s*"([^"]+)"', ONBOARD_REF.read_text())
-    if m is None:
-        _die(f"MIN_EDGE_VERSION not found in {ONBOARD_REF}")
-    return _version_tuple(m.group(1))
 
 
 def _repin_uv_sources(wheels: dict[str, str]) -> None:
@@ -114,11 +97,6 @@ def main(argv: list[str] | None = None) -> None:
              + ", ".join(f"{dist} {version}" for dist, version in sorted(built.items()))
              + " — the hive-edge workspace ships ONE lockstep version; "
              "bump every member to the same version, then re-run")
-
-    floor = _min_edge_version()
-    if _version_tuple(built["hive_edge"]) < floor:
-        _die(f"hive_edge wheel {built['hive_edge']} is below the served MIN_EDGE_VERSION "
-             f"floor {'.'.join(map(str, floor))} — bump hive-edge (or the floor) first")
 
     _repin_uv_sources(built)
     subprocess.run(["uv", "lock"], cwd=REPO, check=True)
