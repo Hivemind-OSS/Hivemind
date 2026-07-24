@@ -552,6 +552,23 @@ All notable changes to this project are documented here.
   transitive packages.
 
 ## Fixed
+- A dead sync daemon now says so. `hive_health(include_census_health=true)` returned a bare
+  `{repo_name: block}` map, so a fault in the tick *shell* — the registry read failing, anything
+  escaping a whole tick, a mirror prune stuck under a deregistered name — had nowhere to surface:
+  it was recorded on a fleet-wide key nothing read. Worse, that fault returns from the tick before
+  any repo is reached, so no per-repo key is written *or cleared* and every block keeps its
+  last-healthy `tracked_ref` and `last_tip` with a null `last_error` — the exact shape the connect
+  runbook calls a PASS. The daemon could be down for a week with every registered repo dark while
+  health reported N healthy repos and the store held the diagnosis the whole time. The report is
+  now `{"repos": {…}, "fleet": {…}}`: the fleet slot carries the daemon's own `last_sync_ts` and
+  `last_error`, always present, each field null exactly when its meta is genuinely absent. It had
+  to be a sibling slot rather than a reserved key inside the map, because the registry slug gate
+  admits `_fleet`, `daemon` and `sync` as legal repo names that would collide with it. The two
+  legs are independent and both fail open, so a registry fault empties `repos` while `fleet` still
+  serves the fault that emptied it. The fleet field set comes from the same key grammar as the
+  per-repo one, and a static test now walks the daemon's AST to assert each fleet field's key
+  reaches a real store write — a permanently-null field there would read as "the daemon has never
+  faulted." The connect, operate and upgrade runbooks now diagnose the daemon before the repo.
 - Deregistering a repo now forgets its feed state. `repo_remove` deleted only the registry row,
   leaving every `sync:<name>:*` key behind, so re-registering the same name — a flow the connect
   runbook explicitly recommends — served a fully-populated health block from the previous

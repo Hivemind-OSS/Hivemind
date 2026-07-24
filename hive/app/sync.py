@@ -93,6 +93,8 @@ from hive.app.drift import DRIFT_UNVERIFIABLE, wire_verdict
 from hive.app.sync_keys import (
     backfilled_total_key,
     canonical_tip_key,
+    fleet_last_error_key,
+    fleet_last_sync_ts_key,
     last_error_key,
     last_sync_ts_key,
     tracked_ref_key,
@@ -102,16 +104,10 @@ from hive.domain.meta import token_version
 
 _log = logging.getLogger("hive.sync")
 
-META_LAST_ERROR = (
-    "sync:last_error"  # tick-SHELL faults only (per-repo faults ride their own key)
-)
-META_LAST_SYNC_TS = (
-    "sync:last_sync_ts"  # ts of the last fault-free tick (via the now seam)
-)
-# Per-repo keys (the served surface) live in hive.app.sync_keys — the ONE grammar this
-# daemon writes and census_health reads. The two globals above are the tick SHELL's own
-# fleet-wide surface: no repo is in scope when they are stamped, so neither belongs to
-# a per-repo block.
+# EVERY key this daemon writes comes from hive.app.sync_keys — the ONE grammar
+# census_health reads back. Two namespaces: the per-repo builders (`sync:<repo>:<field>`)
+# and the 2-part tick-SHELL fleet builders (`sync:<field>`), stamped with no repo in
+# scope and served in the report's own `fleet` block rather than any repo's.
 _DEFAULT_MIRROR_DIR = "/data/sync/mirror"  # the base dir; mirrors live at <base>/<name>
 _DEFAULT_TOKEN_ENV = "HIVE_SYNC__TOKEN"  # the fleet-default credential var (D2)
 # The registry name grammar (store_sqlite.repo_add's gate, mirrored): only names
@@ -300,7 +296,7 @@ class SyncService:
                 # marker: stamping this on a faulted tick reds
                 # test_repo_fault_does_not_advance_last_sync_ts — a fault anywhere
                 # means the sync did NOT complete, and the timestamp must not lie.
-                self._store.meta_set(META_LAST_SYNC_TS, str(self._now()))
+                self._store.meta_set(fleet_last_sync_ts_key(), str(self._now()))
 
     def _repo_fanout(self, rows: Sequence[_RegistryRow]) -> bool:
         """Tick every repo CONCURRENTLY, ``cfg.workers`` at a time. Opt-in only:
@@ -926,12 +922,15 @@ class SyncService:
 
     def _note_error(self, leg: str, exc: BaseException) -> None:
         """Fail-open surfacing for tick-SHELL faults (no repo in scope): logged and
-        recorded under the global ``sync:last_error`` — never raised past the tick."""
+        recorded under the fleet ``sync:last_error`` — never raised past the tick.
+        That key is SERVED, in the health report's ``fleet`` block: a registry read
+        that fails returns before any per-repo key is written or cleared, so this is
+        the ONLY in-band statement that the daemon is down (BUG-062)."""
         message = f"{leg}: {type(exc).__name__}: {exc}"[:500]
         _log.warning("sync.tick_failed leg=%s error=%s", leg, message)
         try:
             with self._lock:
-                self._store.meta_set(META_LAST_ERROR, message)
+                self._store.meta_set(fleet_last_error_key(), message)
         except Exception:  # noqa: BLE001 — surfacing must never become the fault
             _log.warning("sync.last_error_write_failed leg=%s", leg)
 

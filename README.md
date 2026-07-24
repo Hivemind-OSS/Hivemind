@@ -32,7 +32,7 @@ A connected agent gets exactly eight tools:
 | `hive_prune(episode_id)` | Retire an incorrect or misleading memory with no replacement (it stays in the audit ledger) — machine-gated, same rule. |
 | `hive_flag(a, b, kind)` | Advisory only: record that two memories conflict or one supersedes the other. Retires nothing and never qualifies the retirement gate. |
 | `hive_outcome(helped=[…], hurt=[…])` | Log which recalled memories helped or hurt the task; evidence only. Helped rows fuel promotion; hurt rows feed the machine retirement gate. |
-| `hive_health(...)` | Liveness/identity snapshot; `include_trends=true` adds convergence KPIs, `include_gaps=true` the demand-gap report, `include_conflicts=true` the contested-memory worklist; further flags: `include_suspect_consensus`, `include_stale_suspects` (graph-propagated staleness), `include_census_health` (per-repo census/sync state), `include_meta_versions`. |
+| `hive_health(...)` | Liveness/identity snapshot; `include_trends=true` adds convergence KPIs, `include_gaps=true` the demand-gap report, `include_conflicts=true` the contested-memory worklist; further flags: `include_suspect_consensus`, `include_stale_suspects` (graph-propagated staleness), `include_census_health` (per-repo census/sync state + the sync daemon's own `fleet` block), `include_meta_versions`. |
 
 ## Requirements
 

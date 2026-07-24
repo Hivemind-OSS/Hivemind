@@ -1,10 +1,10 @@
 """CT-13 — health worklists in the v3 shape (plan §4 intent 13, §6 step 4).
 
-``hive_health(include_*)``: census_health becomes PER-REPO blocks keyed by
-registry name; conflicts bucket by (repo, anchor) and carry their repo; the
-suspect-consensus / stale-suspects / gaps / trends worklists still serve; miss
-scope rides the gap report; every probe stays fail-open ([]/{} — never a broken
-health).
+``hive_health(include_*)``: census_health serves ``{"repos": per-repo blocks keyed by
+registry name, "fleet": the sync daemon's own state}``; conflicts bucket by (repo,
+anchor) and carry their repo; the suspect-consensus / stale-suspects / gaps / trends
+worklists still serve; miss scope rides the gap report; every probe stays fail-open
+([]/{} — never a broken health).
 """
 
 from __future__ import annotations
@@ -44,28 +44,40 @@ def test_flags_stay_byte_inert_when_unset(rig):
         assert key not in env, f"{key!r} must not serve without its flag"
 
 
-def test_census_health_is_per_repo_blocks(rig):
+def test_census_health_is_per_repo_blocks_beside_a_fleet_block(rig):
     register_repo(rig.store, "alpha", "https://example.invalid/alpha.git")
     register_repo(rig.store, "beta", "https://example.invalid/beta.git")
     env = _health(rig, include_census_health=True)
     block = env.get("census_health")
-    assert isinstance(block, dict), f"census_health serves per-repo blocks: {block}"
-    assert set(block) == {"alpha", "beta"}, (
-        f"one block per REGISTERED repo, keyed by name: {sorted(block)}"
+    assert isinstance(block, dict), f"census_health serves two slots: {block}"
+    assert set(block) == {"repos", "fleet"}, (
+        f"per-repo blocks and the daemon's own state get separate homes — every key "
+        f"of the repo map is a repo name, so a fleet fact has nowhere else: "
+        f"{sorted(block)}"
     )
-    for name, sub in block.items():
+    repos = block["repos"]
+    assert set(repos) == {"alpha", "beta"}, (
+        f"one block per REGISTERED repo, keyed by name: {sorted(repos)}"
+    )
+    for name, sub in repos.items():
         assert isinstance(sub, dict), f"{name} block is a dict: {sub}"
-    assert "days_since_last_change_outcome" not in block, (
+    assert "days_since_last_change_outcome" not in repos, (
         "the flat single-repo shape is gone"
+    )
+    assert set(block["fleet"]) == {"last_sync_ts", "last_error"}, (
+        f"the fleet block states the tick shell's own health: {block['fleet']}"
     )
 
 
 def test_census_health_empty_registry_block(rig):
     env = _health(rig, include_census_health=True)
     block = env.get("census_health")
-    assert block == {}, (
-        f"an EMPTY registry serves an empty per-repo block (never the old flat "
-        f"shape): {block}"
+    assert block == {
+        "repos": {},
+        "fleet": {"last_sync_ts": None, "last_error": None},
+    }, (
+        f"an EMPTY registry serves an empty per-repo map; the fleet block still "
+        f"answers, null where its meta is genuinely absent: {block}"
     )
 
 

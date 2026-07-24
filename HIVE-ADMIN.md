@@ -205,8 +205,8 @@ mirror, credential, and error key, so they are isolated by construction).
 
 No compose change is needed: knobs ride `.env`, the registry rides the store, and the mirrors
 live in the existing volume. Watch the feed via `hive_health(include_census_health=true)` — a
-per-repo census/sync block (§6). Arm and test a repo with the runnable **`hive-connect-repo`**
-skill (`skills/hive-connect-repo/SKILL.md`).
+per-repo census/sync block plus the daemon's own `fleet` block (§6). Arm and test a repo with the
+runnable **`hive-connect-repo`** skill (`skills/hive-connect-repo/SKILL.md`).
 
 **Fixed by the image (not runtime knobs).** The embedder is **Qwen3-Embedding-0.6B**, baked in at
 build and run fully offline (`HF_HUB_OFFLINE=1`) — it emits a native 1024-dim vector and there is no
@@ -256,7 +256,7 @@ fail-open rot:
 | `hive_health(include_conflicts=true)` | near-duplicate / contradicting memories + agent advisories, bucketed by repo and anchor | `hive_supersede` |
 | `hive_health(include_suspect_consensus=true)` | provisionals promoted on thin effective independence | re-examine / retire |
 | `hive_health(include_stale_suspects=true)` | servable memories whose anchor sat in the blast radius of a breaking change | re-verify against the code, then `hive_supersede` / `hive_prune` |
-| `hive_health(include_census_health=true)` | per-repo census/sync block for every registered repo — days since the last `change_outcome`, sync state (`tracked_ref`, `last_tip`, `last_sync_ts`, `last_error`, `backfilled_total`; a dark feed reads null) | check the registry row / remote reachability (§4) |
+| `hive_health(include_census_health=true)` | `repos`: per registered repo — days since the last `change_outcome`, sync state (`tracked_ref`, `last_tip`, `last_sync_ts`, `last_error`, `backfilled_total`; a dark feed reads null). `fleet`: the sync daemon's OWN `last_sync_ts` + `last_error` | a `fleet` `last_error` (or a frozen `fleet` `last_sync_ts`) = the daemon itself is down and every repo block is a stale snapshot — read `hive logs`. Otherwise check the registry row / remote reachability (§4) |
 
 Highest-leverage operator moves: run agents as **distinct sessions** (that diversity is what
 promotes good captures); **keep the store small** — let unused memory expire rather than lengthening

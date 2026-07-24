@@ -164,10 +164,15 @@ it writes are also what the verified-promotion rung (`HIVE_AUTONOMY__VERIFIED_PR
 default on) uses to promote a quarantined memory. Every leg is fail-open per repo; a push
 webhook (`HIVE_SYNC__WEBHOOK_SECRET`, HMAC-gated on the tunnel door) only wakes the poll early —
 one nudge wakes all registered repos; the poll interval stays the correctness floor. Watch the
-feed via `hive_health(include_census_health=true)`: a per-repo block — days since the last
-`change_outcome`, plus that repo's sync state (`tracked_ref`, `last_tip`, `last_sync_ts`,
-`last_error`, `backfilled_total`, and `status: "sync stalled"` only when the feed is configured
-yet dark). The manual escape hatch
+feed via `hive_health(include_census_health=true)`, which answers in two slots: `repos` — per
+registered repo, days since the last `change_outcome` plus that repo's sync state
+(`tracked_ref`, `last_tip`, `last_sync_ts`, `last_error`, `backfilled_total`, and `status: "sync
+stalled"` only when the feed is configured yet dark) — and `fleet`, the daemon's own
+`last_sync_ts` + `last_error`. Read `fleet` first: a fault in the tick shell (the registry read,
+anything escaping a whole tick) is recorded before any repo is reached, so every repo block stays
+frozen at its last healthy values and reads as passing while the daemon is down. A `fleet`
+`last_error`, or a `fleet` `last_sync_ts` far behind now, means every repo block below it is a
+stale snapshot. The manual escape hatch
 remains `hive ingest <receipt.json>`: append a hand-built unsigned receipt's SHA-bound change
 outcome — append-only, idempotent (an exact already-ingested `(repo, base, head, phase)` range
 is skipped whole and reported `range_skipped`), trust-untouched; see

@@ -1190,11 +1190,14 @@ class HiveMCPServer:
             # config knob; dropping the request flag ⇒ always-emits mutation.
             if args.get("include_stale_suspects"):
                 snap["stale_suspects"] = self._stale_suspects_report()
-            # the passive census-feed staleness signal, v3: PER-REPO blocks keyed by
-            # registry name ({} on an empty registry). Same sole-request-flag gate, no
-            # config knob; census_health_report self-wraps fail-open, so it is called
-            # directly (no wrapper method); dropping the request flag ⇒ always-emits
-            # mutation.
+            # the passive census-feed staleness signal: {"repos": per-repo blocks keyed
+            # by registry name, "fleet": the tick shell's own state}. The fleet slot is
+            # what makes a DEAD daemon visible — its fault belongs to no repo, and no
+            # sentinel key inside the repo-keyed map could be reserved (the registry
+            # slug gate would let a real repo collide with it). Same sole-request-flag
+            # gate, no config knob; census_health_report self-wraps fail-open, so it is
+            # called directly (no wrapper method); dropping the request flag ⇒
+            # always-emits mutation.
             if args.get("include_census_health"):
                 snap["census_health"] = census_health_report(self.store)
             # the corpus token-version histogram (the meta envelope law's no-migration

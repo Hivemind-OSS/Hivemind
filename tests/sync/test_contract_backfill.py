@@ -103,7 +103,7 @@ def test_real_tick_populates_every_served_health_field(origin, store, tmp_path):
     seed_episode(store, "greet growls on empty names")  # gives the mint leg work
     _armed(origin, store, tmp_path).tick()
 
-    sync_block = census_health_report(store)[REPO]["sync"]
+    sync_block = census_health_report(store)["repos"][REPO]["sync"]
     assert sync_block["configured"] is True
     assert sync_block["tracked_ref"] == "main"
     assert sync_block["last_tip"] == origin.origin_sha("refs/heads/main")

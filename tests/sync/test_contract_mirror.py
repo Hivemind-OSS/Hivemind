@@ -12,16 +12,22 @@ the one allowed filesystem act). A DEREGISTERED repo loses its mirror on the
 next tick (BUG-050): the reconciliation prune deletes only direct, slug-named,
 non-symlink children of the configured mirrors dir, fails open per name, and
 runs BEFORE the empty-registry early-return. The credential never escapes the
-mirror's remote config — logs and the error meta are redacted.
+mirror's remote config — logs and the error meta are redacted. A fault in the
+tick SHELL itself belongs to no repo, so it rides the 2-part fleet keys and is
+SERVED in the health report's ``fleet`` block — the only in-band statement that
+the daemon is down (BUG-062).
 """
 
 from __future__ import annotations
 
 import logging
 import shutil
+import sqlite3
 import subprocess
 
-from hive.app.sync import META_LAST_ERROR, META_LAST_SYNC_TS, default_run
+from hive.app.census_health import census_health_report
+from hive.app.sync import default_run
+from hive.app.sync_keys import fleet_last_error_key, fleet_last_sync_ts_key
 
 from tests.sync.conftest import (
     Origin,
@@ -82,14 +88,14 @@ def test_unreachable_repo_fails_open_others_sync(store, tmp_path, caplog):
     assert meta(store, "sync:alpha:last_error")  # the fault under ALPHA's key
     assert meta(store, "sync:beta:last_error") is None
     assert meta(store, "sync:beta:last_tip") == healthy.origin_sha("refs/heads/main")
-    assert meta(store, META_LAST_SYNC_TS) is None  # a faulted tick never stamps
+    assert meta(store, fleet_last_sync_ts_key()) is None  # a faulted tick never stamps
     assert any("sync" in r.name for r in caplog.records)
     assert not (tmp_path / "mirrors" / "alpha").exists()
 
     late = Origin(late_root)  # the remote comes up in place
     svc.tick()  # the next tick retries alpha
     assert meta(store, "sync:alpha:last_tip") == late.origin_sha("refs/heads/main")
-    assert meta(store, META_LAST_SYNC_TS) == "31337"  # now fully clean ⇒ stamped
+    assert meta(store, fleet_last_sync_ts_key()) == "31337"  # now fully clean ⇒ stamped
 
 
 def test_absent_token_env_var_fails_that_repo_open_named(store, tmp_path, monkeypatch):
@@ -243,7 +249,7 @@ def test_empty_registry_tick_is_inert(store, tmp_path):
     svc.tick()
     assert run.calls == []  # ← cloning here is the mutation
     assert not (tmp_path / "mirrors").exists()
-    assert meta(store, META_LAST_SYNC_TS) is None
+    assert meta(store, fleet_last_sync_ts_key()) is None
 
 
 def test_deregistered_repo_mirror_pruned_next_tick(store, tmp_path):
@@ -332,12 +338,12 @@ def test_prune_fault_fails_open_tick_continues(store, tmp_path, monkeypatch, cap
     with caplog.at_level(logging.WARNING, logger="hive.sync"):
         svc.tick()  # ← raising here breaks the tick fail-open
     assert leftover.is_dir()  # the fault left it in place (next tick retries)
-    shell_error = meta(store, META_LAST_ERROR) or ""
+    shell_error = meta(store, fleet_last_error_key()) or ""
     assert "prune" in shell_error and "gone" in shell_error  # the name is still named
     assert meta(store, "sync:gone:last_error") is None  # never a blockless per-repo key
     assert meta(store, "sync:beta:last_tip") == healthy.origin_sha("refs/heads/main")
     assert meta(store, "sync:beta:last_error") is None
-    assert meta(store, META_LAST_SYNC_TS) is None  # a faulted tick never stamps
+    assert meta(store, fleet_last_sync_ts_key()) is None  # a faulted tick never stamps
     joined = "\n".join(r.getMessage() for r in caplog.records)
     assert "prune[gone]" in joined
 
@@ -351,9 +357,58 @@ def test_clean_tick_stamps_last_sync_ts_via_now_seam(origin, store, tmp_path):
     register_repo(store, "alpha", origin.url)  # once per repo AND once for the shell
     svc = make_service(store, tmp_path, now=lambda: clock[0])
     svc.tick()
-    assert meta(store, META_LAST_SYNC_TS) == "111000"  # the seam clock, not time.time()
+    assert (
+        meta(store, fleet_last_sync_ts_key()) == "111000"
+    )  # the seam clock, not time.time()
     assert meta(store, "sync:alpha:last_sync_ts") == "111000"
     clock[0] = 222_000
     svc.tick()  # nothing moved — still a clean sync
-    assert meta(store, META_LAST_SYNC_TS) == "222000"
+    assert meta(store, fleet_last_sync_ts_key()) == "222000"
     assert meta(store, "sync:alpha:last_sync_ts") == "222000"
+
+
+def test_dead_daemon_is_named_in_the_fleet_block_not_in_any_repo_block(
+    origin, store, tmp_path
+):
+    """BUG-062, the operator-visible symptom: when the tick SHELL's registry read
+    faults, ``tick()`` returns before the prune and before any repo is reached, so no
+    per-repo key is written OR cleared — every block keeps its last-healthy values and
+    reads character-for-character as the connect runbook's PASS row. Only the fleet
+    block can say the daemon is down, and it must, or a week of darkness reports N
+    healthy repos.
+
+    The registry read is broken for the DAEMON only, not for the report: that is the
+    real shape (a wedged tick against a serve path that still reads fine), and it is
+    also the only way the symptom is visible at all — a report that cannot read the
+    registry serves no repo blocks to be fooled by."""
+    register_repo(store, "alpha", origin.url)
+    svc = make_service(store, tmp_path, now=lambda: 111_000)
+    svc.tick()  # one fully-clean tick: alpha is cloned, resolved, baselined
+
+    real_registry = store.repo_registry
+    down = [True]
+
+    def flaky_registry():
+        if down[0]:
+            raise sqlite3.OperationalError("database is locked")
+        return real_registry()
+
+    store.repo_registry = flaky_registry
+    svc.tick()  # ← the whole tick dies in the shell; alpha is never touched
+    down[0] = False  # the serve path's own registry read is healthy
+
+    report = census_health_report(store)
+    block = report["repos"]["alpha"]["sync"]
+    # (a) the repo still looks entirely passing — the frozen snapshot of the last
+    # healthy tick, with no fault of its own to show
+    assert block["tracked_ref"] == "main"
+    assert block["last_tip"] == origin.origin_sha("refs/heads/main")
+    assert block["last_error"] is None
+    assert block["last_sync_ts"] == "111000"
+    # (b) …and the fleet block is where the diagnosis lives
+    fleet = report["fleet"]
+    assert fleet["last_error"].startswith("registry:")
+    assert "database is locked" in fleet["last_error"]
+    # the clean-tick stamp is withheld by the faulted tick, so it stays frozen next to
+    # the fault — "the daemon last completed a full sync at 111000, then broke"
+    assert fleet["last_sync_ts"] == "111000"

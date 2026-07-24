@@ -1,6 +1,13 @@
-"""The ONE per-repo sync meta-key grammar — the single definition shared by the daemon
-that WRITES the keys (``hive.app.sync``) and the health reader that SERVES them
-(``hive.app.census_health``).
+"""The ONE sync meta-key grammar — the single definition shared by the daemon that
+WRITES the keys (``hive.app.sync``) and the health reader that SERVES them
+(``hive.app.census_health``). TWO namespaces, one law:
+
+- ``sync:<repo>:<field>`` — the PER-REPO surface, one set of fields per registry row;
+- ``sync:<field>`` (2-part) — the tick SHELL's FLEET surface: the state of the daemon
+  itself, which belongs to no repo. It cannot be smuggled into the repo-keyed map as a
+  reserved sentinel, because the registry slug gate is ``[a-z0-9._-]+`` — ``_fleet``,
+  ``daemon`` and ``sync`` are all legal repo names an operator could register — so the
+  two namespaces get two separate homes in the served report as well.
 
 It exists because the two sides drifted apart once and nothing caught it: the reader
 carried its own string literals for the field names, so when the per-repo rewrite
@@ -9,17 +16,13 @@ string literal cannot break an import the way the shared constant it replaced wo
 have. Four of six served fields were structurally empty on a healthy feed, and an
 operator runbook keyed off one of them reported a working connection as broken.
 
-The coupling is therefore mechanical again, in both directions:
+The coupling is therefore mechanical again, in both directions and on BOTH surfaces:
 
-- every served field names its writer through ``KEY_BUILDERS`` — a field with no
-  builder cannot be advertised at all;
+- every served field names its writer through ``KEY_BUILDERS`` / ``FLEET_KEY_BUILDERS``
+  — a field with no builder cannot be advertised at all;
 - ``tests/app/test_sync_keys.py`` asserts STATICALLY (over ``hive.app.sync``'s AST)
-  that the daemon still calls every builder in that map, so deleting a writer without
+  that the daemon still calls every builder in those maps, so deleting a writer without
   dropping its field goes red at the seam rather than on a live server.
-
-The key shape is ``sync:<repo>:<field>``. The 2-part ``sync:<field>`` globals are a
-DIFFERENT namespace — the tick SHELL's own fleet-wide surface (no repo in scope), owned
-by ``hive.app.sync`` and never served in a per-repo block.
 
 Pure string construction: no I/O, no store, no config.
 """
@@ -83,3 +86,41 @@ KEY_BUILDERS: dict[str, Callable[[str], str]] = {
 STR_FIELDS = ("tracked_ref", "last_tip", "last_sync_ts", "last_error")
 #: …vs parsed as a count (still None when there is no readable count to report).
 COUNTER_FIELDS = ("backfilled_total",)
+
+
+# ── the tick SHELL's fleet surface: 2-part keys, no repo in scope ──────────────
+def _fleet_key(field: str) -> str:
+    return f"{_PREFIX}{field}"
+
+
+def fleet_last_error_key() -> str:
+    """The last tick-SHELL fault: the registry read failing, anything escaping a whole
+    tick, or a mirror prune for an already-DEREGISTERED name (leg label
+    ``prune[<name>]``). Redacted, sticky, advisory — the fleet twin of
+    ``last_error_key``.
+
+    It belongs to no repo BY CONSTRUCTION: on a registry fault the tick returns before
+    any repo is even known, so no per-repo key is written OR cleared and every block
+    keeps its last-healthy values. Without a fleet home for this fault a fully dead
+    daemon reads as N passing repos (BUG-062)."""
+    return _fleet_key("last_error")
+
+
+def fleet_last_sync_ts_key() -> str:
+    """ts of the last tick in which the mirror prune AND every registered repo ran
+    fault-free — "the whole fleet synced", the stamp one repo's sticky ``last_error``
+    reads against. An empty-registry tick is inert and stamps nothing, so a server with
+    no registered repo serves this null forever — honestly: nothing has ever synced."""
+    return _fleet_key("last_sync_ts")
+
+
+#: Fleet field name → the builder for its key. This map IS the served fleet field set,
+#: exactly as ``KEY_BUILDERS`` is the per-repo one, and carries the same guarantee: a
+#: field here whose builder no writer in ``hive.app.sync`` calls is caught statically.
+FLEET_KEY_BUILDERS: dict[str, Callable[[], str]] = {
+    "last_sync_ts": fleet_last_sync_ts_key,
+    "last_error": fleet_last_error_key,
+}
+
+#: Every fleet field is a verbatim string-or-None on the wire (no counters here yet).
+FLEET_STR_FIELDS = ("last_sync_ts", "last_error")
