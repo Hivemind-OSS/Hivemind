@@ -120,13 +120,7 @@ _HEAD_APP = (
     "    return caller()\n"
 )
 
-_TEST_LIB = (
-    "from lib import greet\n"
-    "\n"
-    "\n"
-    "def test_greet():\n"
-    '    assert greet("x", ".")\n'
-)
+_TEST_LIB = 'from lib import greet\n\n\ndef test_greet():\n    assert greet("x", ".")\n'
 
 # The banner edit changes only a pre-symbol comment line: the sole in-span
 # graph node is the file's own node, which attribution must never read as a
@@ -137,16 +131,7 @@ _HEAD_LIB2 = "# new banner\ndef gamma():\n    return 3\n"
 # Added whole-file: the span starts at line 1, before the first symbol node,
 # so only the nodes-starting-within-span half of the union rule can attribute
 # it.
-_UTIL = (
-    "# helpers\n"
-    "\n"
-    "def alpha():\n"
-    "    return 1\n"
-    "\n"
-    "\n"
-    "def beta():\n"
-    "    return 2\n"
-)
+_UTIL = "# helpers\n\ndef alpha():\n    return 1\n\n\ndef beta():\n    return 2\n"
 
 
 @pytest.fixture(scope="session")

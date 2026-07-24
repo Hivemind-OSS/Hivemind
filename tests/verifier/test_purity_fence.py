@@ -20,8 +20,16 @@ PACKAGE_DIR = Path(hive.verifier.__file__).resolve().parent
 
 _DIFF_CONTENT = re.compile(r"parse_diff|unidiff|whatthepatch|@@ -")
 
-_PURE_MODULE_GLOBS = ("touched.py", "result.py", "registry.py", "evidence.py", "ingest/*.py")
-_BANNED_IMPORT_ROOTS = frozenset({"subprocess", "os", "sys", "socket", "shutil", "time"})
+_PURE_MODULE_GLOBS = (
+    "touched.py",
+    "result.py",
+    "registry.py",
+    "evidence.py",
+    "ingest/*.py",
+)
+_BANNED_IMPORT_ROOTS = frozenset(
+    {"subprocess", "os", "sys", "socket", "shutil", "time"}
+)
 
 
 def _package_sources() -> list[Path]:
@@ -34,7 +42,9 @@ def test_no_diff_module_exists() -> None:
         for path in _package_sources()
         if any(part.startswith("diff") for part in path.relative_to(PACKAGE_DIR).parts)
     ]
-    assert offenders == [], f"diff-shaped modules are banned in this package: {offenders}"
+    assert offenders == [], (
+        f"diff-shaped modules are banned in this package: {offenders}"
+    )
 
 
 def test_no_diff_parsing_patterns_in_source() -> None:
@@ -43,7 +53,9 @@ def test_no_diff_parsing_patterns_in_source() -> None:
         match = _DIFF_CONTENT.search(path.read_text(encoding="utf-8"))
         if match:
             offenders[str(path)] = match.group(0)
-    assert offenders == {}, f"diff-parsing patterns are banned in this package: {offenders}"
+    assert offenders == {}, (
+        f"diff-parsing patterns are banned in this package: {offenders}"
+    )
 
 
 def _import_roots(tree: ast.AST) -> set[str]:

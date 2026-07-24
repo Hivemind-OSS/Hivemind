@@ -20,7 +20,7 @@ from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass
 from fnmatch import fnmatch
 from pathlib import Path
-from typing import TYPE_CHECKING, Literal
+from typing import TYPE_CHECKING, Literal, cast
 
 from hive.verifier.ingest import INGESTERS, ReportParseError
 from hive.verifier.registry import (
@@ -47,7 +47,7 @@ from hive.verifier.touched import TouchedSet
 
 if TYPE_CHECKING:
     import networkx as nx
-    from matrix import Graph
+    from hive.matrix import BlastRadius, Graph
 
 # Worst state first: a failure outranks an internal fault, which outranks a
 # pass, which outranks an abstention — an errored member can never be
@@ -180,9 +180,7 @@ def _run_group(
             )
         if report is not None:
             if not report.exists():
-                return _GroupOutcome(
-                    "errored", f"{tool} produced no report file", None
-                )
+                return _GroupOutcome("errored", f"{tool} produced no report file", None)
             raw = report.read_bytes()
         else:
             if spawned.truncated:
@@ -280,7 +278,9 @@ def _run_class(
         presence = probe_tool(recipe.available_probe, cache=probe_cache, spawn=spawn)
         if not presence.available:
             lang_outcomes.append(
-                LangOutcome(lang, "not_run", f"{tool} not installed ({presence.reason})")
+                LangOutcome(
+                    lang, "not_run", f"{tool} not installed ({presence.reason})"
+                )
             )
             continue
         tools_used[tool] = presence.version
@@ -295,7 +295,10 @@ def _run_class(
         for config_dir, members in groups.items():
             try:
                 outcome = _run_group(
-                    recipe, members, config_dir, spawn,
+                    recipe,
+                    members,
+                    config_dir,
+                    spawn,
                     authoritative=(mode == "authoritative"),
                 )
             except Exception as exc:  # one bad group never aborts the run
@@ -343,17 +346,22 @@ def _run_class(
     )
 
 
-def _blast_radius(engine: Graph | nx.DiGraph, seed: str, *, depth: int,
-                  test_globs: tuple[str, ...]):
+def _blast_radius(
+    engine: Graph | nx.DiGraph[str],
+    seed: str,
+    *,
+    depth: int,
+    test_globs: tuple[str, ...],
+) -> BlastRadius:
     """Seam over matrix.blast_radius, module-level so tests can patch it.
     Lazy import: matrix reads MATRIX_OUT at import time, so importing
     hive.verifier must stay env-inert; matrix loads only inside a verify()."""
-    from matrix import blast_radius
+    from hive.matrix import blast_radius
 
     return blast_radius(engine, seed, depth=depth, test_globs=test_globs)
 
 
-def _symbol_seeds(engine: Graph | nx.DiGraph, graph_path: str) -> tuple[str, ...]:
+def _symbol_seeds(engine: Graph | nx.DiGraph[str], graph_path: str) -> tuple[str, ...]:
     """Every node the graph roots in one touched file (graph dialect): the
     file's contained symbols plus the file's own node, keyed by the nodes'
     ``source_file`` — the one file→symbol index that holds in BOTH path
@@ -361,19 +369,23 @@ def _symbol_seeds(engine: Graph | nx.DiGraph, graph_path: str) -> tuple[str, ...
     seed's radius is live wherever the graph has edges. Read defensively: an
     engine that cannot be enumerated yields no seeds, and the caller falls
     back to the file-path seed."""
-    g = getattr(engine, "nx", engine)  # a matrix Graph carries .nx; nx is itself
+    g = cast(
+        "nx.DiGraph[str]", getattr(engine, "nx", engine)
+    )  # a matrix Graph carries .nx; nx is itself
     try:
-        return tuple(sorted(
-            str(node_id)
-            for node_id, data in g.nodes(data=True)
-            if str(data.get("source_file") or "") == graph_path
-        ))
+        return tuple(
+            sorted(
+                str(node_id)
+                for node_id, data in g.nodes(data=True)
+                if str(data.get("source_file") or "") == graph_path
+            )
+        )
     except Exception:
         return ()
 
 
 def _compute_affected(
-    engine: Graph | nx.DiGraph,
+    engine: Graph | nx.DiGraph[str],
     touched: TouchedSet,
     depth: int,
     test_globs: tuple[str, ...],
@@ -410,7 +422,7 @@ def _compute_affected(
     prefix = root_offset + "/" if root_offset else ""
 
     def to_graph(path: str) -> str:
-        return path[len(prefix):] if prefix and path.startswith(prefix) else path
+        return path[len(prefix) :] if prefix and path.startswith(prefix) else path
 
     def to_repo(path: str) -> str:
         return prefix + path if prefix else path
@@ -426,9 +438,7 @@ def _compute_affected(
         # no source_file index for the touched file.
         seeds = _symbol_seeds(engine, graph_path) or (graph_path,)
         for seed in seeds:
-            radius = _blast_radius(
-                engine, seed, depth=depth, test_globs=test_globs
-            )
+            radius = _blast_radius(engine, seed, depth=depth, test_globs=test_globs)
             # Hit fields are read defensively: an empty source_file is tolerated.
             for hit in (*radius.callers, *radius.dependents):
                 symbols.add(str(hit.node_id))
@@ -473,7 +483,7 @@ def verify(
     *,
     base_sha: str,
     head_sha: str,
-    engine: Graph | nx.DiGraph,
+    engine: Graph | nx.DiGraph[str],
     opts: VerifyOptions = VerifyOptions(),
     spawn: Callable[..., SpawnResult] = run_hermetic,
 ) -> VerifyResult:
@@ -490,7 +500,9 @@ def verify(
     test_globs = (
         all_test_globs()
         if opts.registry is None
-        else tuple(sorted({glob for row in registry.values() for glob in row.test_globs}))
+        else tuple(
+            sorted({glob for row in registry.values() for glob in row.test_globs})
+        )
     )
     probe_cache: dict[tuple[str, ...], ToolPresence] = {}
     tools_used: dict[str, str] = {}

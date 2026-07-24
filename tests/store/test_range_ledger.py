@@ -5,6 +5,7 @@ transition noise is tolerated, never reasoned about) — and ``record_ingested_r
 idempotent-bool: True iff a NEW row landed; the first write stands, its ts never
 refreshed. Durability across restarts is the point of the table: a re-ingest after a
 process restart must still be skipped."""
+
 from __future__ import annotations
 
 from hive.adapters.sqlite_db import connect
@@ -16,7 +17,7 @@ REPO = "https://github.com/acme/widgets"
 
 
 def _store(path: str = ":memory:") -> SqliteEpisodeStore:
-    return SqliteEpisodeStore(connect(str(path)))            # ledger-only: no index needed
+    return SqliteEpisodeStore(connect(str(path)))  # ledger-only: no index needed
 
 
 # ── port conformance (the Law-7 isinstance idiom) ─────────────────────────────
@@ -56,7 +57,7 @@ def test_record_is_idempotent_bool_and_first_write_stands():
     assert s.record_ingested_range(REPO, BASE, HEAD, "post_merge", 100) is True
     assert s.record_ingested_range(REPO, BASE, HEAD, "post_merge", 999) is False
     rows = s.conn.execute("SELECT ts FROM ingested_ranges").fetchall()
-    assert [r["ts"] for r in rows] == [100]                  # never refreshed, never doubled
+    assert [r["ts"] for r in rows] == [100]  # never refreshed, never doubled
 
 
 def test_ff_merge_pre_and_post_phases_are_distinct_keys():
@@ -71,9 +72,9 @@ def test_overlapping_ranges_are_distinct_keys_no_subsumption():
     # legacy hooks feed A..B then B..C while sync feeds A..C: three distinct keys, all
     # land — the ledger holds NO range-subsumption logic (transition noise tolerated).
     s = _store()
-    assert s.record_ingested_range(REPO, BASE, HEAD, "post_merge", 1) is True   # A..B
-    assert s.record_ingested_range(REPO, HEAD, NEXT, "post_merge", 2) is True   # B..C
-    assert s.already_ingested_range(REPO, BASE, NEXT, "post_merge") is False    # A..C new
+    assert s.record_ingested_range(REPO, BASE, HEAD, "post_merge", 1) is True  # A..B
+    assert s.record_ingested_range(REPO, HEAD, NEXT, "post_merge", 2) is True  # B..C
+    assert s.already_ingested_range(REPO, BASE, NEXT, "post_merge") is False  # A..C new
     assert s.record_ingested_range(REPO, BASE, NEXT, "post_merge", 3) is True
 
 
@@ -95,6 +96,6 @@ def test_recorded_range_survives_a_restart(tmp_path):
     s1 = _store(db)
     assert s1.record_ingested_range(REPO, BASE, HEAD, "post_merge", 100) is True
     s1.conn.close()
-    s2 = _store(db)                                          # a fresh process, same file
+    s2 = _store(db)  # a fresh process, same file
     assert s2.already_ingested_range(REPO, BASE, HEAD, "post_merge") is True
     assert s2.record_ingested_range(REPO, BASE, HEAD, "post_merge", 200) is False

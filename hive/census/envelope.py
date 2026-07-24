@@ -18,6 +18,7 @@ from __future__ import annotations
 import base64
 import hashlib
 import json
+from typing import Any
 
 from hive.census.schema import RECEIPT_PREDICATE_TYPE
 
@@ -26,14 +27,14 @@ STATEMENT_TYPE = "https://in-toto.io/Statement/v1"
 SUBJECT_NAME = "hive-census-receipt"
 
 
-def canonical_bytes(doc: dict) -> bytes:
+def canonical_bytes(doc: dict[str, Any]) -> bytes:
     """The one serialization every digest and payload is computed over."""
     return json.dumps(
         doc, sort_keys=True, separators=(",", ":"), ensure_ascii=False
     ).encode("utf-8")
 
 
-def receipt_statement(receipt: dict) -> dict:
+def receipt_statement(receipt: dict[str, Any]) -> dict[str, Any]:
     """Wrap a receipt as the predicate of an in-toto Statement v1."""
     digest = hashlib.sha256(canonical_bytes(receipt)).hexdigest()
     return {
@@ -44,7 +45,7 @@ def receipt_statement(receipt: dict) -> dict:
     }
 
 
-def unsigned_envelope(receipt: dict) -> dict:
+def unsigned_envelope(receipt: dict[str, Any]) -> dict[str, Any]:
     """The receipt's statement in a DSSE-shaped envelope, explicitly unsigned.
 
     The wire dict is ``{"payload", "payloadType", "signatures", "unsigned"}`` where

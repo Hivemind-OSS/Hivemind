@@ -180,8 +180,8 @@ unmodified AND the entropy arm's true positives (real prefix-less high-entropy s
 
 ## TODO 14 — Ruby and Bash language support removed; re-add recipe if demand returns
 
-**File:** `../hive-edge/packages/comb-drift/combdrift/langs/`, `../hive-edge/packages/matrix/matrix/extract/`,
-`hive/verifier/registry.py` (this repo), and the doc-count claims across the engine READMEs.
+**File:** `hive/combdrift/langs/`, `hive/matrix/extract/`,
+`hive/verifier/registry.py`, and the doc-count claims across the engine reference docs (`docs/engines/`).
 
 Ruby and Bash were removed entirely from all three language subsystems (matrix AST cone,
 combdrift verdict, hive-verifier execution evidence — the latter now `hive/verifier/` in this repo) so nothing claims a capability the fleet does not
@@ -196,7 +196,7 @@ hive-verifier conformance, edge E2E) and no "eight"/"six-language" count claim c
 
 ## TODO 15 — C++ combdrift interface fidelity: full overload / template signature modeling
 
-**File:** `../hive-edge/packages/comb-drift/combdrift/langs/cpp.py`
+**File:** `hive/combdrift/langs/cpp.py`
 
 combdrift C++ ships the plan's §8 CONSERVATIVE fidelity: existence (found/missing/indirect) always, but the
 shape fingerprint only for an unambiguous single declaration — an overload set resolves to `ambiguous` →
@@ -209,7 +209,7 @@ already false-stale-safe; this only ADDS breaking-detection power it currently w
 
 ## TODO 16 — SQL Layer-B column-type fingerprint (combdrift)
 
-**File:** `../hive-edge/packages/comb-drift/combdrift/` (a SQL Layer-B extractor) and the `tests/edge` SQL E2E.
+**File:** `hive/combdrift/` (a SQL Layer-B extractor) and the `tests/edge` SQL E2E.
 
 SQL combdrift staleness already works via EXISTENCE at table+column granularity (a dropped column →
 `missing` → stale); SQL schema members render the `identity` shape because they carry no Layer-B interface.
@@ -221,7 +221,7 @@ deferred — net-new combdrift work, Law-1-orthogonal (existence already covers 
 
 ## TODO 17 — Staleness-direct meta expansion (U4): validator tags beyond code symbols
 
-**File:** `../hive-edge/hive_edge/` (`meta_registry.py`, mint/verify, the anchor grammar),
+**File:** `hive/edge/` (mint/verify, the anchor grammar), `hive/domain/meta_registry.py`,
 `hive/app/sync.py` (backfill + change-time recompute), `hive/domain/change_evidence.py` (census
 ingest seam), `hive/app/onboard_ref.py` (directive wording + contract bump), `CONTEXT/INTERACTIONS.md`,
 upgrade-simulation tests in both repos.

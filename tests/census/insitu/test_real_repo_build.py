@@ -47,19 +47,21 @@ def _rev_parse(repo: str, ref: str) -> str:
 
 def test_real_repo_build(tmp_path: Path) -> None:
     out = tmp_path / "receipt.envelope.json"
-    env = {
-        key: value
-        for key, value in os.environ.items()
-        if key != "MATRIX_OUT"
-    }
+    env = {key: value for key, value in os.environ.items() if key != "MATRIX_OUT"}
     proc = subprocess.run(
         [
-            sys.executable, "-m", "hive.census.cli",
+            sys.executable,
+            "-m",
+            "hive.census.cli",
             "build",
-            "--repo", _REPO,
-            "--base", _BASE,
-            "--head", _HEAD,
-            "--out", str(out),
+            "--repo",
+            _REPO,
+            "--base",
+            _BASE,
+            "--head",
+            _HEAD,
+            "--out",
+            str(out),
         ],
         cwd=tmp_path,
         env=env,
@@ -124,7 +126,9 @@ def test_real_repo_build(tmp_path: Path) -> None:
     non_empty = [
         line
         for line in regressions
-        if line["detail"]["callers"] or line["detail"]["dependents"] or line["detail"]["tests"]
+        if line["detail"]["callers"]
+        or line["detail"]["dependents"]
+        or line["detail"]["tests"]
     ]
     execution_summary = ", ".join(
         f"{cls}={by_class[cls][0]['detail']['state']}"

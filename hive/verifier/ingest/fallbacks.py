@@ -19,7 +19,9 @@ from hive.verifier.result import Diagnostic, Ingested
 
 # --- tsc --noEmit text -------------------------------------------------------
 
-_TSC_DIAGNOSTIC = re.compile(r"^(.+?)\((\d+),(\d+)\): error (TS\d+): (.*)$", re.MULTILINE)
+_TSC_DIAGNOSTIC = re.compile(
+    r"^(.+?)\((\d+),(\d+)\): error (TS\d+): (.*)$", re.MULTILINE
+)
 
 
 def ingest_tsc(raw: bytes, *, exit_code: int) -> Ingested:
@@ -38,7 +40,11 @@ def ingest_tsc(raw: bytes, *, exit_code: int) -> Ingested:
     )
     if diagnostics:
         return Ingested(
-            passed=0, failed=len(diagnostics), errored=0, skipped=0, diagnostics=diagnostics
+            passed=0,
+            failed=len(diagnostics),
+            errored=0,
+            skipped=0,
+            diagnostics=diagnostics,
         )
     if exit_code != 0:
         raise ReportParseError(f"tsc: exit code {exit_code} but no diagnostics parsed")
@@ -77,7 +83,9 @@ def ingest_pyright(raw: bytes, *, exit_code: int) -> Ingested:
                 file=str(entry.get("file") or ""),
                 # pyright ranges are 0-based; diagnostics are 1-based.
                 line=_as_int(start.get("line")) + 1 if isinstance(start, dict) else 0,
-                col=_as_int(start.get("character")) + 1 if isinstance(start, dict) else 0,
+                col=_as_int(start.get("character")) + 1
+                if isinstance(start, dict)
+                else 0,
                 code=str(entry.get("rule") or ""),
                 message=str(entry.get("message") or ""),
                 severity="error" if severity == "error" else "warning",
@@ -87,14 +95,22 @@ def ingest_pyright(raw: bytes, *, exit_code: int) -> Ingested:
             error_count += 1
     if error_count:
         return Ingested(
-            passed=0, failed=error_count, errored=0, skipped=0, diagnostics=tuple(diagnostics)
+            passed=0,
+            failed=error_count,
+            errored=0,
+            skipped=0,
+            diagnostics=tuple(diagnostics),
         )
-    return Ingested(passed=1, failed=0, errored=0, skipped=0, diagnostics=tuple(diagnostics))
+    return Ingested(
+        passed=1, failed=0, errored=0, skipped=0, diagnostics=tuple(diagnostics)
+    )
 
 
 # --- go vet / go build text ------------------------------------------------------
 
-_GO_DIAGNOSTIC = re.compile(r"^(?:vet: )?([^\s:]+\.go):(\d+)(?::(\d+))?: (.+)$", re.MULTILINE)
+_GO_DIAGNOSTIC = re.compile(
+    r"^(?:vet: )?([^\s:]+\.go):(\d+)(?::(\d+))?: (.+)$", re.MULTILINE
+)
 
 
 def ingest_gotext(raw: bytes, *, exit_code: int) -> Ingested:
@@ -113,7 +129,11 @@ def ingest_gotext(raw: bytes, *, exit_code: int) -> Ingested:
     )
     if diagnostics:
         return Ingested(
-            passed=0, failed=len(diagnostics), errored=0, skipped=0, diagnostics=diagnostics
+            passed=0,
+            failed=len(diagnostics),
+            errored=0,
+            skipped=0,
+            diagnostics=diagnostics,
         )
     if exit_code != 0:
         raise ReportParseError(f"go: exit code {exit_code} but no diagnostics parsed")
@@ -139,28 +159,42 @@ def ingest_cargo(raw: bytes, *, exit_code: int) -> Ingested:
         try:
             obj = json.loads(line)
         except (json.JSONDecodeError, UnicodeDecodeError) as exc:
-            raise ReportParseError(f"cargo: malformed JSON on line {index}: {exc}") from exc
+            raise ReportParseError(
+                f"cargo: malformed JSON on line {index}: {exc}"
+            ) from exc
         if not isinstance(obj, dict):
             raise ReportParseError(f"cargo: line {index} is not a JSON object")
         if obj.get("reason") != "compiler-message":
             continue
         message = obj.get("message")
         if not isinstance(message, dict):
-            raise ReportParseError(f"cargo: compiler-message on line {index} has no message object")
+            raise ReportParseError(
+                f"cargo: compiler-message on line {index} has no message object"
+            )
         level = message.get("level")
         if level not in ("error", "warning"):
             continue
-        severity: Literal["error", "warning"] = "error" if level == "error" else "warning"
+        severity: Literal["error", "warning"] = (
+            "error" if level == "error" else "warning"
+        )
         diagnostics.append(_cargo_diagnostic(message, severity))
         if level == "error":
             error_count += 1
     if error_count:
         return Ingested(
-            passed=0, failed=error_count, errored=0, skipped=0, diagnostics=tuple(diagnostics)
+            passed=0,
+            failed=error_count,
+            errored=0,
+            skipped=0,
+            diagnostics=tuple(diagnostics),
         )
     if exit_code != 0:
-        raise ReportParseError(f"cargo: exit code {exit_code} but no error messages parsed")
-    return Ingested(passed=1, failed=0, errored=0, skipped=0, diagnostics=tuple(diagnostics))
+        raise ReportParseError(
+            f"cargo: exit code {exit_code} but no error messages parsed"
+        )
+    return Ingested(
+        passed=1, failed=0, errored=0, skipped=0, diagnostics=tuple(diagnostics)
+    )
 
 
 def _cargo_diagnostic(
@@ -170,7 +204,11 @@ def _cargo_diagnostic(
     primary = None
     if isinstance(spans, list):
         primary = next(
-            (span for span in spans if isinstance(span, dict) and span.get("is_primary")),
+            (
+                span
+                for span in spans
+                if isinstance(span, dict) and span.get("is_primary")
+            ),
             None,
         )
     code = message.get("code")
@@ -204,7 +242,12 @@ def ingest_native_exit(raw: bytes, *, exit_code: int) -> Ingested:
         skipped=0,
         diagnostics=(
             Diagnostic(
-                file="", line=0, col=0, code="native-exit", message=message, severity="error"
+                file="",
+                line=0,
+                col=0,
+                code="native-exit",
+                message=message,
+                severity="error",
             ),
         ),
     )

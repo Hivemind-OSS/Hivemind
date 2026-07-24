@@ -199,8 +199,10 @@ class TestPropagationBlock:
 
     def test_wellformed_propagation_accepted(self) -> None:
         doc = minimal_receipt()
-        doc["propagation"] = [make_propagation_entry(),
-                              make_propagation_entry(drift="removed")]
+        doc["propagation"] = [
+            make_propagation_entry(),
+            make_propagation_entry(drift="removed"),
+        ]
         validate_receipt(doc)
 
     @pytest.mark.parametrize("field", ["seed", "drift", "depth", "neighbors"])
@@ -235,10 +237,13 @@ class TestPackagedSchema:
 
         pyproject = REPO_ROOT / "pyproject.toml"
         data = tomllib.loads(pyproject.read_text(encoding="utf-8"))
-        package_data = data.get("tool", {}).get("setuptools", {}).get("package-data", {})
+        package_data = (
+            data.get("tool", {}).get("setuptools", {}).get("package-data", {})
+        )
         assert "receipt.v0.schema.json" in package_data.get("hive.census", ()), (
             "the receipt schema artifact must ship as hive.census package data "
-            "or the built wheel loses it")
+            "or the built wheel loses it"
+        )
 
     def test_schema_loads_from_package_resources_with_foreign_cwd(
         self, tmp_path: Path
@@ -260,5 +265,7 @@ class TestPackagedSchema:
             text=True,
             timeout=60,
         )
-        assert run.returncode == 0, f"schema resource probe failed:\n{run.stdout}\n{run.stderr}"
+        assert run.returncode == 0, (
+            f"schema resource probe failed:\n{run.stdout}\n{run.stderr}"
+        )
         assert "package-data-ok" in run.stdout

@@ -22,7 +22,6 @@ from hive.census.engines import (
     attribute_symbols,
     build_graphs,
     ensure_scratch_matrix_out,
-    node_change,
 )
 
 SHA_A = "a" * 40
@@ -43,7 +42,7 @@ class TestEnsureScratchMatrixOut:
         import hive.census.engines as engines
 
         monkeypatch.setattr(engines, "_scratch", None)
-        monkeypatch.setitem(sys.modules, "matrix", types.ModuleType("matrix"))
+        monkeypatch.setitem(sys.modules, "hive.matrix", types.ModuleType("hive.matrix"))
         with pytest.raises(EngineError):
             ensure_scratch_matrix_out()
 
@@ -53,9 +52,9 @@ class TestEnsureScratchMatrixOut:
         import hive.census.engines as engines
 
         monkeypatch.setattr(engines, "_scratch", tmp_path / "scratch")
-        fake_paths = types.ModuleType("matrix.paths")
+        fake_paths = types.ModuleType("hive.matrix.paths")
         fake_paths.MATRIX_OUT = str(tmp_path / "elsewhere" / "matrix-out")
-        monkeypatch.setitem(sys.modules, "matrix.paths", fake_paths)
+        monkeypatch.setitem(sys.modules, "hive.matrix.paths", fake_paths)
         with pytest.raises(EngineError):
             ensure_scratch_matrix_out()
 
@@ -66,9 +65,9 @@ class TestEnsureScratchMatrixOut:
 
         scratch = tmp_path / "scratch"
         monkeypatch.setattr(engines, "_scratch", scratch)
-        fake_paths = types.ModuleType("matrix.paths")
+        fake_paths = types.ModuleType("hive.matrix.paths")
         fake_paths.MATRIX_OUT = str(scratch)
-        monkeypatch.setitem(sys.modules, "matrix.paths", fake_paths)
+        monkeypatch.setitem(sys.modules, "hive.matrix.paths", fake_paths)
         assert ensure_scratch_matrix_out() == scratch
 
 
@@ -80,7 +79,7 @@ class TestResolveSeedConformance:
         # upgrade that moves or reshapes it must go red here, not as a silent
         # empty join downstream.
         import networkx as nx
-        from matrix.affected import resolve_seed
+        from hive.matrix.affected import resolve_seed
 
         assert callable(resolve_seed)
         assert resolve_seed(nx.DiGraph(), "anything") is None
@@ -209,9 +208,7 @@ class TestAttributeSymbols:
         assert ("lib.py", "orphan") in touched_symbols
         assert "farewell()" not in _labels(graph_pair.head.nx)
 
-    def test_method_symbol_is_qualified_class_dot_method(
-        self, touched_symbols
-    ) -> None:
+    def test_method_symbol_is_qualified_class_dot_method(self, touched_symbols) -> None:
         assert ("lib.py", "Greeter.wave") in touched_symbols
 
     def test_deterministic_and_deduplicated(
@@ -225,7 +222,7 @@ class TestAttributeSymbols:
         self, matrix_scratch: Path
     ) -> None:
         import networkx as nx
-        from matrix.model import Graph
+        from hive.matrix.model import Graph
 
         class _Booby:
             def __str__(self) -> str:
@@ -238,9 +235,7 @@ class TestAttributeSymbols:
             source_file="poison.py",
             source_location="L2",
         )
-        base.add_node(
-            "ok_fn", label="fn()", source_file="ok.py", source_location="L1"
-        )
+        base.add_node("ok_fn", label="fn()", source_file="ok.py", source_location="L1")
         touched = ChangeSet(
             base_sha=SHA_A,
             head_sha=SHA_B,
@@ -296,9 +291,7 @@ class TestNodeChange:
         assert reasons[("lib.py", "greet")].startswith("signature_changed")
         assert ": " in reasons[("lib.py", "greet")]
 
-    def test_file_level_entries_produce_no_symbol_change(
-        self, change_verdict
-    ) -> None:
+    def test_file_level_entries_produce_no_symbol_change(self, change_verdict) -> None:
         paths_with_symbols = {s.path for s in change_verdict.symbols}
         assert "notes.txt" not in paths_with_symbols
         assert "lib2.py" not in paths_with_symbols

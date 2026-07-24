@@ -18,6 +18,7 @@ any child runs); the daemon never raises on a bad request (INV-3).
 tools/ is operator-surface, not domain (THEORY Law 4), so http.server/webbrowser/threading are
 permitted here. Stdlib only — zero new dependencies.
 """
+
 from __future__ import annotations
 
 import json
@@ -29,7 +30,7 @@ import threading
 import webbrowser
 from dataclasses import dataclass
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from typing import Callable, Mapping, Optional
+from typing import Any, Callable, Mapping, Optional, Protocol
 
 from hive.tools import cli, ui_page
 
@@ -51,12 +52,13 @@ class Response:
     """The transport-agnostic reply the pure router returns; the socket shell renders it verbatim
     (status line + Content-Type + Content-Length, always). A frozen carrier — no transport
     headers leak into it; Allow/Connection are the shell's concern, derived from the status."""
+
     status: int
     body: bytes
     content_type: str = _JSON
 
 
-def _json(status: int, obj: dict) -> Response:
+def _json(status: int, obj: dict[str, Any]) -> Response:
     """A JSON Response with the body encoded once (its length is the Content-Length). // O(1)."""
     return Response(status, json.dumps(obj).encode("utf-8"), _JSON)
 
@@ -64,7 +66,16 @@ def _json(status: int, obj: dict) -> Response:
 # ── header helpers (work on a plain dict in tests and on a case-insensitive Message live) ──
 
 
-def _declared_length(headers: Mapping[str, str]) -> int:
+class _Headers(Protocol):
+    """The dict-style header view the router reads — just ``.get(name)`` → value or None.
+    Satisfied structurally by BOTH a plain dict (tests) and the live case-insensitive
+    ``http.client.HTTPMessage`` (an ``email.message.Message``, which implements the mapping
+    protocol without being typed as ``Mapping``)."""
+
+    def get(self, name: str, /) -> Optional[str]: ...
+
+
+def _declared_length(headers: _Headers) -> int:
     """The DECLARED Content-Length (0 on absent/malformed) — reads no body byte. // O(1)."""
     try:
         return int(headers.get("Content-Length") or 0)
@@ -72,21 +83,21 @@ def _declared_length(headers: Mapping[str, str]) -> int:
         return 0
 
 
-def _hostname(headers: Mapping[str, str]) -> str:
+def _hostname(headers: _Headers) -> str:
     """The Host header's hostname with any :port stripped (bracketed IPv6 kept whole). // O(1)."""
     host = (headers.get("Host") or "").strip()
-    if host.startswith("["):                               # [::1]:4173 → [::1]
+    if host.startswith("["):  # [::1]:4173 → [::1]
         return host.split("]", 1)[0] + "]" if "]" in host else host
     return host.rsplit(":", 1)[0] if ":" in host else host
 
 
-def _host_ok(headers: Mapping[str, str]) -> bool:
+def _host_ok(headers: _Headers) -> bool:
     """The Host allowlist: its hostname must be a loopback name. A missing/foreign Host fails
     CLOSED (rebinding defense). // O(1)."""
     return _hostname(headers) in _ALLOWED_HOSTNAMES
 
 
-def _origin_ok(headers: Mapping[str, str]) -> bool:
+def _origin_ok(headers: _Headers) -> bool:
     """Same-origin check for a state-changing POST: an absent Origin is allowed (a same-origin
     fetch / curl); a present Origin must equal our own origin (`http://<Host>`), so a cross-origin
     browser POST is refused. Admits the legitimate same-origin browser. // O(1)."""
@@ -99,7 +110,7 @@ def _origin_ok(headers: Mapping[str, str]) -> bool:
 # ── request-body arg parsing (fail-fast, before any child) ─────────────────────
 
 
-def _load_obj(body: bytes) -> Optional[dict]:
+def _load_obj(body: bytes) -> Optional[dict[str, Any]]:
     """Parse a JSON object body, or None on malformed JSON / a non-object. // O(len)."""
     try:
         obj = json.loads(body or b"")
@@ -177,8 +188,10 @@ def _upstream_failed() -> Response:
 # A single module-level flag, guarded by a lock, admits ONE such op at a time (a shared data volume
 # must not see concurrent lifecycle/restore ops); a second concurrent request is refused 409.
 
-_LIFECYCLE_LOCK = threading.Lock()   # guards _op_in_flight — the check-and-set must be atomic
-_op_in_flight = False                # True while a lifecycle/tunnel/restore worker holds the slot
+_LIFECYCLE_LOCK = (
+    threading.Lock()
+)  # guards _op_in_flight — the check-and-set must be atomic
+_op_in_flight = False  # True while a lifecycle/tunnel/restore worker holds the slot
 
 
 def _try_claim() -> bool:
@@ -200,21 +213,23 @@ def _release() -> None:
         _op_in_flight = False
 
 
-def _spawn(target: Callable[[], None]) -> None:
+def _spawn(target: Callable[[], object]) -> None:
     """Launch `target` on a detached daemon thread so the slow docker child runs OFF the request
     thread and the loopback response returns at once. A module-level seam a test runs inline. // O(1)."""
     threading.Thread(target=target, daemon=True).start()
 
 
-def _dispatch(work: Callable[[], None]) -> None:
+def _dispatch(work: Callable[[], object]) -> None:
     """Run `work` on a detached worker that RELEASES the claimed slot when it finishes (success or
     not). The caller MUST already hold the slot (via `_try_claim`). If the spawn itself fails, the
     slot is freed here so it can never strand every later op at 409. // O(1)."""
+
     def _guarded() -> None:
         try:
             work()
         finally:
             _release()
+
     try:
         _spawn(_guarded)
     except Exception:
@@ -233,36 +248,47 @@ def _lifecycle_plan(action: str) -> tuple[list[str], str]:
         return cli._compose("down"), "stopping"
     if action == "tunnel-up":
         return cli._compose("up", "-d", "ngrok", profile=cli.TUNNEL_PROFILE), "starting"
-    return cli._compose("stop", "ngrok"), "stopping"       # tunnel-down (hive-server untouched)
+    return cli._compose(
+        "stop", "ngrok"
+    ), "stopping"  # tunnel-down (hive-server untouched)
 
 
 # ── the endpoint handlers (each returns a Response; body is the raw POST bytes) ──
 
 
-def _h_page(body, *, run, env) -> Response:
+def _h_page(body: bytes, *, run: cli.Run, env: Mapping[str, str]) -> Response:
     return Response(200, ui_page.PAGE_HTML.encode("utf-8"), _HTML)
 
 
-def _h_status(body, *, run, env) -> Response:
+def _h_status(body: bytes, *, run: cli.Run, env: Mapping[str, str]) -> Response:
     # serialize the SINGLE-OWNER StatusSnapshot — never scraped from `hive status` text.
     snap = cli._probe_status(run, env)
-    return _json(200, {"server": snap.server, "healthy": snap.healthy,
-                       "tunnel_on": snap.tunnel_on, "tunnel_url": snap.tunnel_url,
-                       "seats": snap.seats})
+    return _json(
+        200,
+        {
+            "server": snap.server,
+            "healthy": snap.healthy,
+            "tunnel_on": snap.tunnel_on,
+            "tunnel_url": snap.tunnel_url,
+            "seats": snap.seats,
+        },
+    )
 
 
-def _h_tokens_list(body, *, run, env) -> Response:
+def _h_tokens_list(body: bytes, *, run: cli.Run, env: Mapping[str, str]) -> Response:
     child = cli._exec_authctl(run, env, "list")
     if child.returncode != 0:
         return _upstream_failed()
     seats = [ln for ln in (child.stdout or "").splitlines() if ln.strip()]
-    return _json(200, {"seats": seats})                    # LABELS only, never a token value
+    return _json(200, {"seats": seats})  # LABELS only, never a token value
 
 
-def _h_tokens_mint(body, *, run, env) -> Response:
+def _h_tokens_mint(body: bytes, *, run: cli.Run, env: Mapping[str, str]) -> Response:
     seat = _seat_arg(body)
     if seat is None:
-        return _json(400, {"error": "bad_request"})        # fail-fast: no child on a blank seat
+        return _json(
+            400, {"error": "bad_request"}
+        )  # fail-fast: no child on a blank seat
     child = cli._exec_authctl(run, env, "create", seat)
     if child.returncode != 0:
         return _upstream_failed()
@@ -270,7 +296,7 @@ def _h_tokens_mint(body, *, run, env) -> Response:
     return _json(200, {"seat": seat, "token": (child.stdout or "").strip()})
 
 
-def _h_tokens_revoke(body, *, run, env) -> Response:
+def _h_tokens_revoke(body: bytes, *, run: cli.Run, env: Mapping[str, str]) -> Response:
     seat = _seat_arg(body)
     if seat is None:
         return _json(400, {"error": "bad_request"})
@@ -280,7 +306,7 @@ def _h_tokens_revoke(body, *, run, env) -> Response:
     return _json(200, {"seat": seat, "revoked": True})
 
 
-def _h_backup(body, *, run, env) -> Response:
+def _h_backup(body: bytes, *, run: cli.Run, env: Mapping[str, str]) -> Response:
     child = cli._exec_backup(run, env)
     if child.returncode != 0:
         return _upstream_failed()
@@ -289,26 +315,30 @@ def _h_backup(body, *, run, env) -> Response:
 
 # The in-container lister for the in-volume backups dir: emits ONE JSON array (name/size/mtime per
 # *.db), newest-first. Run via `python -c` so we never parse `ls` fragilely; json/os/glob are stdlib.
-_BACKUPS_LISTER = "\n".join((
-    "import json, os, glob",
-    "d = '/data/backups'",
-    "rows = []",
-    "for p in glob.glob(os.path.join(d, '*.db')):",
-    "    try:",
-    "        st = os.stat(p)",
-    "    except OSError:",
-    "        continue",
-    "    rows.append({'name': os.path.basename(p), 'size': st.st_size, 'mtime': int(st.st_mtime)})",
-    "rows.sort(key=lambda r: r['mtime'], reverse=True)",
-    "print(json.dumps(rows))",
-))
+_BACKUPS_LISTER = "\n".join(
+    (
+        "import json, os, glob",
+        "d = '/data/backups'",
+        "rows = []",
+        "for p in glob.glob(os.path.join(d, '*.db')):",
+        "    try:",
+        "        st = os.stat(p)",
+        "    except OSError:",
+        "        continue",
+        "    rows.append({'name': os.path.basename(p), 'size': st.st_size, 'mtime': int(st.st_mtime)})",
+        "rows.sort(key=lambda r: r['mtime'], reverse=True)",
+        "print(json.dumps(rows))",
+    )
+)
 
 
-def _list_backups(run, env) -> Optional[list]:
+def _list_backups(run: cli.Run, env: Mapping[str, str]) -> Optional[list[Any]]:
     """The in-volume backups listing (newest-first) via the in-container lister, or None on any
     child/parse failure. SINGLE-OWNED so /api/backups and the restore whitelist read the SAME source
     — a name is restorable IFF it is a member of THIS listing. // O(1) + the child."""
-    child = run(cli._compose("exec", "-T", cli.SERVICE, "python", "-c", _BACKUPS_LISTER), env)
+    child = run(
+        cli._compose("exec", "-T", cli.SERVICE, "python", "-c", _BACKUPS_LISTER), env
+    )
     if child.returncode != 0:
         return None
     try:
@@ -318,14 +348,14 @@ def _list_backups(run, env) -> Optional[list]:
     return rows if isinstance(rows, list) else None
 
 
-def _h_backups(body, *, run, env) -> Response:
+def _h_backups(body: bytes, *, run: cli.Run, env: Mapping[str, str]) -> Response:
     rows = _list_backups(run, env)
     if rows is None:
         return _upstream_failed()
-    return _json(200, {"backups": rows})                   # newest-first, as the lister emits
+    return _json(200, {"backups": rows})  # newest-first, as the lister emits
 
 
-def _restore_worker(name: str, run, env) -> None:
+def _restore_worker(name: str, run: cli.Run, env: Mapping[str, str]) -> None:
     """The detached restore mechanism: stop the daemon (release WAL locks), copy the chosen IN-VOLUME
     snapshot over /data/shared.db (clearing stale WAL sidecars) in a throwaway container, then restart
     WITHOUT rebuilding. Mirrors cli._restore, but the source is already inside the volume. `name` is a
@@ -334,20 +364,35 @@ def _restore_worker(name: str, run, env) -> None:
     (defense-in-depth). A failed step leaves the daemon down for the operator to see in /api/status.
     // O(db size) + a restart."""
     if run(cli._compose("down"), env, capture=False).returncode != 0:
-        return                                             # stop failed → nothing overwritten
-    safe = shlex.quote(name)                               # never interpolate a raw name into the sh -c
-    cp = run(["docker", "run", "--rm", "--entrypoint", "sh", "-v", "hive-data:/data", cli.IMAGE,
-              "-c", f"cp /data/backups/{safe} /data/shared.db && "
-                    "rm -f /data/shared.db-wal /data/shared.db-shm"], env)
+        return  # stop failed → nothing overwritten
+    safe = shlex.quote(name)  # never interpolate a raw name into the sh -c
+    cp = run(
+        [
+            "docker",
+            "run",
+            "--rm",
+            "--entrypoint",
+            "sh",
+            "-v",
+            "hive-data:/data",
+            cli.IMAGE,
+            "-c",
+            f"cp /data/backups/{safe} /data/shared.db && "
+            "rm -f /data/shared.db-wal /data/shared.db-shm",
+        ],
+        env,
+    )
     if cp.returncode != 0:
-        return                                             # copy failed → daemon stays down
+        return  # copy failed → daemon stays down
     run(cli._compose("up", "-d", cli.SERVICE), env, capture=False)
 
 
-def _h_restore(body, *, run, env) -> Response:
+def _h_restore(body: bytes, *, run: cli.Run, env: Mapping[str, str]) -> Response:
     name = _name_arg(body)
     if name is None:
-        return _json(400, {"error": "bad_request"})        # blank/missing name → 400, no child
+        return _json(
+            400, {"error": "bad_request"}
+        )  # blank/missing name → 400, no child
     # (1) PATH-TRAVERSAL + INJECTION GUARD — pure, BEFORE any child: a non-basename / traversal /
     #     absolute / shell-metacharacter name is refused with zero children. ← weakening this to
     #     accept such a name is a deliberate mutation (traversal / shell injection into the volume).
@@ -375,7 +420,7 @@ def _h_restore(body, *, run, env) -> Response:
     return _json(202, {"action": "restore", "status": "restoring"})
 
 
-def _h_lifecycle(body, *, run, env) -> Response:
+def _h_lifecycle(body: bytes, *, run: cli.Run, env: Mapping[str, str]) -> Response:
     # VALIDATE synchronously — an unknown/absent action is 400 before any claim or child (reset is
     # absent by construction; restore is its OWN guarded route, never a lifecycle action here).
     action = _action_arg(body)
@@ -385,8 +430,11 @@ def _h_lifecycle(body, *, run, env) -> Response:
         # public exposure: gate the NGROK secrets from ENV ONLY (never the request body), before
         # any claim or child — mirrors cli._up's fail-fast. ← dropping this gate is a deliberate
         # mutation (a public tunnel could start with no auth env configured).
-        missing = [k for k in ("NGROK_AUTHTOKEN", "NGROK_DOMAIN")
-                   if not (env.get(k) or "").strip()]
+        missing = [
+            k
+            for k in ("NGROK_AUTHTOKEN", "NGROK_DOMAIN")
+            if not (env.get(k) or "").strip()
+        ]
         if missing:
             return _json(400, {"error": "missing_secrets", "missing": missing})
     argv, status = _lifecycle_plan(action)
@@ -399,13 +447,13 @@ def _h_lifecycle(body, *, run, env) -> Response:
     return _json(202, {"action": action, "status": status})
 
 
-def _h_logs(body, *, run, env) -> Response:
+def _h_logs(body: bytes, *, run: cli.Run, env: Mapping[str, str]) -> Response:
     # bounded, NON-blocking: --tail=200 and NO -f (a follow would hang the request forever).
     child = run(cli._compose("logs", "--tail=200", cli.SERVICE), env)
     if child.returncode != 0:
         return _upstream_failed()
     lines = (child.stdout or "").splitlines()
-    return _json(200, {"lines": lines[-200:]})             # honor the ≤200-line budget
+    return _json(200, {"lines": lines[-200:]})  # honor the ≤200-line budget
 
 
 _Handler = Callable[..., Response]
@@ -433,8 +481,15 @@ def _methods_for_path(path: str) -> list[str]:
     return sorted({m for (m, p) in _ROUTES if p == path})
 
 
-def handle_request(method: str, path: str, headers: Mapping[str, str], body: bytes,
-                   *, run: cli.Run, env: Mapping[str, str]) -> Response:
+def handle_request(
+    method: str,
+    path: str,
+    headers: _Headers,
+    body: bytes,
+    *,
+    run: cli.Run,
+    env: Mapping[str, str],
+) -> Response:
     """The whole endpoint contract as a pure function of the request + the injected seams. Every
     guard fails CLOSED and is a NAMED mutation marker pinned by a test in test_ui.py. // O(1) +
     the child's work."""
@@ -456,8 +511,12 @@ def handle_request(method: str, path: str, headers: Mapping[str, str], body: byt
         handler = _ROUTES.get((method, path))
         if handler is None:
             if not _methods_for_path(path):
-                return _json(404, {"error": "not_found"})   # ← mutation: wrong code on an unknown path
-            return _json(405, {"error": "method_not_allowed"})  # ← mutation: wrong code on a bad method
+                return _json(
+                    404, {"error": "not_found"}
+                )  # ← mutation: wrong code on an unknown path
+            return _json(
+                405, {"error": "method_not_allowed"}
+            )  # ← mutation: wrong code on a bad method
         return handler(body, run=run, env=env)
     except Exception:
         # never-raise (INV-3): a handler/parse fault becomes a 500 answer; the daemon survives.
@@ -469,7 +528,7 @@ def handle_request(method: str, path: str, headers: Mapping[str, str], body: byt
 # Factored out exactly as hive/app/http_server.py factors _build_handler out of run_http_dual,
 # so the endpoint contract stays unit-testable against the pure function AND a real socket.
 
-_LOOPBACK_BINDS = ("127.0.0.1", "localhost", "::1")   # the only hosts serve_ui will bind
+_LOOPBACK_BINDS = ("127.0.0.1", "localhost", "::1")  # the only hosts serve_ui will bind
 
 
 def _build_handler(run: cli.Run, env: Mapping[str, str]) -> type:
@@ -481,16 +540,18 @@ def _build_handler(run: cli.Run, env: Mapping[str, str]) -> type:
     one dispatch, so a wrong method on a known path is the router's 405, not a stdlib 501."""
 
     class _UIHandler(BaseHTTPRequestHandler):
-        protocol_version = "HTTP/1.1"                  # keep-alive; every reply frames its length
+        protocol_version = "HTTP/1.1"  # keep-alive; every reply frames its length
         server_version = "hive-ui/1.0"
 
         def _emit(self, resp: Response) -> None:
             self.send_response(resp.status)
             self.send_header("Content-Type", resp.content_type)
             self.send_header("Content-Length", str(len(resp.body)))
-            if resp.status == 405:                     # advertise the methods the path answers
-                self.send_header("Allow", ", ".join(_methods_for_path(self.path.split("?", 1)[0])))
-            if resp.status == 413:                     # the unread body makes the conn unreusable
+            if resp.status == 405:  # advertise the methods the path answers
+                self.send_header(
+                    "Allow", ", ".join(_methods_for_path(self.path.split("?", 1)[0]))
+                )
+            if resp.status == 413:  # the unread body makes the conn unreusable
                 self.send_header("Connection", "close")
             self.end_headers()
             if resp.body and self.command != "HEAD":
@@ -498,12 +559,17 @@ def _build_handler(run: cli.Run, env: Mapping[str, str]) -> type:
 
         def _dispatch(self) -> None:
             try:
-                path = self.path.split("?", 1)[0]      # ignore any query string
+                path = self.path.split("?", 1)[0]  # ignore any query string
                 declared = _declared_length(self.headers)
                 # over-cap: do NOT read the flood body; the router still 413s on the declared length.
-                body = b"" if declared > MAX_BODY_BYTES else (
-                    self.rfile.read(declared) if declared > 0 else b"")
-                resp = handle_request(self.command, path, self.headers, body, run=run, env=env)
+                body = (
+                    b""
+                    if declared > MAX_BODY_BYTES
+                    else (self.rfile.read(declared) if declared > 0 else b"")
+                )
+                resp = handle_request(
+                    self.command, path, self.headers, body, run=run, env=env
+                )
                 self._emit(resp)
             except Exception:
                 # transport-level never-raise (INV-3): the daemon survives any transport fault.
@@ -511,7 +577,7 @@ def _build_handler(run: cli.Run, env: Mapping[str, str]) -> type:
                 try:
                     self._emit(_json(500, {"error": "internal_error"}))
                 except Exception:
-                    pass                               # client already gone — swallow
+                    pass  # client already gone — swallow
 
         do_GET = _dispatch
         do_POST = _dispatch
@@ -521,15 +587,23 @@ def _build_handler(run: cli.Run, env: Mapping[str, str]) -> type:
         do_PATCH = _dispatch
         do_OPTIONS = _dispatch
 
-        def log_message(self, *args) -> None:          # silence the access log (secret-safe, quiet)
+        def log_message(
+            self, *args: Any
+        ) -> None:  # silence the access log (secret-safe, quiet)
             return
 
     return _UIHandler
 
 
-def serve_ui(*, host: str = "127.0.0.1", port: int = 4173, run: Optional[cli.Run] = None,
-             env: Optional[Mapping[str, str]] = None, open_browser: bool = True,
-             server_factory: Callable[..., ThreadingHTTPServer] = ThreadingHTTPServer) -> int:
+def serve_ui(
+    *,
+    host: str = "127.0.0.1",
+    port: int = 4173,
+    run: Optional[cli.Run] = None,
+    env: Optional[Mapping[str, str]] = None,
+    open_browser: bool = True,
+    server_factory: Callable[..., ThreadingHTTPServer] = ThreadingHTTPServer,
+) -> int:
     """Bind the LOOPBACK socket and serve the operator console; return a sysexits code. A routable
     (non-loopback) host is REFUSED fail-FAST (EX_USAGE, NO bind) — the console exposes token
     mint/revoke, so it must never bind a routable interface (Law 6: boot fails fast). A bind
@@ -538,21 +612,29 @@ def serve_ui(*, host: str = "127.0.0.1", port: int = 4173, run: Optional[cli.Run
     run = run or cli.default_run
     env = cli._load_dotenv(cli._DOTENV, os.environ) if env is None else env
     if host not in _LOOPBACK_BINDS:
-        print(f"hive ui: refusing to bind non-loopback host {host!r} — the operator console is "
-              "loopback-only (127.0.0.1). No socket was opened.", file=sys.stderr)
-        return cli.EX_USAGE                            # fail-fast: no bind on a routable host
+        print(
+            f"hive ui: refusing to bind non-loopback host {host!r} — the operator console is "
+            "loopback-only (127.0.0.1). No socket was opened.",
+            file=sys.stderr,
+        )
+        return cli.EX_USAGE  # fail-fast: no bind on a routable host
     try:
         httpd = server_factory((host, port), _build_handler(run, env))
     except OSError as error:
-        print(f"hive ui: cannot bind {host}:{port} — {error} "
-              "(is the console already running, or the port in use?)", file=sys.stderr)
+        print(
+            f"hive ui: cannot bind {host}:{port} — {error} "
+            "(is the console already running, or the port in use?)",
+            file=sys.stderr,
+        )
         return cli.EX_UNAVAILABLE
     url = f"http://{host}:{httpd.server_address[1]}/"
-    print(f"hive ui: operator console at {url} (loopback-only, tokenless; Ctrl-C to stop)",
-          file=sys.stderr)
+    print(
+        f"hive ui: operator console at {url} (loopback-only, tokenless; Ctrl-C to stop)",
+        file=sys.stderr,
+    )
     if open_browser:
         try:
-            webbrowser.open(url)                       # side-channel: fail OPEN (headless is fine)
+            webbrowser.open(url)  # side-channel: fail OPEN (headless is fine)
         except Exception:
             pass
     try:

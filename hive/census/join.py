@@ -16,11 +16,14 @@ that confusion unconstructable at the type level.
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:  # annotation target only; runtime imports stay lazy
-    import combdrift
+    import hive.combdrift as combdrift
+    import hive.matrix as matrix
+    import networkx as nx
 
 _REGRESSION_DRIFTS = frozenset({"breaking", "removed"})
 _TAGS = frozenset({"bounded-estimate", "unverified"})
@@ -85,14 +88,14 @@ def _seed_queries(symbol: str) -> tuple[str, ...]:
     return tuple(dict.fromkeys((symbol, f"{member}()", member)))
 
 
-def _hit_ids(hits) -> tuple[str, ...]:
+def _hit_ids(hits: Sequence[Any] | None) -> tuple[str, ...]:
     return tuple(str(getattr(hit, "node_id", "") or "") for hit in (hits or ()))
 
 
 def _join_one(
-    g_nx, path: str, symbol: str, drift: str, depth: int
+    g_nx: Any, path: str, symbol: str, drift: str, depth: int
 ) -> RegressionFinding:
-    from matrix.affected import resolve_seed
+    from hive.matrix.affected import resolve_seed
 
     seed: str | None = None
     for query in _seed_queries(symbol):
@@ -102,7 +105,7 @@ def _join_one(
     if seed is None:
         return _abstained(path, symbol, drift, depth, REASON_SEED_UNRESOLVED)
 
-    from matrix import blast_radius
+    from hive.matrix import blast_radius
 
     blast = blast_radius(g_nx, seed, depth=depth)
     return RegressionFinding(
@@ -120,7 +123,10 @@ def _join_one(
 
 
 def regression_join(
-    verdict: combdrift.ChangeVerdict, base_graph, *, depth: int = 2
+    verdict: combdrift.ChangeVerdict,
+    base_graph: matrix.Graph | nx.DiGraph[str],
+    *,
+    depth: int = 2,
 ) -> tuple[RegressionFinding, ...]:
     """Join regression-class drift onto the base graph's blast radius.
 

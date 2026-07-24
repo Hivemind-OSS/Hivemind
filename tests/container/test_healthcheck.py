@@ -5,6 +5,7 @@ server report healthy. Also pins the cross-process design — a SEPARATE healthc
 process reads a readiness marker (+ verifies the serve PID is alive) from the shared DB,
 so a stale marker from a crashed server does NOT read green. No network.
 """
+
 from __future__ import annotations
 
 import os
@@ -56,7 +57,7 @@ def test_pid_alive_self_true_and_invalid_false():
 def test_proc_starttime_self_and_dead_and_cross_module_agree():
     st = H._proc_starttime(os.getpid())
     assert isinstance(st, int) and st > 0
-    assert H._proc_starttime(2147483646) is None       # dead/absent ⇒ None
+    assert H._proc_starttime(2147483646) is None  # dead/absent ⇒ None
     assert H._proc_starttime(-1) is None
     # entrypoint and healthcheck must read /proc/<pid>/stat IDENTICALLY (the value the
     # entrypoint records must be the value the healthcheck compares).
@@ -76,14 +77,16 @@ def _make_db(tmp_path, *, marker=None, pid=None, starttime="__live__"):
         conn.execute("INSERT INTO meta VALUES (?,?)", (H.MARK_SERVE_PID, str(pid)))
         st = H._proc_starttime(pid) if starttime == "__live__" else starttime
         if st is not None:
-            conn.execute("INSERT INTO meta VALUES (?,?)", (H.MARK_SERVE_STARTTIME, str(st)))
+            conn.execute(
+                "INSERT INTO meta VALUES (?,?)", (H.MARK_SERVE_STARTTIME, str(st))
+            )
     conn.commit()
     conn.close()
     return db
 
 
 def test_default_probe_green_with_marker_and_live_pid(tmp_path):
-    db = _make_db(tmp_path, marker="1", pid=os.getpid())   # live starttime by default
+    db = _make_db(tmp_path, marker="1", pid=os.getpid())  # live starttime by default
     snap = H._default_probe({"HIVE_STORE__DB_PATH": str(db)})
     assert snap["ok"] is True and snap["embedder_loaded"] is True
     assert H.main(env={"HIVE_STORE__DB_PATH": str(db)}) == H.HEALTHY
@@ -108,8 +111,8 @@ def test_default_probe_red_on_pid_reuse_stale_incarnation(tmp_path):
     # recorded start-time belongs to a PRIOR incarnation ⇒ the marker is stale ⇒ red.
     db = _make_db(tmp_path, marker="1", pid=os.getpid(), starttime="999999999")
     snap = H._default_probe({"HIVE_STORE__DB_PATH": str(db)})
-    assert H._pid_alive(os.getpid()) is True            # the pid IS alive...
-    assert snap["embedder_loaded"] is False             # ...but the incarnation does not match
+    assert H._pid_alive(os.getpid()) is True  # the pid IS alive...
+    assert snap["embedder_loaded"] is False  # ...but the incarnation does not match
     assert H.main(env={"HIVE_STORE__DB_PATH": str(db)}) == H.UNHEALTHY
 
 
@@ -152,13 +155,15 @@ def test_default_probe_opens_read_only(tmp_path, monkeypatch):
     seen = {}
     real_connect = sqlite3.connect
 
-    def _spy(database, *a, **k):                        # NB: param not named 'uri' — connect
-        seen["uri"] = database                          # is called with a uri=True kwarg
+    def _spy(database, *a, **k):  # NB: param not named 'uri' — connect
+        seen["uri"] = database  # is called with a uri=True kwarg
         return real_connect(database, *a, **k)
 
     monkeypatch.setattr(sqlite3, "connect", _spy)
     H._default_probe({"HIVE_STORE__DB_PATH": str(db)})
-    assert "mode=ro" in seen.get("uri", ""), f"probe did not open read-only: {seen.get('uri')!r}"
+    assert "mode=ro" in seen.get("uri", ""), (
+        f"probe did not open read-only: {seen.get('uri')!r}"
+    )
 
 
 # ── bare liveness writes NO stdout (the Docker HEALTHCHECK contract; report mode cut) ──

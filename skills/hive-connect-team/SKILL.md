@@ -1,6 +1,6 @@
 ---
 name: hive-connect-team
-description: "Connect agents and teammates to a running Hivemind server: pick the transport (local loopback / ngrok tunnel / SSH), mint and hand off per-seat tokens, register the MCP client, and revoke seats. Use when asked to connect / onboard / add / provision an agent or teammate, expose the server to remote machines, share the hive, or offboard a seat."
+description: "Connect agents and teammates to a running Hivemind server: pick the transport (local loopback / ngrok tunnel / SSH), mint and hand off per-seat tokens, register the MCP client, and revoke seats. Use when asked to connect / add / provision an agent or teammate, expose the server to remote machines, share the hive, or offboard a seat."
 ---
 
 # hive-connect-team — connect agents & teammates
@@ -56,28 +56,6 @@ ssh -NL 8765:localhost:8765 you@host    # forward the loopback door over SSH
 ```
 Then the teammate uses the **local** loopback line above as-is — no ngrok, no token.
 
-## Edge tools — install & stay current
-
-Every connected participant (local or remote) also installs the **`hive-edge` CLI** — anchor
-mint/verify, the worktree-delta tripwire, the per-checkout code graph, and the Claude-Code hook
-adapters. One install from the public repo, nothing to wire — uv required (the CLI's workspace
-engines resolve from git subdirectories via uv sources, which pip/pipx cannot read):
-
-```bash
-uv tool install git+https://github.com/Hivemind-OSS/Hive-edge@release
-uv tool update-shell   # once, so uv's tool directory is on PATH
-```
-
-Census change evidence needs **no per-device setup**: it is computed and fed server-side (the
-operator arms `HIVE_SYNC__REPO_URL` on the server — `HIVE-ADMIN.md` §4), so there are no git
-hooks, no `census init`, and no signing key on workstations. A connected agent normally installs
-and updates the CLI itself during onboarding — the served contract pins the minimum version
-(`MIN_EDGE_VERSION`) and has it run `uv tool upgrade hive-edge` when below it.
-
-The full flow — `uv tool upgrade hive-edge`, rollback by reinstalling an explicit ref, the
-per-device state directory (`~/.hive-edge/`), and the server's own `hive upgrade` — is
-**`HIVE-ADMIN.md` §8** (the single source; not duplicated here).
-
 ## Seat hygiene & offboarding
 
 - **One token per seat, never shared across agents.** `hive tokens` lists provisioned seat labels
@@ -94,15 +72,11 @@ per-device state directory (`~/.hive-edge/`), and the server's own `hive upgrade
   is tokenless; the tunnel door (compose-internal `8766`) is token-required and is the only
   remote-reachable one. **Never publish `0.0.0.0:8765`** — a bearer token over plain LAN HTTP is
   cleartext.
-- **Onboarding's floor is served — the operator installs nothing.** A terse behavioral floor
-  (recall-first, capture-by-default, the value bar, an identity pointer) reaches every agent over
-  MCP at connect via the `initialize` instructions; the only client-side step is the MCP
-  registration above, and there is no handshake call. The full contract — the install procedure,
-  the capture taxonomy, the identity/auth reference, the hooks, and the allowlist — is fetched on
-  demand over `hive_health(include_onboarding=true)`. On top of the served floor an agent MAY
-  optionally persist the contract as a **version-stamped rules block** in its own project rules
-  file — the server beacons a `contract_version` on every result so a stale block re-onboards, and
-  a missing block degrades to the served floor — but that is the agent's own act, never an operator
-  step. (Claude Code only: the fetched payload also carries optional lifecycle-hook nudges + the
-  read-verb auto-approve allowlist — merge into the project `.claude/settings.json` for active
-  recall / capture reminders.)
+- **The usage contract is served, never installed.** The MCP registration above is the **only**
+  client-side step — there is no handshake call and nothing to install on the workstation or in
+  any repo. The whole contract (recall-first, scoped store/recall, write-vs-capture, outcome
+  evidence, machine-gated retirement) reaches every agent automatically at connect via the MCP
+  `initialize` result's `instructions` field, fresh every session; a reconnect picks up a changed
+  contract. Census change evidence needs **no per-device setup** either: it is computed
+  server-side by the sync daemon off the repo registry (`hive repo add` — **hive-connect-repo**),
+  so there are no git hooks and no signing key on workstations.

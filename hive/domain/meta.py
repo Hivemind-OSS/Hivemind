@@ -21,12 +21,14 @@ forms ``None`` / ``""`` / ``{}`` normalize to ``""`` (no carrier — the column 
 PURE: stdlib ``json``/``re`` only. Total over ``object`` — isinstance-driven, never
 indexes a non-dict (D8: a hostile shape refuses, it cannot crash the boundary).
 """
+
 from __future__ import annotations
 
 import json
 import re
 from collections import Counter
 from collections.abc import Iterable
+from typing import Any
 
 
 class BadMeta(ValueError):
@@ -50,18 +52,19 @@ def normalize_meta(raw: object) -> str:
         return ""
     if not isinstance(raw, dict):
         raise BadMeta(
-            f"meta must be a map of 'tool/attr' -> str handle, got {type(raw).__name__}")
+            f"meta must be a map of 'tool/attr' -> str handle, got {type(raw).__name__}"
+        )
     if len(raw) > META_MAX_KEYS:
         raise BadMeta(f"meta has {len(raw)} keys (max {META_MAX_KEYS})")
     for k, v in raw.items():
         if not isinstance(k, str) or _META_KEY_RE.match(k) is None:
-            raise BadMeta(
-                f"bad meta key {k!r} (want namespaced lowercase 'tool/attr')")
+            raise BadMeta(f"bad meta key {k!r} (want namespaced lowercase 'tool/attr')")
         if not isinstance(v, str):
             raise BadMeta(f"meta value for {k!r} must be a str, got {type(v).__name__}")
         if len(v) > META_MAX_VALUE_LEN:
             raise BadMeta(
-                f"meta value for {k!r} is {len(v)} chars (max {META_MAX_VALUE_LEN})")
+                f"meta value for {k!r} is {len(v)} chars (max {META_MAX_VALUE_LEN})"
+            )
     out = json.dumps(raw, sort_keys=True, separators=(",", ":"))
     n_bytes = len(out.encode("utf-8"))
     if n_bytes > META_MAX_SERIALIZED:
@@ -80,7 +83,9 @@ def token_version(value: str) -> str | None:
     return version if (slash and version.isdigit()) else None
 
 
-def meta_version_histogram(serialized_metas: Iterable[str]) -> dict[str, dict]:
+def meta_version_histogram(
+    serialized_metas: Iterable[str],
+) -> dict[str, dict[str, Any]]:
     """Fold serialized meta carriers into the per-key token-version histogram:
     `{key: {"versions": {"<N>": n}, "absent": a[, "malformed": m]}}` over the rows given
     (the caller supplies the live corpus). `absent` = rows carrying no value for that key
@@ -88,17 +93,17 @@ def meta_version_histogram(serialized_metas: Iterable[str]) -> dict[str, dict]:
     when nonzero); a key appears only once >=1 row carries it. Total over any input: an
     unparseable serialized row contributes no keys (it cannot name one) — never raises."""
     total = 0
-    versions: dict[str, Counter] = {}
+    versions: dict[str, Counter[str]] = {}
     carriers: dict[str, int] = {}
     malformed: dict[str, int] = {}
     for serialized in serialized_metas:
-        total += 1                                   # every row counts, carrier or not
+        total += 1  # every row counts, carrier or not
         if not isinstance(serialized, str) or not serialized:
             continue
         try:
             parsed = json.loads(serialized)
         except Exception:
-            continue                                 # a corrupt carrier names no key
+            continue  # a corrupt carrier names no key
         if not isinstance(parsed, dict):
             continue
         for key, value in parsed.items():
@@ -108,10 +113,12 @@ def meta_version_histogram(serialized_metas: Iterable[str]) -> dict[str, dict]:
                 malformed[key] = malformed.get(key, 0) + 1
             else:
                 versions.setdefault(key, Counter())[version] += 1
-    out: dict[str, dict] = {}
+    out: dict[str, dict[str, Any]] = {}
     for key, carried in carriers.items():
-        entry: dict = {"versions": dict(versions.get(key, Counter())),
-                       "absent": total - carried}
+        entry: dict[str, Any] = {
+            "versions": dict(versions.get(key, Counter())),
+            "absent": total - carried,
+        }
         if malformed.get(key, 0):
             entry["malformed"] = malformed[key]
         out[key] = entry

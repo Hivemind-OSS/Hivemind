@@ -1,10 +1,14 @@
 """The kind registry is the single source for the structured-memory vocabulary; these pin
-its shape so the projections (tool_defs enum, onboard_ref prose, store CHECK, models
+its shape so the projections (tool_defs enum + glosses, store CHECK, models
 validation) cannot silently lose a kind or a required field."""
+
 from __future__ import annotations
 
 from hive.domain.kinds import (
-    DEFAULT_KIND, KINDS, KIND_NAMES, QUERY_GUIDANCE, render_taxonomy,
+    DEFAULT_KIND,
+    KINDS,
+    KIND_NAMES,
+    QUERY_GUIDANCE,
 )
 
 _POLARITIES = {"do", "dont", "neutral"}
@@ -21,8 +25,14 @@ def test_kind_names_matches_the_registry():
 def test_expected_kinds_are_all_present():
     # the locked covering set — a dropped kind is a silent coverage regression
     assert KIND_NAMES == {
-        "bug", "gotcha", "convention", "design_choice",
-        "contract", "dead_end", "env_fact", "note",
+        "bug",
+        "gotcha",
+        "convention",
+        "design_choice",
+        "contract",
+        "dead_end",
+        "env_fact",
+        "note",
     }
 
 
@@ -31,14 +41,6 @@ def test_every_kind_has_gloss_template_and_valid_default_polarity():
         assert spec["gloss"], f"{name} missing gloss"
         assert spec["template"], f"{name} missing template"
         assert spec["default_polarity"] in _POLARITIES, f"{name} bad default_polarity"
-
-
-def test_render_taxonomy_names_every_kind_and_both_rules():
-    rendered = render_taxonomy()
-    for name in KIND_NAMES:
-        assert name in rendered, f"{name} dropped from served taxonomy"
-    assert "POLAR LANGUAGE:" in rendered
-    assert "DENSITY:" in rendered
 
 
 def test_query_guidance_warns_about_abstention():
@@ -52,4 +54,4 @@ def test_query_guidance_mandates_a_single_pointed_query_set():
     g = QUERY_GUIDANCE.lower()
     assert "single-pointed" in g
     assert "one intent" in g
-    assert "per intent" in g            # one recall per intent, not a bulk multi-question query
+    assert "per intent" in g  # one recall per intent, not a bulk multi-question query

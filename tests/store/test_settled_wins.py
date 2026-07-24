@@ -3,6 +3,7 @@ win audit: ``outcome_helped`` (self-reported via hive_outcome) OR ``outcome_veri
 (SHA-bound census corroboration) — the union form. Read-only; powers the suspect-consensus
 martingale clause. Conforms to the SettledWinReader port. ``verified_wins`` is the
 verified-only sibling read the verified-promotion rung consumes."""
+
 from __future__ import annotations
 
 import numpy as np
@@ -20,9 +21,14 @@ def _store() -> SqliteEpisodeStore:
 
 
 def _seed(s: SqliteEpisodeStore, text: str) -> int:
-    eid, _ = s.stage(text=text, weight=1.0, tags="", proposed_by="w", ts=10)
-    s.complete(eid, np.eye(DIM, dtype=np.float32)[0], expected_version=0,
-               trust="provisional", approver=None, approved_ts=10, last_active_ts=10)
+    eid, _ = s.stage(text=text, weight=1.0, proposed_by="w", ts=10)
+    s.complete(
+        eid,
+        np.eye(DIM, dtype=np.float32)[0],
+        expected_version=0,
+        trust="provisional",
+        last_active_ts=10,
+    )
     return eid
 
 
@@ -56,7 +62,7 @@ def test_multiple_helped_events_dedup_to_one_id():
     eid = _seed(s, "helped twice")
     s.insert_audit(eid, "outcome_helped", "agentA", 11, "{}")
     s.insert_audit(eid, "outcome_helped", "agentB", 12, "{}")
-    assert s.settled_wins([eid]) == {eid}            # the id appears once
+    assert s.settled_wins([eid]) == {eid}  # the id appears once
 
 
 def test_mixed_ids_returns_only_the_helped_subset():
@@ -89,8 +95,10 @@ def test_union_pins_both_sources_and_excludes_hurt_kinds():
     s.insert_audit(verified_only, "outcome_verified_helped", "census", 11, "{}")
     s.insert_audit(hurt_only, "outcome_hurt", "agent", 11, "{}")
     s.insert_audit(hurt_only, "outcome_verified_hurt", "census", 11, "{}")
-    assert s.settled_wins([self_only, verified_only, hurt_only]) == \
-        {self_only, verified_only}
+    assert s.settled_wins([self_only, verified_only, hurt_only]) == {
+        self_only,
+        verified_only,
+    }
 
 
 # ── verified_wins: the verified-ONLY read the promotion rung consumes ──────────

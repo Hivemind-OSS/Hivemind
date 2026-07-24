@@ -14,6 +14,7 @@ and lives in its own image — the hive image bakes in no tunnel binary (D1/AC3,
 hermetically-offline invariant). The deliberate mutation (point ngrok back at 8765 → a public
 unauthenticated endpoint) reds `test_tunnel_uses_compose_network_upstream`.
 """
+
 from __future__ import annotations
 
 import dataclasses
@@ -40,14 +41,14 @@ def _env_pairs() -> dict[str, str]:
     Strips a double-quoted value's quotes and any trailing inline `# comment`."""
     out: dict[str, str] = {}
     for line in _text().splitlines():
-        m = re.match(r'^\s+([A-Z][A-Z0-9_]+):\s*(.+?)\s*$', line)
+        m = re.match(r"^\s+([A-Z][A-Z0-9_]+):\s*(.+?)\s*$", line)
         if not m:
             continue
         key, raw = m.group(1), m.group(2)
         if raw.startswith('"'):
-            val = raw[1:].split('"', 1)[0]          # content between the first pair of quotes
+            val = raw[1:].split('"', 1)[0]  # content between the first pair of quotes
         else:
-            val = raw.split("#", 1)[0].strip()      # unquoted token, drop inline comment
+            val = raw.split("#", 1)[0].strip()  # unquoted token, drop inline comment
         out[key] = val
     return out
 
@@ -57,11 +58,12 @@ def _key_to_field(key: str) -> str | None:
     None if it is not a (group, field) env key. Mirrors the loader's case-fold matching."""
     if not key.startswith("HIVE_"):
         return None
-    group_tok, sep, field_tok = key[len("HIVE_"):].partition("__")
+    group_tok, sep, field_tok = key[len("HIVE_") :].partition("__")
     if not sep or group_tok.lower() not in C._GROUP_TYPES:
         return None
-    fld = {f.name.lower(): f
-           for f in dataclasses.fields(C._GROUP_TYPES[group_tok.lower()])}.get(field_tok.lower())
+    fld = {
+        f.name.lower(): f for f in dataclasses.fields(C._GROUP_TYPES[group_tok.lower()])
+    }.get(field_tok.lower())
     return f"{group_tok.lower()}.{fld.name}" if fld else None
 
 
@@ -75,7 +77,7 @@ def test_long_lived_warm_server_not_run_rm():
     # per connection and defeats the no-network/cost model). The evidence is the loopback port
     # map + restart policy; the stdio-attach `stdin_open` belonged to the superseded transport.
     assert "restart: unless-stopped" in _text()
-    assert "127.0.0.1:8765:8765" in _text()        # host-loopback HTTP mapping
+    assert "127.0.0.1:8765:8765" in _text()  # host-loopback HTTP mapping
     assert "run --rm" not in _text()
 
 
@@ -84,11 +86,15 @@ def test_http_port_is_loopback_only():
     # A bare "8765:8765" (all-interfaces publish) is the regression this guards against.
     txt = _text()
     assert "127.0.0.1:8765:8765" in txt
-    assert not re.search(r'(?m)^\s*-\s*"?8765:8765"?\s*$', txt)   # no all-interfaces publish
+    assert not re.search(
+        r'(?m)^\s*-\s*"?8765:8765"?\s*$', txt
+    )  # no all-interfaces publish
 
 
 def test_compose_healthcheck_runs_healthcheck_module():
-    assert re.search(r'test:\s*\["CMD",\s*"python",\s*"-m",\s*"hive\.tools\.healthcheck"\]', _text())
+    assert re.search(
+        r'test:\s*\["CMD",\s*"python",\s*"-m",\s*"hive\.tools\.healthcheck"\]', _text()
+    )
 
 
 def test_named_volume_persists():
@@ -109,7 +115,9 @@ def test_compose_carries_no_config_env_keys():
     # appears in compose — they all live in .env. compose's `environment:` holds only image
     # invariants (the HF offline flags). A config key creeping back in reds here.
     config_keys = sorted(k for k in _env_pairs() if _key_to_field(k) is not None)
-    assert not config_keys, f"compose must carry no config knobs (move to .env): {config_keys}"
+    assert not config_keys, (
+        f"compose must carry no config knobs (move to .env): {config_keys}"
+    )
 
 
 def test_no_legacy_dead_keys():
@@ -141,7 +149,9 @@ def test_tunnel_is_profile_gated():
     # `--profile tunnel`. No host `ports:` either: the sidecar is egress-only.
     blk = _service_block("ngrok")
     assert blk, "ngrok service missing from compose.yaml"
-    assert re.search(r'profiles:\s*\[\s*"tunnel"\s*\]', blk)   # ← deliberate mutation: removing this reds here
+    assert re.search(
+        r'profiles:\s*\[\s*"tunnel"\s*\]', blk
+    )  # ← deliberate mutation: removing this reds here
     assert "ports:" not in blk
 
 
@@ -159,8 +169,8 @@ def test_tunnel_uses_compose_network_upstream():
     # is compose-internal: it is never host-published.
     blk = _service_block("ngrok")
     assert "hive-server:8766" in blk
-    assert "hive-server:8765" not in blk                 # ngrok must NOT reach the tokenless door
-    assert "8766:8766" not in _text()                    # the tunnel door is never host-published
+    assert "hive-server:8765" not in blk  # ngrok must NOT reach the tokenless door
+    assert "8766:8766" not in _text()  # the tunnel door is never host-published
     assert "127.0.0.1" not in blk and "host.docker.internal" not in blk
 
 
@@ -182,7 +192,9 @@ def test_env_example_documents_tunnel_vars():
     assert "NGROK_AUTHTOKEN" in env_ex and "NGROK_DOMAIN" in env_ex
     for ln in env_ex.splitlines():
         if "NGROK_AUTHTOKEN" in ln:
-            assert ln.lstrip().startswith("#"), "NGROK_AUTHTOKEN must ship commented out"
+            assert ln.lstrip().startswith("#"), (
+                "NGROK_AUTHTOKEN must ship commented out"
+            )
 
 
 # ── docker compose config validity (skip-guarded on the CLI; daemon-free) ─────
@@ -190,18 +202,29 @@ def _have_compose() -> bool:
     if not shutil.which("docker"):
         return False
     try:
-        return subprocess.run(["docker", "compose", "version"],
-                              capture_output=True, timeout=30).returncode == 0
+        return (
+            subprocess.run(
+                ["docker", "compose", "version"], capture_output=True, timeout=30
+            ).returncode
+            == 0
+        )
     except (OSError, subprocess.SubprocessError):
         return False
 
 
-_SKIP = pytest.mark.skipif(not _have_compose(), reason="docker compose CLI not available")
+_SKIP = pytest.mark.skipif(
+    not _have_compose(), reason="docker compose CLI not available"
+)
 
 
 @_SKIP
 def test_compose_config_valid():
     env = dict(os.environ, HIVE_TENANT_ID="probe-tenant")
-    r = subprocess.run(["docker", "compose", "-f", str(_COMPOSE), "config"],
-                       capture_output=True, text=True, env=env, timeout=60)
+    r = subprocess.run(
+        ["docker", "compose", "-f", str(_COMPOSE), "config"],
+        capture_output=True,
+        text=True,
+        env=env,
+        timeout=60,
+    )
     assert r.returncode == 0, f"compose config failed: {r.stderr}"

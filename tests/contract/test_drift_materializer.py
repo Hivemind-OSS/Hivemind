@@ -1,0 +1,183 @@
+"""CT-6 — drift is materialized per (repo, tip) and version-gated (plan §4
+intent 6, D5, §6 step 5).
+
+Given stored fps and a moved tip, the materializer writes ``anchor_drift`` rows
+for the canonical tip and any requested refs (worktree at tip + the real
+``hive-edge verify`` per anchor); an incomparable token version yields
+silence/``unverifiable``, NEVER false-stale (BUG-037); a moved tip invalidates
+naturally (the cache key is the tip); the cache is a rebuildable Law-5 cache
+(wipe → repopulated). Real tmp git origins, the real store, the real edge CLI.
+"""
+
+from __future__ import annotations
+
+import json
+
+from tests.contract.conftest import (
+    ANCHOR,
+    DRIFT_ANCHOR_CHANGED,
+    DRIFT_ANCHOR_MISSING,
+    DRIFT_BLAST_RADIUS,
+    DRIFT_BRANCH_SCOPED,
+    DRIFT_FRESH,
+    DRIFT_UNVERIFIABLE,
+    Origin,
+    bump_token_version,
+    drift_rows,
+    git,
+    make_syncer,
+    register_repo,
+    require_method,
+    seed_scoped_episode,
+)
+
+STALE_VERDICTS = {DRIFT_ANCHOR_CHANGED, DRIFT_ANCHOR_MISSING, DRIFT_BLAST_RADIUS}
+WIRE_VERDICTS = STALE_VERDICTS | {
+    DRIFT_FRESH,
+    DRIFT_BRANCH_SCOPED,
+    DRIFT_UNVERIFIABLE,
+}
+
+
+def _armed(sync_store, tmp_path, name: str = "remote"):
+    origin = Origin(tmp_path / name)
+    register_repo(sync_store, "alpha", origin.url, canonical_ref="main")
+    syncer = make_syncer(sync_store, tmp_path)
+    return origin, syncer
+
+
+def _verdict_for(store, tip: str, anchor: str):
+    for r in drift_rows(store, "alpha", tip):
+        if r.get("anchor") == anchor:
+            return r.get("verdict")
+    return None
+
+
+def test_materializes_fresh_then_stale_verdicts_at_the_tip(sync_store, tmp_path):
+    origin, syncer = _armed(sync_store, tmp_path)
+    seed_scoped_episode(sync_store, "greet lesson", anchors=[("alpha", ANCHOR)])
+    syncer.service.tick()  # mint the fp + materialize at tip0
+    tip0 = origin.origin_sha("refs/heads/main")
+    v0 = _verdict_for(sync_store, tip0, ANCHOR)
+    assert v0 == DRIFT_FRESH, (
+        f"an intact anchor at the measured tip materializes fresh, got {v0!r}"
+    )
+    assert v0 in WIRE_VERDICTS, "the cache stores the §3.4 wire vocabulary"
+
+    # remove the symbol on the canonical line → the next tick judges the new tip
+    origin.commit(
+        "app.py", "def farewell(name):\n    return 'bye ' + name\n", "rm greet"
+    )
+    origin.push()
+    syncer.service.tick()
+    tip1 = origin.origin_sha("refs/heads/main")
+    assert tip1 != tip0
+    v1 = _verdict_for(sync_store, tip1, ANCHOR)
+    assert v1 == DRIFT_ANCHOR_MISSING, (
+        f"a removed symbol materializes anchor_missing at the new tip, got {v1!r}"
+    )
+
+
+def test_signature_change_materializes_anchor_changed(sync_store, tmp_path):
+    origin, syncer = _armed(sync_store, tmp_path)
+    seed_scoped_episode(sync_store, "greet lesson", anchors=[("alpha", ANCHOR)])
+    syncer.service.tick()  # fp minted at tip0
+    origin.commit(
+        "app.py",
+        'def greet(name, punct):\n    return "hi " + name + punct\n',
+        "widen greet",
+    )
+    origin.push()
+    syncer.service.tick()
+    tip1 = origin.origin_sha("refs/heads/main")
+    v = _verdict_for(sync_store, tip1, ANCHOR)
+    assert v == DRIFT_ANCHOR_CHANGED, (
+        f"a changed signature materializes anchor_changed, got {v!r}"
+    )
+
+
+def test_version_gate_never_false_stale(sync_store, tmp_path):
+    origin, syncer = _armed(sync_store, tmp_path)
+    eid = seed_scoped_episode(sync_store, "greet lesson", anchors=[("alpha", ANCHOR)])
+    syncer.service.tick()  # real fp minted
+    row = sync_store.conn.execute(
+        "SELECT fp_meta FROM episode_anchors WHERE episode_id=?", (eid,)
+    ).fetchone()
+    fp = json.loads(row["fp_meta"])
+    assert fp.get("combdrift/fp"), "precondition: a real minted token"
+    # corrupt the token's VERSION ENVELOPE → incomparable, not different
+    fp["combdrift/fp"] = bump_token_version(fp["combdrift/fp"])
+    sync_store.conn.execute(
+        "UPDATE episode_anchors SET fp_meta=? WHERE episode_id=?",
+        (json.dumps(fp, separators=(",", ":")), eid),
+    )
+    # move the line so a naive comparator WOULD scream stale
+    origin.commit("app.py", "def farewell(name):\n    return 'bye'\n", "rm greet")
+    origin.push()
+    syncer.service.tick()
+    tip1 = origin.origin_sha("refs/heads/main")
+    v = _verdict_for(sync_store, tip1, ANCHOR)
+    assert v not in STALE_VERDICTS, (
+        f"an incomparable token version must yield silence/unverifiable, NEVER "
+        f"false-stale (BUG-037) — got {v!r}"
+    )
+    assert v in (None, DRIFT_UNVERIFIABLE)
+
+
+def test_requested_ref_materializes_via_ref_requests(sync_store, tmp_path):
+    origin, syncer = _armed(sync_store, tmp_path)
+    seed_scoped_episode(sync_store, "greet lesson", anchors=[("alpha", ANCHOR)])
+    syncer.service.tick()  # fp minted at the canonical tip
+    # a feature branch that breaks the anchor, pushed to the origin
+    git(origin.work, "checkout", "-q", "-b", "feature")
+    origin.commit("app.py", "def other():\n    return 1\n", "break on feature")
+    origin.push("feature")
+    git(origin.work, "checkout", "-q", "main")
+    feature_tip = origin.origin_sha("refs/heads/feature")
+
+    touch = require_method(sync_store, "touch_ref_request")
+    touch("alpha", "feature", 424_242)
+    syncer.service.tick()
+
+    v = _verdict_for(sync_store, feature_tip, ANCHOR)
+    assert v is not None, (
+        "a requested ref must be materialized at ITS tip on the next tick"
+    )
+    assert v in STALE_VERDICTS, f"the branch broke the anchor: got {v!r}"
+
+
+def test_tip_move_invalidates_naturally(sync_store, tmp_path):
+    origin, syncer = _armed(sync_store, tmp_path)
+    seed_scoped_episode(sync_store, "greet lesson", anchors=[("alpha", ANCHOR)])
+    syncer.service.tick()
+    tip0 = origin.origin_sha("refs/heads/main")
+    assert _verdict_for(sync_store, tip0, ANCHOR) is not None
+    origin.commit(
+        "app.py", 'def greet(name):\n    return "hi " + name + "!"\n', "tweak"
+    )
+    origin.push()
+    syncer.service.tick()
+    tip1 = origin.origin_sha("refs/heads/main")
+    from tests.contract.conftest import meta_value
+
+    assert meta_value(sync_store, "sync:alpha:last_tip") == tip1, (
+        "the per-repo watermark tracks the moved tip (§3.5 sync:<name>:last_tip)"
+    )
+    assert _verdict_for(sync_store, tip1, ANCHOR) is not None, (
+        "verdicts are keyed by (repo, tip) — a moved tip gets its own rows"
+    )
+
+
+def test_cache_is_rebuildable(sync_store, tmp_path):
+    origin, syncer = _armed(sync_store, tmp_path)
+    seed_scoped_episode(sync_store, "greet lesson", anchors=[("alpha", ANCHOR)])
+    syncer.service.tick()
+    tip = origin.origin_sha("refs/heads/main")
+    assert drift_rows(sync_store, "alpha", tip), "precondition: materialized rows"
+
+    sync_store.conn.execute("DELETE FROM anchor_drift")
+    assert not drift_rows(sync_store, "alpha", tip)
+    syncer.service.tick()
+    assert drift_rows(sync_store, "alpha", tip), (
+        "the drift cache is a rebuildable cache (Law 5): wipe → repopulated"
+    )

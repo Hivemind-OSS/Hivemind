@@ -17,6 +17,7 @@ vector) RAISE rather than return a defined-looking default — an untestable num
 refused, never masked, so a caller bug surfaces instead of hiding behind a plausible
 0.0/0.5. The IR/AUROC scorers are stdlib-only; ``bootstrap_ci`` needs numpy.
 """
+
 from __future__ import annotations
 
 import math
@@ -26,6 +27,7 @@ import numpy as np
 
 
 # ── pure IR metrics ───────────────────────────────────────────────────────────
+
 
 def _dedup(retrieved: Sequence[str]) -> list[str]:
     """Order-preserving de-duplication of the FULL ranked list. Each id is kept
@@ -78,6 +80,7 @@ def mrr(retrieved: Sequence[str], relevant: set[str]) -> float:
 
 # ── selective-prediction (abstention) metric ──────────────────────────────────
 
+
 def abstention_auroc(scores: Sequence[float], is_miss: Sequence[bool]) -> float:
     """AUROC of the abstention confidence at separating top-k HITS from MISSES,
     via the Mann-Whitney rank-sum identity = P(score(hit) > score(miss)) with
@@ -98,7 +101,8 @@ def abstention_auroc(scores: Sequence[float], is_miss: Sequence[bool]) -> float:
     if n != len(is_miss):
         raise ValueError(
             f"abstention_auroc length mismatch: len(scores)={n} != "
-            f"len(is_miss)={len(is_miss)}")
+            f"len(is_miss)={len(is_miss)}"
+        )
     # A NaN score is the ONE input class where the rank-sum diverges from the
     # brute-force P(hit>miss): every comparison against NaN is False, so the sort
     # mis-places it and the `==` tie test never groups it — it would be assigned a
@@ -108,13 +112,15 @@ def abstention_auroc(scores: Sequence[float], is_miss: Sequence[bool]) -> float:
     if any(math.isnan(s) for s in scores):
         raise ValueError(
             "abstention_auroc requires non-NaN scores; NaN is undefined "
-            "(refused, not masked)")
+            "(refused, not masked)"
+        )
     n_miss = sum(1 for m in is_miss if m)
     n_hit = n - n_miss
     if n_hit == 0 or n_miss == 0:
         raise ValueError(
             f"abstention_auroc is undefined without BOTH classes: "
-            f"hits={n_hit}, misses={n_miss} (degenerate — refused, not masked)")
+            f"hits={n_hit}, misses={n_miss} (degenerate — refused, not masked)"
+        )
     # Average ranks of the scores in ascending order (proper Mann-Whitney tie
     # handling). 1-indexed; tied scores share the mean of their rank block.
     order = sorted(range(n), key=lambda i: scores[i])
@@ -136,8 +142,12 @@ def abstention_auroc(scores: Sequence[float], is_miss: Sequence[bool]) -> float:
 
 # ── paired-delta significance (the ship gate) ─────────────────────────────────
 
+
 def bootstrap_ci(
-    deltas: Sequence[float], *, n_boot: int = 10_000, alpha: float = 0.05,
+    deltas: Sequence[float],
+    *,
+    n_boot: int = 10_000,
+    alpha: float = 0.05,
     seed: int = 0,
 ) -> tuple[float, float, float]:
     """Percentile bootstrap CI on a paired per-query delta vector. Returns

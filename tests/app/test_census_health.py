@@ -1,127 +1,131 @@
-"""The passive census staleness signal — hive_health(include_census_health=true).
+"""The passive census staleness signal — hive_health(include_census_health=true), v3:
+PER-REPO blocks keyed by registry name.
 
-A fail-open report of how long ago the last SHA-bound change_outcome evidence row
-landed. Serves the raw day-count (no invented staleness threshold, THEORY §9 #14) so an
-operator can tell whether the census feed has gone dark — plus, when the server-side
-sync daemon has left ``sync:*`` meta in the store, a ``sync`` observability block (U1
-intent 12: sync state rides the existing flag; no new CLI verb). With sync configured,
-darkness is REINTERPRETED as ``status: "sync stalled"`` (census is server-automatic, so
-"hooks unwired" is no longer the explanation).
+Per registered repo: a fail-open report of how long ago the last SHA-bound
+change_outcome evidence row landed FOR THAT REPO (attribution via the canonical
+payload's ``repo`` key; the raw day-count, no invented staleness threshold — THEORY §9
+#14), plus — when the sync daemon has left ``sync:<name>:*`` meta — a ``sync``
+observability block. With sync configured, darkness is REINTERPRETED as ``status:
+"sync stalled"``. An empty registry serves ``{}`` (never the old flat single-repo
+shape); every leg fails open (Law 6 — the side-channel never breaks hive_health).
 """
+
 from __future__ import annotations
 
+import json
 import sqlite3
 import time
 
+from hive.adapters.sqlite_db import connect
+from hive.adapters.store_sqlite import SqliteEpisodeStore
 from hive.app.census_health import census_health_report
-from hive.app.sync import (META_BACKFILLED_TOTAL, META_CANDIDATES_EVALUATED,
-                           META_LAST_ERROR, META_LAST_SYNC_TS, META_LAST_TIP,
-                           META_TRACKED_REF)
 from hive.domain.evidence_kinds import EK_CHANGE_OUTCOME, EK_OUTCOME_HELPED
-from tests.mcp._helpers import build_real_server, content, tool_call
+from tests.mcp._helpers import (
+    build_real_server,
+    content,
+    register_repo,
+    tool_call,
+)
 
 _DAY_S = 86_400
 
 
-def _conn_with_evidence() -> sqlite3.Connection:
-    conn = sqlite3.connect(":memory:")
-    conn.row_factory = sqlite3.Row
-    conn.execute(
-        "CREATE TABLE evidence_events(id INTEGER PRIMARY KEY AUTOINCREMENT, "
-        "episode_id INTEGER NOT NULL, kind TEXT NOT NULL, actor TEXT NOT NULL, "
-        "ts INTEGER NOT NULL, payload TEXT NOT NULL DEFAULT '{}')")
-    return conn
+def _store(*repos: str) -> SqliteEpisodeStore:
+    store = SqliteEpisodeStore(connect(":memory:"))
+    for i, name in enumerate(repos):
+        store.repo_add(name=name, url=f"https://example.invalid/{name}.git", added_ts=i)
+    return store
 
 
-def _conn_with_meta() -> sqlite3.Connection:
-    """The real store's shape for this module's reads: evidence_events + the plain
-    key/value ``meta`` table (mirrors store_sqlite's ``meta(key TEXT PRIMARY KEY,
-    value TEXT)``)."""
-    conn = _conn_with_evidence()
-    conn.execute("CREATE TABLE meta(key TEXT PRIMARY KEY, value TEXT)")
-    return conn
+def _outcome_payload(repo: str | None) -> str:
+    body = {"schema": "change_outcome/v1", "verdict": "pass"}
+    if repo is not None:
+        body["repo"] = repo
+    return json.dumps(body, sort_keys=True, separators=(",", ":"))
 
 
-def _set_meta(conn: sqlite3.Connection, key: str, value: str) -> None:
-    conn.execute(
-        "INSERT INTO meta(key, value) VALUES(?,?) "
-        "ON CONFLICT(key) DO UPDATE SET value=excluded.value", (key, value))
-    conn.commit()
+def _insert_outcome(store, ts: int, repo: str | None, kind: str = EK_CHANGE_OUTCOME):
+    store.insert_audit(1, kind, "census", ts, _outcome_payload(repo))
 
 
-def _insert(conn: sqlite3.Connection, kind: str, ts: int) -> None:
-    conn.execute("INSERT INTO evidence_events(episode_id, kind, actor, ts) VALUES(?,?,?,?)",
-                 (1, kind, "server", ts))
-    conn.commit()
+# ── the per-repo block shape ──────────────────────────────────────────────────
+def test_empty_registry_serves_empty_block():
+    store = _store()
+    assert census_health_report(store) == {}, (
+        "an EMPTY registry serves {}, never the old flat shape"
+    )
 
 
-def test_empty_store_reports_none():
-    conn = _conn_with_evidence()
-    assert census_health_report(conn) == {"days_since_last_change_outcome": None}
+def test_one_block_per_registered_repo_dark_by_default():
+    store = _store("alpha", "beta")
+    report = census_health_report(store)
+    assert set(report) == {"alpha", "beta"}
+    for block in report.values():
+        assert block == {"days_since_last_change_outcome": None}
 
 
-def test_only_other_kinds_reports_none():
-    # Only change_outcome counts — a helped/hurt row must not be read as a census outcome.
-    conn = _conn_with_evidence()
-    _insert(conn, EK_OUTCOME_HELPED, int(time.time()) - 5 * _DAY_S)
-    assert census_health_report(conn) == {"days_since_last_change_outcome": None}
-
-
-def test_one_change_outcome_at_known_ts_reports_days():
-    conn = _conn_with_evidence()
+def test_change_outcome_attributes_to_its_payload_repo():
+    store = _store("alpha", "beta")
     now = int(time.time())
-    _insert(conn, EK_CHANGE_OUTCOME, now - 3 * _DAY_S)
-    assert census_health_report(conn) == {"days_since_last_change_outcome": 3}
+    _insert_outcome(store, now - 3 * _DAY_S, "alpha")
+    report = census_health_report(store)
+    assert report["alpha"]["days_since_last_change_outcome"] == 3
+    assert report["beta"]["days_since_last_change_outcome"] is None
 
 
-def test_reports_days_since_the_most_recent_change_outcome():
-    conn = _conn_with_evidence()
+def test_newest_change_outcome_wins_per_repo():
+    store = _store("alpha")
     now = int(time.time())
-    _insert(conn, EK_CHANGE_OUTCOME, now - 10 * _DAY_S)
-    _insert(conn, EK_CHANGE_OUTCOME, now - 2 * _DAY_S)  # MAX(ts) wins
-    assert census_health_report(conn) == {"days_since_last_change_outcome": 2}
+    _insert_outcome(store, now - 10 * _DAY_S, "alpha")
+    _insert_outcome(store, now - 2 * _DAY_S, "alpha")  # MAX(ts) wins
+    assert census_health_report(store)["alpha"]["days_since_last_change_outcome"] == 2
 
 
-def test_closed_conn_degrades_to_none():
-    # The RULE-2 fault target: any store fault degrades to None, never raises (Law 6).
-    conn = _conn_with_evidence()
-    conn.close()
-    assert census_health_report(conn) == {"days_since_last_change_outcome": None}
+def test_repo_less_legacy_row_attributes_to_nobody():
+    # a pre-v3 payload with no "repo" key cannot be attributed — honest under-claim.
+    store = _store("alpha")
+    _insert_outcome(store, int(time.time()), None)
+    assert (
+        census_health_report(store)["alpha"]["days_since_last_change_outcome"] is None
+    )
 
 
-# ── the sync observability block (U1 intent 12: sync state rides census health) ──
+def test_only_change_outcome_kind_counts():
+    store = _store("alpha")
+    _insert_outcome(
+        store, int(time.time()) - 5 * _DAY_S, "alpha", kind=EK_OUTCOME_HELPED
+    )
+    assert (
+        census_health_report(store)["alpha"]["days_since_last_change_outcome"] is None
+    )
 
-def test_sync_block_absent_without_sync_meta():
-    # No sync:* meta ⇒ the report keeps TODAY'S exact shape — a non-sync deployment's
-    # census_health payload never grows a sync block (the byte-inert family: key present
-    # only when the condition is true).
-    conn = _conn_with_meta()
-    assert census_health_report(conn) == {"days_since_last_change_outcome": None}
+
+# ── the per-repo sync observability block ─────────────────────────────────────
+def test_sync_block_absent_without_per_repo_sync_meta():
+    store = _store("alpha")
+    assert "sync" not in census_health_report(store)["alpha"]
 
 
-def test_sync_block_absent_when_meta_table_missing():
-    # The legacy/fault shape: no meta table reads exactly like no sync meta, and the
-    # base day-count still serves (per-leg fail-open — the sync probe can never break
-    # the base report, Law 6).
-    conn = _conn_with_evidence()
-    _insert(conn, EK_CHANGE_OUTCOME, int(time.time()) - 3 * _DAY_S)
-    assert census_health_report(conn) == {"days_since_last_change_outcome": 3}
+def test_legacy_global_sync_keys_belong_to_no_repo():
+    # the pre-v3 2-part keys (sync:last_tip) carry no repo name — ignored, never
+    # misattributed to some repo.
+    store = _store("alpha")
+    store.meta_set("sync:last_tip", "a" * 40)
+    assert "sync" not in census_health_report(store)["alpha"]
 
 
 def test_sync_block_serves_the_seven_keys_when_configured():
-    # Every key is sourced from its sync:* store meta — tracked_ref and last_sync_ts
-    # included (the daemon persists both on a clean tick, expressly for this surface).
-    conn = _conn_with_meta()
-    _insert(conn, EK_CHANGE_OUTCOME, int(time.time()) - _DAY_S)
-    _set_meta(conn, META_TRACKED_REF, "master")
-    _set_meta(conn, META_LAST_TIP, "a" * 40)
-    _set_meta(conn, META_LAST_SYNC_TS, "111000")
-    _set_meta(conn, META_LAST_ERROR, "mirror: _SyncFault: git clone failed")
-    _set_meta(conn, META_CANDIDATES_EVALUATED, "4")
-    _set_meta(conn, META_BACKFILLED_TOTAL, "7")
-    report = census_health_report(conn)
-    assert report["days_since_last_change_outcome"] == 1
-    assert report["sync"] == {
+    store = _store("alpha")
+    _insert_outcome(store, int(time.time()) - _DAY_S, "alpha")
+    store.meta_set("sync:alpha:tracked_ref", "master")
+    store.meta_set("sync:alpha:last_tip", "a" * 40)
+    store.meta_set("sync:alpha:last_sync_ts", "111000")
+    store.meta_set("sync:alpha:last_error", "mirror: _SyncFault: git clone failed")
+    store.meta_set("sync:alpha:candidates_evaluated", "4")
+    store.meta_set("sync:alpha:backfilled_total", "7")
+    block = census_health_report(store)["alpha"]
+    assert block["days_since_last_change_outcome"] == 1
+    assert block["sync"] == {
         "configured": True,
         "tracked_ref": "master",
         "last_tip": "a" * 40,
@@ -132,57 +136,109 @@ def test_sync_block_serves_the_seven_keys_when_configured():
     }
 
 
+def test_sync_meta_is_scoped_to_its_own_repo():
+    store = _store("alpha", "beta")
+    store.meta_set("sync:alpha:last_tip", "a" * 40)
+    report = census_health_report(store)
+    assert "sync" in report["alpha"]
+    assert "sync" not in report["beta"]
+
+
 def test_tracked_ref_and_last_sync_ts_null_only_when_meta_absent():
-    # The armed-but-no-clean-tick-yet shape: sync meta exists (block present) but the
-    # daemon has not persisted these two keys — absent meta serves honest None, never
-    # an invented ref or timestamp.
-    conn = _conn_with_meta()
-    _set_meta(conn, META_LAST_TIP, "a" * 40)
-    block = census_health_report(conn)["sync"]
+    store = _store("alpha")
+    store.meta_set("sync:alpha:last_tip", "a" * 40)
+    block = census_health_report(store)["alpha"]["sync"]
     assert block["tracked_ref"] is None
     assert block["last_sync_ts"] is None
 
 
 def test_sync_configured_and_dark_reads_sync_stalled():
-    # The reinterpretation (intent 12): with sync configured, a dark feed no longer
-    # suggests unwired hooks (census is server-automatic) — it reads "sync stalled".
-    # Dark stays threshold-free: no change_outcome evidence at all (THEORY §9 #14).
-    conn = _conn_with_meta()
-    _set_meta(conn, META_LAST_TIP, "a" * 40)
-    report = census_health_report(conn)
-    assert report["days_since_last_change_outcome"] is None
-    assert report["sync"]["status"] == "sync stalled"
+    store = _store("alpha")
+    store.meta_set("sync:alpha:last_tip", "a" * 40)
+    block = census_health_report(store)["alpha"]
+    assert block["days_since_last_change_outcome"] is None
+    assert block["sync"]["status"] == "sync stalled"
 
 
 def test_sync_configured_and_live_carries_no_stalled_status():
     # status is present-only-when-dark (an unconditional attach is the mutation target).
-    conn = _conn_with_meta()
-    _insert(conn, EK_CHANGE_OUTCOME, int(time.time()))
-    _set_meta(conn, META_LAST_TIP, "a" * 40)
-    assert "status" not in census_health_report(conn)["sync"]
+    store = _store("alpha")
+    _insert_outcome(store, int(time.time()), "alpha")
+    store.meta_set("sync:alpha:last_tip", "a" * 40)
+    assert "status" not in census_health_report(store)["alpha"]["sync"]
 
 
 def test_sync_counters_absent_or_garbage_read_zero():
-    # The counter tolerance mirrors sync's _bump_counter_locked: absent or non-digit
-    # reads 0 — a count is never invented from junk.
-    conn = _conn_with_meta()
-    _set_meta(conn, META_LAST_TIP, "a" * 40)
-    _set_meta(conn, META_BACKFILLED_TOTAL, "not-a-number")
-    block = census_health_report(conn)["sync"]
+    store = _store("alpha")
+    store.meta_set("sync:alpha:last_tip", "a" * 40)
+    store.meta_set("sync:alpha:backfilled_total", "not-a-number")
+    block = census_health_report(store)["alpha"]["sync"]
     assert block["candidates_evaluated"] == 0
     assert block["backfilled_total"] == 0
 
 
-def test_health_serves_sync_state_over_mcp_when_configured():
-    # Intent 12 end-to-end: sync state rides hive_health(include_census_health=true) —
-    # the EXISTING flag is the operator surface, no new CLI verb anywhere.
+# ── fail-open legs (Law 6: the side-channel never raises) ─────────────────────
+class _RaisingRegistryStore:
+    conn = None
+
+    def repo_registry(self):
+        raise RuntimeError("registry read exploded")
+
+
+class _RaisingConnStore:
+    """A registry that answers but a conn whose every read faults — each per-repo
+    leg degrades independently (day-count None, no sync block)."""
+
+    class _BadConn:
+        def execute(self, *a, **k):
+            raise sqlite3.OperationalError("conn is gone")
+
+    conn = _BadConn()
+
+    def repo_registry(self):
+        class Row:
+            name = "alpha"
+
+        return [Row()]
+
+
+def test_registry_fault_degrades_to_empty():
+    assert census_health_report(_RaisingRegistryStore()) == {}
+
+
+def test_conn_fault_degrades_to_dark_blocks():
+    report = census_health_report(_RaisingConnStore())
+    assert report == {"alpha": {"days_since_last_change_outcome": None}}
+
+
+def test_closed_conn_degrades_to_empty_never_raises():
+    store = _store("alpha")
+    store.conn.close()
+    assert census_health_report(store) == {}  # the registry read faults first
+
+
+# ── the MCP surface (hive_health rides the per-repo report) ───────────────────
+def test_health_serves_per_repo_blocks_over_mcp():
     server, _ = build_real_server()
-    server.store.meta_set(META_LAST_TIP, "c" * 40)
+    register_repo(server, "alpha")
+    register_repo(server, "beta")
+    server.store.meta_set("sync:alpha:last_tip", "c" * 40)
     snap = content(tool_call(server, "hive_health", {"include_census_health": True}))
-    block = snap["census_health"]["sync"]
-    assert block["configured"] is True
-    assert block["last_tip"] == "c" * 40
-    assert block["status"] == "sync stalled"          # fresh feed: configured + dark
+    block = snap["census_health"]
+    assert set(block) == {"alpha", "beta"}
+    assert block["alpha"]["sync"]["configured"] is True
+    assert block["alpha"]["sync"]["last_tip"] == "c" * 40
+    assert block["alpha"]["sync"]["status"] == "sync stalled"  # configured + dark
+    assert "sync" not in block["beta"]
+    assert "days_since_last_change_outcome" not in block, (
+        "the flat single-repo shape is gone"
+    )
+
+
+def test_health_empty_registry_serves_empty_block_over_mcp():
+    server, _ = build_real_server()
+    snap = content(tool_call(server, "hive_health", {"include_census_health": True}))
+    assert snap["census_health"] == {}
 
 
 def test_health_omits_census_health_by_default():
@@ -191,20 +247,15 @@ def test_health_omits_census_health_by_default():
     assert "census_health" not in content(tool_call(server, "hive_health", {}))
 
 
-def test_health_surfaces_census_health_on_flag():
-    server, _ = build_real_server()
-    snap = content(tool_call(server, "hive_health", {"include_census_health": True}))
-    assert "census_health" in snap
-    assert snap["census_health"] == {"days_since_last_change_outcome": None}  # fresh store
-
-
 def test_census_health_flag_is_advertised():
-    # advertised == enforced: the flag joins its six include_* siblings in both the description
-    # and the inputSchema, and the (capped) description still fits under METADATA_FIELD_LIMIT.
-    from hive.app.onboard_ref import METADATA_FIELD_LIMIT
+    # advertised == enforced: the flag rides the description and the inputSchema, and
+    # the (capped) description still fits under METADATA_FIELD_LIMIT.
+    from hive.app.contract import METADATA_FIELD_LIMIT
     from hive.app.tool_defs import TOOL_DEFINITIONS
 
     health = next(t for t in TOOL_DEFINITIONS if t["name"] == "hive_health")
     assert "include_census_health" in health["description"]
-    assert health["inputSchema"]["properties"]["include_census_health"] == {"type": "boolean"}
+    assert health["inputSchema"]["properties"]["include_census_health"] == {
+        "type": "boolean"
+    }
     assert len(health["description"]) <= METADATA_FIELD_LIMIT

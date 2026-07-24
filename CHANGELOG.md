@@ -3,6 +3,73 @@
 All notable changes to this project are documented here.
 
 ## Added
+- `hive-upgrade` operator skill (`skills/hive-upgrade/`) — the runbook for moving a running server
+  to a different release ref, plus a **schema pre-flight** (`preflight.py`) that answers "will this
+  ref accept the store I already have?" before any rebuild. The pre-flight reads the target ref's
+  own boot assertions (`_LEGACY_EPISODE_COLUMNS` / `_V3_EPISODE_COLUMNS` / `_REQUIRED_TABLES`) with
+  `git show` + `ast` — never importing or executing the target — and compares them against the live
+  store opened read-only. It fails closed: `PASS` (0) is the only safe verdict, and `UNKNOWN` (2),
+  emitted when the target's contract cannot be located, is treated as a break rather than as
+  probably-fine. `hive upgrade` already protected the data (snapshot gate + auto-rollback); what
+  was missing was knowing an upgrade could never work before spending a rebuild-and-rollback cycle
+  discovering it.
+- Sync capacity knobs (`HIVE_SYNC__DRIFT_PER_TICK` / `HIVE_SYNC__BACKFILL_PER_TICK`, default
+  200 each, floor 1; `HIVE_SYNC__WORKERS`, default 1, floor 1). The per-tick verify/mint caps
+  were hardcoded at 50; they are now operator-env, because their right value is a property of
+  the deployment (host cores, registered-repo count, anchored-episode count) rather than a
+  measured constant. `workers > 1` ticks registered repos concurrently through a bounded pool —
+  safe because a repo tick is already isolated by construction (own mirror, own credential, own
+  error key) and every store touch takes the one global write lock, which is never held across
+  a fetch or an engine spawn. The default 1 keeps the serial loop byte-for-byte. All three bound
+  throughput only: a tick that runs out of budget carries the remainder to the next one, and an
+  un-materialized anchor still reads `unverifiable`, never a guess.
+- U4-THIN-AGENT (schema v3, served contract v3): ONE store, partitioned by repo at the
+  memory level; agents are thin, repo-agnostic MCP clients that recall and store; the
+  server owns mint, staleness, poison, outcome, and promotion; trust is fully mechanical
+  + agent-adjudicated — no humans in the loop, no AGI sentinel. The pieces: a durable
+  synced-repo REGISTRY (`repos` table; `hive repo add <url> [--name --branch --token-env]`
+  / `hive repo remove <name>` / `hive repos`, shelling to the in-container
+  `hive.tools.repoctl`; rows are operational data — the sync daemon re-reads them every
+  tick, registering needs no restart; `--token-env` stores the NAME of the env var
+  holding that repo's git token, never a secret byte, unset ⇒ the fleet-default
+  `HIVE_SYNC__TOKEN`); the sync daemon rebuilt as a per-repo registry loop (one mirror,
+  ledger receipt, candidate evaluation, and server-side mint backfill per registered
+  repo; a deregistered repo's mirror is pruned next tick; per-repo census rows and a
+  per-repo `hive_health(include_census_health=true)` block); repo-partitioned memory —
+  structured `anchors=[{repo, anchor}]` + `repos=[...]` scope on the write verbs
+  (an unregistered repo name refuses the call; the server mints fingerprints and judges
+  drift per anchor, server-side — callers never supply fingerprint material) and scoped
+  recall (`repos=["name"|"name@branch"]`, `anchor_prefix`; omit = global; general
+  memories always remain candidates; partition filtering runs BEFORE the relevance
+  gate); serve-now trust (`hive_write` lands `trust=provisional`, recallable
+  immediately; `established` is reachable ONLY via a SHA-bound outcome-verified win on
+  the repo's canonical line — the server-written census artifact, never a human vouch);
+  the MACHINE-GATED retirement evidence gate (`hive_prune` / `hive_supersede` /
+  `hive_write(replaces=)` retire only when the server itself verifies a qualifying
+  machine signal for the target — anchor drift at the canonical tip, hurt evidence from
+  another identity or a verified outcome, a mechanical contradiction, or a near-dup
+  successor; an unqualified call is a benign no-op envelope, never an error); the
+  served-only usage contract (the whole contract rides the MCP `initialize` result's
+  `instructions` field, fresh at every connect — no install step, no versioned rules
+  block, no client hooks, no re-onboard loop; sessions pick up a changed contract on
+  reconnect); and a frozen v3 contract-test suite (`tests/contract/`) pinning the
+  surface. Rollout is deliberately clean-store: schema v3 starts empty and the prior
+  corpus is disposable — `hive reset`, then `hive repo add` each repo; no export, no
+  re-seed, no migration tooling. Consuming repos must one-time strip the now-dead
+  HIVEMIND-RULES block, hivemind hooks, and hive_* allowlist from their own rules files
+  / `.claude/settings.json`; the served tool descriptions change and sessions pick them
+  up on reconnect.
+- `make check` — the repo's canonical mechanical gate (create-on-first-touch):
+  `ruff format --check .` + `ruff check .` + `mypy hive/ --strict` +
+  `pytest -m "not embed"` (the default suite — the heavy `embed` tier is opt-in),
+  non-zero on the first failing leg, each leg runnable alone (`make format` /
+  `lint` / `typecheck` / `test`). Legs run through `uv run --extra dev`, so a fresh
+  clone needs nothing beyond uv; the dev extra gains `ruff`, `mypy`, and the
+  `types-jsonschema` / `types-defusedxml` / `types-networkx` stubs. `[tool.mypy]` pins
+  `python_version` 3.12 with per-module `ignore_missing_imports` ONLY for stub-less
+  deps — the vendored `combdrift.*` / `matrix.*` engines and the embed-only
+  `sentence_transformers.*`; the whole `hive/` tree now passes
+  strict mypy, and the tree is ruff-formatted end to end.
 - `hive-connect-repo` operator skill (`skills/hive-connect-repo/SKILL.md`): a guided runbook that
   arms and tests the server-side census feed against a GitHub repo — it checks the prerequisites
   (repo URL, a read-only token for a private remote, a sync-capable server image), auto-detects the
@@ -338,6 +405,27 @@ All notable changes to this project are documented here.
   config it is resolved at boot — there is no live reload (tune via `.env` then `hive up`).
 
 ## Changed
+- The three anchor/census engines are absorbed as **first-party subpackages of the one `hive`
+  distribution** — `hive.matrix` (AST code-structure + blast radius), `hive.combdrift` (node-level
+  contract-drift / call-shape fingerprint), and `hive.edge` (the in-image engine CLI front) —
+  ported byte-preserving from the former `Hivemind-OSS/Hive-edge` workspace at source commit
+  `f94e1a7`, which is thereby archived: the hivemind repository now self-contains every engine and
+  builds the whole server from itself alone. The vendored-wheel channel dies with it —
+  `vendor/wheels/`, `scripts/vendor_edge.py`, the `[tool.uv.sources]` engine pins, and the
+  four-site version-lockstep + `KNOWN_HIVEMIND_MIN_EDGE_VERSION` floor machinery are all removed;
+  the engines' third-party dependencies (tree-sitter `<0.26` + the eight grammars, networkx,
+  sqlglot) move into the `sync` extra and resolve through `uv lock` / `uv sync` like any other
+  dependency — no wheelhouse to refresh, no separate engine repository to release. Server behavior
+  is byte-identical: the `hive-edge` console script name is kept (re-pointed to
+  `hive.edge.cli:main`) so the sync mint/verify discovery + argv are untouched; all token formats,
+  the four registered meta keys, and receipt/provenance shapes are unchanged; the frozen contract
+  suite (CT-1…14) passes byte-untouched, joined by CT-15/16/17 pinning self-containment,
+  engine-seam byte-parity, and the agent-side deletions. The U2 meta-key registry re-homes to
+  `hive/domain/meta_registry.py` (owner strings drop their `hivemind:` prefix), strict
+  `mypy hive/ --strict` extends over the absorbed engines with **no** first-party override, the
+  engine version constants (`hive.matrix.__version__`, `hive.combdrift.version.COMBDRIFT_VERSION`)
+  are frozen as provenance literals, and the dead agent-side vestiges (`hooks.py`, the `hook` and
+  `worktree-delta` verbs) are not ported — they join the argparse-rejected exit-2 set.
 - The shipped operator skills resolve the `hive` CLI mechanically: each runbook opens with a
   one-line probe (`command -v hive >/dev/null 2>&1 || hive() { python3 -m hive.tools.cli "$@"; }`)
   so every literal `hive …` step runs on an uninstalled checkout — the CLI is stdlib-only — and
@@ -464,6 +552,23 @@ All notable changes to this project are documented here.
   transitive packages.
 
 ## Fixed
+- The advertised anchor grammar now matches the grammar the census join parses. The
+  `hive_write` schema, the `anchors` property, the contract served at MCP `initialize`, and the
+  Python client all told agents to write `path/file.py:symbol` — a single colon, which the
+  change→episode join never matches, because it partitions the stored anchor on `::` alone. The
+  failure was silent and self-disguising: drift verdicts kept working (the engine's own splitter
+  accepts either separator), so the binding looked healthy while the memory earned no
+  `change_outcome`, could never be outcome-verified, could never promote to `established`, and
+  expired at the provisional TTL while still being correct. Every agent-facing surface now
+  advertises `path/file.py::symbol`; a bare `path` still binds file-scoped and was never
+  affected. A regression drives the advertised string itself through the join, so the two halves
+  of the grammar cannot fork again.
+- `hive-edge verify` classifies a prose anchor whose text contains a dot (e.g.
+  `the v2.0 rollout`) as `unverifiable`/`not_a_code_anchor` instead of a false
+  `stale`/`file_missing`. The code-shaped-path check (`hive/edge/cli.py:_is_code_shaped_path`)
+  now requires a whitespace-free path with a clean, letter-initial filename extension — a
+  bare `os.path.splitext` extension read a dotted prose token (`.0 rollout`) as a missing
+  code file, skipping the not-a-code-anchor reclassification.
 - The served onboarding procedure now creates an absent rules file in flight. `ONBOARDING_PROCEDURE`
   step 1 (`hive/app/onboard_ref.py`) spelled out only the "a block is already present, REPLACE it in
   place" case, leaving the DEFAULT first-onboard state — a fresh clone ships no rules file (the rules

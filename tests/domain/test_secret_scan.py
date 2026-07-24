@@ -7,6 +7,7 @@ Each per-rule test asserts the SPECIFIC rule fired (not merely action==refuse) �
 deleting that one regex turns the test red even though the entropy catch-all would
 still refuse the token (the per-family mutation coverage the design review demanded).
 """
+
 from __future__ import annotations
 
 import hashlib
@@ -14,7 +15,13 @@ import hashlib
 import pytest
 
 from hive.domain.secret_scan import (
-    CLEAN, REDACT, REFUSE, ScanVerdict, SecretFinding, scan, token_entropy_bits,
+    CLEAN,
+    REDACT,
+    REFUSE,
+    ScanVerdict,
+    SecretFinding,
+    scan,
+    token_entropy_bits,
 )
 
 
@@ -44,15 +51,19 @@ def test_xox_refused():
 
 
 def test_jwt_refused():
-    jwt = ("eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9"
-           ".eyJzdWIiOiIxMjM0NTY3ODkwIiwibmFtZSI6IkpvZSJ9"
-           ".SflKxwRJSMeKKF2QT4fwpMeJf36POk6yJV_adQssw5c")
+    jwt = (
+        "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9"
+        ".eyJzdWIiOiIxMjM0NTY3ODkwIiwibmFtZSI6IkpvZSJ9"
+        ".SflKxwRJSMeKKF2QT4fwpMeJf36POk6yJV_adQssw5c"
+    )
     v = scan(f"auth bearer {jwt}")
     assert v.action == REFUSE and "jwt" in _rules(v)
 
 
 def test_pem_refused():
-    v = scan("-----BEGIN RSA PRIVATE KEY-----\nMIIEpAIBAAKC\n-----END RSA PRIVATE KEY-----")
+    v = scan(
+        "-----BEGIN RSA PRIVATE KEY-----\nMIIEpAIBAAKC\n-----END RSA PRIVATE KEY-----"
+    )
     assert v.action == REFUSE and "pem_private_key" in _rules(v)
 
 
@@ -75,8 +86,12 @@ def test_low_entropy_residual_is_deliberately_clean():
     # floor targets high-entropy accidental pastes; this is an accepted, conscious
     # gap (out-of-scope for the secret floor), NOT an oversight — if you add a detector, update
     # the secret_scan residual note and flip these expectations deliberately.
-    for benign in ("--------------------", "====================",
-                   "0b1010101010101010", "XXXXXXXXXXXXXXXXXXXX"):
+    for benign in (
+        "--------------------",
+        "====================",
+        "0b1010101010101010",
+        "XXXXXXXXXXXXXXXXXXXX",
+    ):
         assert scan(f"note {benign} end").action == CLEAN, benign
 
 
@@ -87,7 +102,7 @@ def test_entropy_boundary_pair():
     # above: 20 distinct chars → H=log2(20)≈4.32 bits/char (> 4.0) ⟹ refuse
     high = "0123456789abcdefghij"
     assert len(low) == 20 and len(high) == 20
-    assert token_entropy_bits(low) < 4.0 < token_entropy_bits(high)   # genuine straddle
+    assert token_entropy_bits(low) < 4.0 < token_entropy_bits(high)  # genuine straddle
     assert scan(f"id {low} end").action == CLEAN
     v = scan(f"id {high} end")
     assert v.action == REFUSE and "entropy" in _rules(v)
@@ -97,15 +112,21 @@ def test_entropy_ignores_short_and_low_entropy_prose():
     # normal prose tokens are short and/or low-entropy ⟹ never refused
     assert scan("the database connection pool was exhausted under load").action == CLEAN
     # a 40-char hex git SHA sits at H≈4.0 (16-symbol alphabet) and must PASS (git corpus)
-    assert scan("fixed in commit deadbeefcafe1234567890abcdef0123456789ab").action == CLEAN
+    assert (
+        scan("fixed in commit deadbeefcafe1234567890abcdef0123456789ab").action == CLEAN
+    )
 
 
 # ── ScanVerdict cannot lie (frozen __post_init__) ─────────────────────────────
 def test_verdict_cannot_lie():
     with pytest.raises(ValueError):
-        ScanVerdict(action=CLEAN, redacted_text=None, findings=(SecretFinding("x", (0, 1)),))
+        ScanVerdict(
+            action=CLEAN, redacted_text=None, findings=(SecretFinding("x", (0, 1)),)
+        )
     with pytest.raises(ValueError):
-        ScanVerdict(action=REDACT, redacted_text=None, findings=(SecretFinding("x", (0, 1)),))
+        ScanVerdict(
+            action=REDACT, redacted_text=None, findings=(SecretFinding("x", (0, 1)),)
+        )
     with pytest.raises(ValueError):
         ScanVerdict(action=REFUSE, redacted_text=None, findings=())
 
@@ -131,11 +152,11 @@ def test_redact_masks_secret_and_changes_hash():
     text = f"my key is {secret} ok"
     v = scan(text, mode="redact")
     assert v.action == REDACT and v.redacted_text is not None
-    assert secret not in v.redacted_text                    # raw secret gone
+    assert secret not in v.redacted_text  # raw secret gone
     assert "[REDACTED]" in v.redacted_text
     h_orig = hashlib.sha256(text.encode()).hexdigest()
     h_red = hashlib.sha256(v.redacted_text.encode()).hexdigest()
-    assert h_red != h_orig                                  # dedup keys on redacted text
+    assert h_red != h_orig  # dedup keys on redacted text
 
 
 def test_clean_text_is_clean_no_findings():

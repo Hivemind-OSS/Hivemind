@@ -5,12 +5,17 @@ deterministic order + top_n cap, canonical a_id<b_id, [] on degenerate input.
 PURE: hand-crafted unit vectors give exact cosine control (no embedder). The
 detector is the math; the app layer (recall carrier / health report) buckets and
 prose-wraps it."""
+
 from __future__ import annotations
 
 import numpy as np
 
 from hive.domain.conflict import (
-    CONTRADICTION, REDUNDANCY, ConflictItem, ConflictNote, detect_conflicts,
+    CONTRADICTION,
+    REDUNDANCY,
+    ConflictItem,
+    ConflictNote,
+    detect_conflicts,
     suppression_targets,
 )
 
@@ -24,8 +29,9 @@ def _unit(*xs) -> np.ndarray:
 
 
 def _item(eid, vec, *, polarity="neutral", anchor="f.py", ts=0, trust=ESTABLISHED):
-    return ConflictItem(episode_id=eid, vector=vec, polarity=polarity, anchor=anchor,
-                        ts=ts, trust=trust)
+    return ConflictItem(
+        episode_id=eid, vector=vec, polarity=polarity, anchor=anchor, ts=ts, trust=trust
+    )
 
 
 # near-dup pair (cosine ≈ 0.9997 ≥ τ); a far vector (cosine 0 < τ)
@@ -37,20 +43,33 @@ _V_FAR = _unit(0.0, 1.0, 0.0, 0.0)
 # ── ConflictNote invariants (illegal states unconstructable) ───────────────────
 def test_note_rejects_non_canonical_order():
     import pytest
+
     with pytest.raises(ValueError):
-        ConflictNote(a_id=40, b_id=12, relation=REDUNDANCY, cosine=0.9,
-                     anchor="", loser_hint=12)
+        ConflictNote(
+            a_id=40, b_id=12, relation=REDUNDANCY, cosine=0.9, anchor="", loser_hint=12
+        )
 
 
 def test_note_rejects_bad_relation_and_cosine():
     import pytest
+
     with pytest.raises(ValueError):
-        ConflictNote(a_id=1, b_id=2, relation="bogus", cosine=0.9, anchor="", loser_hint=1)
+        ConflictNote(
+            a_id=1, b_id=2, relation="bogus", cosine=0.9, anchor="", loser_hint=1
+        )
     with pytest.raises(ValueError):
-        ConflictNote(a_id=1, b_id=2, relation=REDUNDANCY, cosine=1.5, anchor="", loser_hint=1)
+        ConflictNote(
+            a_id=1, b_id=2, relation=REDUNDANCY, cosine=1.5, anchor="", loser_hint=1
+        )
     with pytest.raises(ValueError):
-        ConflictNote(a_id=1, b_id=2, relation=REDUNDANCY, cosine=float("nan"),
-                     anchor="", loser_hint=1)
+        ConflictNote(
+            a_id=1,
+            b_id=2,
+            relation=REDUNDANCY,
+            cosine=float("nan"),
+            anchor="",
+            loser_hint=1,
+        )
 
 
 # ── opposing polarity → contradiction (symmetric, no winner) ───────────────────
@@ -60,8 +79,8 @@ def test_opposing_polarity_is_contradiction():
     assert len(notes) == 1
     n = notes[0]
     assert n.relation == CONTRADICTION
-    assert (n.a_id, n.b_id) == (10, 20)        # canonical
-    assert n.loser_hint is None                 # contradiction has no winner
+    assert (n.a_id, n.b_id) == (10, 20)  # canonical
+    assert n.loser_hint is None  # contradiction has no winner
     assert n.cosine >= 0.85
 
 
@@ -75,20 +94,24 @@ def test_dont_vs_do_order_independent():
 def test_same_polarity_is_redundancy_with_loser_hint_by_trust():
     # trust dominates ts: keep the established (10), retire the provisional (20),
     # EVEN though 20 is newer — a human-vouched memory outranks a demand-promoted one.
-    items = [_item(10, _V_A, polarity="do", trust=ESTABLISHED, ts=100),
-             _item(20, _V_A2, polarity="do", trust=PROVISIONAL, ts=200)]
+    items = [
+        _item(10, _V_A, polarity="do", trust=ESTABLISHED, ts=100),
+        _item(20, _V_A2, polarity="do", trust=PROVISIONAL, ts=200),
+    ]
     n = detect_conflicts(items, tau=0.85)[0]
     assert n.relation == REDUNDANCY
-    assert n.loser_hint == 20                    # provisional loses to established
+    assert n.loser_hint == 20  # provisional loses to established
 
 
 def test_redundancy_loser_is_older_when_trust_ties():
     # same trust ⇒ ts breaks the tie: the OLDER (lower ts) row is the loser to retire.
-    items = [_item(10, _V_A, trust=ESTABLISHED, ts=500),
-             _item(20, _V_A2, trust=ESTABLISHED, ts=100)]
+    items = [
+        _item(10, _V_A, trust=ESTABLISHED, ts=500),
+        _item(20, _V_A2, trust=ESTABLISHED, ts=100),
+    ]
     n = detect_conflicts(items, tau=0.85)[0]
     assert n.relation == REDUNDANCY
-    assert n.loser_hint == 20                    # id 20 is older (ts 100 < 500)
+    assert n.loser_hint == 20  # id 20 is older (ts 100 < 500)
 
 
 def test_neutral_neutral_is_redundancy():
@@ -110,7 +133,7 @@ def test_below_tau_yields_no_note():
 
 def test_tau_boundary_is_inclusive():
     # cosine exactly at τ counts (>= τ), not dropped
-    items = [_item(10, _V_A), _item(20, _V_A)]      # identical ⇒ cosine 1.0
+    items = [_item(10, _V_A), _item(20, _V_A)]  # identical ⇒ cosine 1.0
     assert len(detect_conflicts(items, tau=1.0)) == 1
 
 
@@ -125,12 +148,12 @@ def test_non_finite_vector_skips_pair():
 
 # ── deterministic order (cosine desc, a_id, b_id) + top_n cap ──────────────────
 def test_deterministic_order_cosine_desc_then_ids():
-    near = _unit(0.999, 0.001, 0.0, 0.0)   # ~1.0 vs _V_A
-    less = _unit(0.9, 0.2, 0.0, 0.0)       # lower cosine vs _V_A but still ≥ τ=0.85
+    near = _unit(0.999, 0.001, 0.0, 0.0)  # ~1.0 vs _V_A
+    less = _unit(0.9, 0.2, 0.0, 0.0)  # lower cosine vs _V_A but still ≥ τ=0.85
     items = [_item(10, _V_A), _item(20, near), _item(30, less)]
     notes = detect_conflicts(items, tau=0.85)
     cosines = [n.cosine for n in notes]
-    assert cosines == sorted(cosines, reverse=True)            # cosine-descending
+    assert cosines == sorted(cosines, reverse=True)  # cosine-descending
 
 
 def test_top_n_caps_output():
@@ -150,8 +173,14 @@ def test_empty_and_singleton_yield_nothing():
 def _note(a_id, b_id, *, relation=REDUNDANCY, loser_hint=None):
     """A canonical note for the suppression rule (it reads trust off ``trust_by_id``,
     not the note — so ``loser_hint`` / ``relation`` do not steer the target)."""
-    return ConflictNote(a_id=a_id, b_id=b_id, relation=relation, cosine=0.95,
-                        anchor="f.py", loser_hint=loser_hint)
+    return ConflictNote(
+        a_id=a_id,
+        b_id=b_id,
+        relation=relation,
+        cosine=0.95,
+        anchor="f.py",
+        loser_hint=loser_hint,
+    )
 
 
 def test_suppression_drops_the_provisional_against_established():
@@ -188,8 +217,18 @@ def test_suppression_no_target_on_unknown_equal_ranks():
 
 def test_suppression_unions_strict_losers_across_notes():
     # multiple notes ⇒ the union of each note's strict-lower member; a tied note adds nothing.
-    trust = {10: ESTABLISHED, 20: PROVISIONAL, 30: ESTABLISHED, 40: PROVISIONAL, 50: ESTABLISHED}
-    notes = [_note(10, 20), _note(30, 40), _note(10, 50)]   # 50 vs 10 both established ⇒ tie
+    trust = {
+        10: ESTABLISHED,
+        20: PROVISIONAL,
+        30: ESTABLISHED,
+        40: PROVISIONAL,
+        50: ESTABLISHED,
+    }
+    notes = [
+        _note(10, 20),
+        _note(30, 40),
+        _note(10, 50),
+    ]  # 50 vs 10 both established ⇒ tie
     assert suppression_targets(notes, trust) == frozenset({20, 40})
 
 

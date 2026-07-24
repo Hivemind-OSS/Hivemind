@@ -40,31 +40,12 @@ def _git(repo: Path, *args: str) -> str:
     assert proc.returncode == 0, f"git {args} failed: {proc.stderr}"
     return proc.stdout
 
-_BASE_MOD = (
-    "def fn(a, b):\n"
-    "    return a + b\n"
-    "\n"
-    "\n"
-    "def other(x):\n"
-    "    return fn(x, 1)\n"
-)
 
-_HEAD_MOD = (
-    "def fn(a):\n"
-    "    return a\n"
-    "\n"
-    "\n"
-    "def other(x):\n"
-    "    return fn(x)\n"
-)
+_BASE_MOD = "def fn(a, b):\n    return a + b\n\n\ndef other(x):\n    return fn(x, 1)\n"
 
-_TEST_MOD = (
-    "from pkg.mod import fn\n"
-    "\n"
-    "\n"
-    "def test_fn():\n"
-    "    assert fn(1, 2) == 3\n"
-)
+_HEAD_MOD = "def fn(a):\n    return a\n\n\ndef other(x):\n    return fn(x)\n"
+
+_TEST_MOD = "from pkg.mod import fn\n\n\ndef test_fn():\n    assert fn(1, 2) == 3\n"
 
 
 @pytest.fixture(scope="session")
@@ -95,10 +76,14 @@ def single_root_receipt(
     rc = cli.main(
         [
             "build",
-            "--repo", str(single_root_repo),
-            "--base", "mainline",
-            "--head", "feat-x",
-            "--out", str(out),
+            "--repo",
+            str(single_root_repo),
+            "--base",
+            "mainline",
+            "--head",
+            "feat-x",
+            "--out",
+            str(out),
             "--propagate",
         ]
     )
@@ -136,11 +121,12 @@ class TestSingleRootReceiptSpellsRepoRelativeSubjects:
         self, single_root_receipt: dict
     ) -> None:
         (node,) = [
-            entry for entry in single_root_receipt["precision"]
+            entry
+            for entry in single_root_receipt["precision"]
             if entry["class"] == "node"
         ]
-        assert node["total"] >= 2                     # fn + other, at least
-        assert node["decided"] == node["total"] > 0   # never the 0/0 silent death
+        assert node["total"] >= 2  # fn + other, at least
+        assert node["decided"] == node["total"] > 0  # never the 0/0 silent death
 
     def test_regression_line_seeds_and_spells_repo_relative(
         self, single_root_receipt: dict
@@ -178,27 +164,38 @@ class TestAsymmetricRootsBridgePerSide:
         repo.mkdir()
         _git(repo, "init", "-q", "-b", "mainline")
         (repo / "pkg").mkdir()
-        (repo / "pkg" / "mod.py").write_text(_BASE_MOD + "\n\ndef doomed():\n    return 9\n")
+        (repo / "pkg" / "mod.py").write_text(
+            _BASE_MOD + "\n\ndef doomed():\n    return 9\n"
+        )
         _git(repo, "add", "-A")
         _git(repo, "commit", "-qm", "base")
         _git(repo, "checkout", "-qb", "feat-x")
         (repo / "pkg" / "mod.py").write_text(_HEAD_MOD)
-        (repo / "main.py").write_text("from pkg.mod import fn\n\n\ndef entry():\n    return fn(1)\n")
+        (repo / "main.py").write_text(
+            "from pkg.mod import fn\n\n\ndef entry():\n    return fn(1)\n"
+        )
         _git(repo, "add", "-A")
         _git(repo, "commit", "-qm", "narrow fn, drop doomed, add root entry")
 
         out = tmp_path / "receipt.json"
         rc = cli.main(
-            ["build", "--repo", str(repo), "--base", "mainline",
-             "--head", "feat-x", "--out", str(out)]
+            [
+                "build",
+                "--repo",
+                str(repo),
+                "--base",
+                "mainline",
+                "--head",
+                "feat-x",
+                "--out",
+                str(out),
+            ]
         )
         assert rc == cli.EX_OK
         envelope = json.loads(out.read_text(encoding="utf-8"))
         receipt = json.loads(base64.b64decode(envelope["payload"]))["predicate"]
 
-        existence = {
-            line["subject"]: line for line in _lines_of(receipt, "existence")
-        }
+        existence = {line["subject"]: line for line in _lines_of(receipt, "existence")}
         # base-side attribution (removed_spans against the single-rooted BASE
         # graph): the deleted symbol is spelled repo-relative.
         assert "pkg/mod.py::doomed" in existence, sorted(existence)
@@ -250,7 +247,7 @@ class TestMultiRootStaysByteIdentical:
         assert real["lines"] == forced_off["lines"]
         assert real["precision"] == forced_off["precision"]
         subjects = {line["subject"] for line in real["lines"]}
-        assert "lib.py::greet" in subjects            # non-vacuous: real evidence rode
+        assert "lib.py::greet" in subjects  # non-vacuous: real evidence rode
 
 
 class TestOffsetFailsOpen:
@@ -259,11 +256,12 @@ class TestOffsetFailsOpen:
     def test_unreadable_manifest_degrades_to_empty_offset(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
     ) -> None:
-        import matrix.paths
         from hive.census import engines
+        from hive.matrix import paths
 
         monkeypatch.setattr(
-            matrix.paths, "default_manifest",
+            paths,
+            "default_manifest",
             lambda: str(tmp_path / "absent" / "manifest.json"),
         )
         assert engines._graph_offset(tmp_path) == ""
@@ -272,7 +270,7 @@ class TestOffsetFailsOpen:
         self, graph_pair: GraphPair
     ) -> None:
         head_nx = graph_pair.head.nx
-        subjects = {
-            node_subject(head_nx, node_id) for node_id in head_nx.nodes()
-        } - {None}
+        subjects = {node_subject(head_nx, node_id) for node_id in head_nx.nodes()} - {
+            None
+        }
         assert any(s.startswith("lib.py::") for s in subjects)

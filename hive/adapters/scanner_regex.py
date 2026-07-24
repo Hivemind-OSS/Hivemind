@@ -6,10 +6,16 @@ implements exactly ``scan(text) -> ScanVerdict`` and is selected by
 ``secret_scan.provider`` in config — no core change. The domain state machine is
 provider-blind; the frozen ``ScanVerdict`` is the enforced shared contract.
 """
+
 from __future__ import annotations
 
 from hive.domain.secret_scan import (
-    CLEAN, DEFAULT_ENTROPY_BITS_FLOOR, DEFAULT_ENTROPY_MIN_LEN, REFUSE, ScanVerdict, scan,
+    CLEAN,
+    DEFAULT_ENTROPY_BITS_FLOOR,
+    DEFAULT_ENTROPY_MIN_LEN,
+    REFUSE,
+    ScanVerdict,
+    scan,
 )
 
 # The bypass verdict an operator-disabled floor returns: a structurally valid CLEAN (no
@@ -31,18 +37,25 @@ class DefaultSecretScanner:
     single flag flows uniformly to admission, the recall miss-floor, and the conflict-flag note.
     Disabling LOOSENS a safety gate, so it is opt-in only (the default is the safe direction)."""
 
-    def __init__(self, *, redact_mode: str = REFUSE,
-                 entropy_min_len: int = DEFAULT_ENTROPY_MIN_LEN,
-                 entropy_bits_floor: float = DEFAULT_ENTROPY_BITS_FLOOR,
-                 enabled: bool = True) -> None:
+    def __init__(
+        self,
+        *,
+        redact_mode: str = REFUSE,
+        entropy_min_len: int = DEFAULT_ENTROPY_MIN_LEN,
+        entropy_bits_floor: float = DEFAULT_ENTROPY_BITS_FLOOR,
+        enabled: bool = True,
+    ) -> None:
         self._mode = redact_mode
         self._entropy_min_len = int(entropy_min_len)
         self._entropy_bits_floor = float(entropy_bits_floor)
         self._enabled = bool(enabled)
 
     def scan(self, text: str) -> ScanVerdict:
-        if not self._enabled:                    # operator opt-OUT: the floor is bypassed
+        if not self._enabled:  # operator opt-OUT: the floor is bypassed
             return _BYPASS
-        return scan(text, mode=self._mode,
-                    entropy_min_len=self._entropy_min_len,
-                    entropy_bits_floor=self._entropy_bits_floor)
+        return scan(
+            text,
+            mode=self._mode,
+            entropy_min_len=self._entropy_min_len,
+            entropy_bits_floor=self._entropy_bits_floor,
+        )

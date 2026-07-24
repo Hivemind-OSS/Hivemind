@@ -4,12 +4,22 @@ The public surface grows as composer stages land; today it exposes the
 versioned receipt schema and its enforcement.
 """
 
-from hive.census.diff import Change, ChangedFile, ChangeSet, open_change, parse_unified_diff
+from hive.census.diff import (
+    Change,
+    ChangedFile,
+    ChangeSet,
+    open_change,
+    parse_unified_diff,
+)
 from hive.census.engines import attribute_symbols, build_graphs, node_change
 from hive.census.envelope import unsigned_envelope
 from hive.census.execution import ExecutionClassLine, coerce_execution
 from hive.census.join import RegressionFinding, regression_join
-from hive.census.memory import MemoryContext, fetch_institutional_context, order_subjects
+from hive.census.memory import (
+    MemoryContext,
+    fetch_institutional_context,
+    order_subjects,
+)
 from hive.census.precision import PrecisionEntry, assess_precision
 from hive.census.propagation import propagation_block
 from hive.census.receipt import build_receipt

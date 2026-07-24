@@ -249,9 +249,7 @@ class TestOpenChange:
             assert marker.removed_spans == ((1, 1),)
             assert marker.added_spans == ((1, 1),)
 
-    def test_worktrees_cleaned_up_when_body_raises(
-        self, two_commit_repo: Path
-    ) -> None:
+    def test_worktrees_cleaned_up_when_body_raises(self, two_commit_repo: Path) -> None:
         trees: tuple[Path, ...] = ()
         with pytest.raises(RuntimeError, match="boom"):
             with open_change(two_commit_repo, "HEAD~1", "HEAD") as change:

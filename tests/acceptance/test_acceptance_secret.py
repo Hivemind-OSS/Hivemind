@@ -1,6 +1,7 @@
 """#5a acceptance — the secret floor end-to-end: a credential in a write is REFUSED
 before any persistence (0 rows, 0 blobs), the refused envelope carries rule NAMES only,
 and nothing about the secret reaches a row, blob, or recall."""
+
 from __future__ import annotations
 
 import json
@@ -11,17 +12,22 @@ import pytest
 from hive.app.mcp_server import MCPRequest
 from tests.acceptance.conftest import build_acc
 
-pytestmark = pytest.mark.embed   # loads the real Qwen3 model (gated heavy tier)
+pytestmark = pytest.mark.embed  # loads the real Qwen3 model (gated heavy tier)
 
 # A realistic AWS access-key shape (a secret-floor rule family). Not a real credential.
-_PLANTED = "deploy creds: AKIAIOSFODNN7EXAMPLE / wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"
+_PLANTED = (
+    "deploy creds: AKIAIOSFODNN7EXAMPLE / wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"
+)
 
 
 def test_acceptance_secret_refused(embedder_v1):
     c = build_acc(embedder_v1)
     server = c.make_server()
-    resp = server.handle(MCPRequest(1, "tools/call",
-            {"name": "hive_write", "arguments": {"text": _PLANTED, "approved_by": "acc"}}))
+    resp = server.handle(
+        MCPRequest(
+            1, "tools/call", {"name": "hive_write", "arguments": {"text": _PLANTED}}
+        )
+    )
     env = json.loads(resp.result["content"][0]["text"])
 
     assert env["status"] == "refused"
@@ -42,12 +48,13 @@ def test_acceptance_secret_never_in_any_row_after_mixed_writes(embedder_v1):
     """A clean write lands; a secret write is refused — and a scan of every persisted row
     + blob contains no secret substring (the #5a floor is structural, not hoped-for)."""
     c = build_acc(embedder_v1)
-    c.admission.write("a perfectly clean durable insight about caching",
-                      proposed_by="acc", approved_by="acc")
+    c.admission.write(
+        "a perfectly clean durable insight about caching", proposed_by="acc"
+    )
     try:
-        c.admission.write(_PLANTED, proposed_by="acc", approved_by="acc")
+        c.admission.write(_PLANTED, proposed_by="acc")
     except Exception:
-        pass                                            # refuse raises SecretRefused — expected
+        pass  # refuse raises SecretRefused — expected
     rows = c.conn.execute("SELECT text FROM episodes").fetchall()
     blobs = c.conn.execute("SELECT text FROM blobs").fetchall()
     hay = " ".join(r["text"] for r in rows) + " ".join(b["text"] for b in blobs)
@@ -61,20 +68,22 @@ def test_acceptance_secret_never_in_logs(embedder_v1, caplog):
     c = build_acc(embedder_v1)
     hive_log = logging.getLogger("hive")
     prev = hive_log.propagate
-    hive_log.propagate = True                       # ensure records reach caplog's root handler
+    hive_log.propagate = True  # ensure records reach caplog's root handler
     try:
         with caplog.at_level(logging.DEBUG, logger="hive"):
             try:
-                c.admission.write(_PLANTED, proposed_by="acc", approved_by="acc")
+                c.admission.write(_PLANTED, proposed_by="acc")
             except Exception:
-                pass                                # SecretRefused — expected
+                pass  # SecretRefused — expected
     finally:
         hive_log.propagate = prev
     parts: list[str] = []
     for r in caplog.records:
         parts.append(r.getMessage())
-        parts.extend(str(v) for v in r.__dict__.values())   # every extra field too
+        parts.extend(str(v) for v in r.__dict__.values())  # every extra field too
     blob = " ".join(parts)
-    assert any("refused" in r.getMessage() for r in caplog.records)   # the refusal DID log
+    assert any(
+        "refused" in r.getMessage() for r in caplog.records
+    )  # the refusal DID log
     assert "AKIAIOSFODNN7EXAMPLE" not in blob
     assert "wJalrXUtnFEMI" not in blob

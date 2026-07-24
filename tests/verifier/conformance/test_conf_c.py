@@ -10,7 +10,11 @@ from __future__ import annotations
 
 import pytest
 
-from tests.verifier.conformance._harness import FIXTURES, conf_verify, ensure_cmake_build
+from tests.verifier.conformance._harness import (
+    FIXTURES,
+    conf_verify,
+    ensure_cmake_build,
+)
 
 GREEN = FIXTURES / "c" / "green"
 RED = FIXTURES / "c" / "red"

@@ -2,12 +2,16 @@
 resurrect), the approved-only belt (★ — re-filters independent of the index),
 neutral reference_context framing (never 'instructions'), and the trace_id join
 key on hit AND abstain (the request_id→trace_id rename pinned)."""
+
 from __future__ import annotations
 
 import dataclasses
 
 from hive.domain.models import (
-    ABSTAIN, CONFIDENT, EMPTY_NO_DATA, RecallHit,
+    ABSTAIN,
+    CONFIDENT,
+    EMPTY_NO_DATA,
+    RecallHit,
     RecallResult,
 )
 from tests.fakes._fakes import FakeIndex
@@ -17,6 +21,7 @@ from tests.mcp._helpers import build_real_server, content, tool_call, write_text
 class _StubRecall:
     """A recall double returning a fixed RecallResult (decouples the belt from the
     gate). ``index`` is present only so an unrelated health probe would not crash."""
+
     index = FakeIndex()
 
     def __init__(self, result):
@@ -32,13 +37,13 @@ def _confident(eid, text, *, trace="T-abc", sim=0.9):
 
 # ── abstain / empty ─────────────────────────────────────────────────────────────
 def test_recall_empty_store_returns_empty_list_with_trace_id():
-    server, _ = build_real_server()                        # nothing approved
+    server, _ = build_real_server()  # nothing approved
     env = content(tool_call(server, "hive_recall", {"query": "anything"}))
     assert env["reference_context"] == []
     assert env["abstained"] is True
     assert env["state"] == EMPTY_NO_DATA
     assert isinstance(env["trace_id"], str) and env["trace_id"]
-    assert "note" in env                                   # neutral note
+    assert "note" in env  # neutral note
 
 
 def test_recall_abstain_returns_empty_list_with_trace_id():
@@ -65,19 +70,20 @@ def test_recall_filters_to_approved_only():
     an empty post-belt set is an ABSTAIN, never a confident-empty. Deleting the
     belt guard surfaces the pending row ⇒ this assertion fails (mutation #2)."""
     server, _ = build_real_server()
-    # a genuine PENDING row via the store substrate (the tool path always approves now);
-    # the belt must still drop a non-approved candidate the stub recall surfaces.
-    eid, _ = server.store.stage(text="staged but NOT approved", weight=1.0,
-                                tags="", proposed_by="x")
+    # a genuine PENDING row via the store substrate (the tool path always materializes);
+    # the belt must still drop a non-materialized candidate the stub recall surfaces.
+    eid, _ = server.store.stage(
+        text="staged but NOT approved", weight=1.0, proposed_by="x"
+    )
     server.recall = _StubRecall(_confident(eid, "staged but NOT approved"))
     env = content(tool_call(server, "hive_recall", {"query": "q"}))
-    assert env["reference_context"] == []                  # pending row filtered out
+    assert env["reference_context"] == []  # pending row filtered out
     assert env["abstained"] is True
 
 
 def test_recall_surfaces_approved_hit_through_belt():
     server, _ = build_real_server()
-    w = write_text(server, "an approved memory")           # lands approved in one call
+    w = write_text(server, "an approved memory")  # lands approved in one call
     eid = w["id"]
     server.recall = _StubRecall(_confident(eid, "an approved memory"))
     env = content(tool_call(server, "hive_recall", {"query": "q"}))
@@ -89,25 +95,41 @@ def test_recall_surfaces_approved_hit_through_belt():
 # ── neutral framing + trace key ─────────────────────────────────────────────────
 def test_recall_framed_as_reference_context_not_instructions():
     server, _ = build_real_server()
-    write_text(server, "the gold memory about retries")    # approved on write
-    env = content(tool_call(server, "hive_recall", {"query": "the gold memory about retries"}))
+    write_text(server, "the gold memory about retries")  # approved on write
+    env = content(
+        tool_call(server, "hive_recall", {"query": "the gold memory about retries"})
+    )
     assert "reference_context" in env
     assert "instructions" not in env and "command" not in env
     assert env["abstained"] is False
     hit = env["reference_context"][0]
-    # trust + ts are the additive lifecycle labels (consumers discount provisional
-    # content and order coexisting versions by them); polarity (do|dont|neutral), kind
-    # (its category), and anchor (the WHERE) are the carried-not-interpreted labels.
-    assert set(hit) == {"episode_id", "text", "sim", "trust", "ts", "polarity",
-                        "kind", "anchor"}
-    assert hit["polarity"] == "neutral"             # defaults when unset on write
-    assert hit["kind"] == "note" and hit["anchor"] == ""
+    # trust + ts are the lifecycle labels (consumers discount provisional content and
+    # order coexisting versions by them); polarity/kind are carried-not-interpreted;
+    # repos/anchors/drift are the v3 §3.4 scope + staleness carriers on EVERY hit.
+    assert set(hit) == {
+        "episode_id",
+        "text",
+        "sim",
+        "trust",
+        "ts",
+        "polarity",
+        "kind",
+        "repos",
+        "anchors",
+        "drift",
+    }
+    assert hit["polarity"] == "neutral"  # defaults when unset on write
+    assert hit["kind"] == "note"
+    assert hit["repos"] == [] and hit["anchors"] == []
+    assert hit["drift"] == {"type": "n/a", "detail": {"per_anchor": []}}
 
 
 def test_recall_trace_id_present_on_hit_and_abstain():
     server, _ = build_real_server()
-    write_text(server, "memory for trace check")           # approved on write
-    hit_env = content(tool_call(server, "hive_recall", {"query": "memory for trace check"}))
+    write_text(server, "memory for trace check")  # approved on write
+    hit_env = content(
+        tool_call(server, "hive_recall", {"query": "memory for trace check"})
+    )
     empty_env = content(tool_call(server, "hive_recall", {"query": "x"}, req_id=2))
     # confident path (use a fresh server so the empty case is genuinely empty)
     assert hit_env["trace_id"]
@@ -118,8 +140,7 @@ def test_recall_envelope_uses_trace_id_key_not_request_id():
     server, _ = build_real_server()
     env = content(tool_call(server, "hive_recall", {"query": "x"}))
     assert "trace_id" in env
-    assert "request_id" not in env                         # the rename is pinned
-
+    assert "request_id" not in env  # the rename is pinned
 
 
 # ── NEW GUARD: the self-quarantine drafts channel is GONE ──────────────────────

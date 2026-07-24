@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 from functools import cache
 from importlib import resources
+from typing import Any
 
 import jsonschema
 
@@ -26,17 +27,18 @@ class ReceiptSchemaError(Exception):
 
 
 @cache
-def load_schema() -> dict:
+def load_schema() -> dict[str, Any]:
     """Load the published receipt schema from the installed package data."""
     text = (
         resources.files("hive.census")
         .joinpath(_SCHEMA_RESOURCE)
         .read_text(encoding="utf-8")
     )
-    return json.loads(text)
+    schema: dict[str, Any] = json.loads(text)
+    return schema
 
 
-def validate_receipt(doc: dict) -> None:
+def validate_receipt(doc: dict[str, Any]) -> None:
     """Validate a receipt against schema v0; raise ReceiptSchemaError if off-schema."""
     try:
         jsonschema.validate(

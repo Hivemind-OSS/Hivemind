@@ -4,6 +4,7 @@ The three swap seams are plain greppable dicts; build_* fail fast on a typo'd se
 build_gate is the ONE located owner that passes the frozen cfg.recall object BY IDENTITY
 into the abstention gate (CONFIG_DRIFT killed structurally — the gate-holds-config-by-identity must-fix).
 """
+
 from __future__ import annotations
 
 import pytest
@@ -31,6 +32,7 @@ def test_config_rejects_unknown_embedding_provider():
 class _StubEmbeddingCfg:
     """A thin cfg whose embedding.provider bypasses Config.__post_init__ — proves the
     belt-level fail-fast in build_embedder survives the registry collapse on its own."""
+
     def __init__(self, provider: str) -> None:
         self.embedding = type("E", (), {"provider": provider, "model": "m"})()
 
@@ -60,7 +62,9 @@ def test_gate_reads_same_frozen_recall_object():
     cfg = Config.load(db_path=":memory:")
     gate = registry.build_gate(cfg)
     assert isinstance(gate, AbsoluteRelevanceGate)
-    assert gate._recall is cfg.recall          # IDENTITY, not a float copy (CONFIG_DRIFT killed)
+    assert (
+        gate._recall is cfg.recall
+    )  # IDENTITY, not a float copy (CONFIG_DRIFT killed)
     assert gate.tau_serve == cfg.recall.tau_serve
 
 

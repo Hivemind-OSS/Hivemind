@@ -7,6 +7,7 @@ corpus + labelled query set makes recall@5 and the abstention AUROC meaningful a
 deterministic without LongMemEval. Network-free: the model is baked/cached (the suite runs
 under HF offline).
 """
+
 from __future__ import annotations
 
 import pytest
@@ -59,6 +60,7 @@ MISS_QUERIES: tuple[str, ...] = (
 @pytest.fixture(scope="session")
 def st_model():
     from sentence_transformers import SentenceTransformer
+
     return SentenceTransformer(DEFAULT_MODEL, device="cpu")
 
 
@@ -69,13 +71,19 @@ def embedder_v1(st_model):
     return LocalSTEmbedder(model=st_model, d=1024).load()
 
 
-def build_acc(embedder, *, db_path: str = ":memory:", clock=None,
-              warm: bool = True, **overrides) -> "object":
+def build_acc(
+    embedder, *, db_path: str = ":memory:", clock=None, warm: bool = True, **overrides
+) -> "object":
     """Build + boot a container on a fresh store with the REAL embedder injected. Returns the
     Container; ``migrate → build_index → warm_embedder`` already run when ``warm`` is True."""
     cfg = Config.load(db_path=db_path, **overrides)
-    c = build_container(cfg, tenant_id="acc-tenant", agent_id="acc-agent",
-                        embedder=embedder, clock=clock)
+    c = build_container(
+        cfg,
+        tenant_id="acc-tenant",
+        agent_id="acc-agent",
+        embedder=embedder,
+        clock=clock,
+    )
     if warm:
         # the production boot order (entrypoint.py): migrate → build_index → warm_embedder
         c.migrate()
@@ -85,12 +93,12 @@ def build_acc(embedder, *, db_path: str = ":memory:", clock=None,
 
 
 def seed_corpus(container, texts=CORPUS) -> list[int]:
-    """Write every text (client-gated: each lands APPROVED in one call) and return the
-    approved episode ids (corpus index → eid). Rebuilds the warm index so the rows are
-    immediately recallable."""
+    """Write every text (v3: each lands trust=provisional, servable NOW, in one call)
+    and return the episode ids (corpus index → eid). Rebuilds the warm index so the
+    rows are immediately recallable."""
     eids: list[int] = []
     for t in texts:
-        res = container.admission.write(t, proposed_by="seed", approved_by="curator")
+        res = container.admission.write(t, proposed_by="seed")
         eids.append(res.episode_id)
     container.build_index()
     return eids

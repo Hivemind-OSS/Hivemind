@@ -73,7 +73,7 @@ def test_python_tests_red_names_the_failing_test() -> None:
 
 @pytest.mark.requires_tool("pyright", "pytest")
 def test_python_e2e_zero_doubles_green(matrix_scratch: Path) -> None:
-    import matrix
+    import hive.matrix as matrix
 
     result = verify(
         GREEN,
@@ -92,7 +92,7 @@ def test_python_e2e_zero_doubles_green(matrix_scratch: Path) -> None:
 
 @pytest.mark.requires_tool("pyright", "pytest")
 def test_python_e2e_zero_doubles_red(matrix_scratch: Path) -> None:
-    import matrix
+    import hive.matrix as matrix
 
     result = verify(
         RED,

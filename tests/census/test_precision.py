@@ -39,24 +39,40 @@ def test_entries_ride_in_input_order() -> None:
 
 def test_entry_rejects_gating_below_budget() -> None:
     with pytest.raises(ValueError):
-        PrecisionEntry(cls="node", decided=1, total=3, value=1 / 3, budget=0.9, gating=True)
+        PrecisionEntry(
+            cls="node", decided=1, total=3, value=1 / 3, budget=0.9, gating=True
+        )
 
 
 def test_entry_rejects_impossible_counts_and_budget() -> None:
     with pytest.raises(ValueError):
-        PrecisionEntry(cls="node", decided=4, total=3, value=1.0, budget=0.9, gating=True)
+        PrecisionEntry(
+            cls="node", decided=4, total=3, value=1.0, budget=0.9, gating=True
+        )
     with pytest.raises(ValueError):
-        PrecisionEntry(cls="node", decided=-1, total=3, value=None, budget=0.9, gating=False)
+        PrecisionEntry(
+            cls="node", decided=-1, total=3, value=None, budget=0.9, gating=False
+        )
     with pytest.raises(ValueError):
-        PrecisionEntry(cls="node", decided=1, total=1, value=1.0, budget=1.5, gating=True)
+        PrecisionEntry(
+            cls="node", decided=1, total=1, value=1.0, budget=1.5, gating=True
+        )
     with pytest.raises(ValueError):
-        PrecisionEntry(cls="node", decided=1, total=1, value=1.0, budget=-0.1, gating=True)
+        PrecisionEntry(
+            cls="node", decided=1, total=1, value=1.0, budget=-0.1, gating=True
+        )
 
 
 def test_entry_rejects_value_inconsistent_with_counts() -> None:
     with pytest.raises(ValueError):
-        PrecisionEntry(cls="node", decided=2, total=3, value=0.5, budget=0.9, gating=False)
+        PrecisionEntry(
+            cls="node", decided=2, total=3, value=0.5, budget=0.9, gating=False
+        )
     with pytest.raises(ValueError):
-        PrecisionEntry(cls="node", decided=2, total=3, value=None, budget=0.9, gating=False)
+        PrecisionEntry(
+            cls="node", decided=2, total=3, value=None, budget=0.9, gating=False
+        )
     with pytest.raises(ValueError):
-        PrecisionEntry(cls="node", decided=0, total=0, value=0.0, budget=0.9, gating=True)
+        PrecisionEntry(
+            cls="node", decided=0, total=0, value=0.0, budget=0.9, gating=True
+        )

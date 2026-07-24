@@ -12,7 +12,11 @@ ENV PATH="/opt/venv/bin:$PATH"
 # runtime is CPU and the CUDA build is multi-GB; this keeps the image lean and the build
 # disk-safe. sentence-transformers then sees torch already satisfied.
 RUN pip install --no-cache-dir torch --index-url https://download.pytorch.org/whl/cpu
-RUN pip install --no-cache-dir ".[embed]"
+# Deps-early / source-late: resolve BOTH the embed and sync extras from the pyproject-only
+# layer, before any hive/ source COPY. The engines are first-party subpackages now, so
+# `.[sync]` here caches their third-party deps (tree-sitter, networkx, sqlglot) ahead of the
+# model bake — a hive/ edit never re-resolves them.
+RUN pip install --no-cache-dir ".[embed,sync]"
 # Bake the Qwen3-Embedding-0.6B weights OFFLINE into an image layer (no hot-path download) BEFORE
 # the volatile `COPY hive/`, so a hive/ source edit never invalidates — and re-downloads — this
 # ~1.2 GB weights layer (fp32; budget ~2.5–3 GB resident RAM on CPU at runtime). bake_model.py is
@@ -26,16 +30,10 @@ COPY hive/__init__.py ./hive/__init__.py
 COPY hive/tools/__init__.py ./hive/tools/__init__.py
 COPY hive/tools/bake_model.py ./hive/tools/bake_model.py
 RUN python -m hive.tools.bake_model --model Qwen/Qwen3-Embedding-0.6B --dest /opt/hf-cache/hub
-# Vendored hive-edge wheelhouse: the census/sync engines (comb-drift, matrix) + the
-# in-image `hive-edge` mint CLI. The server host receives ONLY this repo — these names
-# are never resolved from an index or a sibling checkout; scripts/vendor_edge.py (dev-side)
-# refreshes the committed wheels. Installed after the model layer (a wheel refresh never
-# re-bakes weights) and before the volatile hive/ COPY (a source edit never re-installs
-# engines). Their third-party deps (tree-sitter, networkx) resolve from PyPI as usual.
-COPY vendor/wheels/ /wheels/
-RUN pip install --no-cache-dir /wheels/*.whl
 # Volatile source — copied AFTER the model layer so editing it never re-bakes the weights.
-# [sync]'s bare `hive-edge` is already satisfied by the wheelhouse above; jsonschema/
+# `.[embed,sync]` was already resolved in the pyproject-only layer above, so this final
+# install only links the freshly-copied hive/ source (the engines are first-party
+# subpackages now — hive.matrix, hive.combdrift, hive.edge) into the venv; jsonschema/
 # defusedxml ride the extra, pytest rides along for the candidate-eval verifier tier.
 # Byte-inert at runtime until HIVE_SYNC__* is configured.
 COPY hive/ ./hive/

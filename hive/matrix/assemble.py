@@ -1,0 +1,554 @@
+"""C4: graph assembly + the incremental merge/prune.
+
+Turns extraction dicts (``{nodes, edges}``) into an ``nx.DiGraph`` and merges a
+re-extraction into a prior ``graph.json``: a changed file's prior nodes/edges are
+replaced by ``source_file`` so stale topology never accumulates, and deleted
+files are pruned via ``prune_sources``.
+
+Two design choices worth stating: matrix builds **directed by default** (the
+graph is a dependency DAG, not an undirected co-occurrence graph) and runs with
+**dedup off** (the AST extractor already dedups within a file, and matrix has no
+fuzzy-label/LLM merge layer). The ghost-merge passes in ``build_from_json`` are
+inert on AST-only input (every node carries ``_origin == "ast"``) but are kept
+intact so the assembly stays deterministic on that input.
+"""
+
+from __future__ import annotations
+
+import json
+import os
+import sys
+from pathlib import Path
+from typing import Any
+
+import networkx as nx
+
+from .ids import normalize_id as _normalize_id
+from .paths import default_graph_json as _default_graph_json
+from .validate import validate_extraction
+
+__all__ = [
+    "build_from_json",
+    "build",
+    "build_merge",
+    "dedupe_nodes",
+    "dedupe_edges",
+]
+
+
+# Synonym mapper for known invalid file_type values. Keeps semantic intent close
+# (markdown->document, tool->code) and falls back to "concept" for any other
+# invalid value.
+_FILE_TYPE_SYNONYMS = {
+    "markdown": "document",
+    "text": "document",
+    "tool": "code",
+    "library": "code",
+    "pattern": "concept",
+    "principle": "concept",
+    "constraint": "concept",
+    "tech": "concept",
+    "technology": "concept",
+    "data-source": "concept",
+    "data_source": "concept",
+    "gotcha": "concept",
+    "framework": "concept",
+}
+
+
+def _norm_source_file(p: str | None, root: str | None = None) -> str | None:
+    """Normalize path separators and relativize absolute paths.
+
+    Converts backslashes to forward slashes (Windows compatibility) and, when
+    root is provided, strips the absolute prefix from paths produced by semantic
+    subagents so source_file is always repo-relative (fixes #932).
+    """
+    if not p:
+        return p
+    p = p.replace("\\", "/")
+    if root and os.path.isabs(p):
+        try:
+            p = Path(p).relative_to(root).as_posix()
+        except ValueError:
+            pass
+    return p
+
+
+def dedupe_nodes(nodes: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Collapse nodes sharing an ``id``, last-writer-wins on attributes.
+
+    Mirrors what ``build_from_json``'s ``G.add_node`` does implicitly (idempotent;
+    a later node overwrites an earlier one's attributes). The ``--no-cluster``
+    write path dumps the raw node list without building a graph, so same-id nodes
+    — e.g. a Swift ``type=module`` anchor emitted once per importing file (#1327)
+    — would otherwise appear as duplicates. Insertion order follows each id's
+    first appearance; the retained dict is the last one seen.
+    """
+    by_id: dict[Any, dict[str, Any]] = {}
+    for n in nodes:
+        nid = n.get("id")
+        if nid is None:
+            continue
+        by_id[nid] = n
+    return list(by_id.values())
+
+
+def dedupe_edges(edges: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Collapse exact parallel edges by ``(source, target, relation)``, keeping the
+    first occurrence.
+
+    The clustered build path runs edges through a NetworkX ``DiGraph``, which
+    collapses parallel edges automatically. The ``--no-cluster`` and incremental
+    ``update`` write paths bypass NetworkX and concatenate edge lists raw, so
+    duplicates accumulate and edge counts become non-deterministic across build
+    modes / repeated updates (#1317). Deduping on the connectivity identity is
+    zero-signal-loss and restores idempotency. Callers that intentionally keep
+    parallel edges (multigraph output) must not use this.
+    """
+    seen: set[tuple[Any, ...]] = set()
+    out: list[dict[str, Any]] = []
+    for e in edges:
+        key = (e.get("source"), e.get("target"), e.get("relation"))
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(e)
+    return out
+
+
+def build_from_json(
+    extraction: dict[str, Any], *, directed: bool = True, root: str | Path | None = None
+) -> nx.Graph[Any]:
+    """Build a NetworkX graph from an extraction dict.
+
+    directed=True (default) produces a DiGraph that preserves edge direction
+    (source→target). directed=False produces an undirected Graph.
+    root: if given, absolute source_file paths from semantic subagents are made
+        relative to root so all nodes share a consistent path key (#932).
+    """
+    _root = str(Path(root).resolve()) if root else None
+    # NetworkX <= 3.1 serialised edges as "links"; remap to "edges" for compatibility.
+    if "edges" not in extraction and "links" in extraction:
+        extraction = dict(extraction, edges=extraction["links"])
+
+    # Canonicalize legacy node/edge schema before validation.
+    for node in extraction.get("nodes", []):
+        if not isinstance(node, dict):
+            continue
+        if "source" in node and "source_file" not in node:
+            # Count edges that reference this node so the warning is actionable (#479)
+            node_id = node.get("id", "?")
+            affected_edges = sum(
+                1
+                for e in extraction.get("edges", [])
+                if e.get("source") == node_id or e.get("target") == node_id
+            )
+            print(
+                f"[matrix] WARNING: node '{node_id}' uses field 'source' instead of "
+                f"'source_file' — {affected_edges} edge(s) may be misrouted. "
+                f"Rename the field to 'source_file' to silence this warning.",
+                file=sys.stderr,
+            )
+            node["source_file"] = node.pop("source")
+        # Default missing/None file_type to "concept" so legacy graph.json
+        # entries (and stub nodes from older builds that didn't always populate
+        # file_type) don't trigger spurious "invalid file_type 'None'" warnings.
+        if node.get("file_type") in (None, ""):
+            node["file_type"] = "concept"
+        ft = node.get("file_type", "")
+        if ft and ft not in {
+            "code",
+            "document",
+            "paper",
+            "image",
+            "rationale",
+            "concept",
+        }:
+            node["file_type"] = _FILE_TYPE_SYNONYMS.get(ft, "concept")
+
+    errors = validate_extraction(extraction)
+    # Dangling edges (stdlib/external imports) are expected - only warn about real schema errors.
+    real_errors = [e for e in errors if "does not match any node id" not in e]
+    if real_errors:
+        print(
+            f"[matrix] Extraction warning ({len(real_errors)} issues): {real_errors[0]}",
+            file=sys.stderr,
+        )
+    G: nx.Graph[Any] = nx.DiGraph() if directed else nx.Graph()
+    for node in extraction.get("nodes", []):
+        # Skip dict nodes with a missing or non-hashable id (e.g. a list emitted
+        # by a buggy LLM extraction) so NetworkX add_node never raises
+        # TypeError: unhashable type. Non-dict nodes are deliberately left to
+        # raise as before, so callers that probe build for shape errors (e.g.
+        # the multigraph diagnostic) still observe the malformed shape.
+        if isinstance(node, dict):
+            if "id" not in node:
+                continue
+            try:
+                hash(node["id"])
+            except TypeError:
+                print(
+                    f"[matrix] WARNING: skipping node with non-hashable id "
+                    f"{node['id']!r} (must be a string).",
+                    file=sys.stderr,
+                )
+                continue
+            if "source_file" in node:
+                node["source_file"] = _norm_source_file(node["source_file"], _root)
+        G.add_node(node["id"], **{k: v for k, v in node.items() if k != "id"})
+    node_set = set(G.nodes())
+
+    # #1145 (extended): merge LLM ghost-duplicate nodes into AST canonical nodes.
+    # Original bug: AST uses parent-qualified IDs (mingpt_bpe_get_pairs) while LLM
+    # uses bare-stem IDs (bpe_get_pairs) — different IDs, same symbol.
+    # Original fix only caught LLM nodes with source_location=None; LLM now
+    # populates source_location, so those ghosts survived. Extended fix: use
+    # _origin=="ast" as the canonical signal. AST nodes always win; any non-AST
+    # node sharing (basename, label) with an AST node is a ghost.
+    _loc_nodes: dict[
+        tuple[str, str], str
+    ] = {}  # (basename, label) -> canonical node id
+    _loc_collisions: set[tuple[str, str]] = set()  # keys shared by 2+ AST nodes
+    _noloc_nodes: dict[tuple[str, str], str] = {}  # (basename, label) -> ghost node id
+
+    # Pass 1: collect canonical nodes — AST-origin nodes take precedence over LLM nodes.
+    # When 2+ AST nodes share a key (same-named symbols in same-named files across
+    # directories, e.g. render in two index.ts), the key is ambiguous: merging a
+    # ghost would pick an arbitrary winner via set-iteration order (#1257). Track
+    # those keys so Pass 2 skips them — same conservatism as
+    # _rewire_unique_stub_nodes, which only merges when exactly one real def exists.
+    for nid in node_set:
+        attrs = G.nodes[nid]
+        label = str(attrs.get("label", "")).strip()
+        sf = str(attrs.get("source_file", ""))
+        basename = Path(sf).name if sf else ""
+        if not label or not basename:
+            continue
+        is_ast = attrs.get("_origin") == "ast"
+        if attrs.get("source_location") or is_ast:
+            key = (basename, label)
+            if is_ast:
+                # Two AST nodes on the same key is an ambiguous collision.
+                if (
+                    key in _loc_nodes
+                    and G.nodes[_loc_nodes[key]].get("_origin") == "ast"
+                ):
+                    _loc_collisions.add(key)
+                # AST-origin nodes always overwrite a prior non-AST entry.
+                _loc_nodes[key] = nid
+            elif key not in _loc_nodes:
+                _loc_nodes[key] = nid
+
+    # Pass 2: find ghosts — non-AST nodes that have an AST canonical twin.
+    for nid in node_set:
+        attrs = G.nodes[nid]
+        if attrs.get("_origin") == "ast":
+            continue  # AST nodes are never ghosts
+        label = str(attrs.get("label", "")).strip()
+        sf = str(attrs.get("source_file", ""))
+        basename = Path(sf).name if sf else ""
+        if not label or not basename:
+            continue
+        key = (basename, label)
+        if key in _loc_collisions:
+            continue  # ambiguous key: no safe canonical winner, leave ghost intact
+        if key in _loc_nodes and _loc_nodes[key] != nid:
+            _noloc_nodes[key] = nid
+    # For every ghost that has an AST counterpart, record a remap.
+    _ghost_remap: dict[str, str] = {}  # ghost_id -> canonical_id
+    for key, sem_id in _noloc_nodes.items():
+        ast_id = _loc_nodes.get(key)
+        if ast_id is not None:
+            _ghost_remap[sem_id] = ast_id
+    # Remove ghost nodes from the graph; edges will be re-pointed via norm_to_id.
+    for ghost_id in _ghost_remap:
+        G.remove_node(ghost_id)
+        node_set.discard(ghost_id)
+
+    # Normalized ID map: lets edges survive when the LLM generates IDs with
+    # slightly different casing or punctuation than the AST extractor.
+    # e.g. "Session_ValidateToken" maps to "session_validatetoken".
+    norm_to_id: dict[str, str] = {_normalize_id(nid): nid for nid in node_set}
+    # Also map ghost IDs to their canonical AST replacements.
+    for ghost_id, canonical_id in _ghost_remap.items():
+        norm_to_id[_normalize_id(ghost_id)] = canonical_id
+        norm_to_id[ghost_id] = canonical_id
+    # Iterate edges in a deterministic order. The graph is undirected and stores
+    # direction in _src/_tgt; when two edges collapse onto the same node pair the
+    # last write wins, so an unstable iteration order flips _src/_tgt run-to-run
+    # and makes the serialized graph churn. Sorting fixes the last-write outcome.
+    for edge in sorted(
+        extraction.get("edges", []),
+        key=lambda e: (
+            str(e.get("source", e.get("from", ""))),
+            str(e.get("target", e.get("to", ""))),
+            str(e.get("relation", "")),
+        ),
+    ):
+        if "source" not in edge and "from" in edge:
+            edge["source"] = edge["from"]
+        if "target" not in edge and "to" in edge:
+            edge["target"] = edge["to"]
+        if "source" not in edge or "target" not in edge:
+            continue
+        src, tgt = edge["source"], edge["target"]
+        # Skip edges with non-hashable endpoints (e.g. a list emitted by a buggy
+        # LLM extraction) so the `not in node_set` membership test below never
+        # raises TypeError: unhashable type. The validator already reported these.
+        try:
+            hash(src)
+            hash(tgt)
+        except TypeError:
+            print(
+                f"[matrix] WARNING: skipping edge with non-hashable endpoint "
+                f"(source={src!r}, target={tgt!r}).",
+                file=sys.stderr,
+            )
+            continue
+        # Remap mismatched IDs via normalization before dropping the edge.
+        if src not in node_set:
+            src = norm_to_id.get(_normalize_id(src), src)
+        if tgt not in node_set:
+            tgt = norm_to_id.get(_normalize_id(tgt), tgt)
+        if src not in node_set or tgt not in node_set:
+            continue  # skip edges to external/stdlib nodes - expected, not an error
+        attrs = {k: v for k, v in edge.items() if k not in ("source", "target")}
+        # Backfill source_file from the endpoint nodes (every node carries one).
+        # Semantic/LLM edges occasionally omit it, which downstream validation
+        # flags and leaves query results with no file reference (#1279).
+        if not attrs.get("source_file"):
+            attrs["source_file"] = (
+                G.nodes[src].get("source_file") or G.nodes[tgt].get("source_file") or ""
+            )
+        if "source_file" in attrs:
+            attrs["source_file"] = _norm_source_file(attrs["source_file"], _root)
+        # Drop cross-language INFERRED `calls` edges — same short names (render,
+        # parse, etc.) appear across language boundaries in multi-language chunks,
+        # producing phantom edges that don't represent real call relationships.
+        if attrs.get("relation") == "calls" and attrs.get("confidence") == "INFERRED":
+            _LANG_FAMILY: dict[str, str] = {
+                ".py": "py",
+                ".pyi": "py",
+                ".js": "js",
+                ".mjs": "js",
+                ".cjs": "js",
+                ".jsx": "js",
+                ".ts": "js",
+                ".tsx": "js",
+                ".go": "go",
+                ".rs": "rs",
+                ".java": "jvm",
+                ".kt": "jvm",
+                ".scala": "jvm",
+                ".groovy": "jvm",
+                ".c": "c",
+                ".h": "c",
+                ".cc": "cpp",
+                ".cpp": "cpp",
+                ".hpp": "cpp",
+                ".php": "php",
+                ".cs": "cs",
+                ".swift": "swift",
+                ".lua": "lua",
+            }
+            src_ext = Path(G.nodes[src].get("source_file") or "").suffix.lower()
+            tgt_ext = Path(G.nodes[tgt].get("source_file") or "").suffix.lower()
+            if (
+                src_ext
+                and tgt_ext
+                and _LANG_FAMILY.get(src_ext) != _LANG_FAMILY.get(tgt_ext)
+            ):
+                continue
+        # Preserve original edge direction - undirected graphs lose it otherwise,
+        # causing display functions to show edges backwards.
+        attrs["_src"] = src
+        attrs["_tgt"] = tgt
+        # When the graph is undirected and the same node pair appears twice with
+        # the same relation but opposite directions (e.g. a `calls` b and b `calls` a),
+        # nx.Graph collapses them into one edge. The deterministic sort above means
+        # the lexicographically-later direction would systematically overwrite the
+        # earlier one's _src/_tgt, silently flipping the surviving edge's caller
+        # and callee. First-seen direction wins instead — drop the redundant
+        # reverse-direction duplicate so the original direction is preserved (#1061).
+        if not G.is_directed() and G.has_edge(src, tgt):
+            existing = G.get_edge_data(src, tgt)
+            if existing.get("relation") == attrs.get("relation") and (
+                existing.get("_src") == tgt and existing.get("_tgt") == src
+            ):
+                continue
+        G.add_edge(src, tgt, **attrs)
+    hyperedges = extraction.get("hyperedges", [])
+    if hyperedges:
+        # Relativize hyperedge source_file the same way nodes and edges are
+        # (above), so to_json — which has no root and writes G.graph["hyperedges"]
+        # verbatim — never leaks an absolute path from a semantic subagent (#1418).
+        for he in hyperedges:
+            if isinstance(he, dict) and he.get("source_file"):
+                he["source_file"] = _norm_source_file(he["source_file"], _root)
+        G.graph["hyperedges"] = hyperedges
+    return G
+
+
+def build(
+    extractions: list[dict[str, Any]],
+    *,
+    directed: bool = True,
+    dedup: bool = False,
+    root: str | Path | None = None,
+) -> nx.Graph[Any]:
+    """Merge multiple extraction results into one graph.
+
+    Extractions are merged in order; for nodes with the same ID the last one's
+    attributes win (``add_node`` overwrites). ``dedup`` is accepted as an
+    explicit no-op — matrix has no fuzzy/LLM dedup layer; the AST extractor
+    already collapses duplicate definitions within a file, so the default is off
+    and a ``True`` value is a no-op here.
+    """
+    combined: dict[str, Any] = {
+        "nodes": [],
+        "edges": [],
+        "input_tokens": 0,
+        "output_tokens": 0,
+    }
+    for ext in extractions:
+        combined["nodes"].extend(ext.get("nodes", []))
+        combined["edges"].extend(ext.get("edges", []))
+        combined["input_tokens"] += ext.get("input_tokens", 0)
+        combined["output_tokens"] += ext.get("output_tokens", 0)
+    return build_from_json(combined, directed=directed, root=root)
+
+
+def build_merge(
+    new_chunks: list[dict[str, Any]],
+    graph_path: str | Path | None = None,
+    prune_sources: list[str] | None = None,
+    *,
+    directed: bool = True,
+    dedup: bool = False,
+    root: str | Path | None = None,
+) -> nx.Graph[Any]:
+    """Load existing graph.json, merge new chunks into it, and save back.
+
+    Re-extracted files REPLACE their prior contribution: any source_file present
+    in new_chunks is dropped from the loaded graph before merging, so a changed
+    file's stale nodes/edges don't accumulate. Files absent from new_chunks are
+    preserved unchanged; deleted files are removed via prune_sources.
+    Safe to call repeatedly.
+    root: if given, absolute source_file paths in new_chunks are made relative (#932).
+    """
+    graph_path = Path(graph_path if graph_path is not None else _default_graph_json())
+    if graph_path.exists():
+        # Read JSON directly instead of going through node_link_graph().
+        # The latter rebuilds an undirected nx.Graph and then enumerating
+        # edges() yields endpoints based on node insertion order, which
+        # silently flips directional edges (e.g. `calls`) when the callee
+        # was inserted before the caller. The _src/_tgt direction-preserving
+        # attrs are popped before saving in export.py, so going through the
+        # NetworkX round-trip loses direction permanently (#760).
+        data = json.loads(graph_path.read_text(encoding="utf-8"))
+        links_key = "links" if "links" in data else "edges"
+        existing_nodes = list(data.get("nodes", []))
+        existing_edges = list(data.get(links_key, []))
+        had_graph = True
+    else:
+        existing_nodes = []
+        existing_edges = []
+        had_graph = False
+
+    # Re-extracted files REPLACE their prior contribution. Every source_file
+    # present in new_chunks is dropped from the loaded base before merging, so a
+    # CHANGED file's stale nodes/edges don't accumulate across incremental
+    # updates. Without this, build() merges old+new for the same file and only
+    # exact-duplicate edges collapse — edges/nodes that disappeared from the new
+    # version survive forever. Brand-new files aren't in base, so this is a no-op
+    # for them; genuinely deleted files are still handled via prune_sources.
+    # Matched in both raw and _norm_source_file form because new_chunks may carry
+    # absolute win32 paths while the stored graph keeps relative posix (#1007).
+    _replace_root = str(Path(root).resolve()) if root is not None else None
+    new_sources: set[str] = set()
+    for ch in new_chunks:
+        for n in ch.get("nodes", []):
+            sf = n.get("source_file")
+            if not sf:
+                continue
+            new_sources.add(sf)
+            norm = _norm_source_file(sf, _replace_root)
+            if norm:
+                new_sources.add(norm)
+    if new_sources:
+
+        def _kept(item: dict[str, Any]) -> bool:
+            sf = item.get("source_file")
+            return (
+                sf not in new_sources
+                and _norm_source_file(sf, _replace_root) not in new_sources
+            )
+
+        existing_nodes = [n for n in existing_nodes if _kept(n)]
+        existing_edges = [e for e in existing_edges if _kept(e)]
+
+    base = [{"nodes": existing_nodes, "edges": existing_edges}] if had_graph else []
+
+    all_chunks = base + list(new_chunks)
+    G = build(all_chunks, directed=directed, dedup=dedup, root=root)
+
+    # Prune nodes and edges from deleted source files
+    if prune_sources:
+        # Build a set containing both the raw form (matches nodes that kept
+        # absolute source_file) and the normalised relative form (matches nodes
+        # that were relativised by _norm_source_file at build time).
+        # .resolve() handles symlinked roots and redundant ".." / "./" segments
+        # so Path.relative_to() succeeds even when the scan root is a symlink.
+        # (#1007: manifest absolute paths vs graph relative source_file mismatch)
+        _root_str = str(Path(root).resolve()) if root is not None else None
+        prune_set: set[str] = set()
+        for p in prune_sources:
+            if not p:
+                continue
+            prune_set.add(p)
+            norm = _norm_source_file(p, _root_str)
+            if norm:
+                prune_set.add(norm)
+        to_remove = [
+            n for n, d in G.nodes(data=True) if d.get("source_file") in prune_set
+        ]
+        G.remove_nodes_from(to_remove)
+        n_files = len(prune_sources)
+        n_nodes = len(to_remove)
+        if n_nodes:
+            print(
+                f"[matrix] Pruned {n_nodes} node(s) from {n_files} deleted source file(s).",
+                file=sys.stderr,
+            )
+
+        edges_to_remove = [
+            (u, v)
+            for u, v, d in G.edges(data=True)
+            if d.get("source_file") in prune_set
+        ]
+        if edges_to_remove:
+            G.remove_edges_from(edges_to_remove)
+            print(
+                f"[matrix] Pruned {len(edges_to_remove)} edge(s) from deleted source file(s).",
+                file=sys.stderr,
+            )
+
+        if not n_nodes and not edges_to_remove:
+            print(
+                f"[matrix] {n_files} source file(s) deleted since last run — "
+                f"no matching nodes or edges in graph, already clean.",
+                file=sys.stderr,
+            )
+
+    # Safety check: refuse to shrink the graph silently (#479)
+    # Skip when dedup or prune_sources is active — shrinkage is intentional there.
+    if graph_path.exists() and not dedup and not prune_sources:
+        existing_n = len(existing_nodes)
+        new_n = G.number_of_nodes()
+        if new_n < existing_n:
+            raise ValueError(
+                f"matrix: build_merge would shrink graph from {existing_n} → {new_n} nodes. "
+                f"Pass prune_sources explicitly if you intend to remove nodes."
+            )
+
+    return G

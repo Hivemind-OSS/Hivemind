@@ -5,14 +5,16 @@ what a verifier could prove about ONE change (base_sha → head_sha). This modul
 ids-only ledger rows: parse + validate the envelope shape (D8), derive the verdict/tag
 SERVER-SIDE (the caller can never assert them — the INV-2 analog; the post-merge canary
 rule is structurally unconstructable to violate), join the receipt's touched
-``path::Symbol`` subjects against episode anchors (deterministic, precision-first), and
-render ONE canonical-JSON payload per matched episode (byte-stable — the idempotency key).
+``path::Symbol`` subjects against the target repo's STRUCTURED episode anchors
+(exact-path + symbol tier, repo-filtered — v3 §3.6), and render ONE canonical-JSON
+payload per matched episode (byte-stable — the idempotency key).
 
 The same batch also carries the verified-outcome rider (Flow A): for each matched
-episode — pre-merge only, and only under a full ``ModelVersion ⊕ VerifierVersion ⊕ SHA``
-version stamp — a mechanical ``outcome_verified_helped``/``_hurt`` row when the
-polarity-aware three-way regression clause decides (drift at the anchor ∧ a DECIDED
-failing test run ∧ blast-radius reach; abstention is the default), plus a
+episode — ANY phase, gated ONLY on a full ``ModelVersion ⊕ VerifierVersion ⊕ SHA``
+version stamp (v3: the canonical ``post_merge`` ingest is the rider's normal carrier) —
+a mechanical ``outcome_verified_helped``/``_hurt`` row when the polarity-aware
+three-way regression clause decides (drift at the anchor ∧ a DECIDED failing test run
+∧ blast-radius reach; abstention is the default), plus a
 ``verify_current``/``verify_stale`` row recording what the verifier proved about the
 anchor itself at head SHA — and, when the receipt carries the optional census
 ``propagation`` block, an advisory ``stale_suspect`` row per episode whose anchor sits
@@ -32,18 +34,22 @@ Trust-untouched by construction (O7): this module holds NO trust handle — it s
 narrow ports (an anchored-episode read and an append-only evidence write) and nothing
 else, so the feed structurally cannot mutate any episode's standing.
 """
+
 from __future__ import annotations
 
 import base64
 import hashlib
 import json
-import re
 from dataclasses import dataclass
-from typing import Callable, Optional, Sequence
+from typing import Any, Callable, Optional, Sequence
 
 from hive.domain.evidence_kinds import (
-    EK_CHANGE_OUTCOME, EK_OUTCOME_VERIFIED_HELPED, EK_OUTCOME_VERIFIED_HURT,
-    EK_STALE_SUSPECT, EK_VERIFY_CURRENT, EK_VERIFY_STALE,
+    EK_CHANGE_OUTCOME,
+    EK_OUTCOME_VERIFIED_HELPED,
+    EK_OUTCOME_VERIFIED_HURT,
+    EK_STALE_SUSPECT,
+    EK_VERIFY_CURRENT,
+    EK_VERIFY_STALE,
 )
 from hive.domain.ports import AnchoredEpisodeReader, ChangeEvidenceAppender, RangeLedger
 
@@ -52,11 +58,13 @@ RECEIPT_PREDICATE_TYPE = "urn:hive-census:receipt:v0"
 _PAYLOAD_TYPE = "application/vnd.in-toto+json"
 _STATEMENT_TYPE = "https://in-toto.io/Statement/v1"
 
-PAYLOAD_SCHEMA = "change_outcome/v1"      # versions the rendered evidence payload
-VERIFIED_PAYLOAD_SCHEMA = "outcome_verified/v1"   # versions the verified-outcome payload
-VERIFY_PAYLOAD_SCHEMA = "verify/v1"       # versions the anchor-verification payload
-SUSPECT_PAYLOAD_SCHEMA = "stale_suspect/v1"       # versions the neighbourhood-staleness payload
-CHANGE_ACTOR = "census"                   # the feeding organ (provenance rides the payload)
+PAYLOAD_SCHEMA = "change_outcome/v1"  # versions the rendered evidence payload
+VERIFIED_PAYLOAD_SCHEMA = "outcome_verified/v1"  # versions the verified-outcome payload
+VERIFY_PAYLOAD_SCHEMA = "verify/v1"  # versions the anchor-verification payload
+SUSPECT_PAYLOAD_SCHEMA = (
+    "stale_suspect/v1"  # versions the neighbourhood-staleness payload
+)
+CHANGE_ACTOR = "census"  # the feeding organ (provenance rides the payload)
 
 _PHASES = frozenset({"pre_merge", "post_merge"})
 _VERDICTS = frozenset({"pass", "fail"})
@@ -74,13 +82,10 @@ _BREAKING_DRIFTS = frozenset({"breaking", "removed"})
 _CURRENT_DRIFTS = frozenset({"unchanged", "additive", ""})
 
 # the machine reason enum riding the verified payload (never receipt prose)
-_VERIFIED_REASONS = {EK_OUTCOME_VERIFIED_HELPED: "corroborated",
-                     EK_OUTCOME_VERIFIED_HURT: "contradicted"}
-
-# §3.4 boundary sets: where a path may start/end inside a free-text anchor.
-_PRE_BOUNDARY = frozenset({" ", "(", "`", "'", '"'})           # or string start
-_POST_BOUNDARY = frozenset({":", " ", ")", "`", "'", '"', "#"})  # or string end
-_IDENT = re.compile(r"[A-Za-z_]\w*")
+_VERIFIED_REASONS = {
+    EK_OUTCOME_VERIFIED_HELPED: "corroborated",
+    EK_OUTCOME_VERIFIED_HURT: "contradicted",
+}
 
 
 class ReceiptRefused(ValueError):
@@ -97,18 +102,19 @@ class ChangeOutcome:
     build time); ``repo`` the receipt's recorded repo identity (``provenance.repo``,
     verbatim). Both "" for a legacy receipt — defaulted so every existing constructor
     call compiles and legacy payload bytes stay identical."""
+
     base_sha: str
     head_sha: str
     receipt_sha256: str
     receipt_schema_version: str
     predicate_type: str
-    phase: str                      # pre_merge | post_merge
-    verdict: str                    # pass | fail
-    tag: str                        # machine-checked | bounded-estimate | unverified-judgment
-    signal: str = "none"            # randomized | canary | none
+    phase: str  # pre_merge | post_merge
+    verdict: str  # pass | fail
+    tag: str  # machine-checked | bounded-estimate | unverified-judgment
+    signal: str = "none"  # randomized | canary | none
     hive_census_version: str = ""
-    ref: str = ""                   # the measured branch; "" = legacy/detached (no key rides)
-    repo: str = ""                  # the repo identity; "" = legacy (no key rides)
+    ref: str = ""  # the measured branch; "" = legacy/detached (no key rides)
+    repo: str = ""  # the repo identity; "" = legacy (no key rides)
 
     def __post_init__(self) -> None:
         if self.phase not in _PHASES:
@@ -124,15 +130,20 @@ class ChangeOutcome:
                 raise ValueError(f"{name} must be non-empty")
         # THE §6.2.5 CANARY RULE: a post-merge outcome is machine-checked ONLY with a
         # randomized/canary signal — the over-claim cannot be constructed.
-        if (self.phase == "post_merge" and self.tag == "machine-checked"
-                and self.signal not in _SIGNALS_MACHINE):
+        if (
+            self.phase == "post_merge"
+            and self.tag == "machine-checked"
+            and self.signal not in _SIGNALS_MACHINE
+        ):
             raise ValueError(
-                "post_merge machine-checked requires a randomized/canary signal")
+                "post_merge machine-checked requires a randomized/canary signal"
+            )
 
 
 @dataclass(frozen=True, slots=True)
 class TouchedSubject:
     """One joinable ``path::Symbol`` subject of the receipt."""
+
     path: str
     symbol: str
 
@@ -145,9 +156,10 @@ class SubjectEvidence:
     ``exists_after`` the existence line's; ``regression_tests`` the regression line's
     blast-radius test reach (``has_regression_line`` distinguishes an absent line
     from an empty reach)."""
-    drift: str = ""                          # contract line detail.drift ("" when absent)
-    exists_after: Optional[bool] = None      # existence line detail.exists_after
-    regression_tests: tuple[str, ...] = ()   # regression line detail.tests
+
+    drift: str = ""  # contract line detail.drift ("" when absent)
+    exists_after: Optional[bool] = None  # existence line detail.exists_after
+    regression_tests: tuple[str, ...] = ()  # regression line detail.tests
     has_regression_line: bool = False
 
 
@@ -159,6 +171,7 @@ class IngestReport:
     counts while ``already_recorded`` absorbs the skips. ``range_skipped`` True means
     the range ledger absorbed the whole receipt BEFORE any join/render — every other
     field is then zero (nothing was done)."""
+
     inserted: tuple[int, ...]
     already_recorded: int
     matched: int
@@ -174,14 +187,15 @@ class IngestReport:
 # ── parsing (D8: .get() + coerce everywhere; refuse the receipt, never crash) ──
 
 
-def _canonical_bytes(doc: dict) -> bytes:
+def _canonical_bytes(doc: dict[str, Any]) -> bytes:
     """The census ``canonical_bytes`` convention — the one serialization the subject
     digest is computed over (sha256 of the canonical PREDICATE bytes)."""
-    return json.dumps(doc, sort_keys=True, separators=(",", ":"),
-                      ensure_ascii=False).encode("utf-8")
+    return json.dumps(
+        doc, sort_keys=True, separators=(",", ":"), ensure_ascii=False
+    ).encode("utf-8")
 
 
-def parse_receipt(envelope: object) -> dict:
+def parse_receipt(envelope: object) -> dict[str, Any]:
     """DSSE-shaped envelope dict → in-toto statement dict. Every receipt-global
     malformation raises ``ReceiptRefused`` with the reason: non-dict, wrong
     payloadType, missing/invalid b64 payload, payload not a JSON object, wrong
@@ -193,17 +207,18 @@ def parse_receipt(envelope: object) -> dict:
     payload_type = envelope.get("payloadType")
     if payload_type != _PAYLOAD_TYPE:
         raise ReceiptRefused(
-            f"unexpected payloadType {payload_type!r} — not a DSSE in-toto envelope")
+            f"unexpected payloadType {payload_type!r} — not a DSSE in-toto envelope"
+        )
     raw = envelope.get("payload")
     if not isinstance(raw, str) or not raw:
         raise ReceiptRefused("envelope carries no payload")
     try:
         payload = base64.b64decode(raw, validate=True)
-    except ValueError as error:                    # binascii.Error is a ValueError
+    except ValueError as error:  # binascii.Error is a ValueError
         raise ReceiptRefused(f"payload is not valid base64: {error}") from error
     try:
         statement = json.loads(payload)
-    except ValueError as error:                    # JSONDecodeError/UnicodeDecodeError
+    except ValueError as error:  # JSONDecodeError/UnicodeDecodeError
         raise ReceiptRefused(f"payload is not b64-encoded JSON: {error}") from error
     if not isinstance(statement, dict):
         raise ReceiptRefused("payload is not a JSON object")
@@ -212,7 +227,8 @@ def parse_receipt(envelope: object) -> dict:
     if statement.get("predicateType") != RECEIPT_PREDICATE_TYPE:
         raise ReceiptRefused(
             f"unknown predicateType {statement.get('predicateType')!r} "
-            f"(expected {RECEIPT_PREDICATE_TYPE!r}) — never guess a schema")
+            f"(expected {RECEIPT_PREDICATE_TYPE!r}) — never guess a schema"
+        )
     predicate = statement.get("predicate")
     if not isinstance(predicate, dict):
         raise ReceiptRefused("statement carries no predicate object")
@@ -223,18 +239,20 @@ def parse_receipt(envelope: object) -> dict:
     recomputed = hashlib.sha256(_canonical_bytes(predicate)).hexdigest()
     if claimed != recomputed:
         raise ReceiptRefused(
-            "subject digest does not match the embedded predicate — integrity refused")
+            "subject digest does not match the embedded predicate — integrity refused"
+        )
     provenance = predicate.get("provenance")
     provenance = provenance if isinstance(provenance, dict) else {}
     for name in ("base_sha", "head_sha"):
         value = provenance.get(name)
         if not isinstance(value, str) or not value.strip():
             raise ReceiptRefused(
-                f"provenance {name} absent — the outcome cannot be sha-bound")
+                f"provenance {name} absent — the outcome cannot be sha-bound"
+            )
     return statement
 
 
-def touched_subjects(lines: list) -> tuple[list[TouchedSubject], int]:
+def touched_subjects(lines: list[Any]) -> tuple[list[TouchedSubject], int]:
     """The joinable ``path::Symbol`` subjects of existence/contract/regression lines,
     deduplicated in first-seen order. A malformed line dict (non-dict, missing or
     wrongly-typed class/subject) is skipped AND counted (the per-case fallback — one
@@ -255,15 +273,16 @@ def touched_subjects(lines: list) -> tuple[list[TouchedSubject], int]:
             continue
         path, _, symbol = subject.partition("::")
         if not path or not symbol:
-            continue                               # not a path::Symbol subject
+            continue  # not a path::Symbol subject
         if (path, symbol) not in seen:
             seen.add((path, symbol))
             subjects.append(TouchedSubject(path=path, symbol=symbol))
     return subjects, skipped
 
 
-def propagation_subjects(predicate: object
-                         ) -> tuple[list[tuple[TouchedSubject, str, str]], int]:
+def propagation_subjects(
+    predicate: object,
+) -> tuple[list[tuple[TouchedSubject, str, str]], int]:
     """The ``(neighbour subject, seed, drift)`` triples of the receipt's OPTIONAL
     ``propagation`` block (T2 — census ``--propagate`` blast-radius expansion), in
     block order, deduplicated on the exact triple. D8 at the write boundary: an
@@ -286,9 +305,12 @@ def propagation_subjects(predicate: object
             continue
         seed, drift = entry.get("seed"), entry.get("drift")
         neighbors = entry.get("neighbors")
-        if (not isinstance(seed, str) or not seed
-                or drift not in _BREAKING_DRIFTS
-                or not isinstance(neighbors, list)):
+        if (
+            not isinstance(seed, str)
+            or not seed
+            or drift not in _BREAKING_DRIFTS
+            or not isinstance(neighbors, list)
+        ):
             skipped += 1
             continue
         for neighbor in neighbors:
@@ -307,7 +329,7 @@ def propagation_subjects(predicate: object
 # ── derivation (§3.3 — server-derived, never caller-asserted) ──────────────────
 
 
-def derive_pre_merge(lines: list) -> tuple[str, str]:
+def derive_pre_merge(lines: list[Any]) -> tuple[str, str]:
     """(verdict, tag) from the decided execution lines: class ∈ {typecheck, tests}
     with state ∈ {passed, failed}. ``errored`` is "tooling broke", not "change
     failed" — never decided. Nothing decided ⇒ ``ReceiptRefused`` (an outcome row
@@ -327,8 +349,11 @@ def derive_pre_merge(lines: list) -> tuple[str, str]:
     if not decided:
         raise ReceiptRefused("no decided execution evidence — nothing to record")
     verdict = "fail" if any(state == "failed" for state, _ in decided) else "pass"
-    tag = ("machine-checked"
-           if all(t == "machine-checked" for _, t in decided) else "bounded-estimate")
+    tag = (
+        "machine-checked"
+        if all(t == "machine-checked" for _, t in decided)
+        else "bounded-estimate"
+    )
     return verdict, tag
 
 
@@ -338,21 +363,50 @@ def derive_post_merge_tag(signal: str) -> str:
     return "machine-checked" if signal in _SIGNALS_MACHINE else "unverified-judgment"
 
 
+def derive_post_merge(
+    lines: list[Any], *, verdict: str, signal: str
+) -> tuple[str, str]:
+    """(verdict, tag) for a post-merge ingest (v3 §3.6): when DECIDED execution
+    lines exist (class ∈ {typecheck, tests}, state ∈ {passed, failed}) they DERIVE
+    the verdict — any failed ⇒ ``fail`` — with the tag capped at
+    ``bounded-estimate`` (post-merge execution lines never self-certify
+    machine-checked; that claim needs a randomized/canary SIGNAL, the §6.2.5
+    canary rule the ``ChangeOutcome`` carrier still enforces structurally).
+    Nothing decided ⇒ the CALLER's verdict with the signal-derived tag (the
+    landed-line parity fallback). Total, never raises; ``errored``/``not_run``
+    is "tooling broke", never decided."""
+    decided: list[str] = []
+    for line in lines if isinstance(lines, list) else []:
+        if not isinstance(line, dict) or line.get("class") not in _EXECUTION_CLASSES:
+            continue
+        detail = line.get("detail")
+        state = detail.get("state") if isinstance(detail, dict) else None
+        if state in _DECIDED_STATES:
+            decided.append(state)
+    if not decided:
+        return verdict, derive_post_merge_tag(signal)
+    return ("fail" if "failed" in decided else "pass"), "bounded-estimate"
+
+
 # ── Flow A: the verified/verify distillation + classifiers (mechanical, D8) ────
 
 
-def subject_evidence(lines: list) -> dict[tuple[str, str], SubjectEvidence]:
+def subject_evidence(lines: list[Any]) -> dict[tuple[str, str], SubjectEvidence]:
     """Distill the evidence lines into one ``SubjectEvidence`` per ``path::Symbol``.
     Total and defensive: a malformed line/detail/field is simply DROPPED (the
     under-claim direction — the defaults assert nothing), never a raise. A field
     stated by more than one line is last-write-wins over the parseable statements
     (receipts state each once; the rule only needs determinism)."""
-    acc: dict[tuple[str, str], dict] = {}
+    acc: dict[tuple[str, str], dict[str, Any]] = {}
     for line in lines if isinstance(lines, list) else []:
         if not isinstance(line, dict):
             continue
         cls, subject = line.get("class"), line.get("subject")
-        if cls not in _JOIN_CLASSES or not isinstance(subject, str) or "::" not in subject:
+        if (
+            cls not in _JOIN_CLASSES
+            or not isinstance(subject, str)
+            or "::" not in subject
+        ):
             continue
         path, _, symbol = subject.partition("::")
         if not path or not symbol:
@@ -372,12 +426,11 @@ def subject_evidence(lines: list) -> dict[tuple[str, str], SubjectEvidence]:
             slot["has_regression_line"] = True
             tests = detail.get("tests")
             if isinstance(tests, list):
-                slot["regression_tests"] = tuple(
-                    t for t in tests if isinstance(t, str))
+                slot["regression_tests"] = tuple(t for t in tests if isinstance(t, str))
     return {key: SubjectEvidence(**fields) for key, fields in acc.items()}
 
 
-def decided_tests_state(lines: list) -> Optional[str]:
+def decided_tests_state(lines: list[Any]) -> Optional[str]:
     """The DECIDED state of the ``tests`` execution line(s): ``"failed"`` if any
     decided run failed, ``"passed"`` if every decided run passed, ``None`` when
     nothing is decided (not_run / errored / absent — "tooling broke" is never
@@ -395,8 +448,9 @@ def decided_tests_state(lines: list) -> Optional[str]:
     return "failed" if "failed" in states else "passed"
 
 
-def classify_verified(polarity: str, ev: SubjectEvidence,
-                      tests_state: Optional[str]) -> Optional[str]:
+def classify_verified(
+    polarity: str, ev: SubjectEvidence, tests_state: Optional[str]
+) -> Optional[str]:
     """The mechanical corroborated/contradicted join over the regression line
     (VISION_LIFT §5.2, pinned exactly). HELPED iff a ``dont`` memory's anchor drifted
     breaking/removed AND a decided-failing test run reached it (the three-way clause:
@@ -427,7 +481,7 @@ def classify_verify(ev: SubjectEvidence) -> Optional[str]:
     return None
 
 
-def version_stamp(provenance: object) -> Optional[dict]:
+def version_stamp(provenance: object) -> Optional[dict[str, Any]]:
     """The full ``ModelVersion ⊕ VerifierVersion ⊕ SHA`` binding (L7): base/head SHAs
     + the combdrift block (flat string entries only — the VerifierVersion) + the
     matrix HEAD graph identity (graph_sha256/commit_sha/engine_version — the
@@ -437,14 +491,21 @@ def version_stamp(provenance: object) -> Optional[dict]:
     if not isinstance(provenance, dict):
         return None
     base_sha, head_sha = provenance.get("base_sha"), provenance.get("head_sha")
-    if not (isinstance(base_sha, str) and base_sha.strip()
-            and isinstance(head_sha, str) and head_sha.strip()):
+    if not (
+        isinstance(base_sha, str)
+        and base_sha.strip()
+        and isinstance(head_sha, str)
+        and head_sha.strip()
+    ):
         return None
     combdrift_raw = provenance.get("combdrift")
     if not isinstance(combdrift_raw, dict):
         return None
-    combdrift = {k: v for k, v in combdrift_raw.items()
-                 if isinstance(k, str) and isinstance(v, str)}
+    combdrift = {
+        k: v
+        for k, v in combdrift_raw.items()
+        if isinstance(k, str) and isinstance(v, str)
+    }
     if not combdrift:
         return None
     matrix = provenance.get("matrix")
@@ -457,84 +518,86 @@ def version_stamp(provenance: object) -> Optional[dict]:
         if not (isinstance(value, str) and value.strip()):
             return None
         matrix_head[key] = value
-    return {"base_sha": base_sha, "head_sha": head_sha,
-            "combdrift": combdrift, "matrix_head": matrix_head}
+    return {
+        "base_sha": base_sha,
+        "head_sha": head_sha,
+        "combdrift": combdrift,
+        "matrix_head": matrix_head,
+    }
 
 
-# ── the change→episode join (§3.4 — deterministic, pure, precision-first) ─────
+# ── the change→episode join (v3 §3.6 — structured, repo-scoped, exact) ────────
 
 
-def _find_path_span(anchor: str, path: str) -> Optional[tuple[int, int]]:
-    """The path gate: the first occurrence of ``path`` in ``anchor`` at a boundary
-    (preceding char ∈ start/space/(/`/'/" and following ∈ end/:/space/)/`/'/"/#),
-    else the ``anchor endswith /path`` arm. None ⇒ no path hit ⇒ no match."""
-    if not path:
-        return None
-    start = 0
-    while True:
-        i = anchor.find(path, start)
-        if i < 0:
-            break
-        j = i + len(path)
-        pre_ok = i == 0 or anchor[i - 1] in _PRE_BOUNDARY
-        post_ok = j == len(anchor) or anchor[j] in _POST_BOUNDARY
-        if pre_ok and post_ok:
-            return (i, j)
-        start = i + 1
-    if anchor.endswith("/" + path):
-        return (len(anchor) - len(path), len(anchor))
-    return None
+def _anchor_match_level(
+    anchors: Sequence[str], subject: TouchedSubject
+) -> Optional[str]:
+    """The tier of ``subject`` against one episode's structured anchors:
+    ``symbol`` when any anchor is exactly ``path::Symbol`` for the subject
+    (the most precise tier wins); ``file`` when an anchor names exactly the
+    subject's path (file-scoped — the path alone matches); None otherwise.
+    A symbol-scoped anchor naming a DIFFERENT symbol never matches
+    (precision-first under-claim, unchanged from the free-text era)."""
+    best: Optional[str] = None
+    for anchor in anchors:
+        path, sep, symbol = anchor.partition("::")
+        if path != subject.path:
+            continue
+        if sep and symbol:
+            if symbol == subject.symbol:
+                return "symbol"
+            continue  # names a different symbol: no match
+        best = "file"  # exact-path, file-scoped anchor
+    return best
 
 
-def _names_symbol(anchor: str, symbol: str) -> bool:
-    """True iff ``symbol`` occurs in ``anchor`` with identifier boundaries (the chars
-    around it are non-[A-Za-z0-9_])."""
-    if not symbol:
-        return False
-    start = 0
-    while True:
-        i = anchor.find(symbol, start)
-        if i < 0:
-            return False
-        j = i + len(symbol)
-        pre = anchor[i - 1] if i > 0 else ""
-        post = anchor[j] if j < len(anchor) else ""
-        pre_ident = bool(pre) and (pre.isalnum() or pre == "_")
-        post_ident = bool(post) and (post.isalnum() or post == "_")
-        if not pre_ident and not post_ident:
-            return True
-        start = i + 1
+def match_anchors(
+    subjects: Sequence[TouchedSubject],
+    episodes: Sequence[tuple[int, str, str, str]],
+    *,
+    repo: str,
+) -> dict[int, tuple[TouchedSubject, str]]:
+    """{episode_id: (subject, level)} — the v3 structured join. ``episodes`` rows
+    are ``(episode_id, repo, anchor, polarity)`` (an episode may carry several
+    anchor rows; ``polarity`` rides for the caller's verified classification and
+    is ignored here). Anchors are STRUCTURED (``path`` or ``path::Symbol``), so
+    the old free-text boundary-scan heuristics collapse to exact comparison:
+    exact-path gate, then the symbol tier (see ``_anchor_match_level``).
 
-
-def match_anchors(subjects: Sequence[TouchedSubject],
-                  episodes: Sequence[tuple[int, str]],
-                  ) -> dict[int, tuple[TouchedSubject, str]]:
-    """{episode_id: (subject, level)} — the §3.4 rule. Per episode, subjects are tried
-    in sorted (path, symbol) order and the FIRST match wins (one row per episode per
-    receipt: the outcome is per-change, not per-line). Path gate first; then the
-    symbol tier: a residue (anchor minus the matched path span) containing any
-    identifier token makes the anchor symbol-scoped — the subject's symbol must then
-    ALSO be named (a symbol-scoped anchor naming a different symbol does NOT match);
-    an identifier-free residue is file-scoped and the path hit alone matches. An
-    empty/unparseable anchor simply never matches (under-claim, never a crash).
-    Insertion order follows the episode input order (deterministic, order-stable)."""
+    Per episode, subjects are tried in sorted (path, symbol) order and the FIRST
+    matching subject wins (one row per episode per receipt: the outcome is
+    per-change, not per-line). A malformed row / empty anchor simply never
+    matches (under-claim, never a crash). Insertion order follows the episode
+    input order (deterministic, order-stable)."""
     ordered = sorted(set(subjects), key=lambda s: (s.path, s.symbol))
-    out: dict[int, tuple[TouchedSubject, str]] = {}
-    for episode_id, anchor in episodes:
+    anchors_by_eid: dict[int, list[str]] = {}
+    order: list[int] = []
+    for row in episodes:
+        try:
+            episode_id, row_repo, anchor = int(row[0]), row[1], row[2]
+        except (TypeError, ValueError, IndexError):
+            continue  # malformed row ⇒ under-claim
+        # marker: the cross-repo join guard — only anchor rows of THE RECEIPT'S
+        # repo enter the join, so one repo's change can never write evidence
+        # onto another repo's memory. Dropping this filter is the named
+        # mutation: CT-9's cross-repo join test (tests/contract/
+        # test_multirepo_sync.py) and its unit twin (tests/domain/
+        # test_change_evidence.py::test_join_filters_rows_to_the_receipt_repo) red.
+        if row_repo != repo:
+            continue
         if not isinstance(anchor, str) or not anchor:
             continue
+        if episode_id not in anchors_by_eid:
+            anchors_by_eid[episode_id] = []
+            order.append(episode_id)
+        anchors_by_eid[episode_id].append(anchor)
+    out: dict[int, tuple[TouchedSubject, str]] = {}
+    for episode_id in order:
         for subject in ordered:
-            span = _find_path_span(anchor, subject.path)
-            if span is None:
-                continue
-            residue = anchor[:span[0]] + anchor[span[1]:]
-            if _IDENT.search(residue):
-                if _names_symbol(anchor, subject.symbol):
-                    out[int(episode_id)] = (subject, "symbol")
-                    break
-                continue                           # names a different symbol: no match
-            out[int(episode_id)] = (subject, "file")
-            break
+            level = _anchor_match_level(anchors_by_eid[episode_id], subject)
+            if level is not None:
+                out[episode_id] = (subject, level)
+                break
     return out
 
 
@@ -547,83 +610,106 @@ def render_payload(outcome: ChangeOutcome, subject: TouchedSubject, level: str) 
     no memory text, no source code, no receipt prose (Law 4). The receipt's measured
     ``ref`` and recorded ``repo`` ride only when present — a legacy (stamp-less)
     receipt renders the exact pre-stamp bytes, so its dedup key never moves."""
-    return json.dumps({
-        "schema": PAYLOAD_SCHEMA,
-        "base_sha": outcome.base_sha,
-        "head_sha": outcome.head_sha,
-        "receipt_sha256": outcome.receipt_sha256,
-        "receipt_schema_version": outcome.receipt_schema_version,
-        "predicate_type": outcome.predicate_type,
-        "phase": outcome.phase,
-        "verdict": outcome.verdict,
-        "tag": outcome.tag,
-        "signal": outcome.signal,
-        # marker: unconditional emission ("ref" on a legacy payload) is a mutation —
-        # it breaks legacy content-keyed dedup (every re-ingest would double-write).
-        **({"ref": outcome.ref} if outcome.ref else {}),
-        # marker: unconditional emission ("repo" on a legacy payload) is a mutation —
-        # it breaks legacy content-keyed dedup (every re-ingest would double-write).
-        **({"repo": outcome.repo} if outcome.repo else {}),
-        "matched": {"path": subject.path, "symbol": subject.symbol, "level": level},
-        "hive_census_version": outcome.hive_census_version,
-    }, sort_keys=True, separators=(",", ":"))
+    return json.dumps(
+        {
+            "schema": PAYLOAD_SCHEMA,
+            "base_sha": outcome.base_sha,
+            "head_sha": outcome.head_sha,
+            "receipt_sha256": outcome.receipt_sha256,
+            "receipt_schema_version": outcome.receipt_schema_version,
+            "predicate_type": outcome.predicate_type,
+            "phase": outcome.phase,
+            "verdict": outcome.verdict,
+            "tag": outcome.tag,
+            "signal": outcome.signal,
+            # marker: unconditional emission ("ref" on a legacy payload) is a mutation —
+            # it breaks legacy content-keyed dedup (every re-ingest would double-write).
+            **({"ref": outcome.ref} if outcome.ref else {}),
+            # marker: unconditional emission ("repo" on a legacy payload) is a mutation —
+            # it breaks legacy content-keyed dedup (every re-ingest would double-write).
+            **({"repo": outcome.repo} if outcome.repo else {}),
+            "matched": {"path": subject.path, "symbol": subject.symbol, "level": level},
+            "hive_census_version": outcome.hive_census_version,
+        },
+        sort_keys=True,
+        separators=(",", ":"),
+    )
 
 
-def render_verified_payload(outcome: ChangeOutcome, subject: TouchedSubject,
-                            level: str, kind_reason: str, stamp: dict,
-                            ref: str = "") -> str:
+def render_verified_payload(
+    outcome: ChangeOutcome,
+    subject: TouchedSubject,
+    level: str,
+    kind_reason: str,
+    stamp: dict[str, Any],
+    ref: str = "",
+) -> str:
     """The verified-outcome payload: canonical JSON, ids/enums/stamps only.
     ``kind_reason`` is the machine enum (corroborated/contradicted), never receipt
     prose; the full version ``stamp`` binds the row (L7). ``ref`` (the measured line)
     rides only when present — legacy bytes stay identical."""
-    return json.dumps({
-        "schema": VERIFIED_PAYLOAD_SCHEMA,
-        "receipt_sha256": outcome.receipt_sha256,
-        "phase": outcome.phase,
-        "verdict": outcome.verdict,
-        "tag": outcome.tag,
-        "matched": {"path": subject.path, "symbol": subject.symbol, "level": level},
-        "reason": kind_reason,
-        # marker: unconditional emission ("ref" on a legacy payload) is a mutation —
-        # it breaks legacy content-keyed dedup.
-        **({"ref": ref} if ref else {}),
-        "stamp": stamp,
-    }, sort_keys=True, separators=(",", ":"))
+    return json.dumps(
+        {
+            "schema": VERIFIED_PAYLOAD_SCHEMA,
+            "receipt_sha256": outcome.receipt_sha256,
+            "phase": outcome.phase,
+            "verdict": outcome.verdict,
+            "tag": outcome.tag,
+            "matched": {"path": subject.path, "symbol": subject.symbol, "level": level},
+            "reason": kind_reason,
+            # marker: unconditional emission ("ref" on a legacy payload) is a mutation —
+            # it breaks legacy content-keyed dedup.
+            **({"ref": ref} if ref else {}),
+            "stamp": stamp,
+        },
+        sort_keys=True,
+        separators=(",", ":"),
+    )
 
 
-def render_verify_payload(subject: TouchedSubject, ev: SubjectEvidence,
-                          stamp: dict, ref: str = "") -> str:
+def render_verify_payload(
+    subject: TouchedSubject, ev: SubjectEvidence, stamp: dict[str, Any], ref: str = ""
+) -> str:
     """The anchor-verification payload: the observed existence/drift facts + the full
     version stamp. Deliberately receipt-digest-free — the verification state of an
     anchor at a head SHA is a fact about the CHANGE, so a re-issued receipt for the
     same change dedups to the same row (content-keyed idempotency). ``ref`` (the
     measured line) rides only when present — legacy bytes stay identical."""
-    return json.dumps({
-        "schema": VERIFY_PAYLOAD_SCHEMA,
-        "matched": {"path": subject.path, "symbol": subject.symbol},
-        "exists_after": ev.exists_after,
-        "drift": ev.drift,
-        # marker: unconditional emission ("ref" on a legacy payload) is a mutation —
-        # it breaks legacy content-keyed dedup.
-        **({"ref": ref} if ref else {}),
-        "stamp": stamp,
-    }, sort_keys=True, separators=(",", ":"))
+    return json.dumps(
+        {
+            "schema": VERIFY_PAYLOAD_SCHEMA,
+            "matched": {"path": subject.path, "symbol": subject.symbol},
+            "exists_after": ev.exists_after,
+            "drift": ev.drift,
+            # marker: unconditional emission ("ref" on a legacy payload) is a mutation —
+            # it breaks legacy content-keyed dedup.
+            **({"ref": ref} if ref else {}),
+            "stamp": stamp,
+        },
+        sort_keys=True,
+        separators=(",", ":"),
+    )
 
 
-def render_suspect_payload(subject: TouchedSubject, seed: str, drift: str,
-                           stamp: dict) -> str:
+def render_suspect_payload(
+    subject: TouchedSubject, seed: str, drift: str, stamp: dict[str, Any]
+) -> str:
     """The neighbourhood-staleness payload: the suspected neighbour + the
     breaking/removed seed whose blast radius reached it + the full version stamp
     (the SHAs ride the stamp). Ids/enums/hashes only — never receipt prose (Law 4);
     receipt-digest-free like the verify payload, so a re-issued receipt for the same
     change dedups to the same row (content-keyed idempotency)."""
-    return json.dumps({
-        "schema": SUSPECT_PAYLOAD_SCHEMA,
-        "matched": {"path": subject.path, "symbol": subject.symbol},
-        "seed": seed,
-        "drift": drift,
-        "stamp": stamp,
-    }, sort_keys=True, separators=(",", ":"))
+    return json.dumps(
+        {
+            "schema": SUSPECT_PAYLOAD_SCHEMA,
+            "matched": {"path": subject.path, "symbol": subject.symbol},
+            "seed": seed,
+            "drift": drift,
+            "stamp": stamp,
+        },
+        sort_keys=True,
+        separators=(",", ":"),
+    )
 
 
 # ── the orchestrating service (ports in, ONE batch out) ────────────────────────
@@ -637,22 +723,35 @@ class ChangeEvidenceService:
     range already ingested is skipped whole; None (every legacy construction) keeps
     today's behavior byte-identical — content-keyed dedupe alone."""
 
-    def __init__(self, *, reader: AnchoredEpisodeReader,
-                 appender: ChangeEvidenceAppender, now: Callable[[], int],
-                 ranges: Optional[RangeLedger] = None) -> None:
+    def __init__(
+        self,
+        *,
+        reader: AnchoredEpisodeReader,
+        appender: ChangeEvidenceAppender,
+        now: Callable[[], int],
+        ranges: Optional[RangeLedger] = None,
+    ) -> None:
         self._reader = reader
         self._appender = appender
         self._now = now
         self._ranges = ranges
 
-    def ingest(self, envelope: object, *, phase: str = "pre_merge",
-               verdict: Optional[str] = None, signal: str = "none") -> IngestReport:
+    def ingest(
+        self,
+        envelope: object,
+        *,
+        phase: str = "pre_merge",
+        verdict: Optional[str] = None,
+        signal: str = "none",
+    ) -> IngestReport:
         """One receipt in, one atomic batch out. pre_merge derives the verdict from
         the receipt (a caller-passed verdict is IGNORED — never caller-asserted);
-        post_merge requires the operator's verdict and derives the tag from the
-        signal. Zero matches ⇒ a report only (the store is never touched)."""
+        post_merge requires the caller's verdict as the nothing-decided FALLBACK
+        and otherwise derives verdict/tag from the receipt's decided execution
+        lines (``derive_post_merge``, capped at bounded-estimate). Zero matches ⇒
+        a report only (the store is never touched)."""
         statement = parse_receipt(envelope)
-        predicate = statement["predicate"]           # shape vouched by parse_receipt
+        predicate = statement["predicate"]  # shape vouched by parse_receipt
         provenance = predicate.get("provenance") or {}
         lines = predicate.get("lines")
         lines = lines if isinstance(lines, list) else []
@@ -661,8 +760,11 @@ class ChangeEvidenceService:
         elif phase == "post_merge":
             if verdict not in _VERDICTS:
                 raise ValueError(
-                    "post_merge ingest requires an explicit verdict ('pass'|'fail')")
-            derived_verdict, tag = verdict, derive_post_merge_tag(signal)
+                    "post_merge ingest requires an explicit verdict ('pass'|'fail')"
+                )
+            derived_verdict, tag = derive_post_merge(
+                lines, verdict=verdict, signal=signal
+            )
         else:
             raise ValueError(f"unknown phase {phase!r}")
         subjects, skipped_lines = touched_subjects(lines)
@@ -678,55 +780,100 @@ class ChangeEvidenceService:
             receipt_sha256=str(statement["subject"][0]["digest"]["sha256"]),
             receipt_schema_version=str(predicate.get("schema_version") or ""),
             predicate_type=str(statement.get("predicateType")),
-            phase=phase, verdict=derived_verdict, tag=tag, signal=signal,
+            phase=phase,
+            verdict=derived_verdict,
+            tag=tag,
+            signal=signal,
             hive_census_version=str(provenance.get("hive_census_version") or ""),
-            ref=ref, repo=repo)
+            ref=ref,
+            repo=repo,
+        )
         # The range-ledger skip: an exact (repo, base, head, phase) range already
         # ingested absorbs the whole receipt with zero rows — checked only AFTER
         # parse + derivation, so a malformed duplicate still refuses loudly (the
         # ledger vouches only for receipts this module can vouch for).
         if self._ranges is not None and self._ranges.already_ingested_range(
-                outcome.repo, outcome.base_sha, outcome.head_sha, phase):
-            return IngestReport(inserted=(), already_recorded=0, matched=0,
-                                skipped_lines=0, range_skipped=True)
-        anchored = self._reader.anchored_episodes()
-        polarity_by_id = {int(eid): pol for eid, _anchor, pol in anchored}
-        matches = match_anchors(
-            subjects, [(eid, anchor) for eid, anchor, _pol in anchored])
+            outcome.repo, outcome.base_sha, outcome.head_sha, phase
+        ):
+            return IngestReport(
+                inserted=(),
+                already_recorded=0,
+                matched=0,
+                skipped_lines=0,
+                range_skipped=True,
+            )
+        anchored = self._reader.anchored_episodes()  # v3: (id, repo, anchor, polarity)
+        polarity_by_id = {int(row[0]): row[3] for row in anchored}
+        matches = match_anchors(subjects, anchored, repo=outcome.repo)
         ts = int(self._now())
-        # Flow A rider: pre-merge only, and ONLY under a full version stamp (L7) — a
-        # post-merge assertion carries no per-subject machine evidence, and a
+        # Flow A rider: gated ONLY on the full version stamp (L7) — ANY phase; the
+        # canonical post_merge ingest is the rider's normal carrier in v3, and a
         # stamp-less receipt still lands its plain change_outcome rows unchanged.
-        stamp = version_stamp(provenance) if phase == "pre_merge" else None
+        # marker: restoring the old `phase == "pre_merge"` condition here is the
+        # named rider mutation: CT-9's rider test (tests/contract/
+        # test_multirepo_sync.py — riders land from the canonical post_merge
+        # ingest) and its unit twin (tests/domain/test_change_evidence.py::
+        # test_post_merge_stamped_ingest_writes_rider_rows) red.
+        stamp = version_stamp(provenance)
         ev_by_subject = subject_evidence(lines) if stamp is not None else {}
         tests_state = decided_tests_state(lines) if stamp is not None else None
-        counts = {EK_OUTCOME_VERIFIED_HELPED: 0, EK_OUTCOME_VERIFIED_HURT: 0,
-                  EK_VERIFY_CURRENT: 0, EK_VERIFY_STALE: 0}
+        counts = {
+            EK_OUTCOME_VERIFIED_HELPED: 0,
+            EK_OUTCOME_VERIFIED_HURT: 0,
+            EK_VERIFY_CURRENT: 0,
+            EK_VERIFY_STALE: 0,
+        }
         rows: list[tuple[int, str, str, int, str]] = []
         for episode_id, (subject, level) in matches.items():
-            rows.append((episode_id, EK_CHANGE_OUTCOME, CHANGE_ACTOR, ts,
-                         render_payload(outcome, subject, level)))
+            rows.append(
+                (
+                    episode_id,
+                    EK_CHANGE_OUTCOME,
+                    CHANGE_ACTOR,
+                    ts,
+                    render_payload(outcome, subject, level),
+                )
+            )
             if stamp is None:
                 continue
             ev = ev_by_subject.get((subject.path, subject.symbol), SubjectEvidence())
             verified_kind = classify_verified(
-                polarity_by_id.get(episode_id, "neutral"), ev, tests_state)
+                polarity_by_id.get(episode_id, "neutral"), ev, tests_state
+            )
             if verified_kind is not None:
-                rows.append((episode_id, verified_kind, CHANGE_ACTOR, ts,
-                             render_verified_payload(
-                                 outcome, subject, level,
-                                 _VERIFIED_REASONS[verified_kind], stamp,
-                                 outcome.ref)))
+                rows.append(
+                    (
+                        episode_id,
+                        verified_kind,
+                        CHANGE_ACTOR,
+                        ts,
+                        render_verified_payload(
+                            outcome,
+                            subject,
+                            level,
+                            _VERIFIED_REASONS[verified_kind],
+                            stamp,
+                            outcome.ref,
+                        ),
+                    )
+                )
                 counts[verified_kind] += 1
             verify_kind = classify_verify(ev)
             if verify_kind is not None:
-                rows.append((episode_id, verify_kind, CHANGE_ACTOR, ts,
-                             render_verify_payload(subject, ev, stamp, outcome.ref)))
+                rows.append(
+                    (
+                        episode_id,
+                        verify_kind,
+                        CHANGE_ACTOR,
+                        ts,
+                        render_verify_payload(subject, ev, stamp, outcome.ref),
+                    )
+                )
                 counts[verify_kind] += 1
         # T2 rider: graph-propagated staleness — join the receipt's OPTIONAL propagation
         # neighbours with the SAME anchor rule, in the same atomic batch. Stamp-gated like
-        # the verified/verify rows (the payload carries the version stamp, so pre-merge
-        # only); an episode already carrying a POINT row this ingest gets no suspect row
+        # the verified/verify rows (the payload carries the version stamp — any phase);
+        # an episode already carrying a POINT row this ingest gets no suspect row
         # (point evidence dominates neighbourhood suspicion). Detection fuel only — the
         # worklist proposes re-verification, nothing here retires anything.
         stale_suspects = 0
@@ -738,14 +885,21 @@ class ChangeEvidenceService:
                 for subject, seed, drift in triples:
                     seed_drift_by_subject.setdefault(subject, (seed, drift))
                 neighbour_matches = match_anchors(
-                    list(seed_drift_by_subject),
-                    [(eid, anchor) for eid, anchor, _pol in anchored])
+                    list(seed_drift_by_subject), anchored, repo=outcome.repo
+                )
                 for episode_id, (subject, _level) in neighbour_matches.items():
                     if episode_id in matches:
-                        continue               # point evidence dominates suspicion
+                        continue  # point evidence dominates suspicion
                     seed, drift = seed_drift_by_subject[subject]
-                    rows.append((episode_id, EK_STALE_SUSPECT, CHANGE_ACTOR, ts,
-                                 render_suspect_payload(subject, seed, drift, stamp)))
+                    rows.append(
+                        (
+                            episode_id,
+                            EK_STALE_SUSPECT,
+                            CHANGE_ACTOR,
+                            ts,
+                            render_suspect_payload(subject, seed, drift, stamp),
+                        )
+                    )
                     stale_suspects += 1
         inserted, already = self._appender.append_evidence(rows) if rows else ([], 0)
         # Record the range only after a SUCCESSFUL append batch (an appender fault
@@ -754,11 +908,16 @@ class ChangeEvidenceService:
         # still gets its rows (the ledger marks ingested WORK, not seen receipts).
         if rows and self._ranges is not None:
             self._ranges.record_ingested_range(
-                outcome.repo, outcome.base_sha, outcome.head_sha, phase, ts)
-        return IngestReport(inserted=tuple(inserted), already_recorded=already,
-                            matched=len(matches), skipped_lines=skipped_lines,
-                            verified_helped=counts[EK_OUTCOME_VERIFIED_HELPED],
-                            verified_hurt=counts[EK_OUTCOME_VERIFIED_HURT],
-                            verify_current=counts[EK_VERIFY_CURRENT],
-                            verify_stale=counts[EK_VERIFY_STALE],
-                            stale_suspects=stale_suspects)
+                outcome.repo, outcome.base_sha, outcome.head_sha, phase, ts
+            )
+        return IngestReport(
+            inserted=tuple(inserted),
+            already_recorded=already,
+            matched=len(matches),
+            skipped_lines=skipped_lines,
+            verified_helped=counts[EK_OUTCOME_VERIFIED_HELPED],
+            verified_hurt=counts[EK_OUTCOME_VERIFIED_HURT],
+            verify_current=counts[EK_VERIFY_CURRENT],
+            verify_stale=counts[EK_VERIFY_STALE],
+            stale_suspects=stale_suspects,
+        )

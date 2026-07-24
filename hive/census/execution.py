@@ -17,8 +17,9 @@ with a deciding tag unconstructable.
 
 from __future__ import annotations
 
+from collections.abc import Iterable
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Literal
+from typing import TYPE_CHECKING, Any, Literal, cast
 
 from hive.census.diff import Change, ChangeSet
 from hive.census.engines import GraphPair
@@ -78,7 +79,10 @@ def _runners(value: object) -> tuple[str, ...]:
     if isinstance(value, str):  # one runner name, never a character iterable
         return (value,)
     try:
-        return tuple(str(item) for item in value)  # type: ignore[union-attr]
+        # Optimistic duck-iteration: the except IS the type gate (a non-iterable
+        # raises TypeError there), so the cast asserts nothing the try does not
+        # already check at runtime.
+        return tuple(str(item) for item in cast(Iterable[object], value))
     except TypeError:
         return ()
 
@@ -151,11 +155,13 @@ def coerce_execution(
         _coerce_class(
             "typecheck", getattr(result, "typecheck", None), authoritative=authoritative
         ),
-        _coerce_class("tests", getattr(result, "tests", None), authoritative=authoritative),
+        _coerce_class(
+            "tests", getattr(result, "tests", None), authoritative=authoritative
+        ),
     )
 
 
-def coerce_verifier_stamp(result: object | None) -> dict | None:
+def coerce_verifier_stamp(result: object | None) -> dict[str, Any] | None:
     """Extract the producer's tool-version provenance block, or omit it.
 
     Any missing field omits the whole block (under-claim, never a guess).
@@ -165,7 +171,9 @@ def coerce_verifier_stamp(result: object | None) -> dict | None:
         return None
     head_sha = getattr(tool_version, "head_sha", None)
     base_sha = getattr(tool_version, "base_sha", None)
-    tool_versions = getattr(tool_version, "tool_versions", None)
+    # Any, not Any | None: the duck-read pair-iteration below is guarded by the
+    # None-membership check plus the except (iterating None raises TypeError).
+    tool_versions: Any = getattr(tool_version, "tool_versions", None)
     registry_version = getattr(tool_version, "registry_version", None)
     if None in (head_sha, base_sha, tool_versions, registry_version):
         return None
@@ -205,7 +213,8 @@ def run_verifier(
         head_sha=change.touched.head_sha,
         engine=graphs.head,
         opts=VerifyOptions(
-            depth=depth, authoritative=authoritative,
+            depth=depth,
+            authoritative=authoritative,
             root_offset=graphs.head_offset,
         ),
     )
@@ -224,9 +233,7 @@ def verifier_touched_set(touched: ChangeSet) -> hive.verifier.TouchedSet:
         if changed.status in _NO_POST_IMAGE_STATUSES:
             continue
         lines = frozenset(
-            line
-            for start, end in changed.added_spans
-            for line in range(start, end + 1)
+            line for start, end in changed.added_spans for line in range(start, end + 1)
         )
         files.append(TouchedFile(path=changed.path, lines=lines))
     return TouchedSet(files=tuple(files))

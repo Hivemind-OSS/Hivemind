@@ -1,6 +1,7 @@
 """P1.9 — M11 backup floor: online sqlite3.backup() snapshot + keep-N retention,
 WAL-safe under a concurrent uncommitted writer.
 """
+
 from __future__ import annotations
 
 import os
@@ -47,7 +48,7 @@ def test_failed_backup_leaves_no_junk_at_dest(tmp_path):
         fh.write(b"this is definitely not a sqlite database")
     with pytest.raises(sqlite3.DatabaseError):
         backup(src, dest)
-    assert not os.path.exists(dest)               # no junk at the canonical path
+    assert not os.path.exists(dest)  # no junk at the canonical path
     assert not os.path.exists(dest + ".partial")  # the temp was cleaned up too
 
 
@@ -56,7 +57,7 @@ def test_failed_backup_preserves_existing_good_dest(tmp_path):
     good_src = str(tmp_path / "good.db")
     dest = str(tmp_path / "snap.db")
     _make_db(good_src, rows=4)
-    backup(good_src, dest)                         # dest now holds a real 4-row snapshot
+    backup(good_src, dest)  # dest now holds a real 4-row snapshot
     bad_src = str(tmp_path / "bad.bin")
     with open(bad_src, "wb") as fh:
         fh.write(b"corrupt")
@@ -65,15 +66,18 @@ def test_failed_backup_preserves_existing_good_dest(tmp_path):
     conn = sqlite3.connect(dest)
     n = conn.execute("SELECT COUNT(*) FROM t").fetchone()[0]
     conn.close()
-    assert n == 4                                  # the prior good snapshot survived untouched
+    assert n == 4  # the prior good snapshot survived untouched
 
 
 def test_run_daily_backup_snapshots_and_prunes(tmp_path):
     from hive.app.config import Config
+
     db = str(tmp_path / "live.db")
     _make_db(db, rows=3)
     backup_dir = str(tmp_path / "bk")
-    cfg = Config.load(db_path=db, retention={"backup_keep": 5, "backup_dir": backup_dir})
+    cfg = Config.load(
+        db_path=db, retention={"backup_keep": 5, "backup_dir": backup_dir}
+    )
     rec = run_daily_backup(cfg)
     assert os.path.exists(rec.dest_path)
     assert rec.dest_path.startswith(backup_dir)
@@ -83,13 +87,18 @@ def test_run_daily_backup_snapshots_and_prunes(tmp_path):
 def test_backupctl_main_prints_dest_path(tmp_path, capsys):
     # the in-container `hive backup` entry: resolve db_path from env → snapshot → print path.
     from hive.tools import backupctl
+
     db = str(tmp_path / "shared.db")
     _make_db(db, rows=2)
     rc = backupctl.main(env={"HIVE_STORE__DB_PATH": db})
     assert rc == 0
     dest = capsys.readouterr().out.strip()
-    assert dest.endswith(".db") and os.path.exists(dest)      # snapshot written + path printed
-    assert dest.startswith(str(tmp_path / "backups"))         # default backup_dir = <db_dir>/backups
+    assert dest.endswith(".db") and os.path.exists(
+        dest
+    )  # snapshot written + path printed
+    assert dest.startswith(
+        str(tmp_path / "backups")
+    )  # default backup_dir = <db_dir>/backups
 
 
 def test_prune_keeps_n_most_recent(tmp_path):

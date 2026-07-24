@@ -9,6 +9,7 @@ Grounded deviations (built-decision-wins, documented in the deliverable):
   ``test_db_path_required``. The "no silent default" prose guards a persistent store —
   ``":memory:"`` cannot.
 """
+
 from __future__ import annotations
 
 import dataclasses
@@ -32,13 +33,15 @@ def test_defaults_match_spec():
 def test_env_namespacing_no_collision():
     env = {"HIVE_RECALL__TAU_SERVE": "0.5", "HIVE_AUTONOMY__DEMAND_M": "5"}
     cfg = Config.load(db_path=":memory:", env=env)
-    assert cfg.recall.tau_serve == 0.5    # field on the RECALL group
-    assert cfg.autonomy.demand_m == 5     # field on the AUTONOMY group — distinct, no collapse
+    assert cfg.recall.tau_serve == 0.5  # field on the RECALL group
+    assert (
+        cfg.autonomy.demand_m == 5
+    )  # field on the AUTONOMY group — distinct, no collapse
 
 
 def test_env_unknown_key_ignored_not_crash():
     env = {"HIVE_NOPE__DOES_NOT_EXIST": "x", "HIVE_RECALL__NOSUCH": "y"}
-    cfg = Config.load(db_path=":memory:", env=env)   # must not raise
+    cfg = Config.load(db_path=":memory:", env=env)  # must not raise
     assert cfg.recall.tau_serve == 0.70
 
 
@@ -54,8 +57,8 @@ def test_layering_precedence():
     # explicit beats env; env beats the default.
     env = {"HIVE_AUTONOMY__DEMAND_M": "7", "HIVE_RECALL__RECALL_TOP_N": "11"}
     cfg = Config.load(db_path=":memory:", env=env, recall={"recall_top_n": 13})
-    assert cfg.recall.recall_top_n == 13   # explicit override beats env
-    assert cfg.autonomy.demand_m == 7      # env value applied (no explicit override)
+    assert cfg.recall.recall_top_n == 13  # explicit override beats env
+    assert cfg.autonomy.demand_m == 7  # env value applied (no explicit override)
 
 
 def test_env_applies_every_knob():
@@ -92,8 +95,9 @@ def test_autonomy_verified_promotion_defaults_on_and_env_opts_out():
     # env, which coerces like every bool field. Receipt authenticity is out of scope by
     # design (receipts are unsigned; the ingest door verifies no signature).
     assert Config.load(db_path=":memory:").autonomy.verified_promotion is True
-    off = Config.load(db_path=":memory:",
-                      env={"HIVE_AUTONOMY__VERIFIED_PROMOTION": "false"})
+    off = Config.load(
+        db_path=":memory:", env={"HIVE_AUTONOMY__VERIFIED_PROMOTION": "false"}
+    )
     assert off.autonomy.verified_promotion is False
 
 
@@ -121,13 +125,13 @@ def test_auth_group_is_removed():
 def test_frozen_nested_group_raises():
     cfg = Config.load(db_path=":memory:")
     with pytest.raises(dataclasses.FrozenInstanceError):
-        cfg.recall.tau_serve = 0.9   # type: ignore[misc]
+        cfg.recall.tau_serve = 0.9  # type: ignore[misc]
 
 
 def test_frozen_root_raises():
     cfg = Config.load(db_path=":memory:")
     with pytest.raises(dataclasses.FrozenInstanceError):
-        cfg.recall = None   # type: ignore[misc]
+        cfg.recall = None  # type: ignore[misc]
 
 
 # ── fail-fast validation ──────────────────────────────────────────────────────
@@ -186,7 +190,9 @@ def test_backup_keep_at_least_one():
 # ── ConflictConfig group (detection ON; one empirical knob τ; no suppress knob) ──
 def test_conflict_detection_defaults_and_no_suppress_knob():
     cfg = Config.load(db_path=":memory:")
-    assert cfg.conflict.enabled is True           # detection surfaces ship ON (fleet flags conflicts)
+    assert (
+        cfg.conflict.enabled is True
+    )  # detection surfaces ship ON (fleet flags conflicts)
     # 0.80: measured to sit in the gap between distinct same-subsystem facts (~0.69) and
     # genuine paraphrase/contradiction pairs (~0.81-0.87) — calibratable per deployment.
     assert cfg.conflict.tau == 0.80
@@ -262,40 +268,21 @@ def test_conflict_top_n_at_least_one():
 def test_conflict_group_is_frozen():
     cfg = Config.load(db_path=":memory:")
     with pytest.raises(dataclasses.FrozenInstanceError):
-        cfg.conflict.enabled = True   # type: ignore[misc]
+        cfg.conflict.enabled = True  # type: ignore[misc]
 
 
-# ── AgiConfig group (the AGI-MODE operator opt-in; default OFF, byte-inert) ─────
-def test_agi_mode_defaults_off():
-    # AGI_MODE LOOSENS a safety gate, so it ships OFF — the strict default-OFF (THEORY §9.9).
-    cfg = Config.load(db_path=":memory:")
-    assert cfg.agi.mode is False
+# ── the agi group is DELETED (U4: no AGI mode, no sentinel — CT-12 mirror) ─────
+def test_agi_group_is_deleted_and_env_degrades_to_unknown_group_warn():
+    # HIVE_AGI__MODE is no longer a live switch: it hits the unknown-group WARN path and is
+    # ignored — the loaded Config carries NO agi group at all.
+    cfg = Config.load(db_path=":memory:", env={"HIVE_AGI__MODE": "true"})
+    assert not hasattr(cfg, "agi")
 
 
-def test_agi_mode_enabled_via_env_coerces_bool():
-    # the operator opt-in: HIVE_AGI__MODE coerces through the existing bool path.
-    for truthy in ("true", "1", "yes", "on"):
-        cfg = Config.load(db_path=":memory:", env={"HIVE_AGI__MODE": truthy})
-        assert cfg.agi.mode is True
-    for falsy in ("false", "0", "no", "off"):
-        cfg = Config.load(db_path=":memory:", env={"HIVE_AGI__MODE": falsy})
-        assert cfg.agi.mode is False
-
-
-def test_agi_mode_explicit_override():
-    assert Config.load(db_path=":memory:", agi={"mode": True}).agi.mode is True
-
-
-def test_agi_unknown_field_typo_raises():
-    # a typo in the highest-precedence layer fails fast (never silently leaves the gate OFF).
-    with pytest.raises(ValueError, match=r"unknown config override|modee"):
-        Config.load(agi={"modee": True})
-
-
-def test_agi_group_is_frozen():
-    cfg = Config.load(db_path=":memory:")
-    with pytest.raises(dataclasses.FrozenInstanceError):
-        cfg.agi.mode = True   # type: ignore[misc]
+def test_agi_explicit_override_raises_unknown_group():
+    # the highest-precedence layer stays fail-fast: naming the deleted group is a caller bug.
+    with pytest.raises(ValueError, match=r"unknown config group override 'agi'"):
+        Config.load(agi={"mode": True})
 
 
 # ── SecretScanConfig group (the secret-floor operator opt-OUT; default ON, byte-inert) ─
@@ -318,8 +305,12 @@ def test_secret_scan_enabled_via_env_coerces_bool():
 
 
 def test_secret_scan_explicit_override():
-    assert Config.load(
-        db_path=":memory:", secret_scan={"enabled": False}).secret_scan.enabled is False
+    assert (
+        Config.load(
+            db_path=":memory:", secret_scan={"enabled": False}
+        ).secret_scan.enabled
+        is False
+    )
 
 
 def test_secret_scan_unknown_field_typo_raises():
@@ -332,7 +323,7 @@ def test_secret_scan_unknown_field_typo_raises():
 def test_secret_scan_group_is_frozen():
     cfg = Config.load(db_path=":memory:")
     with pytest.raises(dataclasses.FrozenInstanceError):
-        cfg.secret_scan.enabled = False   # type: ignore[misc]
+        cfg.secret_scan.enabled = False  # type: ignore[misc]
 
 
 # ── config → embedder threading (torch-free: construction does not load the model) ────
@@ -340,67 +331,79 @@ def test_build_provider_sources_native_dim():
     # the embedder's d is the model's NATIVE dim (sourced from native_dim_for), not a config
     # knob — construction is lazy (no model load), so this proves the wiring without the model.
     from hive.adapters.embedding.factory import build_provider, native_dim_for
+
     cfg = Config.load(db_path=":memory:")
     assert build_provider(cfg).d == native_dim_for(cfg.embedding.model) == 1024
 
-# ── CensusConfig group (canonical-ref rider scoping; default "" = byte-inert) ─────
-def test_census_canonical_ref_defaults_off():
-    cfg = Config.load(db_path=":memory:")
-    assert cfg.census.canonical_ref == ""            # "" = unscoped, byte-identical
 
-
-def test_census_canonical_ref_via_env_and_override():
+# ── the census group is DELETED (U4: canonical refs live on the repo registry) ────
+def test_census_group_is_deleted_and_env_degrades_to_unknown_group_warn():
     cfg = Config.load(db_path=":memory:", env={"HIVE_CENSUS__CANONICAL_REF": "master"})
-    assert cfg.census.canonical_ref == "master"
-    assert Config.load(db_path=":memory:",
-                       census={"canonical_ref": "main"}).census.canonical_ref == "main"
+    assert not hasattr(cfg, "census")
 
 
-def test_census_group_is_frozen():
+def test_census_explicit_override_raises_unknown_group():
+    with pytest.raises(ValueError, match=r"unknown config group override 'census'"):
+        Config.load(census={"canonical_ref": "main"})
+
+
+# ── SyncConfig group (v3: loop knobs only — the repo registry owns WHICH repos) ──
+def test_sync_defaults():
     cfg = Config.load(db_path=":memory:")
-    with pytest.raises(dataclasses.FrozenInstanceError):
-        cfg.census.canonical_ref = "x"   # type: ignore[misc]
-
-
-# ── SyncConfig group (server-side census sync; repo_url "" = unarmed/byte-inert) ─
-def test_sync_defaults_unarmed():
-    cfg = Config.load(db_path=":memory:")
-    assert cfg.sync.repo_url == "" and cfg.sync.token == ""
     assert cfg.sync.interval_s == 60
     assert cfg.sync.webhook_secret == ""
-    assert cfg.sync.verify_candidates is True
-    assert cfg.sync.mirror_dir == ""             # "" ⇒ /data/sync/mirror at the service
+    assert cfg.sync.mirror_dir == ""  # "" ⇒ /data/sync/mirror at the service
 
 
 def test_sync_env_and_override():
-    env = {"HIVE_SYNC__REPO_URL": "https://example.com/o/r.git",
-           "HIVE_SYNC__INTERVAL_S": "30",
-           "HIVE_SYNC__VERIFY_CANDIDATES": "false"}
+    env = {"HIVE_SYNC__INTERVAL_S": "30", "HIVE_SYNC__WEBHOOK_SECRET": "hooksecret"}
     cfg = Config.load(db_path=":memory:", env=env)
-    assert cfg.sync.repo_url == "https://example.com/o/r.git"
     assert cfg.sync.interval_s == 30
-    assert cfg.sync.verify_candidates is False
-    assert Config.load(db_path=":memory:",
-                       sync={"repo_url": "x", "mirror_dir": "/m"}).sync.mirror_dir == "/m"
+    assert cfg.sync.webhook_secret == "hooksecret"
+    assert (
+        Config.load(db_path=":memory:", sync={"mirror_dir": "/m"}).sync.mirror_dir
+        == "/m"
+    )
 
 
 def test_sync_interval_floor():
     with pytest.raises(ValueError):
-        Config.load(db_path=":memory:", sync={"repo_url": "x", "interval_s": 4})
-    assert Config.load(db_path=":memory:",
-                       sync={"repo_url": "x", "interval_s": 5}).sync.interval_s == 5
+        Config.load(db_path=":memory:", sync={"interval_s": 4})
+    assert Config.load(db_path=":memory:", sync={"interval_s": 5}).sync.interval_s == 5
 
 
-def test_sync_partial_credential_without_repo_url_raises():
-    # fail-fast partial config: a credential with no repo is refused, NAMING the
-    # missing var and never echoing the credential value
-    for half in ({"token": "tok-value"}, {"webhook_secret": "hook-value"}):
-        with pytest.raises(ValueError, match="HIVE_SYNC__REPO_URL") as ei:
-            Config.load(db_path=":memory:", sync=half)
-        assert "tok-value" not in str(ei.value) and "hook-value" not in str(ei.value)
+def test_sync_webhook_secret_is_standalone_valid():
+    # the partial-config guard is DELETED: the webhook nudge is GLOBAL (one nudge wakes the
+    # loop for every registered repo), so a secret with no other sync setting is a complete,
+    # valid config — never a refused half-install.
+    cfg = Config.load(db_path=":memory:", sync={"webhook_secret": "hook-value"})
+    assert cfg.sync.webhook_secret == "hook-value"
+
+
+def test_sync_deleted_fields_raise_as_unknown_overrides():
+    # repo_url / token / verify_candidates left the group (the store's repo registry +
+    # per-row token_env indirection replaced them): an explicit override naming one is a
+    # caller bug and fails fast.
+    for dead in ({"repo_url": "x"}, {"token": "t"}, {"verify_candidates": True}):
+        with pytest.raises(ValueError, match=r"unknown config override"):
+            Config.load(sync=dead)
+
+
+def test_sync_deleted_env_vars_are_ignored_not_crash():
+    # leftover env from a v2 deployment degrades to the unknown-field WARN — ignored, and
+    # never echoed (the value could be a credential).
+    env = {
+        "HIVE_SYNC__REPO_URL": "https://example.invalid/x.git",
+        "HIVE_SYNC__TOKEN": "tok-value",
+        "HIVE_SYNC__VERIFY_CANDIDATES": "true",
+    }
+    cfg = Config.load(db_path=":memory:", env=env)
+    for dead in ("repo_url", "token", "verify_candidates"):
+        assert not hasattr(cfg.sync, dead)
+    assert cfg.sync.interval_s == 60  # the surviving knobs still default
 
 
 def test_sync_group_is_frozen():
     cfg = Config.load(db_path=":memory:")
     with pytest.raises(dataclasses.FrozenInstanceError):
-        cfg.sync.repo_url = "x"   # type: ignore[misc]
+        cfg.sync.interval_s = 99  # type: ignore[misc]

@@ -63,9 +63,9 @@ class TestStatement:
         # subject digest is sha256 over the canonical predicate bytes, so ANY change
         # to the predicate necessarily changes the digest — tamper is detectable.
         base = receipt_statement(_RECEIPT)["subject"][0]["digest"]["sha256"]
-        mutated = receipt_statement(
-            {**_RECEIPT, "schema_version": "v-tampered"}
-        )["subject"][0]["digest"]["sha256"]
+        mutated = receipt_statement({**_RECEIPT, "schema_version": "v-tampered"})[
+            "subject"
+        ][0]["digest"]["sha256"]
         assert base != mutated
 
 

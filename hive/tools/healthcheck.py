@@ -14,6 +14,7 @@ Touches NO network (HF is offline anyway). Returns a sysexits-style code:
     0  → ok AND embedder_loaded   (the ONLY green)
     1  → unhealthy                (db unreachable, OR the embedder is not resident yet)
 """
+
 from __future__ import annotations
 
 import logging
@@ -46,7 +47,7 @@ def _pid_alive(pid: int) -> bool:
         os.kill(pid, 0)
     except ProcessLookupError:
         return False
-    except PermissionError:                            # exists but not ours — still alive
+    except PermissionError:  # exists but not ours — still alive
         return True
     except OSError:
         return False
@@ -67,8 +68,8 @@ def _proc_starttime(pid: int) -> Optional[int]:
         with open(f"/proc/{int(pid)}/stat") as fh:
             data = fh.read()
         # comm (field 2) is parenthesized and may contain spaces/')'; parse after the LAST ')'.
-        rest = data[data.rindex(")") + 1:].split()
-        return int(rest[19])                           # field 22 == index 19 once pid+comm dropped
+        rest = data[data.rindex(")") + 1 :].split()
+        return int(rest[19])  # field 22 == index 19 once pid+comm dropped
     except (OSError, ValueError, IndexError, OverflowError):
         return None
 
@@ -96,15 +97,24 @@ def _default_probe(env: Mapping[str, str]) -> dict[str, Any]:
         # read-only URI so the healthcheck can never create/migrate the store as a side effect
         conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True, timeout=5.0)
         conn.row_factory = sqlite3.Row
-        conn.execute("SELECT 1").fetchone()            # db reachable ⇒ ok
+        conn.execute("SELECT 1").fetchone()  # db reachable ⇒ ok
         marker = _meta(conn, MARK_EMBEDDER_LOADED)
         pid = _as_int(_meta(conn, MARK_SERVE_PID))
         recorded_start = _meta(conn, MARK_SERVE_STARTTIME)
-        embedder_loaded = (marker == "1" and _pid_alive(pid)
-                           and _starttime_matches(pid, recorded_start))
-        return {"ok": True, "embedder_loaded": bool(embedder_loaded), "db_path": db_path}
-    except Exception as exc:                            # noqa: BLE001 — probe never raises
-        _log.warning("healthcheck.probe_failed kind=%s db_path=%s", type(exc).__name__, db_path)
+        embedder_loaded = (
+            marker == "1"
+            and _pid_alive(pid)
+            and _starttime_matches(pid, recorded_start)
+        )
+        return {
+            "ok": True,
+            "embedder_loaded": bool(embedder_loaded),
+            "db_path": db_path,
+        }
+    except Exception as exc:  # noqa: BLE001 — probe never raises
+        _log.warning(
+            "healthcheck.probe_failed kind=%s db_path=%s", type(exc).__name__, db_path
+        )
         return {"ok": False, "embedder_loaded": False, "db_path": db_path}
     finally:
         if conn is not None:
@@ -123,9 +133,13 @@ def _as_int(raw: Any) -> int:
         return -1
 
 
-def main(argv: Optional[list[str]] = None, *, env: Optional[Mapping[str, str]] = None,
-         probe: Optional[Callable[[Mapping[str, str]], dict[str, Any]]] = None,
-         now: Optional[int] = None) -> int:
+def main(
+    argv: Optional[list[str]] = None,
+    *,
+    env: Optional[Mapping[str, str]] = None,
+    probe: Optional[Callable[[Mapping[str, str]], dict[str, Any]]] = None,
+    now: Optional[int] = None,
+) -> int:
     """The image HEALTHCHECK CMD: exit 0 IFF `ok` AND `embedder_loaded` — the
     conjunction IS the contract (dropping the `embedder_loaded` term, a deliberate
     mutation, lets a cold server report healthy). // O(1)."""
@@ -135,13 +149,19 @@ def main(argv: Optional[list[str]] = None, *, env: Optional[Mapping[str, str]] =
 
     ok = snap.get("ok") is True
     embedder_loaded = snap.get("embedder_loaded") is True
-    if ok and embedder_loaded:                          # ← dropping the 2nd term is mutation #1
+    if ok and embedder_loaded:  # ← dropping the 2nd term is mutation #1
         return HEALTHY
     # warn WHICH conjunct failed (the boundary log) — db_path is an identifier, not a secret
-    _log.warning("healthcheck.unhealthy ok=%s embedder_loaded=%s db_path=%s",
-                 ok, embedder_loaded, snap.get("db_path"))
+    _log.warning(
+        "healthcheck.unhealthy ok=%s embedder_loaded=%s db_path=%s",
+        ok,
+        embedder_loaded,
+        snap.get("db_path"),
+    )
     return UNHEALTHY
 
 
-if __name__ == "__main__":  # pragma: no cover — module entry (the image HEALTHCHECK CMD)
+if (
+    __name__ == "__main__"
+):  # pragma: no cover — module entry (the image HEALTHCHECK CMD)
     raise SystemExit(main(sys.argv[1:]))

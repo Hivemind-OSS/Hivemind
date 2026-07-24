@@ -3,6 +3,7 @@ row per requested id, as ``{eid: (ts, head_sha, state)}``. Read-only; powers the
 verification-recency stamp on recall hits. Conforms to the LastVerificationReader port;
 defensive payload parse mirrors ``promotion_provenance`` (a malformed newest row is
 skipped so an older parseable row may still answer; nothing parseable ⇒ the id is ABSENT)."""
+
 from __future__ import annotations
 
 import json
@@ -22,23 +23,40 @@ def _store() -> SqliteEpisodeStore:
 
 
 def _seed(s: SqliteEpisodeStore, text: str) -> int:
-    eid, _ = s.stage(text=text, weight=1.0, tags="", proposed_by="w", ts=10,
-                     anchor="a.py::F")
-    s.complete(eid, np.eye(DIM, dtype=np.float32)[0], expected_version=0,
-               trust="established", approver="h", approved_ts=10, last_active_ts=10)
+    eid, _ = s.stage(
+        text=text, weight=1.0, proposed_by="w", ts=10, anchors=[("r", "a.py::F")]
+    )
+    s.complete(
+        eid,
+        np.eye(DIM, dtype=np.float32)[0],
+        expected_version=0,
+        trust="established",
+        last_active_ts=10,
+    )
     return eid
 
 
 def _verify_payload(head_sha: str = "b" * 40) -> str:
-    return json.dumps({"schema": "verify/v1",
-                       "matched": {"path": "a.py", "symbol": "F"},
-                       "exists_after": True, "drift": "unchanged",
-                       "stamp": {"base_sha": "a" * 40, "head_sha": head_sha,
-                                 "combdrift": {"combdrift_version": "0.1.0"},
-                                 "matrix_head": {"graph_sha256": "g" * 64,
-                                                 "commit_sha": "b" * 40,
-                                                 "engine_version": "0.1.0"}}},
-                      sort_keys=True, separators=(",", ":"))
+    return json.dumps(
+        {
+            "schema": "verify/v1",
+            "matched": {"path": "a.py", "symbol": "F"},
+            "exists_after": True,
+            "drift": "unchanged",
+            "stamp": {
+                "base_sha": "a" * 40,
+                "head_sha": head_sha,
+                "combdrift": {"combdrift_version": "0.1.0"},
+                "matrix_head": {
+                    "graph_sha256": "g" * 64,
+                    "commit_sha": "b" * 40,
+                    "engine_version": "0.1.0",
+                },
+            },
+        },
+        sort_keys=True,
+        separators=(",", ":"),
+    )
 
 
 def test_real_store_satisfies_last_verification_reader():
@@ -119,27 +137,40 @@ def _reffed_payload(head_sha: str, ref: str | None) -> str:
 def test_canonical_ref_none_is_todays_read():
     s = _store()
     eid = _seed(s, "unscoped read")
-    s.insert_audit(eid, EK_VERIFY_STALE, "census", 200, _reffed_payload("2" * 40, "feat-y"))
-    assert s.last_verification([eid], canonical_ref=None) == \
-        s.last_verification([eid]) == {eid: (200, "2" * 40, "stale")}
+    s.insert_audit(
+        eid, EK_VERIFY_STALE, "census", 200, _reffed_payload("2" * 40, "feat-y")
+    )
+    assert (
+        s.last_verification([eid], canonical_ref=None)
+        == s.last_verification([eid])
+        == {eid: (200, "2" * 40, "stale")}
+    )
 
 
 def test_canonical_ref_skips_newest_foreign_row_older_canonical_answers():
     # The newest row measured a foreign line: skipped; the older canonical row wins.
     s = _store()
     eid = _seed(s, "foreign-newest ledger")
-    s.insert_audit(eid, EK_VERIFY_CURRENT, "census", 100, _reffed_payload("1" * 40, "master"))
-    s.insert_audit(eid, EK_VERIFY_STALE, "census", 200, _reffed_payload("2" * 40, "feat-y"))
-    assert s.last_verification([eid], canonical_ref="master") == \
-        {eid: (100, "1" * 40, "current")}
+    s.insert_audit(
+        eid, EK_VERIFY_CURRENT, "census", 100, _reffed_payload("1" * 40, "master")
+    )
+    s.insert_audit(
+        eid, EK_VERIFY_STALE, "census", 200, _reffed_payload("2" * 40, "feat-y")
+    )
+    assert s.last_verification([eid], canonical_ref="master") == {
+        eid: (100, "1" * 40, "current")
+    }
 
 
 def test_canonical_ref_keeps_canonical_row():
     s = _store()
     eid = _seed(s, "canonical ledger")
-    s.insert_audit(eid, EK_VERIFY_STALE, "census", 200, _reffed_payload("2" * 40, "master"))
-    assert s.last_verification([eid], canonical_ref="master") == \
-        {eid: (200, "2" * 40, "stale")}
+    s.insert_audit(
+        eid, EK_VERIFY_STALE, "census", 200, _reffed_payload("2" * 40, "master")
+    )
+    assert s.last_verification([eid], canonical_ref="master") == {
+        eid: (200, "2" * 40, "stale")
+    }
 
 
 def test_canonical_ref_keeps_legacy_refless_row():
@@ -149,13 +180,18 @@ def test_canonical_ref_keeps_legacy_refless_row():
     s = _store()
     eid = _seed(s, "legacy ledger")
     s.insert_audit(eid, EK_VERIFY_STALE, "census", 200, _reffed_payload("2" * 40, None))
-    assert s.last_verification([eid], canonical_ref="master") == \
-        {eid: (200, "2" * 40, "stale")}
+    assert s.last_verification([eid], canonical_ref="master") == {
+        eid: (200, "2" * 40, "stale")
+    }
 
 
 def test_canonical_ref_all_foreign_rows_means_absent():
     s = _store()
     eid = _seed(s, "all-foreign ledger")
-    s.insert_audit(eid, EK_VERIFY_STALE, "census", 100, _reffed_payload("1" * 40, "feat-a"))
-    s.insert_audit(eid, EK_VERIFY_STALE, "census", 200, _reffed_payload("2" * 40, "feat-b"))
+    s.insert_audit(
+        eid, EK_VERIFY_STALE, "census", 100, _reffed_payload("1" * 40, "feat-a")
+    )
+    s.insert_audit(
+        eid, EK_VERIFY_STALE, "census", 200, _reffed_payload("2" * 40, "feat-b")
+    )
     assert s.last_verification([eid], canonical_ref="master") == {}

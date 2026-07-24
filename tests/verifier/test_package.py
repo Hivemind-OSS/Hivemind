@@ -55,7 +55,7 @@ def test_importing_verifier_never_imports_matrix() -> None:
             sys.executable,
             "-c",
             "import sys; import hive.verifier, hive.verifier.verify; "
-            "sys.exit(1 if 'matrix' in sys.modules else 0)",
+            "sys.exit(1 if 'hive.matrix' in sys.modules else 0)",
         ],
         capture_output=True,
         text=True,

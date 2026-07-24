@@ -1,17 +1,23 @@
 # Hivemind
 
-A stale-proof, stigmergic **episodic memory** for a fleet of coding agents working one codebase. Hivemind
+A stale-proof, stigmergic **episodic memory** for a fleet of coding agents. Hivemind
 runs as a single self-hosted **MCP server** that every agent connects to; what one agent
 learns, the others can recall. It is built for **solo devs and small teams** — single-tenant,
-single-host, one SQLite store.
+single-host, **one SQLite store, partitioned by repo at the memory level**: you register the
+repos the fleet works on (`hive repo add`), memories bind to them (and to code anchors inside
+them), and recall scopes by repo and branch.
 
 Recall is deliberately conservative: a query is embedded, matched by dense cosine similarity,
 and passed through an **absolute-relevance abstention gate** — when the top match does not
-clear an absolute similarity floor, Hivemind returns nothing rather than guess. Memories enter **quarantined**
-via `hive_capture` and become servable only once independent fleet demand or a verified change outcome promotes them
-(`provisional`); the trusted `established` tier is reached **only** by an explicit
-human-approved `hive_write`. Unused memories decay on a TTL. Nothing is auto-trusted, and the
-store never silently migrates across schema generations.
+clear an absolute similarity floor, Hivemind returns nothing rather than guess. `hive_write`
+serves immediately as `provisional`; the trusted `established` tier is reached **only** when a
+verified change outcome on the repo's canonical line confirms the memory. `hive_capture` is the
+unclear-value tail — it lands **quarantined** and becomes servable only once independent fleet
+demand or a verified change outcome promotes it. Retirement is **machine-gated**: the server
+retires a memory only when it verifies a qualifying machine signal (anchor drift at the
+canonical tip, hurt evidence, a mechanical contradiction) — never on an agent's say-so, and an
+unqualified call is a benign no-op, not an error. Unused memories decay on a TTL. Nothing is
+auto-trusted, and the store never silently migrates across schema generations.
 
 ## The MCP tools
 
@@ -19,19 +25,20 @@ A connected agent gets exactly eight tools:
 
 | Tool | Purpose |
 |---|---|
-| `hive_recall(query)` | Dense recall behind the abstention gate. Returns reference context (or abstains) with each hit's `trust`, `ts`, `polarity`, `kind`, and `anchor`. |
-| `hive_capture(text)` | Record a durable insight. Lands quarantined; served only after fleet demand or a verified change outcome promotes it. |
-| `hive_write(text, approved_by=…)` | Human-vouched memory served immediately as `established`. `replaces=<id>` supersedes an existing one. |
-| `hive_supersede(loser, winner, approved_by=…)` | Human-vouched: retire one memory in favor of another. Nothing new is written. |
-| `hive_prune(episode_id, approved_by=…)` | Human-vouched: retire an incorrect or misleading memory with no replacement (it stays in the audit ledger). |
-| `hive_flag(a, b, kind)` | Advisory only: record that two memories conflict or one supersedes the other, for a human to resolve. Retires nothing. |
-| `hive_outcome(helped=[…], hurt=[…])` | Log which recalled memories helped or hurt the task; records evidence only — changes no trust. |
-| `hive_health(...)` | Liveness/identity snapshot; `include_trends=true` adds convergence KPIs, `include_gaps=true` the demand-gap report, `include_conflicts=true` the contested-memory worklist; further flags: `suspect_consensus`, `stale_suspects`, `census_health`, `meta_versions`, `onboarding` (the full install payload). |
+| `hive_recall(query, repos=…, anchor_prefix=…)` | Dense recall behind the abstention gate, scoped by repo (`repos=["name"]` or `["name@branch"]`; omit for global). Returns reference context (or abstains) with each hit's `trust`, `ts`, `polarity`, `kind`, `repos`, `anchors`, and a per-anchor `drift` verdict (a drifted hit is reference only). |
+| `hive_write(text)` | Save a memory that **serves now** as `provisional`; healed afterward by the server's outcome/drift machinery (`established` = outcome-verified on the canonical line). `replaces=<id>` retires the corrected memory only when the server verifies a qualifying signal — else the write still lands and the retire is a no-op. |
+| `hive_capture(text)` | Record an insight of unclear value. Lands quarantined; served only after fleet demand or a verified change outcome promotes it. |
+| `hive_supersede(loser, winner)` | Retire one memory in favor of another — machine-gated: the server retires only on a verified qualifying signal; otherwise a benign no-op. |
+| `hive_prune(episode_id)` | Retire an incorrect or misleading memory with no replacement (it stays in the audit ledger) — machine-gated, same rule. |
+| `hive_flag(a, b, kind)` | Advisory only: record that two memories conflict or one supersedes the other. Retires nothing and never qualifies the retirement gate. |
+| `hive_outcome(helped=[…], hurt=[…])` | Log which recalled memories helped or hurt the task; evidence only. Helped rows fuel promotion; hurt rows feed the machine retirement gate. |
+| `hive_health(...)` | Liveness/identity snapshot; `include_trends=true` adds convergence KPIs, `include_gaps=true` the demand-gap report, `include_conflicts=true` the contested-memory worklist; further flags: `include_suspect_consensus`, `include_stale_suspects` (graph-propagated staleness), `include_census_health` (per-repo census/sync state), `include_meta_versions`. |
 
 ## Requirements
 
 - **Docker** + **Docker Compose v2** — the server, its store, and a baked offline embedder run
-  in one container (the image is hermetically offline; no network at runtime beyond the opt-in census sync's git fetches (`HIVE_SYNC__REPO_URL`)).
+  in one container (the image is hermetically offline; no network at runtime beyond the sync
+  daemon's git fetches for the repos you register with `hive repo add`).
 - **Python 3.11+** on the host — to run the `hive` operator CLI (it drives `docker compose`).
 
 ## Quickstart (from a clone)
@@ -74,12 +81,31 @@ claude mcp add --transport http hive https://<your-domain>/mcp \
   --header "Authorization: Bearer <seat-token>"   # replace <seat-token> with the seat's token
 ```
 
-From there onboarding is automatic and server-side: at connect the server delivers its usage
-contract through the MCP `initialize` instructions (every client surfaces them) — recall-first,
-capture-by-default, and the per-agent-session identity model. **Nothing is
-automatically written into a rules file at connect** — installing the optional persistence block
-into your project's rules file is an agent-driven step via `hive_health(include_onboarding=true)`. On **Claude Code only**, `hive_health(include_onboarding=true)` additionally
-serves optional lifecycle-hook nudges you can merge into `.claude/settings.json`.
+That registration line is the whole per-agent setup. Agents are **thin, repo-agnostic MCP
+clients**: the server delivers its usage contract through the MCP `initialize` instructions
+(every client surfaces them) — fresh at every connect, so a session picks up a changed contract
+on reconnect. Nothing is written into any rules file, and there is nothing to install per
+agent, per project, or per device.
+
+## Register your repos
+
+Partitioning is operational, not config: register each repo the fleet works on and the server
+does the rest.
+
+```bash
+hive repo add https://github.com/you/your-repo.git     # slug defaults to the URL basename
+hive repo add https://github.com/you/private.git --name priv --branch main --token-env PRIV_TOKEN
+hive repos                                             # list the registry (never a secret)
+hive repo remove priv                                  # stop syncing; memories keep their scope
+```
+
+A registered row lands in the store's `repos` table and the sync daemon picks it up on its next
+tick — no restart. Per repo, the daemon mirrors the remote, feeds every landing on the canonical
+branch into the change-outcome evidence ledger, mints missing anchor fingerprints, and
+materializes the staleness (drift) verdicts that ride recall hits. `--token-env` is the **name**
+of an env var holding that repo's git token — the registry never stores a secret byte; unset,
+the fleet-default `HIVE_SYNC__TOKEN` is used. Removing a repo stops the feed and prunes its
+mirror; its memories keep their scope, so re-registering picks them straight back up.
 
 ## Agents
 Read **[`llms-full.txt`](llms-full.txt)** for the complete, self-contained explanation of how
@@ -102,10 +128,11 @@ silently clamping.
 
 There is no `HIVE_AUTH__MODE` switch — delete any leftover one from `.env` (it is ignored).
 
-**Automatic census feed (optional).** Set `HIVE_SYNC__REPO_URL` (plus `HIVE_SYNC__TOKEN` for a
-private remote) and the server itself mirrors the repo and feeds every landing on the tracked
-branch into the change-outcome evidence ledger — detect-only, fail-open, byte-inert when unset;
-nothing is wired per repo or per device. Arm and test it with the runnable
+**Per-repo census feed.** Which repos the sync daemon feeds is operational data — the repo
+registry (`hive repo add`, above), re-read every tick — not boot config. The `HIVE_SYNC__*`
+group carries only the loop's own knobs (poll cadence, webhook nudge, mirror dir); the feed is
+detect-only evidence plus the one mechanical trust movement it drives — the verified-outcome
+`established` sweep. Arm and test a repo with the runnable
 **[`hive-connect-repo`](skills/hive-connect-repo/SKILL.md)** skill; knob table + details:
 **[HIVE-ADMIN.md §4](HIVE-ADMIN.md)**.
 
@@ -126,39 +153,33 @@ Never publish `0.0.0.0:8765` — a bearer token over plain LAN HTTP is cleartext
 `hive ui` (loopback operator dashboard in the browser — live status, seat mint/revoke, backup,
 non-blocking start/stop, tunnel activate/deactivate, restore from an in-volume backup behind a
 typed confirm, log tail; no reset) / `hive status` / `logs` / `tokens` / `revoke <seat>` /
+`repo add <url>` / `repo remove <name>` / `repos` (the synced-repo registry) /
 `backup` (manual snapshot) / `ingest
 <receipt.json>` (manually feed an unsigned census receipt's change outcome into the evidence
-ledger — the escape hatch; with `HIVE_SYNC__REPO_URL` set the server feeds itself) / `down`
+ledger — the escape hatch; the sync daemon feeds every registered repo itself) / `down`
 (stop, keep data) / `reset` (snapshot the store out of the volume, then destroy + recreate it
 empty — recoverable; typed confirm) / `restore` (replace the live store from a snapshot) / `upgrade
 [--ref release]` (move the server to a vetted release ref — backup-gated, auto-rollback on failure).
-A compatible release moves with `hive upgrade`; crossing a schema generation is a single `hive reset`
-— it saves the prior store to the host, then recreates empty; no in-place migration ships.
+
+A compatible release moves with `hive upgrade`; crossing a schema generation is a clean store —
+`hive reset` (it saves the prior store to the host first), then `hive repo add` each repo; no
+in-place migration ships. Moving onto the v3 schema, also one-time strip what an older server
+had projects install client-side — the served rules block, the hive lifecycle hooks, and the
+`hive_*` allowlist entries in each consuming repo's rules file / `.claude/settings.json` — the
+v3 server serves everything at connect, so those are dead weight.
 
 See **[HIVE-ADMIN.md](HIVE-ADMIN.md)** for the full admin & operator guide (setup, tunneling, tuning,
 KPIs).
 
-## Edge tooling
+## Code anchors & staleness (server-side)
 
-Anchor mint/verify (recall freshness, including the dependency-neighborhood `radius` advisory) and
-a persistent per-repo code graph (`hive-edge graph`) ride a companion, per-workstation CLI,
-**[`hive-edge`](https://github.com/Hivemind-OSS/Hive-edge)** — the server image bakes its own copy for the server-side census leg; each workstation installs its own. It is not required for the core recall/capture/write loop (absent, mint and
-verify simply no-op; nothing else is affected), but the trust-lifecycle verify step depends on it.
-Census change evidence does **not**: it is computed and fed server-side (`HIVE_SYNC__REPO_URL`,
-above), so there is nothing to wire per repo or per device.
-
-You don't need to install it yourself: a connected agent checks for it during onboarding and
-installs or updates it automatically. To install it manually instead — uv required (the CLI's
-workspace engines resolve from git subdirectories via uv sources, which pip/pipx cannot read):
-
-```bash
-uv tool install git+https://github.com/Hivemind-OSS/Hive-edge@release
-uv tool update-shell   # once, so uv's tool directory is on your PATH
-```
-
-Per-device edge state (worktree-delta baselines, the per-checkout code-graph cache) lives under
-`~/.hive-edge/` (`HIVE_EDGE_HOME` overrides); it is safe to delete and regenerates. See
-**[HIVE-ADMIN.md §8](HIVE-ADMIN.md)** for the full install/update/rollback flow.
+Anchor fingerprints and staleness verdicts are computed **in the server**: the anchor/census
+engines are first-party subpackages of the `hive` distribution (`hive/matrix`, `hive/combdrift`,
+`hive/edge`), built into the image from this repository, and the sync daemon runs
+them per registered repo — minting fingerprints for stored anchors and materializing per-anchor
+drift verdicts at the canonical tip (and at branch tips recall asked about). Every recall hit
+carries the result as its `drift` field, and a hit the server already knows is stale arrives
+with a remediation rider. There is nothing to install on a workstation or in an agent.
 
 ## Embedding model & attribution
 
@@ -173,15 +194,17 @@ full text and attribution travel with this repository in
 ## Repository layout
 
 ```
-hive/                 the server: domain core, adapters (SQLite store, embedder), MCP app, CLI
+hive/                 the server: domain core, adapters (SQLite store, embedder), MCP app, CLI, sync daemon, and the first-party engine subpackages (matrix/combdrift/edge)
 tests/                the test suite
 compose.yaml          the single-service stack (+ opt-in ngrok tunnel profile)
 Dockerfile            the hermetically-offline server image (embedder baked at build)
+Makefile              the canonical mechanical gate — `make check` (format, lint, strict typecheck, tests)
+docs/engines/         reference docs for the first-party anchor/census engines (matrix, comb-drift)
 llms.txt              link index to the project docs (llmstxt.org convention)
 llms-full.txt         the complete, self-contained operating guide for agents & integrators
 HIVE-ADMIN.md         admin & operator guide
 OPERATIONS.md         long-form operations reference & the tuning evidence behind the knobs
-skills/               operator runbook-skills (bringup, connect-team, connect-repo, backup/restore, operate)
+skills/               operator runbook-skills (bringup, connect-team, connect-repo, upgrade, backup/restore, operate)
 CONTRIBUTING.md       how to contribute: the development-first branch flow and running the tests
 LICENSE               this project's license (Apache-2.0)
 THIRD_PARTY_NOTICES.md / LICENSES/   embedding-model attribution + license (the embedder)
@@ -191,5 +214,7 @@ THIRD_PARTY_NOTICES.md / LICENSES/   embedding-model attribution + license (the 
 
 Contributions are welcome. All work lands on the `development` branch; `master` is updated
 only through a `development → master` pull request — a required check enforces that source,
-and direct pushes to `master` are rejected. See **[CONTRIBUTING.md](CONTRIBUTING.md)** for the
-full workflow and how to run the tests.
+and direct pushes to `master` are rejected. The canonical mechanical gate is **`make check`**
+(ruff format check, ruff lint, `mypy hive/ --strict`, the default pytest suite — the heavy
+`embed` tier is opt-in: run it with `-m embed` and the `embed` extra) — a change is done
+when it passes. See **[CONTRIBUTING.md](CONTRIBUTING.md)** for the full workflow.

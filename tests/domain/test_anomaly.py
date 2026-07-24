@@ -4,6 +4,7 @@ It fires iff a candidate sits in an abnormally COMPACT near-dup cluster (the MIN
 AgentPoison flood signature). Precision-first: a clean background stays quiet, and an
 undecidable neighbor is skipped, never counted. It is DETECTION-ONLY — the not-blocked
 integration pin lives in test_demand_rule.py."""
+
 from __future__ import annotations
 
 import math
@@ -41,9 +42,11 @@ def test_below_quorum_does_not_fire():
 
 def test_undecidable_neighbors_are_skipped():
     # a wrong-shape neighbor is undecidable ⇒ skipped, never counted toward the cluster
-    bad = np.array([1.0, 0.0], dtype=np.float32)            # shape mismatch
+    bad = np.array([1.0, 0.0], dtype=np.float32)  # shape mismatch
     neighbors = [_at_cos(0.99), bad, _at_cos(0.99)]
-    assert cluster_anomaly(E0, neighbors, tau=0.95, min_cluster=3) is False   # only 2 decidable
+    assert (
+        cluster_anomaly(E0, neighbors, tau=0.95, min_cluster=3) is False
+    )  # only 2 decidable
     assert cluster_anomaly(E0, neighbors, tau=0.95, min_cluster=2) is True
 
 

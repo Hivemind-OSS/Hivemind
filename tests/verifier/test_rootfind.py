@@ -69,7 +69,9 @@ def test_marker_above_repo_root_is_ignored(tmp_path: Path) -> None:
 
 def test_no_marker_anywhere_degrades_to_repo_root(tmp_path: Path) -> None:
     _tree(tmp_path, "src/mod.py")
-    assert find_nearest_config_dir(tmp_path / "src/mod.py", tmp_path, _MARKERS) == tmp_path
+    assert (
+        find_nearest_config_dir(tmp_path / "src/mod.py", tmp_path, _MARKERS) == tmp_path
+    )
 
 
 def test_empty_markers_degrade_to_repo_root(tmp_path: Path) -> None:
@@ -90,7 +92,9 @@ def test_relative_file_path_is_resolved_against_repo_root(tmp_path: Path) -> Non
 def test_file_outside_repo_root_is_a_programmer_error(tmp_path: Path) -> None:
     _tree(tmp_path, "elsewhere/mod.py", "repo/pyproject.toml")
     with pytest.raises(ValueError):
-        find_nearest_config_dir(tmp_path / "elsewhere/mod.py", tmp_path / "repo", _MARKERS)
+        find_nearest_config_dir(
+            tmp_path / "elsewhere/mod.py", tmp_path / "repo", _MARKERS
+        )
 
 
 # --- grouping -------------------------------------------------------------------------

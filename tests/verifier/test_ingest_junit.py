@@ -71,7 +71,12 @@ BILLION_LAUGHS = b"""<?xml version="1.0"?>
 class TestJunitCounts:
     def test_junit_green_counts_cases(self) -> None:
         ingested = ingest_junit(GREEN, exit_code=0)
-        assert (ingested.passed, ingested.failed, ingested.errored, ingested.skipped) == (
+        assert (
+            ingested.passed,
+            ingested.failed,
+            ingested.errored,
+            ingested.skipped,
+        ) == (
             2,
             0,
             0,
@@ -82,7 +87,12 @@ class TestJunitCounts:
 
     def test_junit_red_counts_failure_and_error(self) -> None:
         ingested = ingest_junit(RED, exit_code=1)
-        assert (ingested.passed, ingested.failed, ingested.errored, ingested.skipped) == (
+        assert (
+            ingested.passed,
+            ingested.failed,
+            ingested.errored,
+            ingested.skipped,
+        ) == (
             1,
             1,
             1,
@@ -117,7 +127,7 @@ class TestJunitCounts:
 
     def test_junit_multiple_failure_children_count_once(self) -> None:
         raw = (
-            b"<testsuite><testcase name=\"t\">"
+            b'<testsuite><testcase name="t">'
             b'<failure message="a"/><failure message="b"/>'
             b"</testcase></testsuite>"
         )
@@ -125,7 +135,12 @@ class TestJunitCounts:
 
     def test_junit_zero_case_document_is_not_run(self) -> None:
         ingested = ingest_junit(b"<testsuites></testsuites>", exit_code=0)
-        assert (ingested.passed, ingested.failed, ingested.errored, ingested.skipped) == (
+        assert (
+            ingested.passed,
+            ingested.failed,
+            ingested.errored,
+            ingested.skipped,
+        ) == (
             0,
             0,
             0,
@@ -152,7 +167,9 @@ class TestJunitParseFailure:
     def test_junit_truncated_raises(self) -> None:
         # A naive tail-scan would find the first complete <testcase/> and read
         # green; the parse must refuse the whole document instead.
-        truncated = b'<testsuites><testsuite tests="2"><testcase name="a"/><testcase nam'
+        truncated = (
+            b'<testsuites><testsuite tests="2"><testcase name="a"/><testcase nam'
+        )
         with pytest.raises(ReportParseError):
             ingest_junit(truncated, exit_code=0)
 
@@ -162,7 +179,9 @@ class TestJunitParseFailure:
 
     def test_junit_xml_but_not_junit_raises(self) -> None:
         with pytest.raises(ReportParseError, match="not a JUnit report"):
-            ingest_junit(b"<html><body><p>502 Bad Gateway</p></body></html>", exit_code=0)
+            ingest_junit(
+                b"<html><body><p>502 Bad Gateway</p></body></html>", exit_code=0
+            )
 
     def test_junit_billion_laughs_refused(self) -> None:
         # Pins defusedxml: stdlib ElementTree would expand the entities and

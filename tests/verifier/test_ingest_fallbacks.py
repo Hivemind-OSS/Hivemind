@@ -80,14 +80,20 @@ PYRIGHT_ERROR = {
     "file": "/repo/src/app.py",
     "severity": "error",
     "message": 'Argument of type "str" cannot be assigned to parameter "n" of type "int"',
-    "range": {"start": {"line": 13, "character": 4}, "end": {"line": 13, "character": 9}},
+    "range": {
+        "start": {"line": 13, "character": 4},
+        "end": {"line": 13, "character": 9},
+    },
     "rule": "reportArgumentType",
 }
 PYRIGHT_WARNING = {
     "file": "/repo/src/app.py",
     "severity": "warning",
     "message": 'Import "json" is not accessed',
-    "range": {"start": {"line": 0, "character": 7}, "end": {"line": 0, "character": 11}},
+    "range": {
+        "start": {"line": 0, "character": 7},
+        "end": {"line": 0, "character": 11},
+    },
     "rule": "reportUnusedImport",
 }
 PYRIGHT_INFO = {
@@ -185,13 +191,23 @@ CARGO_ERROR = {
         "message": "mismatched types",
         "code": {"code": "E0308"},
         "spans": [
-            {"file_name": "src/lib.rs", "line_start": 7, "column_start": 20, "is_primary": True}
+            {
+                "file_name": "src/lib.rs",
+                "line_start": 7,
+                "column_start": 20,
+                "is_primary": True,
+            }
         ],
     },
 }
 CARGO_ABORT = {
     "reason": "compiler-message",
-    "message": {"level": "error", "message": "aborting due to 1 previous error", "code": None, "spans": []},
+    "message": {
+        "level": "error",
+        "message": "aborting due to 1 previous error",
+        "code": None,
+        "spans": [],
+    },
 }
 CARGO_WARNING = {
     "reason": "compiler-message",
@@ -200,7 +216,12 @@ CARGO_WARNING = {
         "message": "unused variable: `x`",
         "code": {"code": "unused_variables"},
         "spans": [
-            {"file_name": "src/lib.rs", "line_start": 2, "column_start": 9, "is_primary": True}
+            {
+                "file_name": "src/lib.rs",
+                "line_start": 2,
+                "column_start": 9,
+                "is_primary": True,
+            }
         ],
     },
 }
@@ -208,7 +229,9 @@ CARGO_WARNING = {
 
 class TestCargo:
     def test_cargo_green(self) -> None:
-        ingested = ingest_cargo(cargo_lines(CARGO_ARTIFACT, CARGO_FINISH_OK), exit_code=0)
+        ingested = ingest_cargo(
+            cargo_lines(CARGO_ARTIFACT, CARGO_FINISH_OK), exit_code=0
+        )
         assert (ingested.passed, ingested.failed) == (1, 0)
         assert classify(ingested)[0] == "passed"
 
@@ -225,7 +248,9 @@ class TestCargo:
         assert primary.severity == "error"
 
     def test_cargo_warning_only_passes(self) -> None:
-        ingested = ingest_cargo(cargo_lines(CARGO_WARNING, CARGO_FINISH_OK), exit_code=0)
+        ingested = ingest_cargo(
+            cargo_lines(CARGO_WARNING, CARGO_FINISH_OK), exit_code=0
+        )
         assert (ingested.passed, ingested.failed) == (1, 0)
         assert [d.severity for d in ingested.diagnostics] == ["warning"]
 

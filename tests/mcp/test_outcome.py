@@ -2,19 +2,29 @@
 HELPED or HURT its task; the server records ``outcome_helped`` / ``outcome_hurt`` evidence_events
 audits and NOTHING else. It holds no establish/retire handle, so it structurally CANNOT mutate
 trust (like ConflictFlagService cannot resolve — O7-safe by construction). Ids + audit kinds
-only, no memory text (Law 4). Identical under AGI_MODE on/off (it gates nothing)."""
+only, no memory text (Law 4). v3: hurt rows are §3.2 gate feed — evidence, never an action."""
+
 from __future__ import annotations
 
 import json
 
-from hive.app.onboard_ref import CONTRACT_VERSION
 from hive.domain.evidence_kinds import EVIDENCE_KINDS
-from tests.mcp._helpers import build_real_server, content, is_error, tool_call, write_text
+from tests.mcp._helpers import (
+    build_real_server,
+    content,
+    is_error,
+    tool_call,
+    write_text,
+)
 
 
 def _kinds_for(server, eid):
-    return [r["kind"] for r in server.store.conn.execute(
-        "SELECT kind FROM evidence_events WHERE episode_id=? ORDER BY id", (eid,)).fetchall()]
+    return [
+        r["kind"]
+        for r in server.store.conn.execute(
+            "SELECT kind FROM evidence_events WHERE episode_id=? ORDER BY id", (eid,)
+        ).fetchall()
+    ]
 
 
 def test_records_helped_and_hurt_audits_for_known_ids():
@@ -31,29 +41,35 @@ def test_records_helped_and_hurt_audits_for_known_ids():
     # the recording agent is the audit actor
     actor = server.store.conn.execute(
         "SELECT actor FROM evidence_events WHERE episode_id=? AND kind='outcome_helped'",
-        (a,)).fetchone()["actor"]
-    assert actor == "agent"                               # the ServerIdentity agent_id
+        (a,),
+    ).fetchone()["actor"]
+    assert actor == "agent"  # the ServerIdentity agent_id
 
 
 def test_skips_unknown_ids_without_crashing():
     server, _ = build_real_server()
     a = write_text(server, "the only real memory")["id"]
-    out = content(tool_call(server, "hive_outcome", {"helped": [a, 9999], "hurt": [4242]}))
-    assert out["helped"] == [a]                           # 9999 skipped (unknown)
-    assert out["hurt"] == []                              # 4242 skipped
+    out = content(
+        tool_call(server, "hive_outcome", {"helped": [a, 9999], "hurt": [4242]})
+    )
+    assert out["helped"] == [a]  # 9999 skipped (unknown)
+    assert out["hurt"] == []  # 4242 skipped
     # no audit row was forged for the unknown ids
-    assert server.store.conn.execute(
-        "SELECT COUNT(*) AS c FROM evidence_events WHERE episode_id IN (9999, 4242)"
-    ).fetchone()["c"] == 0
+    assert (
+        server.store.conn.execute(
+            "SELECT COUNT(*) AS c FROM evidence_events WHERE episode_id IN (9999, 4242)"
+        ).fetchone()["c"]
+        == 0
+    )
 
 
 def test_trust_is_unchanged_after_outcome():
     server, _ = build_real_server()
-    a = write_text(server, "an established memory reported as hurt")["id"]
-    assert server.store.get_episode(a).trust == "established"
+    a = write_text(server, "a provisional memory reported as hurt")["id"]
+    assert server.store.get_episode(a).trust == "provisional"
     tool_call(server, "hive_outcome", {"hurt": [a]})
     # evidence changes NO trust — the row is byte-identical in its trust axis
-    assert server.store.get_episode(a).trust == "established"
+    assert server.store.get_episode(a).trust == "provisional"
 
 
 def test_no_memory_text_on_wire_or_in_audit():
@@ -61,28 +77,29 @@ def test_no_memory_text_on_wire_or_in_audit():
     text = "the distinctive marbled marmoset memory content must never leak"
     a = write_text(server, text)["id"]
     resp = tool_call(server, "hive_outcome", {"helped": [a]})
-    assert text not in json.dumps(content(resp))          # not on the wire
-    payloads = [r["payload"] for r in server.store.conn.execute(
-        "SELECT payload FROM evidence_events WHERE episode_id=? AND kind='outcome_helped'",
-        (a,)).fetchall()]
-    assert all(text not in p for p in payloads)           # not in the audit (Law 4)
+    assert text not in json.dumps(content(resp))  # not on the wire
+    payloads = [
+        r["payload"]
+        for r in server.store.conn.execute(
+            "SELECT payload FROM evidence_events WHERE episode_id=? AND kind='outcome_helped'",
+            (a,),
+        ).fetchall()
+    ]
+    assert all(text not in p for p in payloads)  # not in the audit (Law 4)
 
 
-def test_identical_under_both_modes():
-    # hive_outcome gates nothing — its behavior is identical with AGI_MODE on or off.
-    for agi in (False, True):
-        server, _ = build_real_server(agi_mode=agi)
-        a = write_text(server, "a mode-invariant memory")["id"]
-        out = content(tool_call(server, "hive_outcome", {"helped": [a]}))
-        assert out == {"status": "recorded", "helped": [a], "hurt": [],
-                       "contract_version": CONTRACT_VERSION}
+def test_recorded_envelope_exact_shape():
+    # the exact v3 envelope — no beacon, no approver, ids echoed back
+    server, _ = build_real_server()
+    a = write_text(server, "a recorded memory")["id"]
+    out = content(tool_call(server, "hive_outcome", {"helped": [a]}))
+    assert out == {"status": "recorded", "helped": [a], "hurt": []}
 
 
 def test_empty_call_records_nothing():
     server, _ = build_real_server()
-    out = content(tool_call(server, "hive_outcome", {}))   # both arrays optional
-    assert out == {"status": "recorded", "helped": [], "hurt": [],
-                   "contract_version": CONTRACT_VERSION}
+    out = content(tool_call(server, "hive_outcome", {}))  # both arrays optional
+    assert out == {"status": "recorded", "helped": [], "hurt": []}
 
 
 def test_schema_belt_accepts_arrays_rejects_non_array():

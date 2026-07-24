@@ -52,9 +52,7 @@ PINNED_REGISTRY_HASHES = {
 
 
 def _canonical_registry_bytes() -> bytes:
-    payload = {
-        lang: dataclasses.asdict(row) for lang, row in sorted(REGISTRY.items())
-    }
+    payload = {lang: dataclasses.asdict(row) for lang, row in sorted(REGISTRY.items())}
     return json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
 
 

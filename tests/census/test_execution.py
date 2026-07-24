@@ -287,9 +287,13 @@ def test_projection_unions_head_side_added_lines() -> None:
 
 def test_projection_excludes_deleted_and_binary_keeps_renames_and_adds() -> None:
     touched = _change_set(
-        ChangedFile(path="gone.py", status="deleted", added_spans=(), removed_spans=((1, 10),)),
+        ChangedFile(
+            path="gone.py", status="deleted", added_spans=(), removed_spans=((1, 10),)
+        ),
         ChangedFile(path="img.png", status="binary", added_spans=(), removed_spans=()),
-        ChangedFile(path="new.py", status="added", added_spans=((1, 4),), removed_spans=()),
+        ChangedFile(
+            path="new.py", status="added", added_spans=((1, 4),), removed_spans=()
+        ),
         ChangedFile(
             path="moved.py",
             status="renamed",
@@ -299,7 +303,10 @@ def test_projection_excludes_deleted_and_binary_keeps_renames_and_adds() -> None
         ),
     )
     projected = verifier_touched_set(touched)
-    assert [f.path for f in projected.files] == ["moved.py", "new.py"]  # sorted, filtered
+    assert [f.path for f in projected.files] == [
+        "moved.py",
+        "new.py",
+    ]  # sorted, filtered
     by_path = {f.path: f.lines for f in projected.files}
     assert by_path["new.py"] == frozenset({1, 2, 3, 4})
     assert by_path["moved.py"] == frozenset()
@@ -371,9 +378,7 @@ def scoped_result(verifier_change: Change, verifier_graphs):
 def test_run_verifier_discovers_head_only_test_and_decides(scoped_result) -> None:
     # Head-graph discovery: the test file added at head is reachable only
     # from the head graph, and runnable only inside the head worktree.
-    assert any(
-        path.endswith("test_helper.py") for path in scoped_result.affected.tests
-    )
+    assert any(path.endswith("test_helper.py") for path in scoped_result.affected.tests)
     assert scoped_result.tests.state == "passed"
     assert "pytest" in scoped_result.tests.runners
     assert scoped_result.tests.passed >= 1

@@ -55,10 +55,14 @@ class TestArgvContract:
             cli.build_parser().parse_args(
                 [
                     "build",
-                    "--repo", "r",
-                    "--base", "b",
-                    "--head", "h",
-                    "--precision-budget", "almost",
+                    "--repo",
+                    "r",
+                    "--base",
+                    "b",
+                    "--head",
+                    "h",
+                    "--precision-budget",
+                    "almost",
                 ]
             )
 
@@ -78,10 +82,14 @@ class TestErrorMapping:
         rc = cli.main(
             [
                 "build",
-                "--repo", str(repo),
-                "--base", "no-such-ref",
-                "--head", "HEAD",
-                "--out", str(tmp_path / "envelope.json"),
+                "--repo",
+                str(repo),
+                "--base",
+                "no-such-ref",
+                "--head",
+                "HEAD",
+                "--out",
+                str(tmp_path / "envelope.json"),
             ]
         )
         assert rc == cli.EX_SOFTWARE
@@ -104,12 +112,20 @@ class TestVerifierWiring:
 
         return SimpleNamespace(
             typecheck=SimpleNamespace(
-                state="passed", passed=1, failed=0, errored=0,
-                reason=None, runners=("stubcheck",),
+                state="passed",
+                passed=1,
+                failed=0,
+                errored=0,
+                reason=None,
+                runners=("stubcheck",),
             ),
             tests=SimpleNamespace(
-                state="failed", passed=0, failed=1, errored=0,
-                reason=None, runners=("stubtest",),
+                state="failed",
+                passed=0,
+                failed=1,
+                errored=0,
+                reason=None,
+                runners=("stubtest",),
             ),
             tool_version=None,
         )
@@ -139,10 +155,14 @@ class TestVerifierWiring:
         rc = cli.main(
             [
                 "build",
-                "--repo", str(repo),
-                "--base", "HEAD~1",
-                "--head", "HEAD",
-                "--out", str(out),
+                "--repo",
+                str(repo),
+                "--base",
+                "HEAD~1",
+                "--head",
+                "HEAD",
+                "--out",
+                str(out),
                 *extra_argv,
             ]
         )
@@ -223,10 +243,14 @@ class TestMemoryWiring:
         rc = cli.main(
             [
                 "build",
-                "--repo", str(repo),
-                "--base", "HEAD~1",
-                "--head", "HEAD",
-                "--out", str(out),
+                "--repo",
+                str(repo),
+                "--base",
+                "HEAD~1",
+                "--head",
+                "HEAD",
+                "--out",
+                str(out),
                 *extra_argv,
             ]
         )
@@ -235,7 +259,9 @@ class TestMemoryWiring:
         return json.loads(base64.b64decode(envelope["payload"]))["predicate"]
 
     def test_hive_url_fetches_ordered_subjects_and_context_rides(
-        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
         capsys: pytest.CaptureFixture,
     ) -> None:
         from hive.census.memory import MemoryContext
@@ -248,8 +274,13 @@ class TestMemoryWiring:
             )
             return [
                 MemoryContext(
-                    episode_id=9, trust="established", polarity="dont",
-                    kind="gotcha", anchor="lib.py::greet", ts=1, sim=0.8,
+                    episode_id=9,
+                    trust="established",
+                    polarity="dont",
+                    kind="gotcha",
+                    anchor="lib.py::greet",
+                    ts=1,
+                    sim=0.8,
                     text="a served lesson",
                 )
             ]
@@ -283,7 +314,9 @@ class TestMemoryWiring:
         assert "context" not in receipt
 
     def test_unreachable_hive_fails_open_and_builds(
-        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
         capsys: pytest.CaptureFixture,
     ) -> None:
         import socket
@@ -324,10 +357,14 @@ class TestPropagationWiring:
         rc = cli.main(
             [
                 "build",
-                "--repo", str(repo),
-                "--base", "HEAD~1",
-                "--head", "HEAD",
-                "--out", str(out),
+                "--repo",
+                str(repo),
+                "--base",
+                "HEAD~1",
+                "--head",
+                "HEAD",
+                "--out",
+                str(out),
                 *extra_argv,
             ]
         )
@@ -336,12 +373,20 @@ class TestPropagationWiring:
         return json.loads(base64.b64decode(envelope["payload"]))["predicate"]
 
     def test_propagate_flag_threads_findings_into_the_builder_and_receipt(
-        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
         capsys: pytest.CaptureFixture,
     ) -> None:
         calls: list[dict] = []
-        entries = [{"seed": "lib.py::greet", "drift": "breaking", "depth": 2,
-                    "neighbors": ["app.py::caller"]}]
+        entries = [
+            {
+                "seed": "lib.py::greet",
+                "drift": "breaking",
+                "depth": 2,
+                "neighbors": ["app.py::caller"],
+            }
+        ]
 
         def recorder(findings, graphs, **kwargs):
             calls.append({"n_findings": len(findings), "graphs": graphs is not None})
@@ -359,7 +404,7 @@ class TestPropagationWiring:
             raise AssertionError("propagation_block fired without --propagate")
 
         receipt = self._build(monkeypatch, tmp_path, [], block=forbidden)
-        assert "propagation" not in receipt              # byte-inert without the flag
+        assert "propagation" not in receipt  # byte-inert without the flag
 
     def test_propagate_with_no_resolvable_neighbours_emits_no_key(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
@@ -384,7 +429,8 @@ class TestBuildOnlySurface:
 
     def test_build_is_the_only_subcommand(self) -> None:
         subparser_actions = [
-            action for action in cli.build_parser()._actions
+            action
+            for action in cli.build_parser()._actions
             if hasattr(action, "choices") and action.choices is not None
         ]
         assert len(subparser_actions) == 1
@@ -422,10 +468,14 @@ class TestAtomicWrite:
         rc = cli.main(
             [
                 "build",
-                "--repo", str(repo),
-                "--base", "HEAD~1",
-                "--head", "HEAD",
-                "--out", str(out),
+                "--repo",
+                str(repo),
+                "--base",
+                "HEAD~1",
+                "--head",
+                "HEAD",
+                "--out",
+                str(out),
             ]
         )
         assert rc == cli.EX_SOFTWARE
@@ -444,10 +494,13 @@ class TestRefStampWiring:
         import json
 
         repo = TestMemoryWiring._repo_with_py_change(TestMemoryWiring(), tmp_path)
-        subprocess.run(["git", "-C", str(repo), "checkout", "-qb", "feat-x"], check=True)
+        subprocess.run(
+            ["git", "-C", str(repo), "checkout", "-qb", "feat-x"], check=True
+        )
         if detach:
-            subprocess.run(["git", "-C", str(repo), "checkout", "-q", "--detach"],
-                           check=True)
+            subprocess.run(
+                ["git", "-C", str(repo), "checkout", "-q", "--detach"], check=True
+            )
         monkeypatch.setattr(
             cli, "run_verifier", lambda *a, **k: TestVerifierWiring._decided_stub()
         )
@@ -455,10 +508,14 @@ class TestRefStampWiring:
         rc = cli.main(
             [
                 "build",
-                "--repo", str(repo),
-                "--base", "HEAD~1",
-                "--head", "HEAD",
-                "--out", str(out),
+                "--repo",
+                str(repo),
+                "--base",
+                "HEAD~1",
+                "--head",
+                "HEAD",
+                "--out",
+                str(out),
             ]
         )
         assert rc == cli.EX_OK
@@ -472,13 +529,13 @@ class TestRefStampWiring:
 
         receipt = self._build_predicate(monkeypatch, tmp_path, detach=False)
         assert receipt["provenance"]["ref"] == "feat-x"
-        validate_receipt(receipt)                    # the stamped receipt is schema-valid
+        validate_receipt(receipt)  # the stamped receipt is schema-valid
 
     def test_receipt_detached_head_omits_ref(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
     ) -> None:
         receipt = self._build_predicate(monkeypatch, tmp_path, detach=True)
-        assert "ref" not in receipt["provenance"]    # fail-open: no branch, no stamp
+        assert "ref" not in receipt["provenance"]  # fail-open: no branch, no stamp
 
 
 class TestBuildFlagOverrides:
@@ -495,7 +552,9 @@ class TestBuildFlagOverrides:
         import json
 
         repo = TestMemoryWiring._repo_with_py_change(TestMemoryWiring(), tmp_path)
-        subprocess.run(["git", "-C", str(repo), "checkout", "-qb", "feat-x"], check=True)
+        subprocess.run(
+            ["git", "-C", str(repo), "checkout", "-qb", "feat-x"], check=True
+        )
         monkeypatch.setattr(
             cli, "run_verifier", lambda *a, **k: TestVerifierWiring._decided_stub()
         )
@@ -503,10 +562,14 @@ class TestBuildFlagOverrides:
         rc = cli.main(
             [
                 "build",
-                "--repo", str(repo),
-                "--base", "HEAD~1",
-                "--head", "HEAD",
-                "--out", str(out),
+                "--repo",
+                str(repo),
+                "--base",
+                "HEAD~1",
+                "--head",
+                "HEAD",
+                "--out",
+                str(out),
                 *extra_argv,
             ]
         )
@@ -517,9 +580,7 @@ class TestBuildFlagOverrides:
     def test_ref_flag_wins_over_the_checkout(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
     ) -> None:
-        receipt = self._predicate(
-            monkeypatch, tmp_path, ["--ref", "refs/pull/7/head"]
-        )
+        receipt = self._predicate(monkeypatch, tmp_path, ["--ref", "refs/pull/7/head"])
         assert receipt["provenance"]["ref"] == "refs/pull/7/head"  # never "feat-x"
 
     def test_repo_id_recorded_verbatim_and_schema_valid(
@@ -531,11 +592,11 @@ class TestBuildFlagOverrides:
             monkeypatch, tmp_path, ["--repo-id", "https://example.test/org/repo.git"]
         )
         assert receipt["provenance"]["repo"] == "https://example.test/org/repo.git"
-        validate_receipt(receipt)               # the stamped receipt is schema-valid
+        validate_receipt(receipt)  # the stamped receipt is schema-valid
 
     def test_absent_flags_keep_todays_receipt_shape(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
     ) -> None:
         receipt = self._predicate(monkeypatch, tmp_path, [])
-        assert "repo" not in receipt["provenance"]   # no flag, no key — legacy bytes
+        assert "repo" not in receipt["provenance"]  # no flag, no key — legacy bytes
         assert receipt["provenance"]["ref"] == "feat-x"  # the checkout stays the line

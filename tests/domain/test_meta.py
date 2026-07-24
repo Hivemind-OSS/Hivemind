@@ -11,6 +11,7 @@ Contract under test:
     never a silent drop or a partial normalize;
   - total over ``object``: isinstance-driven, never indexes/raises anything else.
 """
+
 from __future__ import annotations
 
 import json
@@ -18,8 +19,13 @@ import json
 import pytest
 
 from hive.domain.meta import (
-    BadMeta, META_MAX_KEYS, META_MAX_SERIALIZED, META_MAX_VALUE_LEN,
-    meta_version_histogram, normalize_meta, token_version,
+    BadMeta,
+    META_MAX_KEYS,
+    META_MAX_SERIALIZED,
+    META_MAX_VALUE_LEN,
+    meta_version_histogram,
+    normalize_meta,
+    token_version,
 )
 
 
@@ -44,21 +50,25 @@ def test_good_map_serializes_canonically_key_sorted_and_tight():
 def test_key_grammar_accepts_namespaced_lowercase_forms():
     for key in ("a/b", "combdrift/fp", "tool-x/attr.name", "t0/a_b-c.d", "9/9"):
         assert normalize_meta({key: "v"}) == json.dumps(
-            {key: "v"}, sort_keys=True, separators=(",", ":"))
+            {key: "v"}, sort_keys=True, separators=(",", ":")
+        )
 
 
 # ── violations: each raises BadMeta naming the violation ─────────────────────
-@pytest.mark.parametrize("bad_key", [
-    "noslash",            # no namespace separator
-    "Upper/case",         # uppercase in tool
-    "tool/Case",          # uppercase in attr
-    "/leading",           # empty tool
-    "tool/",              # empty attr
-    "-tool/attr",         # tool starts with punctuation
-    "tool/.attr",         # attr starts with punctuation
-    "to ol/attr",         # whitespace
-    "a/b/c",              # a second separator
-])
+@pytest.mark.parametrize(
+    "bad_key",
+    [
+        "noslash",  # no namespace separator
+        "Upper/case",  # uppercase in tool
+        "tool/Case",  # uppercase in attr
+        "/leading",  # empty tool
+        "tool/",  # empty attr
+        "-tool/attr",  # tool starts with punctuation
+        "tool/.attr",  # attr starts with punctuation
+        "to ol/attr",  # whitespace
+        "a/b/c",  # a second separator
+    ],
+)
 def test_bad_keys_raise_badmeta_naming_the_key(bad_key):
     with pytest.raises(BadMeta, match="key"):
         normalize_meta({bad_key: "v"})
@@ -86,7 +96,7 @@ def test_oversize_value_raises_badmeta():
 
 def test_too_many_keys_raises_badmeta():
     ok = {f"t/k{i:02d}": "v" for i in range(META_MAX_KEYS)}
-    assert normalize_meta(ok)                                # at the cap: fine
+    assert normalize_meta(ok)  # at the cap: fine
     over = {f"t/k{i:02d}": "v" for i in range(META_MAX_KEYS + 1)}
     with pytest.raises(BadMeta, match="keys"):
         normalize_meta(over)
@@ -96,8 +106,10 @@ def test_oversize_serialized_raises_badmeta():
     # each entry is within the per-value cap, but the whole map exceeds the
     # serialized budget — the total cap must bind independently.
     big = {f"t/k{i:02d}": "x" * META_MAX_VALUE_LEN for i in range(12)}
-    assert len(json.dumps(big, sort_keys=True,
-                          separators=(",", ":")).encode()) > META_MAX_SERIALIZED
+    assert (
+        len(json.dumps(big, sort_keys=True, separators=(",", ":")).encode())
+        > META_MAX_SERIALIZED
+    )
     with pytest.raises(BadMeta, match="serialized"):
         normalize_meta(big)
 
@@ -112,16 +124,19 @@ def test_non_dict_raw_raises_badmeta(raw):
 def test_token_version_reads_the_version_prefix_never_the_body():
     assert token_version("matrix-subgraph-fp/1:" + "0" * 64) == "1"
     assert token_version("combdrift-fp/1:func(req=1,max=2)") == "1"
-    assert token_version("matrix-subgraph-fp/999:deadbeef") == "999"   # future reads too
+    assert token_version("matrix-subgraph-fp/999:deadbeef") == "999"  # future reads too
 
 
-@pytest.mark.parametrize("value", [
-    "garbage",                # no ':' separator
-    "noslash:body",           # no '/' before the separator
-    "tool-x/v2beta:body",     # non-digit version segment
-    "tool-x/:body",           # empty version segment
-    "",                       # empty value
-])
+@pytest.mark.parametrize(
+    "value",
+    [
+        "garbage",  # no ':' separator
+        "noslash:body",  # no '/' before the separator
+        "tool-x/v2beta:body",  # non-digit version segment
+        "tool-x/:body",  # empty version segment
+        "",  # empty value
+    ],
+)
 def test_token_version_unparseable_prefix_is_none(value):
     assert token_version(value) is None
 
@@ -134,11 +149,14 @@ def test_histogram_folds_a_mixed_corpus_per_key():
         '"matrix/subgraph_fp":"matrix-subgraph-fp/1:bbb"}',
         '{"matrix/subgraph_fp":"matrix-subgraph-fp/2:ccc"}',
         '{"matrix/subgraph_fp":"garbage"}',
-        "",                                        # no carrier at all
+        "",  # no carrier at all
     ]
     assert meta_version_histogram(rows) == {
-        "matrix/subgraph_fp": {"versions": {"1": 2, "2": 1}, "absent": 1,
-                               "malformed": 1},
+        "matrix/subgraph_fp": {
+            "versions": {"1": 2, "2": 1},
+            "absent": 1,
+            "malformed": 1,
+        },
         "combdrift/fp": {"versions": {"1": 1}, "absent": 4},
     }
 

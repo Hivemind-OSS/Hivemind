@@ -2,6 +2,7 @@
 bounds, zero-safety on an empty store, the two-metric window shape, and the
 envelope shape contract. Driven against the REAL sqlite store (the aggregates
 are SQL — a fake would test the fake)."""
+
 from __future__ import annotations
 
 from dataclasses import asdict
@@ -15,13 +16,18 @@ from hive.adapters.store_sqlite import SqliteEpisodeStore
 from hive.app.gaps import cluster_misses
 from hive.app.trends import TrendWindow, WINDOW_DAYS, compute_trends, demand_entropy
 
-_TREND_FIELDS = {"recalls_confident", "misses_abstained", "misses_no_match",
-                 "confident_rate", "demand_entropy"}
+_TREND_FIELDS = {
+    "recalls_confident",
+    "misses_abstained",
+    "misses_no_match",
+    "confident_rate",
+    "demand_entropy",
+}
 
 D = 8
 DAY = 86_400
 NOW = 100 * DAY
-CUR_EDGE = NOW - WINDOW_DAYS * DAY            # boundary tick: belongs to PREVIOUS
+CUR_EDGE = NOW - WINDOW_DAYS * DAY  # boundary tick: belongs to PREVIOUS
 
 
 def _unit(*xs) -> np.ndarray:
@@ -44,11 +50,11 @@ def _trends(s, now=NOW):
     return compute_trends(s, _clusterer, now=now)
 
 
-def _episode(s, text, *, ts, approver=None, vec=U) -> int:
-    eid, _ = s.stage(text=text, weight=1.0, tags="",
-                     proposed_by="writer", ts=ts)
-    assert s.complete(eid, vec, expected_version=0, trust="established",
-                      approver=approver, approved_ts=ts, last_active_ts=ts)
+def _episode(s, text, *, ts, vec=U) -> int:
+    eid, _ = s.stage(text=text, weight=1.0, proposed_by="writer", ts=ts)
+    assert s.complete(
+        eid, vec, expected_version=0, trust="established", last_active_ts=ts
+    )
     return eid
 
 
@@ -62,11 +68,15 @@ def test_windows_partition_correctly():
     s.record_miss("older", U.tobytes(), "a", "abstained", ts=CUR_EDGE - DAY)
     out = _trends(s)
     assert out["current"]["misses_no_match"] == 1
-    assert out["previous"]["misses_no_match"] == 1            # the boundary row
+    assert out["previous"]["misses_no_match"] == 1  # the boundary row
     assert out["previous"]["misses_abstained"] == 1
-    total = (out["current"]["misses_no_match"] + out["current"]["misses_abstained"]
-             + out["previous"]["misses_no_match"] + out["previous"]["misses_abstained"])
-    assert total == 3                                         # nothing dropped/doubled
+    total = (
+        out["current"]["misses_no_match"]
+        + out["current"]["misses_abstained"]
+        + out["previous"]["misses_no_match"]
+        + out["previous"]["misses_abstained"]
+    )
+    assert total == 3  # nothing dropped/doubled
 
 
 def test_window_is_one_week():
@@ -74,9 +84,9 @@ def test_window_is_one_week():
     # literal day offsets pin the 7-day semantics (a revert to 14 reds this — the
     # −8d miss would fall into `current` and the −15d miss into `previous`).
     s = _store()
-    s.record_miss("recent", U.tobytes(), "a", "no_match", ts=NOW - 6 * DAY)   # → current
-    s.record_miss("prior", U.tobytes(), "a", "no_match", ts=NOW - 8 * DAY)    # → previous
-    s.record_miss("stale", U.tobytes(), "a", "no_match", ts=NOW - 15 * DAY)   # → neither
+    s.record_miss("recent", U.tobytes(), "a", "no_match", ts=NOW - 6 * DAY)  # → current
+    s.record_miss("prior", U.tobytes(), "a", "no_match", ts=NOW - 8 * DAY)  # → previous
+    s.record_miss("stale", U.tobytes(), "a", "no_match", ts=NOW - 15 * DAY)  # → neither
     out = _trends(s)
     assert out["current"]["misses_no_match"] == 1
     assert out["previous"]["misses_no_match"] == 1
@@ -85,13 +95,13 @@ def test_window_is_one_week():
 
 # ── the demand-entropy KPI ─────────────────────────────────────────────────────
 def test_demand_entropy_bounds():
-    assert demand_entropy([]) == 0.0                          # no clusters
-    assert demand_entropy([7]) == 0.0                         # ONE cluster ⇒ 0.0 (no div-by-0)
-    assert demand_entropy([5, 5]) == pytest.approx(1.0)       # uniform ⇒ ~1.0
+    assert demand_entropy([]) == 0.0  # no clusters
+    assert demand_entropy([7]) == 0.0  # ONE cluster ⇒ 0.0 (no div-by-0)
+    assert demand_entropy([5, 5]) == pytest.approx(1.0)  # uniform ⇒ ~1.0
     assert demand_entropy([5, 5, 5, 5]) == pytest.approx(1.0)
     skewed = demand_entropy([97, 1, 1, 1])
-    assert 0.0 < skewed < 0.35                                # concentrated ⇒ low
-    assert 0.0 <= demand_entropy([10**9, 1]) <= 1.0           # clamped
+    assert 0.0 < skewed < 0.35  # concentrated ⇒ low
+    assert 0.0 <= demand_entropy([10**9, 1]) <= 1.0  # clamped
 
 
 def test_demand_entropy_composes_cluster_masses_not_misses():
@@ -112,10 +122,10 @@ def test_demand_entropy_composes_cluster_masses_not_misses():
 
 # ── zero-safety ─────────────────────────────────────────────────────────────────
 def test_rates_zero_safe():
-    out = _trends(_store())                                   # EMPTY store
+    out = _trends(_store())  # EMPTY store
     for win in ("current", "previous"):
         w = out[win]
-        assert set(w) == _TREND_FIELDS                        # exactly the two-metric core
+        assert set(w) == _TREND_FIELDS  # exactly the two-metric core
         assert w["recalls_confident"] == 0 and w["confident_rate"] == 0.0
         assert w["demand_entropy"] == 0.0
         assert w["misses_abstained"] == 0 and w["misses_no_match"] == 0
@@ -125,8 +135,8 @@ def test_rates_zero_safe():
 
 def test_confident_rate_and_miss_counts():
     s = _store()
-    eid = _episode(s, "x" * 40, ts=NOW - 5 * DAY, approver="h")
-    cap = _episode(s, "captured row", ts=NOW - 5 * DAY)       # approver=None ⇒ capture
+    eid = _episode(s, "x" * 40, ts=NOW - 5 * DAY)
+    cap = _episode(s, "captured row", ts=NOW - 5 * DAY)
     # two confident recalls (distinct traces), one of them serving both rows
     s.record_exposure("t-1", [(eid, 0.5)], agent_id="a", ts=NOW - 4 * DAY)
     s.record_exposure("t-2", [(eid, 0.5), (cap, 0.4)], agent_id="b", ts=NOW - 3 * DAY)
@@ -136,7 +146,9 @@ def test_confident_rate_and_miss_counts():
     cur = _trends(s)["current"]
     assert cur["recalls_confident"] == 2
     assert cur["misses_abstained"] == 1 and cur["misses_no_match"] == 1
-    assert cur["confident_rate"] == pytest.approx(2 / 4)      # confident / (confident + misses)
+    assert cur["confident_rate"] == pytest.approx(
+        2 / 4
+    )  # confident / (confident + misses)
 
 
 # ── the two-metric window shape (the trim guard) ────────────────────────────────
@@ -144,14 +156,20 @@ def test_trends_window_is_two_metric_only():
     # the demand-health window is EXACTLY the THEORY §8.3 rot-detection core — the
     # heavier KPI surface (promotions/establishments/supersessions, median-days,
     # dead-capture ratio, token cost) was trimmed.
-    w = TrendWindow(recalls_confident=1, misses_abstained=2, misses_no_match=3,
-                    confident_rate=0.5, demand_entropy=0.0)
+    w = TrendWindow(
+        recalls_confident=1,
+        misses_abstained=2,
+        misses_no_match=3,
+        confident_rate=0.5,
+        demand_entropy=0.0,
+    )
     assert set(asdict(w).keys()) == _TREND_FIELDS
 
 
 # ── envelope contract ──────────────────────────────────────────────────────────
 def test_health_trends_shape():
     from tests.mcp._helpers import build_real_server, content, tool_call
+
     server, _clock = build_real_server()
     snap = content(tool_call(server, "hive_health", {"include_trends": True}))
     trends = snap["trends"]
@@ -160,7 +178,7 @@ def test_health_trends_shape():
     assert set(trends["previous"]) == _TREND_FIELDS
     assert set(trends["deltas"]) == _TREND_FIELDS
     plain = content(tool_call(server, "hive_health", {}))
-    assert "trends" not in plain                              # opt-in only
+    assert "trends" not in plain  # opt-in only
 
 
 # ── gaps clustering regression (re-homed from the deleted contested tests) ──────

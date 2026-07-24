@@ -38,6 +38,7 @@ ENV/
 *.db-journal
 /data/
 backups/
+hive-backups/
 
 # ── Secrets / local env ──
 .env

@@ -91,7 +91,13 @@ REGISTRY: dict[str, LangRecipe] = {
         lang="python",
         extensions=(".py",),
         test_globs=("test_*.py", "*_test.py"),
-        root_markers=("pyproject.toml", "pytest.ini", "setup.cfg", "tox.ini", "conftest.py"),
+        root_markers=(
+            "pyproject.toml",
+            "pytest.ini",
+            "setup.cfg",
+            "tox.ini",
+            "conftest.py",
+        ),
         typecheck=ToolRecipe(
             argv=("pyright", "--outputjson", "{files}"),
             report_format="pyright",
@@ -108,7 +114,12 @@ REGISTRY: dict[str, LangRecipe] = {
         lang="typescript",
         extensions=(".ts", ".tsx", ".mts", ".cts"),
         test_globs=("*.test.ts", "*.test.tsx", "*.spec.ts", "*.spec.tsx"),
-        root_markers=("tsconfig.json", "package.json", "vitest.config.ts", "vitest.config.js"),
+        root_markers=(
+            "tsconfig.json",
+            "package.json",
+            "vitest.config.ts",
+            "vitest.config.js",
+        ),
         # tsc is project-scoped: it reads tsconfig.json from the config dir the
         # spawn runs in; passing files would silently drop the project config.
         typecheck=ToolRecipe(
@@ -117,7 +128,15 @@ REGISTRY: dict[str, LangRecipe] = {
             available_probe=("tsc", "--version"),
         ),
         test=ToolRecipe(
-            argv=("vitest", "run", "--reporter", "junit", "--outputFile", "{report}", "{files}"),
+            argv=(
+                "vitest",
+                "run",
+                "--reporter",
+                "junit",
+                "--outputFile",
+                "{report}",
+                "{files}",
+            ),
             report_format="junit",
             available_probe=("vitest", "--version"),
             report_source="file",
@@ -239,7 +258,9 @@ def _validate_registry(registry: dict[str, LangRecipe]) -> dict[str, LangRecipe]
     boot failure, never a KeyError mid-verification."""
     for lang, row in registry.items():
         if row.lang != lang:
-            raise RuntimeError(f"registry key {lang!r} does not match row lang {row.lang!r}")
+            raise RuntimeError(
+                f"registry key {lang!r} does not match row lang {row.lang!r}"
+            )
         for slot in ("typecheck", "test", "adequacy"):
             recipe: ToolRecipe | None = getattr(row, slot)
             if recipe is not None and recipe.report_format not in INGESTERS:

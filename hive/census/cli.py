@@ -27,6 +27,7 @@ import sys
 import tempfile
 from collections.abc import Sequence
 from pathlib import Path
+from typing import Any
 
 from hive.census.diff import DiffError, current_ref, open_change
 from hive.census.engines import (
@@ -39,7 +40,11 @@ from hive.census.engines import (
 from hive.census.envelope import unsigned_envelope
 from hive.census.execution import coerce_execution, coerce_verifier_stamp, run_verifier
 from hive.census.join import regression_join
-from hive.census.memory import fetch_institutional_context, order_subjects
+from hive.census.memory import (
+    MemoryContext,
+    fetch_institutional_context,
+    order_subjects,
+)
 from hive.census.propagation import propagation_block
 from hive.census.receipt import build_receipt
 from hive.census.schema import ReceiptSchemaError
@@ -135,7 +140,7 @@ def _memory_subjects(verdict: object) -> list[tuple[str, str]]:
     )
 
 
-def _write_atomic(out_path: Path, doc: dict) -> None:
+def _write_atomic(out_path: Path, doc: dict[str, Any]) -> None:
     """Write the envelope via temp + rename: the out path is all or nothing."""
     fd, tmp_name = tempfile.mkstemp(
         dir=str(out_path.parent), prefix=f".{out_path.name}.", suffix=".tmp"
@@ -174,7 +179,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             # Memory is a side-channel: the fetch itself fails open, so a
             # down or absent hive builds the identical receipt minus the
             # context block; without --hive-url the door is never touched.
-            context: list = []
+            context: list[MemoryContext] = []
             if args.hive_url:
                 context = fetch_institutional_context(
                     args.hive_url,
@@ -183,7 +188,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 )
             # Propagation is opt-in: without the flag the block builder is never
             # touched and the receipt stays byte-identical.
-            propagation: list = []
+            propagation: list[dict[str, Any]] = []
             if args.propagate:
                 propagation = propagation_block(findings, graphs)
             receipt = build_receipt(

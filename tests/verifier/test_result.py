@@ -178,7 +178,9 @@ class TestClassResultGuards:
 
 class TestIngested:
     def test_valid_constructs(self) -> None:
-        i = Ingested(passed=2, failed=1, errored=0, skipped=3, diagnostics=(diag("warning"),))
+        i = Ingested(
+            passed=2, failed=1, errored=0, skipped=3, diagnostics=(diag("warning"),)
+        )
         assert i.passed == 2 and len(i.diagnostics) == 1
 
     def test_negative_counts_rejected(self) -> None:

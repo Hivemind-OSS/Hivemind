@@ -1,4 +1,5 @@
 """Domain error taxonomy. Pure (stdlib only)."""
+
 from __future__ import annotations
 
 
@@ -14,8 +15,9 @@ class SecretRefused(HiveError):
     Secret-safety: ``rules`` is a list of labels (``"aws_akia"``…); no value is ever
     attached. // O(1)."""
 
-    def __init__(self, message: str, *, rules: "list[str] | None" = None,
-                 n_findings: int = 0) -> None:
+    def __init__(
+        self, message: str, *, rules: "list[str] | None" = None, n_findings: int = 0
+    ) -> None:
         super().__init__(message)
         self.rules: list[str] = list(rules or ())
         self.n_findings: int = int(n_findings)

@@ -5,6 +5,7 @@ snapshot via `sqlite3.backup()` + keep-N retention.
 `prune_backups()` keeps the N most-recent `.db` files (sorts DESCending by mtime BEFORE
 slicing — the newest survive). `run_daily_backup(cfg)` is the scheduled entry point.
 """
+
 from __future__ import annotations
 
 import logging
@@ -33,7 +34,7 @@ def _unlink_quietly(path: str) -> None:
     for p in (path, path + "-wal", path + "-shm"):
         try:
             Path(p).unlink(missing_ok=True)
-        except OSError:                  # pragma: no cover - defensive
+        except OSError:  # pragma: no cover - defensive
             pass
 
 
@@ -55,16 +56,18 @@ def backup(src: str, dest: str) -> BackupRecord:
     t0 = time.perf_counter()
     src_conn = sqlite3.connect(src)
     try:
-        _unlink_quietly(tmp)             # clear any stale partial from a prior crash
+        _unlink_quietly(tmp)  # clear any stale partial from a prior crash
         dest_conn = sqlite3.connect(tmp)
         try:
             src_conn.backup(dest_conn)
             dest_conn.commit()
         finally:
             dest_conn.close()
-        os.replace(tmp, dest)            # atomic publish — a failed backup never reaches `dest`
-    except Exception as exc:             # noqa: BLE001 — log, drop the partial, re-raise
-        _log.error("backup.failed src=%s dest=%s kind=%s", src, dest, type(exc).__name__)
+        os.replace(tmp, dest)  # atomic publish — a failed backup never reaches `dest`
+    except Exception as exc:  # noqa: BLE001 — log, drop the partial, re-raise
+        _log.error(
+            "backup.failed src=%s dest=%s kind=%s", src, dest, type(exc).__name__
+        )
         _unlink_quietly(tmp)
         raise
     finally:
@@ -72,8 +75,7 @@ def backup(src: str, dest: str) -> BackupRecord:
     bytes_copied = Path(dest).stat().st_size
     dt = time.perf_counter() - t0
     _log.info("backup.ok src=%s dest=%s bytes=%d dt=%.3fs", src, dest, bytes_copied, dt)
-    return BackupRecord(dest_path=dest,
-                        bytes_copied=bytes_copied, ts=time.time())
+    return BackupRecord(dest_path=dest, bytes_copied=bytes_copied, ts=time.time())
 
 
 def prune_backups(backup_dir: str, keep: int = 30) -> list[str]:
@@ -86,7 +88,7 @@ def prune_backups(backup_dir: str, keep: int = 30) -> list[str]:
     files = sorted(
         Path(backup_dir).glob("*.db"),
         key=lambda p: p.stat().st_mtime,
-        reverse=True,                    # newest first ⇒ tail (oldest) is removed
+        reverse=True,  # newest first ⇒ tail (oldest) is removed
     )
     removed: list[str] = []
     for f in files[keep:]:
@@ -96,7 +98,9 @@ def prune_backups(backup_dir: str, keep: int = 30) -> list[str]:
         except OSError as exc:
             _log.warning("backup.prune_failed path=%s kind=%s", f, type(exc).__name__)
     if removed:
-        _log.info("backup.pruned removed=%d dir=%s kept=%d", len(removed), backup_dir, keep)
+        _log.info(
+            "backup.pruned removed=%d dir=%s kept=%d", len(removed), backup_dir, keep
+        )
     return removed
 
 
@@ -105,7 +109,8 @@ def run_daily_backup(cfg: "Config") -> BackupRecord:
     `cfg.retention.backup_keep`. The single ops floor."""
     src = cfg.runtime.db_path
     backup_dir = cfg.retention.backup_dir or os.path.join(
-        os.path.dirname(os.path.abspath(src)) or ".", "backups")
+        os.path.dirname(os.path.abspath(src)) or ".", "backups"
+    )
     stamp = time.strftime("%Y%m%d-%H%M%S", time.gmtime())
     dest = os.path.join(backup_dir, f"hive-{stamp}.db")
     rec = backup(src, dest)
