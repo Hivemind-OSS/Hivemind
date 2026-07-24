@@ -93,19 +93,31 @@ daemon one poll interval (default **60 s**), then read your repo's block:
 
 | What the repo's block shows | Meaning | Action |
 |---|---|---|
-| `sync` sub-block with `tracked_ref` + `last_tip` set, no fresh `last_error` | **PASS** — mirror cloned, feed live and baselined | Done. (`status: "sync stalled"` may show — it only means "no `change_outcome` row for this repo yet," not a fault.) |
+| `sync` sub-block with `last_tip` + `tracked_ref` set and `last_error` null | **PASS** — mirror cloned, branch resolved, feed live and baselined | Done. (`status: "sync stalled"` may show — it only means "no `change_outcome` row for this repo yet," not a fault.) |
 | no block for the repo at all | the repo is not registered (or the name differs) | `hive repos` — check the slug; re-run `hive repo add` |
 | block present, no `sync` sub-block after ≥1 interval | the daemon has not completed a tick for it | check `hive logs` for that repo's sync errors; wait one more interval |
 | `sync` with `last_error`, no `last_tip` | the first clone/fetch faulted | `last_error` (redacted) names the leg: **auth** (bad/expired token, missing Contents: Read) or **unreachable** (bad URL / no egress) — fix; the next tick retries |
 | boot fails `EX_CONFIG` naming an env var | a registered `--token-env` var is unset on the server | set the var in `.env`, or re-register without it |
 
-Two counters in the `sync` sub-block are the positive proof, not just the absence of an error:
+**`last_tip` is the positive proof, not just the absence of an error.** Once it carries the
+tracked branch's current head SHA, the daemon has cloned the mirror, resolved the branch, and
+baselined — the whole outbound path works. Compare it against
+`git ls-remote <url> refs/heads/<branch>`: equal means the feed is current.
 
-- **`backfilled_total`** — fingerprints minted server-side. Any value > 0 proves the whole mint
-  path works end to end: mirror cloned, anchor resolved against the real tree, `hive-edge mint`
-  spawned and parsed. It stays `0` until the repo has at least one **anchored** memory — a fresh
-  registry with no anchored memories yet reads `0` and that is correct, not a fault.
-- **`candidates_evaluated`** — ranges the ledger leg has looked at.
+The rest of the block reads as follows — each field is written by the daemon, so a `null` is
+information, never an unwired field:
+
+- **`tracked_ref`** — the branch the daemon actually RESOLVED. Stamped as soon as the branch is
+  known, so it is present even on a faulted tick; check it when a repo syncs but follows the
+  wrong line. Registering without `--branch` resolves origin's default here.
+- **`last_sync_ts`** — when **this repo** last completed a tick with every leg fault-free. It
+  does not advance on a faulted tick, so `last_sync_ts` far behind now, next to a fresh
+  `last_error`, is the signature of a repo stuck failing.
+- **`backfilled_total`** — fingerprints minted server-side for this repo. Any value > 0 proves
+  the whole mint path works end to end: mirror cloned, anchor resolved against the real tree,
+  `hive-edge mint` spawned and parsed. It stays `0` until the repo has at least one **anchored**
+  memory — a fresh registry with no anchored memories yet reads `0`, and that is correct, not a
+  fault. `null` means the counter has never been bumped at all.
 
 A `change_outcome` row then lands on the **next landing** on the tracked branch (first sync
 baselines the current tip silently — no historical receipt). To confirm the loop end to end,
@@ -149,8 +161,8 @@ If the recall returns nothing at all, that is a **recall-gate** result, not a sy
 `hive_write` serves immediately as `provisional`, so the memory is live — the query simply did
 not clear the relevance gate. Re-query closer to the memory's own wording, and check the scope
 with the exact slug from `hive repos` (that slug is the only name that scopes). Note this is the
-one step that needs an anchored memory to exist: on a repo with none, `backfilled_total` stays
-`0` and no drift verdict can be produced — that is correct, not a fault.
+one step that needs an anchored memory to exist: on a repo with none, `backfilled_total` never
+leaves `0`/`null` and no drift verdict can be produced — that is correct, not a fault.
 
 ## 5. One-time cleanup — leftovers of the old per-repo contract
 

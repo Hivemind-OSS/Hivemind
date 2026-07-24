@@ -165,8 +165,9 @@ default on) uses to promote a quarantined memory. Every leg is fail-open per rep
 webhook (`HIVE_SYNC__WEBHOOK_SECRET`, HMAC-gated on the tunnel door) only wakes the poll early —
 one nudge wakes all registered repos; the poll interval stays the correctness floor. Watch the
 feed via `hive_health(include_census_health=true)`: a per-repo block — days since the last
-`change_outcome`, plus the sync state (`tracked_ref`, `last_tip`, `last_error`, and
-`status: "sync stalled"` only when the feed is configured yet dark). The manual escape hatch
+`change_outcome`, plus that repo's sync state (`tracked_ref`, `last_tip`, `last_sync_ts`,
+`last_error`, `backfilled_total`, and `status: "sync stalled"` only when the feed is configured
+yet dark). The manual escape hatch
 remains `hive ingest <receipt.json>`: append a hand-built unsigned receipt's SHA-bound change
 outcome — append-only, idempotent (an exact already-ingested `(repo, base, head, phase)` range
 is skipped whole and reported `range_skipped`), trust-untouched; see

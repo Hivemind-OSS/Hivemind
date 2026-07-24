@@ -11,12 +11,16 @@ REINTERPRETED: census is server-automatic, so a dark feed reads ``status: "sync
 stalled"`` (present-only-when-dark).
 
 App-side, read-only, direct SQL over ``store.conn`` — like ``trends.py``/``gaps.py``.
-``store`` is duck-typed: ``repo_registry()`` (the block keys) + ``conn``. The per-repo
-meta key scheme is ``sync:<name>:<field>`` (the same family as the drift watermark
-``sync:<name>:last_tip`` — ``hive.app.drift.canonical_tip_key``); the legacy 2-part
-global keys (``sync:last_tip``) belong to no repo and are ignored. Keys are read raw
-from the store, never from live config, so a field serves None exactly when its meta is
-genuinely absent — honest absence over invented data (Law 6).
+``store`` is duck-typed: ``repo_registry()`` (the block keys) + ``conn``. The served
+field set and its ``sync:<name>:<field>`` key scheme are NOT restated here: both come
+from ``hive.app.sync_keys``, the one grammar the writing daemon also imports, so a
+field can only be advertised when a writer exists for it (BUG-059 — the reader's own
+string literals once outlived four writers, and nothing broke). The 2-part global keys
+(``sync:last_sync_ts``) are the tick shell's fleet-wide surface, belong to no repo, and
+are ignored. Keys are read raw from the store, never from live config, so a field
+serves None exactly when its meta is genuinely absent — honest absence over invented
+data (Law 6): that applies to the counters too, which serve None rather than a
+confident ``0`` when there is no readable count, since ``0`` reads as a measurement.
 
 It serves the raw day-count with no invented "too stale" threshold (THEORY §9 #14 — no
 magic number an operator could mis-set), and "dark" stays threshold-free the same way:
@@ -33,21 +37,20 @@ import sqlite3
 import time
 from typing import Any
 
+from hive.app.sync_keys import COUNTER_FIELDS, STR_FIELDS
 from hive.domain.evidence_kinds import EK_CHANGE_OUTCOME
 
 _DAY_S = 86_400
 
 _SYNC_PREFIX = "sync:"
 
-# The per-repo sync fields served verbatim (string-or-None) and as tolerant counters.
-_SYNC_STR_FIELDS = ("tracked_ref", "last_tip", "last_sync_ts", "last_error")
-_SYNC_COUNTER_FIELDS = ("candidates_evaluated", "backfilled_total")
 
-
-def _counter(raw: str | None) -> int:
-    """A ``sync:*`` string-int counter, with the daemon's own bump tolerance: absent or
-    non-digit reads 0 — a count is never invented from junk."""
-    return int(raw) if raw and str(raw).isdigit() else 0
+def _counter(raw: str | None) -> int | None:
+    """A ``sync:*`` string-int counter, or None when there is no readable count —
+    absent meta (the daemon has not bumped it yet) and junk (a corrupt row) alike. A
+    ``0`` here would read as a measured zero and be indistinguishable from an unwired
+    counter, which is precisely how BUG-059 stayed invisible on a live server."""
+    return int(raw) if raw and str(raw).isdigit() else None
 
 
 def _last_outcome_ts_by_repo(conn: sqlite3.Connection) -> dict[str, int]:
@@ -119,9 +122,9 @@ def census_health_report(store: Any) -> dict[str, Any]:
         meta = sync_meta.get(name)
         if meta:
             sync_block: dict[str, Any] = {"configured": True}
-            for field in _SYNC_STR_FIELDS:
+            for field in STR_FIELDS:
                 sync_block[field] = meta.get(field)
-            for field in _SYNC_COUNTER_FIELDS:
+            for field in COUNTER_FIELDS:
                 sync_block[field] = _counter(meta.get(field))
             if block["days_since_last_change_outcome"] is None:
                 # marker: an unconditional attach reds

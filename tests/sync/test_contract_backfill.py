@@ -23,6 +23,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+from hive.app.census_health import census_health_report
+
 from tests.sync.conftest import (
     ANCHOR,
     REPO,
@@ -35,7 +37,9 @@ from tests.sync.conftest import (
 )
 
 META_LAST_ERROR = f"sync:{REPO}:last_error"
-META_BACKFILLED_TOTAL = "sync:backfilled_total"
+# per-repo, not a fleet global: the counter is what census_health serves in THIS
+# repo's block, so it must be keyed by the repo that earned it (BUG-059).
+META_BACKFILLED_TOTAL = f"sync:{REPO}:backfilled_total"
 FP_KEY = "combdrift/fp"
 SUBGRAPH_KEY = "matrix/subgraph_fp"
 PROVENANCE_KEY = "hive-sync/minted"
@@ -90,6 +94,28 @@ def test_fills_absent_carrier(origin, store, tmp_path):
     )  # anchor carrier ONLY
     assert meta(store, META_BACKFILLED_TOTAL) == "1"
     assert meta(store, META_LAST_ERROR) is None
+
+
+def test_real_tick_populates_every_served_health_field(origin, store, tmp_path):
+    """The writer→reader seam END TO END (BUG-059), the one check neither suite made:
+    run a REAL tick, then read the block an operator actually reads. Every advertised
+    field must carry data the daemon itself wrote — no field seeded by this test."""
+    seed_episode(store, "greet growls on empty names")  # gives the mint leg work
+    _armed(origin, store, tmp_path).tick()
+
+    sync_block = census_health_report(store)[REPO]["sync"]
+    assert sync_block["configured"] is True
+    assert sync_block["tracked_ref"] == "main"
+    assert sync_block["last_tip"] == origin.origin_sha("refs/heads/main")
+    assert sync_block["last_sync_ts"] is not None
+    assert sync_block["last_error"] is None
+    assert sync_block["backfilled_total"] == 1
+    # and nothing advertised is left structurally empty — the bug's exact signature
+    assert not [
+        field
+        for field, value in sync_block.items()
+        if field != "last_error" and value in (None, 0)
+    ]
 
 
 def test_pinned_carrier_never_swept_or_displaced(origin, store, tmp_path):

@@ -256,7 +256,7 @@ fail-open rot:
 | `hive_health(include_conflicts=true)` | near-duplicate / contradicting memories + agent advisories, bucketed by repo and anchor | `hive_supersede` |
 | `hive_health(include_suspect_consensus=true)` | provisionals promoted on thin effective independence | re-examine / retire |
 | `hive_health(include_stale_suspects=true)` | servable memories whose anchor sat in the blast radius of a breaking change | re-verify against the code, then `hive_supersede` / `hive_prune` |
-| `hive_health(include_census_health=true)` | per-repo census/sync block for every registered repo — days since the last `change_outcome`, sync state (`last_tip`, `last_error`; a dark feed reads null) | check the registry row / remote reachability (§4) |
+| `hive_health(include_census_health=true)` | per-repo census/sync block for every registered repo — days since the last `change_outcome`, sync state (`tracked_ref`, `last_tip`, `last_sync_ts`, `last_error`, `backfilled_total`; a dark feed reads null) | check the registry row / remote reachability (§4) |
 
 Highest-leverage operator moves: run agents as **distinct sessions** (that diversity is what
 promotes good captures); **keep the store small** — let unused memory expire rather than lengthening

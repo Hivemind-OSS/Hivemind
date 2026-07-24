@@ -51,7 +51,8 @@ from typing import Any, Callable, Mapping, Optional, TextIO
 from hive.app.anchors import BadAnchors, normalize_anchors, normalize_repos
 from hive.app.census_health import census_health_report
 from hive.app.contract import REMEDIATION_NOTICE, SERVER_INSTRUCTIONS
-from hive.app.drift import attach_drift, canonical_tip_key
+from hive.app.drift import attach_drift
+from hive.app.sync_keys import canonical_tip_key
 from hive.app.gaps import cluster_misses
 from hive.app.trends import compute_trends
 from hive.app.tool_defs import TOOL_DEFINITIONS

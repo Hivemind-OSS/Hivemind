@@ -114,14 +114,13 @@ def test_legacy_global_sync_keys_belong_to_no_repo():
     assert "sync" not in census_health_report(store)["alpha"]
 
 
-def test_sync_block_serves_the_seven_keys_when_configured():
+def test_sync_block_serves_the_six_keys_when_configured():
     store = _store("alpha")
     _insert_outcome(store, int(time.time()) - _DAY_S, "alpha")
     store.meta_set("sync:alpha:tracked_ref", "master")
     store.meta_set("sync:alpha:last_tip", "a" * 40)
     store.meta_set("sync:alpha:last_sync_ts", "111000")
     store.meta_set("sync:alpha:last_error", "mirror: _SyncFault: git clone failed")
-    store.meta_set("sync:alpha:candidates_evaluated", "4")
     store.meta_set("sync:alpha:backfilled_total", "7")
     block = census_health_report(store)["alpha"]
     assert block["days_since_last_change_outcome"] == 1
@@ -131,7 +130,6 @@ def test_sync_block_serves_the_seven_keys_when_configured():
         "last_tip": "a" * 40,
         "last_sync_ts": "111000",  # served as stamped (the writer's seam-clock string)
         "last_error": "mirror: _SyncFault: git clone failed",
-        "candidates_evaluated": 4,
         "backfilled_total": 7,
     }
 
@@ -168,13 +166,16 @@ def test_sync_configured_and_live_carries_no_stalled_status():
     assert "status" not in census_health_report(store)["alpha"]["sync"]
 
 
-def test_sync_counters_absent_or_garbage_read_zero():
+def test_sync_counters_absent_or_garbage_read_null_never_zero():
+    # BUG-059: a confident `0` for an unwired counter is indistinguishable from a
+    # measured zero — the shape that hid the bug on a live server. No readable count
+    # ⇒ null.
     store = _store("alpha")
     store.meta_set("sync:alpha:last_tip", "a" * 40)
     store.meta_set("sync:alpha:backfilled_total", "not-a-number")
-    block = census_health_report(store)["alpha"]["sync"]
-    assert block["candidates_evaluated"] == 0
-    assert block["backfilled_total"] == 0
+    assert census_health_report(store)["alpha"]["sync"]["backfilled_total"] is None
+    store.meta_set("sync:alpha:backfilled_total", "0")  # a REAL measured zero survives
+    assert census_health_report(store)["alpha"]["sync"]["backfilled_total"] == 0
 
 
 # ── fail-open legs (Law 6: the side-channel never raises) ─────────────────────

@@ -30,6 +30,7 @@ from collections.abc import Iterable, Sequence
 from typing import Any
 
 from hive.app.anchors import split_scope
+from hive.app.sync_keys import canonical_tip_key
 
 _log = logging.getLogger("hive.drift")
 
@@ -65,11 +66,6 @@ SEVERITY_ORDER = (
 
 _SEVERITY_INDEX = {v: i for i, v in enumerate(SEVERITY_ORDER)}
 _UNVERIFIABLE_IDX = _SEVERITY_INDEX[DRIFT_UNVERIFIABLE]
-
-
-def canonical_tip_key(repo: str) -> str:
-    """The sync watermark meta key holding ``repo``'s canonical-ref tip SHA."""
-    return f"sync:{repo}:last_tip"
 
 
 # ── hive-edge verify → wire mapping (§3.4, verbatim; else → unverifiable) ─────

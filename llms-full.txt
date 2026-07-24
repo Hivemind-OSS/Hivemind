@@ -252,7 +252,7 @@ Watch these read-only signals over MCP on a fixed cadence (weekly suffices for a
 | `hive_health(include_conflicts=true)` | near-duplicate / contradicting memories + agent advisories, bucketed by repo and anchor | `hive_supersede` |
 | `hive_health(include_suspect_consensus=true)` | provisionals promoted on thin *effective* independence | re-examine / retire |
 | `hive_health(include_stale_suspects=true)` | servable memories in the blast radius of a breaking change | re-verify, then retire |
-| `hive_health(include_census_health=true)` | per-repo census/sync state (days since the last change outcome, `last_tip`, `last_error`) | check the registry row / remote reachability |
+| `hive_health(include_census_health=true)` | per-repo census/sync state (days since the last change outcome, `tracked_ref`, `last_tip`, `last_sync_ts`, `last_error`, `backfilled_total`) | check the registry row / remote reachability |
 
 ## 10. Configuration knobs
 

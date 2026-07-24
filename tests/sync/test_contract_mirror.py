@@ -19,8 +19,9 @@ from __future__ import annotations
 
 import logging
 import shutil
+import subprocess
 
-from hive.app.sync import META_LAST_SYNC_TS
+from hive.app.sync import META_LAST_SYNC_TS, default_run
 
 from tests.sync.conftest import (
     Origin,
@@ -177,6 +178,47 @@ def test_registry_canonical_ref_overrides_tracked_branch(store, tmp_path):
         == trunk_tip
     )
     assert meta(store, "sync:alpha:last_tip") == trunk_tip
+    assert meta(store, "sync:alpha:tracked_ref") == "trunk"
+
+
+def test_tracked_ref_records_the_resolved_default_branch(store, tmp_path):
+    """BUG-059: ``sync:<name>:tracked_ref`` is the branch the daemon RESOLVED, which
+    is why the registry row cannot answer it — the common "track whatever the default
+    is" registration carries no canonical_ref at all, and the resolved name is only
+    knowable from the clone's origin/HEAD."""
+    origin = Origin(tmp_path / "remote")  # default branch: main
+    origin.commit("app.py", "def greet(name):\n    return name\n", "seed")
+    origin.push()
+    register_repo(store, "alpha", origin.url, canonical_ref="")
+    make_service(store, tmp_path).tick()
+    assert meta(store, "sync:alpha:tracked_ref") == "main"
+
+
+def test_tracked_ref_is_stamped_even_when_a_later_leg_faults(origin, store, tmp_path):
+    """The stamp rides branch RESOLUTION, not a clean tick: "which line do you believe
+    you track" is exactly the question a faulted feed needs answered, so it must not be
+    withheld alongside last_error the way the freshness stamp is."""
+    broken = [False]
+
+    def breaking_run(argv, env=None, timeout=None):
+        if broken[0] and "hive.census.cli" in list(argv):
+            return subprocess.CompletedProcess(
+                list(argv), 1, stdout="", stderr="census build broken"
+            )
+        return default_run(argv, env=env, timeout=timeout)
+
+    register_repo(store, "alpha", origin.url)
+    svc = make_service(store, tmp_path, run=breaking_run, now=lambda: 1_000)
+    svc.tick()  # first connect: baseline only — clean
+    store.meta_set("sync:alpha:tracked_ref", "")  # cleared, so the re-stamp is visible
+
+    origin.commit("app.py", "def greet(name):\n    return name\n", "move the tip")
+    origin.push()
+    broken[0] = True
+    svc.tick()  # the ledger leg faults on the moved tip
+    assert meta(store, "sync:alpha:last_error").startswith("ledger:")
+    assert meta(store, "sync:alpha:tracked_ref") == "main"  # ← re-stamped anyway
+    assert meta(store, "sync:alpha:last_sync_ts") == "1000"  # ← freshness held back
 
 
 def test_registry_reread_each_tick_no_restart(origin, store, tmp_path):
@@ -295,12 +337,17 @@ def test_prune_fault_fails_open_tick_continues(store, tmp_path, monkeypatch, cap
 
 
 def test_clean_tick_stamps_last_sync_ts_via_now_seam(origin, store, tmp_path):
-    """A fully-clean tick stamps ``sync:last_sync_ts`` through the injected
-    ``now`` seam — never wall clock; a second clean tick advances it."""
-    ticks = iter([111_000, 222_000])
-    register_repo(store, "alpha", origin.url)
-    svc = make_service(store, tmp_path, now=lambda: next(ticks))
+    """A fully-clean tick stamps BOTH freshness surfaces through the injected ``now``
+    seam — never wall clock; a second clean tick advances both. The fleet-wide global
+    means "every repo ran clean", the per-repo key means "THIS repo ran clean" (they
+    only agree while one repo is registered)."""
+    clock = [111_000]  # settable, not a consuming iterator: one tick reads the seam
+    register_repo(store, "alpha", origin.url)  # once per repo AND once for the shell
+    svc = make_service(store, tmp_path, now=lambda: clock[0])
     svc.tick()
     assert meta(store, META_LAST_SYNC_TS) == "111000"  # the seam clock, not time.time()
+    assert meta(store, "sync:alpha:last_sync_ts") == "111000"
+    clock[0] = 222_000
     svc.tick()  # nothing moved — still a clean sync
     assert meta(store, META_LAST_SYNC_TS) == "222000"
+    assert meta(store, "sync:alpha:last_sync_ts") == "222000"

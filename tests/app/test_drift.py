@@ -23,7 +23,6 @@ from hive.app.drift import (
     WIRE_VERDICTS,
     aggregate_verdicts,
     attach_drift,
-    canonical_tip_key,
     wire_verdict,
 )
 
@@ -43,10 +42,6 @@ def test_severity_order_is_the_normative_one():
         DRIFT_FRESH,
     )
     assert set(WIRE_VERDICTS) == set(SEVERITY_ORDER) | {DRIFT_NA}
-
-
-def test_canonical_tip_key_is_the_sync_watermark():
-    assert canonical_tip_key("alpha") == "sync:alpha:last_tip"
 
 
 # ── verify → wire mapping (§3.4 verbatim, else → unverifiable) ────────────────

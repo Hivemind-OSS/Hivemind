@@ -106,8 +106,8 @@ Then confirm the server is doing real work, not merely healthy:
 hive_health(include_census_health=true)
 ```
 
-Check each registered repo still has its `sync` sub-block with `tracked_ref` + `last_tip` and no
-fresh `last_error`. The repo registry and mirrors live in the `hive-data` volume, so an upgrade
+Check each registered repo still has its `sync` sub-block with `tracked_ref` + `last_tip` set, no
+fresh `last_error`, and a `last_sync_ts` that advances across two poll intervals. The repo registry and mirrors live in the `hive-data` volume, so an upgrade
 does not deregister anything — a repo that went dark after an upgrade is a real regression, not
 expected churn (see **hive-connect-repo**). Finally, run one real `hive_recall` against a repo you
 know has memories: healthy + empty recall is the signature of a store that came up but lost its

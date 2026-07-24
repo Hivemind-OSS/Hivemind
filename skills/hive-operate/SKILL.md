@@ -28,7 +28,7 @@ Call these from any connected agent (there is no host-side verb):
 | `hive_health(include_conflicts=true)` | near-duplicate / contradicting memories + agent advisories, bucketed by repo and anchor | `hive_supersede` |
 | `hive_health(include_suspect_consensus=true)` | promotions on thin *effective* independence | re-examine; retire via `hive_supersede` / `hive_prune` |
 | `hive_health(include_stale_suspects=true)` | servable memories whose anchor sat in the blast radius of a breaking/removed change | re-verify each against the code; retire the truly stale |
-| `hive_health(include_census_health=true)` | per registered repo: days since the last `change_outcome` + the `sync` block (`last_tip`/`last_error`/counters; `status: "sync stalled"` when configured yet dark) | check the registry (`hive repos`), the token env var, remote reachability |
+| `hive_health(include_census_health=true)` | per registered repo: days since the last `change_outcome` + the `sync` block (`tracked_ref`/`last_tip`/`last_sync_ts`/`last_error`/`backfilled_total`; `status: "sync stalled"` when configured yet dark) | check the registry (`hive repos`), the token env var, remote reachability |
 
 The **trends window is the only view into silent fail-open rot** — read it on a fixed cadence
 (weekly suffices for a small team).

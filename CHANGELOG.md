@@ -552,6 +552,21 @@ All notable changes to this project are documented here.
   transitive packages.
 
 ## Fixed
+- Every field the per-repo `sync` health block advertises now has a writer behind it. Four of
+  six read empty on a demonstrably healthy feed: `tracked_ref` and `candidates_evaluated` had no
+  writer anywhere, while `last_sync_ts` and `backfilled_total` were single-repo-era globals the
+  per-repo reader skips by design. The daemon now stamps `tracked_ref` with the branch it
+  actually resolved (on faulted ticks too — "which line do you think you track" is what a fault
+  needs answered), stamps `last_sync_ts` per repo when that repo's every leg ran clean, and
+  bumps `backfilled_total` under the repo that earned it; `candidates_evaluated` is gone with
+  the PR-candidate machinery it counted. Counters serve `null` rather than a confident `0` when
+  there is no readable count, since a `0` reads as a measurement and is exactly what disguised
+  this in production. The underlying cause was a lost coupling: the reader once imported the key
+  names as symbols from the daemon, so deleting a writer broke the import — replacing them with
+  its own string literals made the same deletion silent, and a test that hand-seeded all six
+  keys certified the gap. Both sides now import one grammar (`hive/app/sync_keys.py`), and a
+  static test walks the daemon's AST to assert every advertised field's key builder is really
+  called there. The operator runbooks that keyed a PASS off a dead field are corrected.
 - The advertised anchor grammar now matches the grammar the census join parses. The
   `hive_write` schema, the `anchors` property, the contract served at MCP `initialize`, and the
   Python client all told agents to write `path/file.py:symbol` — a single colon, which the

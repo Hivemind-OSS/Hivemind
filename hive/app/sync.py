@@ -89,7 +89,14 @@ from pathlib import Path
 from typing import Any, Callable, Mapping, Optional, Protocol, Sequence
 
 from hive.app.config import Config, SyncConfig
-from hive.app.drift import DRIFT_UNVERIFIABLE, canonical_tip_key, wire_verdict
+from hive.app.drift import DRIFT_UNVERIFIABLE, wire_verdict
+from hive.app.sync_keys import (
+    backfilled_total_key,
+    canonical_tip_key,
+    last_error_key,
+    last_sync_ts_key,
+    tracked_ref_key,
+)
 from hive.domain.change_evidence import ChangeEvidenceService
 from hive.domain.meta import token_version
 
@@ -101,7 +108,10 @@ META_LAST_ERROR = (
 META_LAST_SYNC_TS = (
     "sync:last_sync_ts"  # ts of the last fault-free tick (via the now seam)
 )
-META_BACKFILLED_TOTAL = "sync:backfilled_total"  # anchor carriers fp-backfilled, ever
+# Per-repo keys (the served surface) live in hive.app.sync_keys — the ONE grammar this
+# daemon writes and census_health reads. The two globals above are the tick SHELL's own
+# fleet-wide surface: no repo is in scope when they are stamped, so neither belongs to
+# a per-repo block.
 _DEFAULT_MIRROR_DIR = "/data/sync/mirror"  # the base dir; mirrors live at <base>/<name>
 _DEFAULT_TOKEN_ENV = "HIVE_SYNC__TOKEN"  # the fleet-default credential var (D2)
 # The registry name grammar (store_sqlite.repo_add's gate, mirrored): only names
@@ -114,12 +124,6 @@ _REF_REQUEST_WINDOW_S = (
 _ENGINE_TIMEOUT_S = 600  # the ONE bound on hive-edge mint/verify spawns
 _FP_KEY = "combdrift/fp"  # the stored interface-fingerprint carrier key
 _SUBGRAPH_KEY = "matrix/subgraph_fp"  # the stored dependency-neighborhood carrier key
-
-
-def last_error_key(repo: str) -> str:
-    """The per-repo fault surface (``sync:<name>:last_error``) — the twin of
-    ``hive.app.drift.canonical_tip_key`` for the error side."""
-    return f"sync:{repo}:last_error"
 
 
 # The spawn seam (mirrors hive.tools.cli's Run/default_run shape): full child argv
@@ -337,12 +341,19 @@ class SyncService:
     def _repo_tick(self, row: _RegistryRow) -> bool:
         """Mirror + fetch, then the three legs, for ONE registry row. Returns True
         iff every leg ran fault-free; every fault is logged + recorded under THIS
-        repo's ``sync:<name>:last_error`` and never raises past here."""
+        repo's ``sync:<name>:last_error`` and never raises past here.
+
+        Two observability stamps ride this method for the health block: the RESOLVED
+        tracked branch as soon as it is known (stamped even when a later leg faults —
+        "which line do you think you track" is exactly what a fault needs answered),
+        and this repo's own clean-tick timestamp when every leg ran fault-free."""
         token = ""
         try:
             token = self._resolve_token(row)
             mirror = self.ensure_mirror(row, token=token)
             branch = self._tracked_branch(mirror, row.canonical_ref)
+            with self._lock:
+                self._store.meta_set(tracked_ref_key(row.name), branch)
             prev_local = self._rev(mirror, f"refs/remotes/origin/{branch}")
             self._fetch(mirror)
         except Exception as exc:  # noqa: BLE001 — marker: re-raising breaks
@@ -371,6 +382,13 @@ class SyncService:
         except Exception as exc:  # noqa: BLE001 — the leg fails open too
             self._note_repo_error(row.name, "drift", exc, token)
             ok = False
+        if ok:
+            # marker: stamping this unconditionally reds
+            # test_repo_fault_does_not_advance_its_own_last_sync_ts — the per-repo
+            # twin of the tick shell's rule, and for the same reason: a faulted leg
+            # means THIS repo did not sync, and its timestamp must not lie.
+            with self._lock:
+                self._store.meta_set(last_sync_ts_key(row.name), str(self._now()))
         return ok
 
     @staticmethod
@@ -622,7 +640,7 @@ class SyncService:
                     eid, row.name, anchor, {**minted, "hive-sync/minted": provenance}
                 ):
                     filled += 1
-                    self._bump_counter_locked(META_BACKFILLED_TOTAL)
+                    self._bump_counter_locked(backfilled_total_key(row.name))
         if filled:
             _log.info(
                 "sync.backfilled repo=%s carriers=%d tip=%.12s ref=%s",
