@@ -440,7 +440,11 @@ class SyncService:
                 # test_prune_fault_fails_open_tick_continues — a stuck leftover
                 # is a logged per-name skip; the repos, the tick, and the serve
                 # path never feel it.
-                self._note_repo_error(name, "prune", exc, "")
+                # The fault rides the tick-SHELL key, not a per-repo one (BUG-061):
+                # `name` here is DEREGISTERED, so it has no health block, and a
+                # per-repo key written under it is readable by nobody — the stuck
+                # mirror would leak disk in total silence.
+                self._note_error(f"prune[{name}]", exc)
                 clean = False
         return clean
 

@@ -552,6 +552,20 @@ All notable changes to this project are documented here.
   transitive packages.
 
 ## Fixed
+- Deregistering a repo now forgets its feed state. `repo_remove` deleted only the registry row,
+  leaving every `sync:<name>:*` key behind, so re-registering the same name — a flow the connect
+  runbook explicitly recommends — served a fully-populated health block from the previous
+  incarnation before the daemon had ticked once, reading as a passing connection that had never
+  been attempted, and resumed the ledger from a watermark whose mirror had been pruned and
+  re-cloned. The keys now go in the same transaction as the row, so a re-registered repo
+  re-clones and re-baselines exactly as a fresh registration does. The observations built from
+  the feed — memories, their repo scope, the rebuildable drift cache — are not feed state and
+  are deliberately kept, so a re-registered repo still picks its memories straight back up.
+- A failed mirror prune is recorded where it can be read. The fault was written to
+  `sync:<name>:last_error` for a name that had just been DEREGISTERED, so it belonged to no
+  health block and was readable by nobody — a mirror stuck on disk leaked in silence. It now
+  rides the tick-shell error key, which is the honest home for a fault belonging to no live repo,
+  with the name kept in the leg label.
 - Every field the per-repo `sync` health block advertises now has a writer behind it. Four of
   six read empty on a demonstrably healthy feed: `tracked_ref` and `candidates_evaluated` had no
   writer anywhere, while `last_sync_ts` and `backfilled_total` were single-repo-era globals the

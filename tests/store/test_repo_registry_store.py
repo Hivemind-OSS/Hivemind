@@ -155,3 +155,42 @@ def test_remove_leaves_episode_scope_rows_untouched():
         "SELECT COUNT(*) AS c FROM episode_anchors WHERE episode_id=?", (eid,)
     ).fetchone()["c"]
     assert n == 1
+
+
+def _sync_keys(s, repo: str) -> set[str]:
+    return {
+        r["key"]
+        for r in s.conn.execute(
+            "SELECT key FROM meta WHERE key LIKE ?", (f"sync:{repo}:%",)
+        )
+    }
+
+
+def test_repo_remove_forgets_the_feed_state():
+    # BUG-060: deregistering means "forget the FEED". Leaving sync:<name>:* behind
+    # made a re-registration resume a watermark whose mirror was pruned, and serve a
+    # health block for a feed that had never run.
+    s = _store()
+    s.repo_add(name="alpha", url="https://example.invalid/alpha.git", added_ts=1)
+    s.repo_add(name="beta", url="https://example.invalid/beta.git", added_ts=2)
+    for repo in ("alpha", "beta"):
+        for field in ("tracked_ref", "last_tip", "last_sync_ts", "backfilled_total"):
+            s.meta_set(f"sync:{repo}:{field}", "x")
+
+    s.repo_remove("alpha")
+    assert _sync_keys(s, "alpha") == set()
+    assert len(_sync_keys(s, "beta")) == 4  # a sibling repo's feed is untouched
+
+
+def test_repo_remove_leaves_the_tick_shell_globals_alone():
+    # the 2-part globals belong to the daemon, not to any repo — deregistering one
+    # repo must not erase the fleet-wide surface.
+    s = _store()
+    s.repo_add(name="alpha", url="https://example.invalid/alpha.git", added_ts=1)
+    s.meta_set("sync:last_sync_ts", "1000")
+    s.meta_set("sync:last_error", "registry: OperationalError: disk I/O error")
+    s.repo_remove("alpha")
+    survivors = {
+        r["key"] for r in s.conn.execute("SELECT key FROM meta WHERE key LIKE 'sync:%'")
+    }
+    assert survivors == {"sync:last_sync_ts", "sync:last_error"}

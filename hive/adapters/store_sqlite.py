@@ -1182,9 +1182,21 @@ class SqliteEpisodeStore:
         """Deregister one repo. True iff a row was deleted (False ⇒ no such name —
         idempotent-bool, the repo_record convention). The sync daemon prunes the
         mirror on its next tick; episode scope rows are UNTOUCHED — memories keep
-        their partition (a re-registered repo picks them straight back up). // O(1)."""
+        their partition (a re-registered repo picks them straight back up).
+
+        The repo's ``sync:<name>:*`` daemon state goes WITH the row, in the same tx
+        (BUG-060). Leaving it made re-registering the same name — a documented
+        operator flow — serve a fully-populated health block from the PREVIOUS
+        incarnation before the daemon had ticked once, which reads as a passing
+        connection; and it resumed the ledger from a watermark whose mirror no
+        longer exists. Deregistration therefore means "forget the feed": a
+        re-registered repo re-clones and re-baselines from scratch, which is what a
+        fresh registration is defined to do. The observations built FROM the feed
+        (memories, their scope, the rebuildable drift cache) are not feed state and
+        stay. // O(1)."""
         with tx(self.conn):
             cur = self.conn.execute("DELETE FROM repos WHERE name=?", (name,))
+            self.conn.execute("DELETE FROM meta WHERE key LIKE ?", (f"sync:{name}:%",))
         if cur.rowcount:
             _log.info("store.repo_removed name=%s", name)
         return cur.rowcount > 0

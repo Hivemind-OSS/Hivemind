@@ -21,7 +21,7 @@ import logging
 import shutil
 import subprocess
 
-from hive.app.sync import META_LAST_SYNC_TS, default_run
+from hive.app.sync import META_LAST_ERROR, META_LAST_SYNC_TS, default_run
 
 from tests.sync.conftest import (
     Origin,
@@ -312,9 +312,13 @@ def test_prune_skips_slug_invalid_and_symlink_children(store, tmp_path):
 
 
 def test_prune_fault_fails_open_tick_continues(store, tmp_path, monkeypatch, caplog):
-    """A prune fault is a logged per-name skip under ``sync:<name>:last_error``:
-    the tick lives on, the registered repo's legs still run, and — like every
-    fault — the clean ``sync:last_sync_ts`` stamp is withheld."""
+    """A prune fault is a logged skip on the tick-SHELL key: the tick lives on, the
+    registered repo's legs still run, and — like every fault — the clean
+    ``sync:last_sync_ts`` stamp is withheld.
+
+    It rides the SHELL key, never ``sync:<name>:last_error`` (BUG-061): the name being
+    pruned is DEREGISTERED, so a per-repo key written under it has no health block and
+    is readable by nobody — the stuck mirror would leak disk in total silence."""
     healthy = Origin(tmp_path / "remote-b")
     register_repo(store, "beta", healthy.url)
     leftover = tmp_path / "mirrors" / "gone"
@@ -328,12 +332,14 @@ def test_prune_fault_fails_open_tick_continues(store, tmp_path, monkeypatch, cap
     with caplog.at_level(logging.WARNING, logger="hive.sync"):
         svc.tick()  # ← raising here breaks the tick fail-open
     assert leftover.is_dir()  # the fault left it in place (next tick retries)
-    assert "prune" in (meta(store, "sync:gone:last_error") or "")
+    shell_error = meta(store, META_LAST_ERROR) or ""
+    assert "prune" in shell_error and "gone" in shell_error  # the name is still named
+    assert meta(store, "sync:gone:last_error") is None  # never a blockless per-repo key
     assert meta(store, "sync:beta:last_tip") == healthy.origin_sha("refs/heads/main")
     assert meta(store, "sync:beta:last_error") is None
     assert meta(store, META_LAST_SYNC_TS) is None  # a faulted tick never stamps
     joined = "\n".join(r.getMessage() for r in caplog.records)
-    assert "repo=gone" in joined and "leg=prune" in joined
+    assert "prune[gone]" in joined
 
 
 def test_clean_tick_stamps_last_sync_ts_via_now_seam(origin, store, tmp_path):

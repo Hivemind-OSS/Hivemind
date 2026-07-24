@@ -134,6 +134,22 @@ def test_sync_block_serves_the_six_keys_when_configured():
     }
 
 
+def test_reregistered_repo_serves_no_stale_sync_block():
+    # BUG-060: re-registering a name (a documented operator flow) must not re-attach
+    # the PREVIOUS incarnation's block — that reads as a passing connection the
+    # daemon has never attempted.
+    store = _store("alpha")
+    store.meta_set("sync:alpha:tracked_ref", "master")
+    store.meta_set("sync:alpha:last_tip", "a" * 40)
+    store.meta_set("sync:alpha:last_sync_ts", "1000")
+    store.repo_remove("alpha")
+    store.repo_add(name="alpha", url="https://example.invalid/alpha.git", added_ts=9)
+    block = census_health_report(store)["alpha"]
+    assert "sync" not in block, (
+        "a re-registered repo has no feed state until its first tick"
+    )
+
+
 def test_sync_meta_is_scoped_to_its_own_repo():
     store = _store("alpha", "beta")
     store.meta_set("sync:alpha:last_tip", "a" * 40)
