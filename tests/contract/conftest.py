@@ -479,19 +479,21 @@ def make_syncer(
     run=None,
     now=None,
     interval_s: int = 5,
+    **cfg_kw,
 ) -> SyncRig:
     """A v3 ``SyncService`` wired the entrypoint way: the real store as
     reader/appender/ranges, one fresh global lock, and the v3 ``SyncConfig``
-    surface only ({interval_s, webhook_secret, mirror_dir} — no repo_url, no
-    token, no verify_candidates). Repos come from the STORE REGISTRY, read each
-    tick. Mirrors land at ``<mirror_dir>/<name>`` (plan §6 step 5)."""
+    surface only (no repo_url, no token, no verify_candidates). Repos come from
+    the STORE REGISTRY, read each tick. Mirrors land at ``<mirror_dir>/<name>``
+    (plan §6 step 5). ``cfg_kw`` reaches ``SyncConfig`` verbatim — that is how a
+    test drives the capacity knobs (``workers`` / ``*_per_tick``)."""
     import threading
 
     from hive.app.config import SyncConfig
     from hive.app.sync import SyncService
 
     mirror_base = tmp_path / "mirrors"
-    cfg = SyncConfig(interval_s=interval_s, mirror_dir=str(mirror_base))
+    cfg = SyncConfig(interval_s=interval_s, mirror_dir=str(mirror_base), **cfg_kw)
     evidence = ChangeEvidenceService(
         reader=store, appender=store, now=lambda: 424_242, ranges=store
     )

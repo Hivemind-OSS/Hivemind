@@ -31,7 +31,7 @@ _KIND_GLOSSES = "; ".join(f"{name}={spec['gloss']}" for name, spec in KINDS.item
 _WRITE_GUIDANCE = (
     " Pick the kind that fits (it rides every recall hit, is never embedded, and is NOT a "
     "recall filter): " + _KIND_GLOSSES + ". Bind the WHERE as anchors=[{repo, anchor}] "
-    "(registered repo name + path/file.py:symbol), or repos=[...] for repo scope without a "
+    "(registered repo name + path/file.py::symbol), or repos=[...] for repo scope without a "
     "code anchor; neither = a general, fleet-wide memory. Write one dense, self-contained "
     "fact — don't pad or restate the obvious; verbosity flattens the embedding and makes "
     "recall abstain."
@@ -62,7 +62,7 @@ _ANCHORS_PROPERTY: dict[str, Any] = {
         "additionalProperties": False,
     },
     "description": "Code bindings: [{repo, anchor}] — repo is a REGISTERED repo name, "
-    "anchor the WHERE (path/file.py:symbol). The server mints fingerprints "
+    "anchor the WHERE (path/file.py::symbol, or a bare path). The server mints fingerprints "
     "and judges drift per anchor; an unregistered repo refuses the call.",
 }
 

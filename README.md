@@ -204,7 +204,7 @@ llms.txt              link index to the project docs (llmstxt.org convention)
 llms-full.txt         the complete, self-contained operating guide for agents & integrators
 HIVE-ADMIN.md         admin & operator guide
 OPERATIONS.md         long-form operations reference & the tuning evidence behind the knobs
-skills/               operator runbook-skills (bringup, connect-team, connect-repo, backup/restore, operate)
+skills/               operator runbook-skills (bringup, connect-team, connect-repo, upgrade, backup/restore, operate)
 CONTRIBUTING.md       how to contribute: the development-first branch flow and running the tests
 LICENSE               this project's license (Apache-2.0)
 THIRD_PARTY_NOTICES.md / LICENSES/   embedding-model attribution + license (the embedder)

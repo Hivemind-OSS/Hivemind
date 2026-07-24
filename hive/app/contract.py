@@ -82,7 +82,7 @@ SERVER_INSTRUCTIONS: str = (
     "provisional), polarity, kind, repos, anchors, drift. Drifted = REFERENCE ONLY — "
     "re-verify against the code; never follow a 'dont' as a 'do'.\n"
     "- STORE, per durable lesson: WHAT + WHERE + WHY — anchors=[{repo, anchor}] (registered "
-    "repo + path/file.py:symbol) or repos=[...] scope-only; neither = general. "
+    "repo + path/file.py::symbol) or repos=[...] scope-only; neither = general. "
     + WRITE_VS_CAPTURE
     + " Don't duplicate — recall first. Worth storing: DURABLE, "
     "REUSABLE, NON-OBVIOUS, EVIDENCE-GROUNDED; never the obvious, transient, secret, or "

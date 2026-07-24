@@ -215,6 +215,9 @@ leverage on the outcome, but part of the full surface.
 | `HIVE_SYNC__INTERVAL_S` | `60` | census-sync daemon poll cadence in seconds (floor 5; an empty repo registry is an inert tick) |
 | `HIVE_SYNC__WEBHOOK_SECRET` | *(unset)* | arms the `POST /census-webhook` nudge on the tunnel door — one nudge wakes the poll for all registered repos |
 | `HIVE_SYNC__MIRROR_DIR` | `""` ⇒ `/data/sync/mirror` | where the sync daemon keeps its per-repo mirrors (`<dir>/<name>` — rebuildable caches in the hive-data volume) |
+| `HIVE_SYNC__DRIFT_PER_TICK` | `200` | verify spawns per repo per tick (floor 1); the rest carries over — raise it when a repo's anchor count makes drift lag a push |
+| `HIVE_SYNC__BACKFILL_PER_TICK` | `200` | fingerprint-mint spawns per repo per tick (floor 1); the rest carries over |
+| `HIVE_SYNC__WORKERS` | `1` | registered repos ticking concurrently (floor 1); raise toward the repo count when one serial pass outlasts the interval |
 | `HIVE_HTTP_MAX_BODY_BYTES` | `1048576` | request-body cap in bytes on both HTTP doors (1 MiB) |
 | `HIVE_RETENTION__BACKUP_KEEP` | `30` | most-recent `hive backup` snapshots kept |
 | `HIVE_RETENTION__BACKUP_DIR` | `<db_dir>/backups` | where snapshots are written |

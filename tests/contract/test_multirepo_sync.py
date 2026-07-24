@@ -214,3 +214,100 @@ def test_empty_registry_is_inert(sync_store, tmp_path):
     assert not (syncer.mirror_base).exists() or not any(syncer.mirror_base.iterdir()), (
         "no mirror may be created by an inert tick"
     )
+
+
+# ── the repo fan-out (sync.workers): same verdict, less wall-clock ────────────
+def test_default_workers_never_reaches_the_fanout(sync_store, tmp_path):
+    """workers=1 is the shipped path and stays the SERIAL loop byte-for-byte
+    (§9 #9): a fan-out that detonates on entry cannot be reached at the default,
+    so no default deployment silently gains threads."""
+    a, b = _two_origins(tmp_path)
+    register_repo(sync_store, "alpha", a.url, canonical_ref="main")
+    register_repo(sync_store, "beta", b.url, canonical_ref="main")
+    syncer = make_syncer(sync_store, tmp_path)
+    assert syncer.service._cfg.workers == 1, "the shipped default is serial"
+
+    def _detonate(rows):
+        raise AssertionError("the fan-out must not run at workers=1")
+
+    syncer.service._repo_fanout = _detonate  # type: ignore[method-assign]
+    syncer.service.tick()
+
+    assert meta_value(sync_store, "sync:alpha:last_tip") == a.origin_sha(
+        "refs/heads/main"
+    )
+    assert meta_value(sync_store, "sync:beta:last_tip") == b.origin_sha(
+        "refs/heads/main"
+    )
+
+
+def test_repo_fanout_reaches_the_same_state_as_the_serial_loop(sync_store, tmp_path):
+    """Concurrency is a throughput knob, never a semantic one: every repo still
+    gets its own mirror and its own advanced watermark, and a clean fan-out tick
+    still stamps the fleet-wide last_sync_ts."""
+    a, b = _two_origins(tmp_path)
+    register_repo(sync_store, "alpha", a.url, canonical_ref="main")
+    register_repo(sync_store, "beta", b.url, canonical_ref="main")
+    syncer = make_syncer(sync_store, tmp_path, workers=4)
+    syncer.service.tick()
+
+    assert mirror_is_git(syncer.mirror_base, "alpha")
+    assert mirror_is_git(syncer.mirror_base, "beta")
+    assert meta_value(sync_store, "sync:alpha:last_tip") == a.origin_sha(
+        "refs/heads/main"
+    )
+    assert meta_value(sync_store, "sync:beta:last_tip") == b.origin_sha(
+        "refs/heads/main"
+    )
+    assert meta_value(sync_store, "sync:last_sync_ts"), (
+        "a fault-free concurrent tick stamps the clean-sync marker like the serial one"
+    )
+
+
+def test_one_repo_fault_never_blocks_the_other_under_fanout(sync_store, tmp_path):
+    """CT-9's isolation promise holds when the repos run concurrently: the broken
+    remote surfaces on ITS key, the healthy one still syncs."""
+    _a, b = _two_origins(tmp_path)
+    register_repo(
+        sync_store, "alpha", str(tmp_path / "no-such-remote.git"), canonical_ref="main"
+    )
+    register_repo(sync_store, "beta", b.url, canonical_ref="main")
+    syncer = make_syncer(sync_store, tmp_path, workers=4)
+    syncer.service.tick()  # must not raise
+
+    assert meta_value(sync_store, "sync:beta:last_tip") == b.origin_sha(
+        "refs/heads/main"
+    )
+    assert meta_value(sync_store, "sync:alpha:last_error")
+    assert meta_value(sync_store, "sync:last_sync_ts") is None, (
+        "a faulted repo means the tick did not complete — the marker must not lie"
+    )
+
+
+def test_worker_fault_is_isolated_and_never_raises(sync_store, tmp_path):
+    """The fan-out's OWN guard (the named mutation marker in `_repo_fanout`): a
+    worker raising PAST `_repo_tick`'s per-leg guards is surfaced on that repo's
+    error key and counted unclean — it never reaches the tick shell and never
+    strands its siblings. Deleting that except-block reds this test."""
+    a, b = _two_origins(tmp_path)
+    register_repo(sync_store, "alpha", a.url, canonical_ref="main")
+    register_repo(sync_store, "beta", b.url, canonical_ref="main")
+    syncer = make_syncer(sync_store, tmp_path, workers=4)
+    real_tick = syncer.service._repo_tick
+
+    def _explode(row):
+        if row.name == "alpha":
+            raise RuntimeError("worker detonated")
+        return real_tick(row)
+
+    syncer.service._repo_tick = _explode  # type: ignore[method-assign]
+    syncer.service.tick()  # must not raise
+
+    err = meta_value(sync_store, "sync:alpha:last_error") or ""
+    assert "worker detonated" in err and err.startswith("tick:"), (
+        f"the escaped fault lands on the repo's own key, tagged as a tick fault: {err!r}"
+    )
+    assert meta_value(sync_store, "sync:beta:last_tip") == b.origin_sha(
+        "refs/heads/main"
+    ), "the sibling repo completed despite the other worker dying"
+    assert meta_value(sync_store, "sync:last_sync_ts") is None

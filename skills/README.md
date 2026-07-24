@@ -9,6 +9,7 @@ reference is `HIVE-ADMIN.md` (and `OPERATIONS.md` for the tuning evidence).
 | [`hive-bringup`](hive-bringup/SKILL.md) | start / stop / restart / health-check the server; diagnose a boot crash-loop |
 | [`hive-connect-team`](hive-connect-team/SKILL.md) | connect a local agent or a remote teammate (loopback / tunnel / SSH); mint & revoke seat tokens |
 | [`hive-connect-repo`](hive-connect-repo/SKILL.md) | register repos with the server-side census sync (`hive repo add` — picked up next tick, no restart) and verify each repo's change-outcome feed is live |
+| [`hive-upgrade`](hive-upgrade/SKILL.md) | move the server to a different release ref safely (`hive upgrade` — snapshot-gated, health-verified, auto-rollback), after a schema pre-flight that proves the target ref accepts the store you already have |
 | [`hive-backup-restore`](hive-backup-restore/SKILL.md) | snapshot, reset (recoverable clean-start), or restore the data store |
 | [`hive-operate`](hive-operate/SKILL.md) | read the convergence KPIs over MCP and turn the recall / safety knobs; manage the synced-repo registry (`hive repo add/remove`, `hive repos`); watch the per-repo automatic census feed and feed manual receipts (`hive ingest`); open the loopback browser dashboard (`hive ui`) |
 
@@ -21,7 +22,7 @@ agent that loads skills from `.claude/skills/` (e.g. Claude Code), copy or symli
 there:
 
 ```bash
-for s in hive-bringup hive-connect-team hive-connect-repo hive-backup-restore hive-operate; do
+for s in hive-bringup hive-connect-team hive-connect-repo hive-upgrade hive-backup-restore hive-operate; do
   ln -s "../../skills/$s" ".claude/skills/$s"
 done
 ```

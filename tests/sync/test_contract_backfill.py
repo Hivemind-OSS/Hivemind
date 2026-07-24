@@ -165,13 +165,10 @@ def test_matches_edge_mint_at_the_moved_tip(origin, store, tmp_path):
     assert meta(store, META_LAST_ERROR) is None
 
 
-def test_cap_carries_over(origin, store, tmp_path, monkeypatch):
-    import hive.app.sync as sync_mod
-
-    monkeypatch.setattr(sync_mod, "_BACKFILL_PER_TICK", 1)
+def test_cap_carries_over(origin, store, tmp_path):
     first = seed_episode(store, "first anchored memory")
     second = seed_episode(store, "second anchored memory")
-    svc = _armed(origin, store, tmp_path)
+    svc = _armed(origin, store, tmp_path, backfill_per_tick=1)
 
     svc.tick()  # one slot: lowest id fills
     assert FP_KEY in anchor_fp(store, first)

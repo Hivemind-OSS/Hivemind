@@ -46,9 +46,34 @@ def test_sync_config_v3_surface():
         "interval_s",
         "webhook_secret",
         "mirror_dir",
+        "drift_per_tick",
+        "backfill_per_tick",
+        "workers",
     }
     with pytest.raises(ValueError):
         SyncConfig(interval_s=4)  # the floor is 5
+
+
+def test_capacity_knobs_default_and_validate():
+    """The three throughput knobs: shipped defaults, a floor of 1 each, and env
+    coercion through the HIVE_SYNC__ namespace. They bound spawn/thread COUNT
+    only — no verdict rides them (a capped tick carries the rest over)."""
+    cfg = SyncConfig()
+    assert (cfg.drift_per_tick, cfg.backfill_per_tick, cfg.workers) == (200, 200, 1)
+    for knob in ("drift_per_tick", "backfill_per_tick", "workers"):
+        with pytest.raises(ValueError):
+            SyncConfig(**{knob: 0})
+    loaded = Config.load(
+        db_path=":memory:",
+        env={
+            "HIVE_SYNC__DRIFT_PER_TICK": "500",
+            "HIVE_SYNC__BACKFILL_PER_TICK": "400",
+            "HIVE_SYNC__WORKERS": "8",
+        },
+    )
+    assert loaded.sync.drift_per_tick == 500
+    assert loaded.sync.backfill_per_tick == 400
+    assert loaded.sync.workers == 8
     # webhook_secret is standalone-valid — no repo_url pairing rule exists
     cfg = Config.load(
         db_path=":memory:", env={"HIVE_SYNC__WEBHOOK_SECRET": "hook-credential"}

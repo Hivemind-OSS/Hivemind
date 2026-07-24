@@ -192,15 +192,12 @@ def test_cache_is_rebuildable(origin, store, tmp_path):
     )
 
 
-def test_verify_cap_carries_over(origin, store, tmp_path, monkeypatch):
-    import hive.app.sync as sync_mod
-
-    monkeypatch.setattr(sync_mod, "_DRIFT_PER_TICK", 1)
+def test_verify_cap_carries_over(origin, store, tmp_path):
     origin.commit("util.py", "def helper(x):\n    return x\n", "add util")
     origin.push()
     seed_episode(store, "greet lesson")
     seed_episode(store, "helper lesson", "util.py::helper")
-    svc = _armed(origin, store, tmp_path)
+    svc = _armed(origin, store, tmp_path, drift_per_tick=1)
 
     svc.tick()  # one verify slot: one anchor lands
     tip = origin.origin_sha("refs/heads/main")

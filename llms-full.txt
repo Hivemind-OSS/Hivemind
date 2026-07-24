@@ -140,7 +140,7 @@ carry no special field — retirement is adjudicated server-side by the machine 
 `polarity` ∈ `{do, dont, neutral}`. Both are carried-not-interpreted labels that ride every hit
 but are **not** recall filters — recall matches the body text, so put the discriminating terms
 there. Code binding is structured: `anchors=[{repo, anchor}]` — `repo` a **registered** repo
-name (an unregistered name refuses the call), `anchor` the WHERE as `path/file.py:symbol`;
+name (an unregistered name refuses the call), `anchor` the WHERE as `path/file.py::symbol`;
 `repos=[...]` gives repo scope without a code anchor; neither = a general, fleet-wide memory.
 The server mints fingerprints and judges drift per anchor — callers never supply fingerprint
 material. `meta` is an optional opaque string map, served back verbatim, never interpreted.
@@ -292,7 +292,7 @@ knows what good agent behavior looks like:
   prefer `established` and newer, re-verify a drifted hit against the code, and never invent a
   memory when recall is empty.
 - **Store per durable lesson: WHAT + WHERE + WHY.** Bind the WHERE as `anchors=[{repo,
-  anchor}]` (registered repo + `path/file.py:symbol`) or `repos=[...]` for scope without a
+  anchor}]` (registered repo + `path/file.py::symbol`) or `repos=[...]` for scope without a
   code anchor. **Write by default**: `hive_write` serves now as `provisional` and is healed by
   outcome and drift evidence; `hive_capture` is the unclear-value tail, quarantined until
   demand promotes it. Recall before writing to avoid duplicating or rivaling an existing

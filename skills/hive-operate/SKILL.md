@@ -54,9 +54,17 @@ worklists only surface it; resolving it is this pass.
 | `HIVE_AUTONOMY__QUARANTINE_TTL_DAYS` / `…__PROVISIONAL_TTL_DAYS` | 14 / 45 | **do not lengthen to hoard** — expiry of unused memory is doing real work |
 | `HIVE_SYNC__INTERVAL_S` | 60 | the sync poll cadence (floor 5 s) — the webhook only wakes it early, never replaces it |
 | `HIVE_SYNC__WEBHOOK_SECRET` | unset | arm the push-triggered early wake (`POST /census-webhook`, HMAC-gated, tunnel door only) |
+| `HIVE_SYNC__DRIFT_PER_TICK` | 200 | drift lags your push rate — a repo needs `ceil(anchors / this)` ticks to rebuild its cache at a new tip |
+| `HIVE_SYNC__BACKFILL_PER_TICK` | 200 | new memories sit without fingerprints for several ticks after a burst of writes |
+| `HIVE_SYNC__WORKERS` | 1 | many registered repos make one serial pass outlast the interval — raise toward the repo count |
 
 **Which repos the sync feeds is not a knob** — it is the durable repo registry, changed live with
 `hive repo add/remove` (next section), no restart.
+
+The three sync capacity knobs bound **throughput only** and can never change a verdict: a tick
+that runs out of budget leaves the remainder for the next one, and an un-materialized anchor
+reads `unverifiable` — never a false `fresh`. Under-provisioning costs coverage *latency*, so
+the symptom to watch for is recall hits reading `unverifiable` on a repo you know is synced.
 
 ## The synced-repo registry (`hive repo`)
 

@@ -189,6 +189,19 @@ untouched. The loop's own knobs:
 | `HIVE_SYNC__INTERVAL_S` | `60` | poll cadence in seconds (floor 5) |
 | `HIVE_SYNC__WEBHOOK_SECRET` | *(unset)* | arms `POST /census-webhook` on the tunnel door (constant-time HMAC-SHA256 vs `X-Hub-Signature-256`) — a push wakes the poll early for ALL registered repos; the interval stays the correctness floor |
 | `HIVE_SYNC__MIRROR_DIR` | `/data/sync/mirror` | base dir for the per-repo mirrors (`<dir>/<name>` — rebuildable caches inside the `hive-data` volume) |
+| `HIVE_SYNC__DRIFT_PER_TICK` | `200` | max `hive-edge verify` spawns per repo per tick (floor 1); the remainder carries over to the next tick |
+| `HIVE_SYNC__BACKFILL_PER_TICK` | `200` | max `hive-edge mint` spawns per repo per tick (floor 1); the remainder carries over |
+| `HIVE_SYNC__WORKERS` | `1` | how many registered repos tick concurrently (floor 1); `1` is the serial loop |
+
+The last three are **capacity** knobs — they bound throughput and can never change a verdict, so
+raising them costs CPU and buys coverage latency, never correctness. A tick that runs out of
+budget leaves the rest un-materialized, and an un-materialized anchor reads `unverifiable` (never
+a guess) until a later tick reaches it. Rough sizing: after every landing on a repo's tracked
+branch the drift cache must be rebuilt for that repo's whole anchor set at the new tip, so a repo
+with N anchored memories needs `ceil(N / DRIFT_PER_TICK)` ticks to reconverge. Raise
+`DRIFT_PER_TICK` toward N to reconverge in one tick; raise `WORKERS` toward the registered-repo
+count when many repos make one serial pass longer than the interval (each repo already has its own
+mirror, credential, and error key, so they are isolated by construction).
 
 No compose change is needed: knobs ride `.env`, the registry rides the store, and the mirrors
 live in the existing volume. Watch the feed via `hive_health(include_census_health=true)` — a
@@ -290,3 +303,11 @@ revert itself fails it prints the exact manual `git checkout` + `hive restore <s
 Because the build **refuses an old-format store** rather than migrating it (§1), a release that
 changes the schema comes up unhealthy and auto-rolls-back; cross a schema change with `hive reset`
 (a clean store — then `hive repo add` each repo) or a restore from backup, not `hive upgrade`.
+
+Run the whole procedure with the **`hive-upgrade`** skill (`skills/hive-upgrade/SKILL.md`). It adds
+the step this section cannot: a **schema pre-flight**
+(`python3 skills/hive-upgrade/preflight.py <ref>`) that reads the target ref's own boot assertions
+(`_LEGACY_EPISODE_COLUMNS` / `_V3_EPISODE_COLUMNS` / `_REQUIRED_TABLES`) via `git show` + `ast` and
+compares them to the live store read-only — so an incompatible ref is known *before* a rebuild and
+rollback cycle, not after. It fails closed: only `PASS` (exit 0) means safe; `SCHEMA BREAK` (1) and
+`UNKNOWN` (2) both mean stop.

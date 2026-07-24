@@ -132,7 +132,10 @@ def test_cap_carries_over(sync_store, tmp_path):
             )
         ]
     )
-    syncer = make_syncer(sync_store, tmp_path, run=run)
+    # the cap is PINNED here, never inherited from the shipped default: this test
+    # is about the carry-over behavior, not about what number the default happens
+    # to be (raising that default must not silently disarm the assertion below).
+    syncer = make_syncer(sync_store, tmp_path, run=run, backfill_per_tick=10)
 
     def n_filled() -> int:
         return sum(

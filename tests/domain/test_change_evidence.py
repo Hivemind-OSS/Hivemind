@@ -1646,3 +1646,42 @@ def test_refused_receipt_refuses_even_when_the_range_is_known():
     with pytest.raises(ReceiptRefused):
         svc.ingest(_receipt([_subj_line("existence", _ANCHOR)]))  # nothing decided
     assert appender.batches == [] and ranges.recorded == []
+
+
+# ── BUG-058: the advertised anchor grammar must be the grammar the join parses ──
+def test_advertised_anchor_grammar_joins_the_subject_feed():
+    """The `path::symbol` form advertised to agents — in the `hive_write` schema,
+    in the `anchors` property, and in the contract served at MCP `initialize` —
+    MUST join a receipt subject at the precise `symbol` tier.
+
+    This is the anti-fork pin for BUG-058: the join partitions the stored anchor
+    on `'::'` alone, while the drift engine's `_split_anchor` accepts `':'` too.
+    That asymmetry let a single-colon advertisement look healthy (drift verdicts
+    kept working) while the memory silently earned no change_outcome, so it could
+    never be outcome-verified, never promote, and died at the provisional TTL
+    while still being correct. Re-advertising the single-colon form reds this.
+    """
+    from hive.app.contract import SERVER_INSTRUCTIONS
+    from hive.app.tool_defs import TOOL_DEFINITIONS
+
+    advertised = "path/file.py::symbol"
+    surfaces = {"contract": SERVER_INSTRUCTIONS}
+    for spec in TOOL_DEFINITIONS:
+        if spec["name"] == "hive_write":
+            surfaces["hive_write.description"] = spec["description"]
+            surfaces["anchors.property"] = json.dumps(spec["inputSchema"])
+    assert len(surfaces) == 3, f"the advertising surfaces moved: {sorted(surfaces)}"
+    for where, text in surfaces.items():
+        assert advertised in text, (
+            f"{where} must advertise {advertised!r} — the ONE form the census join "
+            f"parses; a single-colon anchor never matches any tier"
+        )
+
+    # the advertised form, made concrete, joins at the precise tier
+    subject = TouchedSubject(path="path/file.py", symbol="symbol")
+    assert ce._anchor_match_level([advertised], subject) == "symbol"
+    # the file-scoped form still joins one tier down (unaffected by the fork)
+    assert ce._anchor_match_level(["path/file.py"], subject) == "file"
+    # and the form that caused the bug still does not — pinned so the asymmetry
+    # stays visible rather than being silently "fixed" in the wrong half
+    assert ce._anchor_match_level(["path/file.py:symbol"], subject) is None

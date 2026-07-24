@@ -3,6 +3,26 @@
 All notable changes to this project are documented here.
 
 ## Added
+- `hive-upgrade` operator skill (`skills/hive-upgrade/`) — the runbook for moving a running server
+  to a different release ref, plus a **schema pre-flight** (`preflight.py`) that answers "will this
+  ref accept the store I already have?" before any rebuild. The pre-flight reads the target ref's
+  own boot assertions (`_LEGACY_EPISODE_COLUMNS` / `_V3_EPISODE_COLUMNS` / `_REQUIRED_TABLES`) with
+  `git show` + `ast` — never importing or executing the target — and compares them against the live
+  store opened read-only. It fails closed: `PASS` (0) is the only safe verdict, and `UNKNOWN` (2),
+  emitted when the target's contract cannot be located, is treated as a break rather than as
+  probably-fine. `hive upgrade` already protected the data (snapshot gate + auto-rollback); what
+  was missing was knowing an upgrade could never work before spending a rebuild-and-rollback cycle
+  discovering it.
+- Sync capacity knobs (`HIVE_SYNC__DRIFT_PER_TICK` / `HIVE_SYNC__BACKFILL_PER_TICK`, default
+  200 each, floor 1; `HIVE_SYNC__WORKERS`, default 1, floor 1). The per-tick verify/mint caps
+  were hardcoded at 50; they are now operator-env, because their right value is a property of
+  the deployment (host cores, registered-repo count, anchored-episode count) rather than a
+  measured constant. `workers > 1` ticks registered repos concurrently through a bounded pool —
+  safe because a repo tick is already isolated by construction (own mirror, own credential, own
+  error key) and every store touch takes the one global write lock, which is never held across
+  a fetch or an engine spawn. The default 1 keeps the serial loop byte-for-byte. All three bound
+  throughput only: a tick that runs out of budget carries the remainder to the next one, and an
+  un-materialized anchor still reads `unverifiable`, never a guess.
 - U4-THIN-AGENT (schema v3, served contract v3): ONE store, partitioned by repo at the
   memory level; agents are thin, repo-agnostic MCP clients that recall and store; the
   server owns mint, staleness, poison, outcome, and promotion; trust is fully mechanical
@@ -532,6 +552,17 @@ All notable changes to this project are documented here.
   transitive packages.
 
 ## Fixed
+- The advertised anchor grammar now matches the grammar the census join parses. The
+  `hive_write` schema, the `anchors` property, the contract served at MCP `initialize`, and the
+  Python client all told agents to write `path/file.py:symbol` — a single colon, which the
+  change→episode join never matches, because it partitions the stored anchor on `::` alone. The
+  failure was silent and self-disguising: drift verdicts kept working (the engine's own splitter
+  accepts either separator), so the binding looked healthy while the memory earned no
+  `change_outcome`, could never be outcome-verified, could never promote to `established`, and
+  expired at the provisional TTL while still being correct. Every agent-facing surface now
+  advertises `path/file.py::symbol`; a bare `path` still binds file-scoped and was never
+  affected. A regression drives the advertised string itself through the join, so the two halves
+  of the grammar cannot fork again.
 - `hive-edge verify` classifies a prose anchor whose text contains a dot (e.g.
   `the v2.0 rollout`) as `unverifiable`/`not_a_code_anchor` instead of a false
   `stale`/`file_missing`. The code-shaped-path check (`hive/edge/cli.py:_is_code_shaped_path`)

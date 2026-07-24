@@ -243,15 +243,34 @@ class SyncConfig:
     ALL registered repos, so it rides no per-repo setting (per-repo git credentials resolve
     via each registry row's ``token_env`` indirection at tick time, never from config).
     ``mirror_dir`` "" ⇒ /data/sync/mirror (resolved by the sync service, the volume-local
-    default)."""
+    default).
+
+    The three CAPACITY knobs below are operator-env by §9 #14's own test: their right value is
+    a property of the DEPLOYMENT (host cores, registered-repo count, anchored-episode count),
+    not a measured constant with one right answer — a two-repo laptop and a twenty-repo fleet
+    want different numbers, and no benchmark can pick for both. They bound throughput only;
+    none of them can change a verdict. ``drift_per_tick`` / ``backfill_per_tick`` (floor 1)
+    cap the ``hive-edge`` verify/mint spawns per repo per tick — the excess carries over to the
+    next tick, so a low cap costs LATENCY to coverage and never coverage itself (an
+    un-materialized anchor reads ``unverifiable``, never a guess). ``workers`` (floor 1) is how
+    many registered repos tick CONCURRENTLY; the default 1 is the serial loop byte-for-byte
+    (§9 #9), so concurrency is an explicit operator opt-in."""
 
     interval_s: int = 60
     webhook_secret: str = ""
     mirror_dir: str = ""
+    drift_per_tick: int = 200
+    backfill_per_tick: int = 200
+    workers: int = 1
 
     def __post_init__(self) -> None:
         if int(self.interval_s) < 5:
             raise ValueError(f"sync.interval_s must be >= 5 (got {self.interval_s})")
+        for knob in ("drift_per_tick", "backfill_per_tick", "workers"):
+            if int(getattr(self, knob)) < 1:
+                raise ValueError(
+                    f"sync.{knob} must be >= 1 (got {getattr(self, knob)})"
+                )
 
 
 # ── the root ──────────────────────────────────────────────────────────────────

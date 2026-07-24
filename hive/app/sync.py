@@ -5,7 +5,9 @@ One daemon thread (ALWAYS started by ``start_sync``; the entrypoint arms it afte
 serve-ready) re-reads the durable repo REGISTRY every tick — registering a repo
 needs no restart, an empty registry is an inert tick — and, per registered repo
 under its OWN fail-open guard, runs three legs against that repo's mirror at
-``<mirror_dir>/<name>/``:
+``<mirror_dir>/<name>/``. The repos of one tick run serially by default and
+concurrently at ``sync.workers > 1`` (an isolated-by-construction fan-out; same
+verdict, less wall-clock):
 
 - LEDGER: tracked-branch movement lands as ONE unsigned receipt per contiguous
   ``watermark..tip`` range, built by ``python -m hive.census.cli build`` in a
@@ -82,6 +84,7 @@ import sys
 import tempfile
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Any, Callable, Mapping, Optional, Protocol, Sequence
 
@@ -105,8 +108,6 @@ _DEFAULT_TOKEN_ENV = "HIVE_SYNC__TOKEN"  # the fleet-default credential var (D2)
 # the registry could ever have minted are prune candidates — anything else in
 # the mirrors dir was never this daemon's mirror and is never deleted.
 _REPO_SLUG_RE = re.compile(r"^[a-z0-9._-]+$")
-_BACKFILL_PER_TICK = 50  # fp-mint cap per repo per tick; the rest carry over
-_DRIFT_PER_TICK = 50  # verify cap per repo per tick; the rest carry over
 _REF_REQUEST_WINDOW_S = (
     7 * 86_400
 )  # recall demand keeps a branch on the work list this long
@@ -261,7 +262,10 @@ class SyncService:
         with no restart — D2), prune the mirrors of DEREGISTERED repos (the
         ``repo_remove`` promise — BUG-050), then run every repo under its OWN
         fail-open guard — one repo's fault never blocks another, and nothing
-        raises past this method. ``sync:last_sync_ts`` — stamped through the
+        raises past this method. Repos run SERIALLY at the default
+        ``workers=1`` and concurrently through ``_repo_fanout`` above it; the
+        aggregate verdict is identical either way, only the wall-clock differs.
+        ``sync:last_sync_ts`` — stamped through the
         injected ``now`` seam — advances only when the prune AND every repo ran
         fault-free, so it reads as "the last fully-clean sync" against the
         sticky per-repo ``sync:<name>:last_error``."""
@@ -282,14 +286,52 @@ class SyncService:
             # mirror dir made. The leftover-mirror prune above (pure local
             # filesystem, delete-only) is the ONE act allowed before this return.
             return
-        for row in rows:
-            clean = self._repo_tick(row) and clean
+        if self._cfg.workers > 1 and len(rows) > 1:
+            clean = self._repo_fanout(rows) and clean
+        else:
+            for row in rows:
+                clean = self._repo_tick(row) and clean
         if clean:
             with self._lock:
                 # marker: stamping this on a faulted tick reds
                 # test_repo_fault_does_not_advance_last_sync_ts — a fault anywhere
                 # means the sync did NOT complete, and the timestamp must not lie.
                 self._store.meta_set(META_LAST_SYNC_TS, str(self._now()))
+
+    def _repo_fanout(self, rows: Sequence[_RegistryRow]) -> bool:
+        """Tick every repo CONCURRENTLY, ``cfg.workers`` at a time. Opt-in only:
+        the default ``workers=1`` never reaches here, so the serial loop above
+        stays the shipped path byte-for-byte (§9 #9).
+
+        Parallelizing is safe because a repo tick is ALREADY isolated by
+        construction — its own mirror directory, its own token resolution, its own
+        ``sync:<name>:last_error`` surface, its own tempdir per verify worktree —
+        and every store touch inside it takes THE one global write lock, which is
+        held for store access alone and never across a fetch or an engine spawn.
+        Concurrency therefore widens no critical section; it only overlaps the
+        waiting.
+
+        Direction (Law 6): FAILS OPEN exactly like its serial twin. ``_repo_tick``
+        already absorbs every per-leg fault; a worker that somehow raises past it
+        is logged, surfaced on that repo's own error key, and counted unclean —
+        never re-raised into the tick shell, and never able to strand the other
+        repos. // O(repos / workers)"""
+        clean = True
+        with ThreadPoolExecutor(
+            max_workers=min(self._cfg.workers, len(rows)),
+            thread_name_prefix="hive-sync-repo",
+        ) as pool:
+            pending = {pool.submit(self._repo_tick, row): row for row in rows}
+            for fut in as_completed(pending):
+                try:
+                    clean = fut.result() and clean
+                except Exception as exc:  # noqa: BLE001 — the fanout fails open too
+                    # marker: re-raising here (or dropping this guard) reds
+                    # test_worker_fault_is_isolated_and_never_raises — one repo's
+                    # worker fault must not take the tick or its siblings down.
+                    self._note_repo_error(pending[fut].name, "tick", exc, "")
+                    clean = False
+        return clean
 
     # ── one repo, one guard ────────────────────────────────────────────────────
     def _repo_tick(self, row: _RegistryRow) -> bool:
@@ -559,7 +601,7 @@ class SyncService:
         each anchor through the real ``hive-edge`` CLI, and merge under the
         store's absent-only guard with ``hive-sync/minted`` provenance. ``{}`` (an
         unresolvable anchor / an engine fault) skips silently and the loop stays
-        alive — the next tick retries; at most ``_BACKFILL_PER_TICK`` mints per
+        alive — the next tick retries; at most ``cfg.backfill_per_tick`` mints per
         tick, the rest carry over. The lock is held ONLY for store access — never
         across a mint."""
         with self._lock:
@@ -571,7 +613,7 @@ class SyncService:
         filled = 0
         # marker: lifting the cap (an un-sliced todo) reds test_cap_carries_over —
         # mint spawns per tick are bounded, the rest stay LACKING for the next sweep.
-        for eid, anchor in todo[:_BACKFILL_PER_TICK]:
+        for eid, anchor in todo[: self._cfg.backfill_per_tick]:
             minted = self._mint(mirror, anchor)
             if not minted:
                 continue  # unresolvable ⇒ silent skip, loop alive
@@ -624,7 +666,7 @@ class SyncService:
         into ``drift_put`` (the cache stores wire vocabulary verbatim). Already-
         materialized (repo, tip, anchor) rows are skipped — that is both the
         carry-over and the cheap steady state; ``drift_prune`` drops every tip no
-        longer live. Capped at ``_DRIFT_PER_TICK`` verify spawns per repo per
+        longer live. Capped at ``cfg.drift_per_tick`` verify spawns per repo per
         tick, the rest carry over next tick."""
         name = row.name
         with self._lock:
@@ -636,7 +678,7 @@ class SyncService:
                 tips.append(sha)  # a deleted/unknown ref is silently skipped
         if fps:
             anchors = sorted(fps)
-            budget = _DRIFT_PER_TICK
+            budget = self._cfg.drift_per_tick
             now = int(self._now())
             out: list[tuple[str, str, str, str, str, int]] = []
             for tip in tips:
@@ -913,6 +955,12 @@ def start_sync(
     thread.sync_service = service  # type: ignore[attr-defined]
     thread.start()
     _log.info(
-        "sync.armed interval_s=%d mirrors=%s", sync_cfg.interval_s, service.mirror_base
+        "sync.armed interval_s=%d workers=%d drift_per_tick=%d backfill_per_tick=%d "
+        "mirrors=%s",
+        sync_cfg.interval_s,
+        sync_cfg.workers,
+        sync_cfg.drift_per_tick,
+        sync_cfg.backfill_per_tick,
+        service.mirror_base,
     )
     return thread
