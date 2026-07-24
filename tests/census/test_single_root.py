@@ -256,11 +256,11 @@ class TestOffsetFailsOpen:
     def test_unreadable_manifest_degrades_to_empty_offset(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
     ) -> None:
-        import matrix.paths
         from hive.census import engines
+        from hive.matrix import paths
 
         monkeypatch.setattr(
-            matrix.paths,
+            paths,
             "default_manifest",
             lambda: str(tmp_path / "absent" / "manifest.json"),
         )

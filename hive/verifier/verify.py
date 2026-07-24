@@ -20,7 +20,7 @@ from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass
 from fnmatch import fnmatch
 from pathlib import Path
-from typing import TYPE_CHECKING, Literal
+from typing import TYPE_CHECKING, Literal, cast
 
 from hive.verifier.ingest import INGESTERS, ReportParseError
 from hive.verifier.registry import (
@@ -47,7 +47,7 @@ from hive.verifier.touched import TouchedSet
 
 if TYPE_CHECKING:
     import networkx as nx
-    from matrix import BlastRadius, Graph
+    from hive.matrix import BlastRadius, Graph
 
 # Worst state first: a failure outranks an internal fault, which outranks a
 # pass, which outranks an abstention — an errored member can never be
@@ -356,7 +356,7 @@ def _blast_radius(
     """Seam over matrix.blast_radius, module-level so tests can patch it.
     Lazy import: matrix reads MATRIX_OUT at import time, so importing
     hive.verifier must stay env-inert; matrix loads only inside a verify()."""
-    from matrix import blast_radius
+    from hive.matrix import blast_radius
 
     return blast_radius(engine, seed, depth=depth, test_globs=test_globs)
 
@@ -369,7 +369,9 @@ def _symbol_seeds(engine: Graph | nx.DiGraph[str], graph_path: str) -> tuple[str
     seed's radius is live wherever the graph has edges. Read defensively: an
     engine that cannot be enumerated yields no seeds, and the caller falls
     back to the file-path seed."""
-    g = getattr(engine, "nx", engine)  # a matrix Graph carries .nx; nx is itself
+    g = cast(
+        "nx.DiGraph[str]", getattr(engine, "nx", engine)
+    )  # a matrix Graph carries .nx; nx is itself
     try:
         return tuple(
             sorted(

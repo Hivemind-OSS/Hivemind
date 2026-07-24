@@ -385,6 +385,27 @@ All notable changes to this project are documented here.
   config it is resolved at boot — there is no live reload (tune via `.env` then `hive up`).
 
 ## Changed
+- The three anchor/census engines are absorbed as **first-party subpackages of the one `hive`
+  distribution** — `hive.matrix` (AST code-structure + blast radius), `hive.combdrift` (node-level
+  contract-drift / call-shape fingerprint), and `hive.edge` (the in-image engine CLI front) —
+  ported byte-preserving from the former `Hivemind-OSS/Hive-edge` workspace at source commit
+  `f94e1a7`, which is thereby archived: the hivemind repository now self-contains every engine and
+  builds the whole server from itself alone. The vendored-wheel channel dies with it —
+  `vendor/wheels/`, `scripts/vendor_edge.py`, the `[tool.uv.sources]` engine pins, and the
+  four-site version-lockstep + `KNOWN_HIVEMIND_MIN_EDGE_VERSION` floor machinery are all removed;
+  the engines' third-party dependencies (tree-sitter `<0.26` + the eight grammars, networkx,
+  sqlglot) move into the `sync` extra and resolve through `uv lock` / `uv sync` like any other
+  dependency — no wheelhouse to refresh, no separate engine repository to release. Server behavior
+  is byte-identical: the `hive-edge` console script name is kept (re-pointed to
+  `hive.edge.cli:main`) so the sync mint/verify discovery + argv are untouched; all token formats,
+  the four registered meta keys, and receipt/provenance shapes are unchanged; the frozen contract
+  suite (CT-1…14) passes byte-untouched, joined by CT-15/16/17 pinning self-containment,
+  engine-seam byte-parity, and the agent-side deletions. The U2 meta-key registry re-homes to
+  `hive/domain/meta_registry.py` (owner strings drop their `hivemind:` prefix), strict
+  `mypy hive/ --strict` extends over the absorbed engines with **no** first-party override, the
+  engine version constants (`hive.matrix.__version__`, `hive.combdrift.version.COMBDRIFT_VERSION`)
+  are frozen as provenance literals, and the dead agent-side vestiges (`hooks.py`, the `hook` and
+  `worktree-delta` verbs) are not ported — they join the argparse-rejected exit-2 set.
 - The shipped operator skills resolve the `hive` CLI mechanically: each runbook opens with a
   one-line probe (`command -v hive >/dev/null 2>&1 || hive() { python3 -m hive.tools.cli "$@"; }`)
   so every literal `hive …` step runs on an uninstalled checkout — the CLI is stdlib-only — and
@@ -511,6 +532,12 @@ All notable changes to this project are documented here.
   transitive packages.
 
 ## Fixed
+- `hive-edge verify` classifies a prose anchor whose text contains a dot (e.g.
+  `the v2.0 rollout`) as `unverifiable`/`not_a_code_anchor` instead of a false
+  `stale`/`file_missing`. The code-shaped-path check (`hive/edge/cli.py:_is_code_shaped_path`)
+  now requires a whitespace-free path with a clean, letter-initial filename extension — a
+  bare `os.path.splitext` extension read a dotted prose token (`.0 rollout`) as a missing
+  code file, skipping the not-a-code-anchor reclassification.
 - The served onboarding procedure now creates an absent rules file in flight. `ONBOARDING_PROCEDURE`
   step 1 (`hive/app/onboard_ref.py`) spelled out only the "a block is already present, REPLACE it in
   place" case, leaving the DEFAULT first-onboard state — a fresh clone ships no rules file (the rules

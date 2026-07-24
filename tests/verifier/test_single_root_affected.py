@@ -128,7 +128,7 @@ def package_single_root(tmp_path_factory: pytest.TempPathFactory):
     """(repo, graph) for the real package-dialect single-root shape at HEAD:
     ALL parsed source under pkg/, the test importing ``from pkg.mod import fn``,
     a root pyproject.toml (config-dir marker, not parsed source)."""
-    import matrix
+    import hive.matrix as matrix
 
     base = tmp_path_factory.mktemp("bug039-package")
     repo = _write_tree(
@@ -165,7 +165,7 @@ def multi_root(tmp_path_factory: pytest.TempPathFactory):
     """(repo, graph) for the multi-rooted dual — THE existing multi-root
     corpus, the byte-identity regression baseline: two top-level entries, so
     the extraction root IS the repo root (offset "") and dialects agree."""
-    import matrix
+    import hive.matrix as matrix
 
     base = tmp_path_factory.mktemp("bug039-multi-root")
     repo = _write_tree(base / "repo", {"calc.py": _CALC, "test_calc.py": _TEST_CALC})
@@ -340,7 +340,7 @@ class TestFlatLayoutStillDecides:
     def test_flat_breaking_change_decides_failed(
         self, tmp_path: Path, _venv_tools_on_path
     ) -> None:
-        import matrix
+        import hive.matrix as matrix
 
         repo = _write_tree(
             tmp_path / "repo", {"calc.py": _CALC_RED, "test_calc.py": _TEST_CALC}
@@ -390,7 +390,7 @@ class TestNestedMultiRootDecides:
     def test_nested_touched_file_decides_failed(
         self, tmp_path: Path, _venv_tools_on_path
     ) -> None:
-        import matrix
+        import hive.matrix as matrix
 
         repo = _write_tree(
             tmp_path / "repo",

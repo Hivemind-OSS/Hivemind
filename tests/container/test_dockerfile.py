@@ -127,10 +127,30 @@ def test_runtime_has_git_and_uv_for_sync():
 
 
 def test_builder_installs_sync_extra_and_pytest():
-    # The server-side census engines ride `.[sync]` (hive-edge CLI + comb-drift +
-    # matrix) and the candidate-eval tier needs pytest in the venv the runtime copies.
+    # The server-side census engines are first-party subpackages now (hive.matrix,
+    # hive.combdrift, hive.edge); their third-party deps ride `.[sync]`, resolved EARLY in
+    # the pyproject-only layer (deps-early) AND linked with the source in the final install,
+    # which also carries pytest for the candidate-eval tier the runtime venv copies.
     builder = _stages()["builder"]
+    # early deps layer: `.[embed,sync]` resolves before the ~1.2 GB model bake
+    early = re.search(
+        r'(?im)^RUN\s+pip install --no-cache-dir\s+"\.\[embed,sync\]"\s*$', builder
+    )
+    assert early, "no early `.[embed,sync]` install in the pyproject-only layer"
+    assert early.start() < builder.index("hive.tools.bake_model"), (
+        "the sync extra must resolve before the model bake (deps-early)"
+    )
+    # final source install carries pytest for the candidate-eval verifier tier
     assert re.search(r"pip install[^\n]*\.\[embed,sync\][^\n]*\bpytest\b", builder)
+
+
+def test_no_vendored_wheelhouse_steps():
+    # U5 absorbed the engines as first-party subpackages: the vendored-wheel channel is
+    # gone. Neither the wheelhouse COPY nor its install may remain — the engines resolve
+    # from `.[sync]` like any first-party code, never from a /wheels/ directory.
+    builder = _stages()["builder"]
+    assert not re.search(r"(?im)^COPY\s+vendor/wheels/", builder)
+    assert "/wheels/" not in builder
 
 
 def test_pyright_bake_is_best_effort_only():
@@ -167,8 +187,10 @@ def test_runtime_does_not_copy_source_tree_wholesale():
 def test_embed_extra_installed_for_bake_and_warm():
     # the bake step and the runtime embedder both need sentence-transformers; the builder
     # must install the `embed` extra (a bare `pip install .` cannot bake or warm the model).
+    # Post-U5 the early layer resolves `.[embed,sync]` in one shot, so match `.[embed`
+    # followed by either a closing `]` or the `,sync]` continuation.
     builder = _stages()["builder"]
-    assert re.search(r"pip install[^\n]*\.\[embed\]", builder)
+    assert re.search(r"pip install[^\n]*\.\[embed[,\]]", builder)
 
 
 def test_volume_and_data_dir_owned_by_hive():

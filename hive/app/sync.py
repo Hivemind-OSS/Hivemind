@@ -150,7 +150,7 @@ def _clean_env() -> dict[str, str]:
     strips GIT_DIR-family vars so a ``git -C <mirror>`` child targets the mirror and
     never an inherited hook repo (BUG-034). Call-time import — the empty-registry
     path never loads matrix (byte-inert)."""
-    from matrix import gitenv  # noqa: PLC0415 — call-time by design
+    from hive.matrix import gitenv  # noqa: PLC0415 — call-time by design
 
     env: dict[str, str] = gitenv.clean_git_env()
     return env
@@ -183,7 +183,7 @@ def _incomparable_fp_version(fp_token: str) -> bool:
     if version is None:
         return True  # malformed envelope: silence, never stale
     try:
-        from combdrift.fingerprint import FINGERPRINT_VERSION  # noqa: PLC0415 — call-time by design
+        from hive.combdrift.fingerprint import FINGERPRINT_VERSION  # noqa: PLC0415 — call-time by design
     except Exception:  # pragma: no cover — image without the engine wheel
         return False
     return version != str(FINGERPRINT_VERSION)

@@ -267,12 +267,13 @@ qualifies) — that is what fights the dominant long-run decay.
 ## 8. Staying current — server upgrades
 
 There is exactly one install target: the **server**. Agents and workstations install nothing —
-they are thin MCP clients (§2), and the anchor/census engines the sync daemon runs ship *inside*
-the server image as vendored wheels (`vendor/wheels/` — the committed wheelhouse is the release
-artifact; PyPI is not an install or publish channel for any of our distributions, and
-`scripts/vendor_edge.py` is the single seam that refreshes the wheelhouse from the engine
-workspace). A contract change needs no fleet action either: each session receives the served
-usage contract fresh at its next connect.
+they are thin MCP clients (§2), and the anchor/census engines the sync daemon runs are
+**first-party subpackages of the one `hive` distribution** (`hive/matrix`, `hive/combdrift`,
+`hive/edge`), built into the server image straight from this repository: there is no wheelhouse
+to refresh and no separate engine repository, and PyPI is not an install or publish channel for
+our distribution. The engines' own third-party dependencies (tree-sitter grammars, networkx,
+sqlglot) resolve through `uv lock` / `uv sync` like any other dependency. A contract change needs
+no fleet action either: each session receives the served usage contract fresh at its next connect.
 
 **Server upgrade / rollback.** Move the server to a vetted ref:
 

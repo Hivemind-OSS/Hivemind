@@ -21,8 +21,8 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:  # annotation target only; runtime imports stay lazy
-    import combdrift
-    import matrix
+    import hive.combdrift as combdrift
+    import hive.matrix as matrix
     import networkx as nx
 
 _REGRESSION_DRIFTS = frozenset({"breaking", "removed"})
@@ -95,7 +95,7 @@ def _hit_ids(hits: Sequence[Any] | None) -> tuple[str, ...]:
 def _join_one(
     g_nx: Any, path: str, symbol: str, drift: str, depth: int
 ) -> RegressionFinding:
-    from matrix.affected import resolve_seed
+    from hive.matrix.affected import resolve_seed
 
     seed: str | None = None
     for query in _seed_queries(symbol):
@@ -105,7 +105,7 @@ def _join_one(
     if seed is None:
         return _abstained(path, symbol, drift, depth, REASON_SEED_UNRESOLVED)
 
-    from matrix import blast_radius
+    from hive.matrix import blast_radius
 
     blast = blast_radius(g_nx, seed, depth=depth)
     return RegressionFinding(

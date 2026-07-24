@@ -25,9 +25,10 @@ Open your pull requests against **`development`** — never straight into `maste
 
 ## Getting set up
 
-Hivemind uses [uv](https://docs.astral.sh/uv/). The server-side engine libraries
-(`hive-edge`, `comb-drift`, `matrix`) resolve from the committed `vendor/wheels/`
-wheelhouse, so no package index is needed for them:
+Hivemind uses [uv](https://docs.astral.sh/uv/). Everything lives in this one repository —
+including the anchor/census engines, which are first-party subpackages (`hive/matrix`,
+`hive/combdrift`, `hive/edge`) of the `hive` distribution — so `uv sync` resolves every
+dependency from the lockfile in one step:
 
 ```bash
 uv sync --extra dev

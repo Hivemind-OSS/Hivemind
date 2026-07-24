@@ -2,10 +2,13 @@
   - hive/domain/** may not import any I/O module (sqlite3|torch|subprocess|os|git|time).
   - hive/domain|adapters|app/** may not import the build-excluded scripts/ utilities.
   - hive/domain/** may not import the moved-in engines (hive.census|hive.verifier);
-    the engines stay standalone — they never import hive.domain or hive.app.
+    hive.census|hive.verifier stay standalone of the server stack, importing only
+    each other + the edge engines (hive.matrix|hive.combdrift).
+  - the absorbed edge engines (hive.matrix|hive.combdrift|hive.edge) stay standalone
+    too — they never import the hive server stack or the census/verifier consumers.
   - nothing on the hivemind side imports the pre-move top-level names
-    (hive_census|hive_verifier) — the hive-edge transition install would silently
-    satisfy a missed rename.
+    (hive_census|hive_verifier|hive_edge|matrix|combdrift) — the still-installed
+    old wheels would silently satisfy a missed rename.
 The gate has teeth: the mutation (add `import sqlite3` to a domain file)
 must turn test_domain_imports_no_io red.
 """
@@ -132,8 +135,9 @@ def test_domain_never_imports_census_or_verifier() -> None:
 
 def test_engines_never_import_hive_domain_or_app() -> None:
     # The engines moved IN wholesale but stay standalone: hive.census/hive.verifier
-    # depend only on each other + the edge engine packages (matrix, combdrift),
-    # never on the hive server stack — the dependency arrow points one way.
+    # depend only on each other + the first-party edge engine packages
+    # (hive.matrix, hive.combdrift), never on the hive server stack — the
+    # dependency arrow points one way.
     offenders: dict[str, set[str]] = {}
     for path in _full_module_paths("census", "verifier"):
         bad = _imports_under(
@@ -146,11 +150,41 @@ def test_engines_never_import_hive_domain_or_app() -> None:
     )
 
 
+def test_absorbed_engines_never_import_the_server_stack() -> None:
+    # The edge engines moved IN as first-party subpackages (hive.matrix,
+    # hive.combdrift, hive.edge) but stay standalone: they may import each other,
+    # never the hive server stack (domain/app/adapters/tools) nor the
+    # census/verifier engines that consume them — the dependency arrow points one
+    # way (server -> engines), so the engines remain independently shippable.
+    offenders: dict[str, set[str]] = {}
+    for path in _full_module_paths("matrix", "combdrift", "edge"):
+        bad = _imports_under(
+            path,
+            (
+                "hive.domain",
+                "hive.app",
+                "hive.adapters",
+                "hive.tools",
+                "hive.census",
+                "hive.verifier",
+            ),
+        )
+        if bad:
+            offenders[str(path.relative_to(ROOT))] = bad
+    assert not offenders, (
+        f"the absorbed edge engines must stay standalone of the server stack: "
+        f"{offenders}"
+    )
+
+
 def test_no_module_imports_the_premove_engine_names() -> None:
-    # The transition venv still carries hive-edge's `hive_census`/`hive_verifier`
-    # top-level packages, so a missed import rename would resolve SILENTLY against
-    # the wrong (agent-side) copy instead of failing loudly. Runtime and the moved
-    # test suites alike must name only hive.census / hive.verifier.
+    # The transition venv still carries the pre-move top-level engine packages —
+    # hive-edge's `hive_census`/`hive_verifier` AND the vendored 0.9.0
+    # `matrix`/`combdrift`/`hive_edge` wheels — so a missed import rename would
+    # resolve SILENTLY against the wrong (old, external) copy instead of failing
+    # loudly. Runtime and the moved test suites alike must name only the
+    # first-party hive.census / hive.verifier / hive.matrix / hive.combdrift /
+    # hive.edge.
     offenders: dict[str, set[str]] = {}
     scan_roots = [
         *ROOT.rglob("*.py"),
@@ -158,7 +192,10 @@ def test_no_module_imports_the_premove_engine_names() -> None:
         *(ROOT.parent / "tests" / "verifier").rglob("*.py"),
     ]
     for path in scan_roots:
-        bad = _imports_under(path, ("hive_census", "hive_verifier"))
+        bad = _imports_under(
+            path,
+            ("hive_census", "hive_verifier", "hive_edge", "matrix", "combdrift"),
+        )
         if bad:
             offenders[str(path)] = bad
     assert not offenders, f"pre-move engine names must not be imported: {offenders}"

@@ -74,7 +74,7 @@ class TestRegressionFindingInvariants:
 
 
 def _symbol_change(path: str, symbol: str, drift: str, reason: str = "reason: detail"):
-    import combdrift
+    import hive.combdrift as combdrift
 
     return combdrift.SymbolChange(
         path=path,
@@ -89,7 +89,7 @@ def _symbol_change(path: str, symbol: str, drift: str, reason: str = "reason: de
 
 
 def _verdict(*symbol_changes):
-    import combdrift
+    import hive.combdrift as combdrift
 
     return combdrift.ChangeVerdict(
         verifier_version=combdrift.verifier_version(base_sha=SHA_A, head_sha=SHA_B),
@@ -107,7 +107,7 @@ def findings(change_verdict, graph_pair) -> tuple[RegressionFinding, ...]:
 
 @pytest.fixture(scope="session")
 def seed_of(graph_pair):
-    from matrix.affected import resolve_seed
+    from hive.matrix.affected import resolve_seed
 
     def resolve(query: str) -> str:
         node_id = resolve_seed(graph_pair.base.nx, query)
@@ -238,7 +238,7 @@ class TestRegressionJoinFailClosed:
     def test_pathological_symbol_degrades_that_symbol_never_aborts(
         self, monkeypatch: pytest.MonkeyPatch, change_verdict, graph_pair, seed_of
     ) -> None:
-        import matrix
+        import hive.matrix as matrix
 
         real_blast = matrix.blast_radius
         poisoned_seed = seed_of("farewell")

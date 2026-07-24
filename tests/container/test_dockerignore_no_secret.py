@@ -2,8 +2,9 @@
 
 Two halves: (1) `.dockerignore` excludes the sensitive trees so a stray credential, the
 git history, a local venv, or the test/doc trees can never enter the build context; (2) a
-scan of the files that WOULD become layers (pyproject.toml + hive/ + vendor/, the exact
-COPY set) finds no AWS/OpenAI/GitHub credential shapes. The full layer-tar scan of a built image is
+scan of the files that WOULD become layers (pyproject.toml + hive/, the exact COPY set —
+the vendored wheelhouse is gone: the engines are first-party hive.* subpackages) finds no
+AWS/OpenAI/GitHub credential shapes. The full layer-tar scan of a built image is
 in test_container_live.py (skip-guarded); this is the daemon-free static guarantee.
 """
 
@@ -35,8 +36,9 @@ _KNOWN_KEY_FAKES = [
     "AIza" + "A" * 35,
 ]
 
-# exactly the trees the Dockerfile COPYs into a layer
-_CONTEXT = [_ROOT / "pyproject.toml", _ROOT / "hive", _ROOT / "vendor"]
+# exactly the trees the Dockerfile COPYs into a layer (the vendored wheelhouse is gone —
+# U5 absorbed the engines as first-party hive.* subpackages, so only pyproject + hive/ COPY)
+_CONTEXT = [_ROOT / "pyproject.toml", _ROOT / "hive"]
 _REQUIRED_IGNORES = [
     ".git",
     "__pycache__",
@@ -106,10 +108,14 @@ def test_secret_regex_matches_modern_key_shapes():
 
 
 def test_context_set_matches_dockerfile_copy():
-    # guard the assumption above: the Dockerfile COPYs pyproject + hive/ + vendor/wheels/
-    # and nothing else source-wise into the builder (so scanning that set == scanning the
-    # layered source).
+    # guard the assumption above: the Dockerfile COPYs pyproject + hive/ and nothing else
+    # source-wise into the builder (so scanning that set == scanning the layered source).
+    # U5 removed the vendored wheelhouse — no `COPY vendor/wheels/` may remain, and the
+    # engines' third-party deps resolve via the early `.[embed,sync]` install instead.
     df = (_ROOT / "Dockerfile").read_text()
     assert re.search(r"(?im)^COPY\s+pyproject\.toml", df)
     assert re.search(r"(?im)^COPY\s+hive/\s", df)
-    assert re.search(r"(?im)^COPY\s+vendor/wheels/\s", df)
+    assert not re.search(r"(?im)^COPY\s+vendor/wheels/", df)
+    assert re.search(
+        r'(?im)^RUN\s+pip install --no-cache-dir\s+"\.\[embed,sync\]"\s*$', df
+    )

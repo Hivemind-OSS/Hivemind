@@ -112,38 +112,6 @@ wheels = [
 ]
 
 [[package]]
-name = "comb-drift"
-version = "0.9.0"
-source = { path = "vendor/wheels/comb_drift-0.9.0-py3-none-any.whl" }
-dependencies = [
-    { name = "sqlglot" },
-    { name = "tree-sitter" },
-    { name = "tree-sitter-c" },
-    { name = "tree-sitter-cpp" },
-    { name = "tree-sitter-go" },
-    { name = "tree-sitter-javascript" },
-    { name = "tree-sitter-rust" },
-    { name = "tree-sitter-typescript" },
-]
-wheels = [
-    { filename = "comb_drift-0.9.0-py3-none-any.whl", hash = "sha256:cb2a956c45f97b133474f7d0d1e39213451100beea42eb66187f3122c60b7390" },
-]
-
-[package.metadata]
-requires-dist = [
-    { name = "pytest", marker = "extra == 'dev'" },
-    { name = "sqlglot", specifier = ">=30" },
-    { name = "tree-sitter", specifier = ">=0.25" },
-    { name = "tree-sitter-c", specifier = ">=0.24,<0.26" },
-    { name = "tree-sitter-cpp", specifier = ">=0.23,<0.26" },
-    { name = "tree-sitter-go", specifier = ">=0.23,<0.26" },
-    { name = "tree-sitter-javascript", specifier = ">=0.25" },
-    { name = "tree-sitter-rust", specifier = ">=0.24,<0.26" },
-    { name = "tree-sitter-typescript", specifier = ">=0.23" },
-]
-provides-extras = ["dev"]
-
-[[package]]
 name = "cuda-bindings"
 version = "13.3.1"
 source = { registry = "https://pypi.org/simple" }
@@ -299,15 +267,23 @@ dependencies = [
 
 [package.optional-dependencies]
 dev = [
-    { name = "comb-drift" },
     { name = "defusedxml" },
-    { name = "hive-edge" },
     { name = "hypothesis" },
     { name = "jsonschema" },
-    { name = "matrix" },
     { name = "mypy" },
+    { name = "networkx" },
     { name = "pytest" },
     { name = "ruff" },
+    { name = "sqlglot" },
+    { name = "tree-sitter" },
+    { name = "tree-sitter-c" },
+    { name = "tree-sitter-cpp" },
+    { name = "tree-sitter-go" },
+    { name = "tree-sitter-javascript" },
+    { name = "tree-sitter-python" },
+    { name = "tree-sitter-rust" },
+    { name = "tree-sitter-sql" },
+    { name = "tree-sitter-typescript" },
     { name = "types-defusedxml" },
     { name = "types-jsonschema" },
     { name = "types-networkx" },
@@ -316,50 +292,47 @@ embed = [
     { name = "sentence-transformers" },
 ]
 sync = [
-    { name = "comb-drift" },
     { name = "defusedxml" },
-    { name = "hive-edge" },
     { name = "jsonschema" },
-    { name = "matrix" },
+    { name = "networkx" },
+    { name = "sqlglot" },
+    { name = "tree-sitter" },
+    { name = "tree-sitter-c" },
+    { name = "tree-sitter-cpp" },
+    { name = "tree-sitter-go" },
+    { name = "tree-sitter-javascript" },
+    { name = "tree-sitter-python" },
+    { name = "tree-sitter-rust" },
+    { name = "tree-sitter-typescript" },
 ]
 
 [package.metadata]
 requires-dist = [
-    { name = "comb-drift", marker = "extra == 'sync'", path = "vendor/wheels/comb_drift-0.9.0-py3-none-any.whl" },
     { name = "defusedxml", marker = "extra == 'sync'", specifier = ">=0.7" },
     { name = "hive", extras = ["sync"], marker = "extra == 'dev'" },
-    { name = "hive-edge", marker = "extra == 'sync'", path = "vendor/wheels/hive_edge-0.9.0-py3-none-any.whl" },
     { name = "hypothesis", marker = "extra == 'dev'", specifier = ">=6.100" },
     { name = "jsonschema", marker = "extra == 'sync'", specifier = ">=4.21,<5" },
-    { name = "matrix", marker = "extra == 'sync'", path = "vendor/wheels/matrix-0.9.0-py3-none-any.whl" },
     { name = "mypy", marker = "extra == 'dev'", specifier = ">=1.15" },
+    { name = "networkx", marker = "extra == 'sync'", specifier = ">=3.4" },
     { name = "numpy", specifier = ">=1.24" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=7" },
     { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.8" },
     { name = "sentence-transformers", marker = "extra == 'embed'", specifier = ">=5.0" },
+    { name = "sqlglot", marker = "extra == 'sync'", specifier = ">=30" },
+    { name = "tree-sitter", marker = "extra == 'sync'", specifier = ">=0.25,<0.26" },
+    { name = "tree-sitter-c", marker = "extra == 'sync'", specifier = ">=0.24,<0.26" },
+    { name = "tree-sitter-cpp", marker = "extra == 'sync'", specifier = ">=0.23,<0.26" },
+    { name = "tree-sitter-go", marker = "extra == 'sync'", specifier = ">=0.23,<0.26" },
+    { name = "tree-sitter-javascript", marker = "extra == 'sync'", specifier = ">=0.25,<0.26" },
+    { name = "tree-sitter-python", marker = "extra == 'sync'", specifier = ">=0.23,<0.26" },
+    { name = "tree-sitter-rust", marker = "extra == 'sync'", specifier = ">=0.24,<0.26" },
+    { name = "tree-sitter-sql", marker = "extra == 'dev'", specifier = ">=0.3" },
+    { name = "tree-sitter-typescript", marker = "extra == 'sync'", specifier = ">=0.23,<0.26" },
     { name = "types-defusedxml", marker = "extra == 'dev'", specifier = ">=0.7" },
     { name = "types-jsonschema", marker = "extra == 'dev'", specifier = ">=4.21" },
     { name = "types-networkx", marker = "extra == 'dev'", specifier = ">=3" },
 ]
 provides-extras = ["embed", "sync", "dev"]
-
-[[package]]
-name = "hive-edge"
-version = "0.9.0"
-source = { path = "vendor/wheels/hive_edge-0.9.0-py3-none-any.whl" }
-dependencies = [
-    { name = "comb-drift" },
-    { name = "matrix" },
-]
-wheels = [
-    { filename = "hive_edge-0.9.0-py3-none-any.whl", hash = "sha256:cf7ae7cce0ac9df7c652207de1baf5f2d29ab55908637cb39a235f472df2fb02" },
-]
-
-[package.metadata]
-requires-dist = [
-    { name = "comb-drift" },
-    { name = "matrix" },
-]
 
 [[package]]
 name = "httpcore"
@@ -696,41 +669,6 @@ wheels = [
     { url = "https://files.pythonhosted.org/packages/1a/8a/0402ba61a2f16038b48b39bccca271134be00c5c9f0f623208399333c448/markupsafe-3.0.3-cp314-cp314t-win_amd64.whl", hash = "sha256:4faffd047e07c38848ce017e8725090413cd80cbc23d86e55c587bf979e579c9", size = 15426, upload-time = "2025-09-27T18:37:27.316Z" },
     { url = "https://files.pythonhosted.org/packages/70/bc/6f1c2f612465f5fa89b95bead1f44dcb607670fd42891d8fdcd5d039f4f4/markupsafe-3.0.3-cp314-cp314t-win_arm64.whl", hash = "sha256:32001d6a8fc98c8cb5c947787c5d08b0a50663d139f1305bac5885d98d9b40fa", size = 14146, upload-time = "2025-09-27T18:37:28.327Z" },
 ]
-
-[[package]]
-name = "matrix"
-version = "0.9.0"
-source = { path = "vendor/wheels/matrix-0.9.0-py3-none-any.whl" }
-dependencies = [
-    { name = "networkx" },
-    { name = "tree-sitter" },
-    { name = "tree-sitter-c" },
-    { name = "tree-sitter-cpp" },
-    { name = "tree-sitter-go" },
-    { name = "tree-sitter-javascript" },
-    { name = "tree-sitter-python" },
-    { name = "tree-sitter-rust" },
-    { name = "tree-sitter-typescript" },
-]
-wheels = [
-    { filename = "matrix-0.9.0-py3-none-any.whl", hash = "sha256:b769eeba2f99d9e1806303b6e7d9dd5c32b99034a7417a683cf2c0063b017cb0" },
-]
-
-[package.metadata]
-requires-dist = [
-    { name = "networkx", specifier = ">=3.4" },
-    { name = "pytest", marker = "extra == 'dev'", specifier = ">=8" },
-    { name = "tree-sitter", specifier = ">=0.25,<0.26" },
-    { name = "tree-sitter-c", specifier = ">=0.24" },
-    { name = "tree-sitter-cpp", specifier = ">=0.23" },
-    { name = "tree-sitter-go", specifier = ">=0.23" },
-    { name = "tree-sitter-javascript", specifier = ">=0.23" },
-    { name = "tree-sitter-python", specifier = ">=0.23" },
-    { name = "tree-sitter-rust", specifier = ">=0.24" },
-    { name = "tree-sitter-sql", marker = "extra == 'sql'", specifier = ">=0.3" },
-    { name = "tree-sitter-typescript", specifier = ">=0.23" },
-]
-provides-extras = ["dev", "sql"]
 
 [[package]]
 name = "mdurl"
@@ -2017,6 +1955,22 @@ wheels = [
     { url = "https://files.pythonhosted.org/packages/a2/e1/3519f866a4679ca36acd9f5a06a779ecb8a92b18887c5546458d521df557/tree_sitter_rust-0.24.2-cp39-abi3-musllinux_1_2_x86_64.whl", hash = "sha256:da2b86099028fd42c6cd32878b7b16b01f8aac0f7b0e98742b7fa6bc3cf09b89", size = 162403, upload-time = "2026-03-27T21:08:52.588Z" },
     { url = "https://files.pythonhosted.org/packages/34/71/7ef609894dbfe5699eb16f7471f9b8af1d958d8ba3e29c238d7607e8cb47/tree_sitter_rust-0.24.2-cp39-abi3-win_amd64.whl", hash = "sha256:4529c125d928882ddfb879fdc6bc0704913261ecc078b6fa7902559e0daf200d", size = 129422, upload-time = "2026-03-27T21:08:54.031Z" },
     { url = "https://files.pythonhosted.org/packages/b9/d8/050a781172745bc345f98abb7c56e72022ea0790f8e793de981c83c2ef15/tree_sitter_rust-0.24.2-cp39-abi3-win_arm64.whl", hash = "sha256:66ba90f61bd54f4c4f5d30434957daf64507c16b0313df76becb37d63f70a227", size = 128245, upload-time = "2026-03-27T21:08:54.803Z" },
+]
+
+[[package]]
+name = "tree-sitter-sql"
+version = "0.3.11"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/e8/5c/3d10387f779f36835486167253682f61d5f4fd8336b7001da1ac7d78f31c/tree_sitter_sql-0.3.11.tar.gz", hash = "sha256:700b93be2174c3c83d174ec3e10b682f72a4fb451f0076c7ce5012f1d5a76cbc", size = 834454, upload-time = "2025-10-01T13:44:15.913Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/32/68/bb80073915dfe1b38935451bc0d65528666c126b2d5878e7140ef9bf9f8a/tree_sitter_sql-0.3.11-cp310-abi3-macosx_10_9_x86_64.whl", hash = "sha256:cf1b0c401756940bf47544ad7c4cc97373fc0dac118f821820953e7015a115e3", size = 322035, upload-time = "2025-10-01T13:44:07.497Z" },
+    { url = "https://files.pythonhosted.org/packages/05/45/b2bd5f9919ea15c4ae90a156999101ebd4caa4036babe54efaf9d3e77d55/tree_sitter_sql-0.3.11-cp310-abi3-macosx_11_0_arm64.whl", hash = "sha256:a33cd6880ab2debef036f80365c32becb740ec79946805598488732b6c515fff", size = 341635, upload-time = "2025-10-01T13:44:08.961Z" },
+    { url = "https://files.pythonhosted.org/packages/8e/96/7cee5661aa897e5d1a67499944ea5cf8a148953c1dc07a3059a50db8cb56/tree_sitter_sql-0.3.11-cp310-abi3-manylinux2014_aarch64.manylinux_2_17_aarch64.manylinux_2_28_aarch64.whl", hash = "sha256:344e99b59c8c8d72f7154041e9d054400f4a3fccc16c2c96ac106dde0e7f8d0c", size = 381217, upload-time = "2025-10-01T13:44:10.211Z" },
+    { url = "https://files.pythonhosted.org/packages/1d/c1/eec7c09a9c94436ea4c56d096feba815e42b209b3d41a17532f99ecf0c67/tree_sitter_sql-0.3.11-cp310-abi3-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:5128b12f71ac0f5ebcc607f67a62cdc56a187c1a5ba7553feeb9c5f6f9bc3c72", size = 380606, upload-time = "2025-10-01T13:44:11.135Z" },
+    { url = "https://files.pythonhosted.org/packages/94/1d/06e9598799bd119e56f6e431d42c2f3a5c6dee858a5b6ad7633cc4d670aa/tree_sitter_sql-0.3.11-cp310-abi3-musllinux_1_2_aarch64.whl", hash = "sha256:03cc164fcf7b1f711e7d939aeb4d1f62c76f4162e081c70b860b4fcd91806a38", size = 380862, upload-time = "2025-10-01T13:44:12.072Z" },
+    { url = "https://files.pythonhosted.org/packages/52/e9/a7afd7f68ce165c040ce50e67bb05553784a8e17f37e057405d693fc869d/tree_sitter_sql-0.3.11-cp310-abi3-musllinux_1_2_x86_64.whl", hash = "sha256:0e22ea8de690dd9960d8c0c36c4cd25417b084e1e29c91ac0235fbdb3abb4664", size = 379447, upload-time = "2025-10-01T13:44:13.062Z" },
+    { url = "https://files.pythonhosted.org/packages/eb/b3/57ff42dadd33c06fabe6c725de50e1625e1060f1571cc21a9260febadc1f/tree_sitter_sql-0.3.11-cp310-abi3-win_amd64.whl", hash = "sha256:c57b877702d218c0856592d33320c02b2dc8411d8820b3bf7b81be86c54fa0bb", size = 343550, upload-time = "2025-10-01T13:44:13.988Z" },
+    { url = "https://files.pythonhosted.org/packages/77/60/f10b8551f435d57a4748820ee30e66df2682820b2972375c2b89d2e5fb10/tree_sitter_sql-0.3.11-cp310-abi3-win_arm64.whl", hash = "sha256:8a1e42f0a2c9b01b23074708ecf5b8d21b9a0440e3dff279d8cf466cdf1a877e", size = 333547, upload-time = "2025-10-01T13:44:14.893Z" },
 ]
 
 [[package]]

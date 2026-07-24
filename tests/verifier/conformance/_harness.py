@@ -182,7 +182,7 @@ def ensure_scratch_matrix_out() -> Path:
     global _MATRIX_SCRATCH
     if _MATRIX_SCRATCH is not None:
         return _MATRIX_SCRATCH
-    paths_module = sys.modules.get("matrix.paths")
+    paths_module = sys.modules.get("hive.matrix.paths")
     if paths_module is not None:
         pinned = Path(str(paths_module.MATRIX_OUT))
         if not pinned.is_absolute():

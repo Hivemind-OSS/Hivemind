@@ -33,7 +33,7 @@ from hive.census.schema import SCHEMA_VERSION, validate_receipt
 if TYPE_CHECKING:  # annotation targets only; the runtime imports stay lazy
     from collections.abc import Sequence
 
-    import combdrift
+    import hive.combdrift as combdrift
 
     from hive.census.memory import MemoryContext
 
@@ -67,7 +67,7 @@ def _subject(path: str, symbol: str) -> str:
 
 
 def _node_lines(verdict: combdrift.ChangeVerdict) -> list[dict[str, Any]]:
-    from combdrift import tag_for_reason
+    from hive.combdrift import tag_for_reason
 
     lines: list[dict[str, Any]] = []
     for change in getattr(verdict, "symbols", ()) or ():

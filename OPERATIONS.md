@@ -230,19 +230,16 @@ recall/safety tuning.
 
 A hivemind release has exactly one deploy target — the **server**. Agents are thin MCP clients
 with nothing installed, so no step in any release directs the fleet at anything; each session
-simply receives the served usage contract fresh at its next connect. Three concerns, each safe
+simply receives the served usage contract fresh at its next connect. Two concerns, each safe
 to stop after:
 
-1. **Refresh the engine wheels (only when the anchor/census engines changed).** The server's
-   engines ship as the committed wheelhouse `vendor/wheels/`; `python scripts/vendor_edge.py`
-   on the dev machine rebuilds it from the engine-workspace checkout — it refuses a half-bumped
-   workspace (the wheel versions must be identical), rewrites the `[tool.uv.sources]` wheel
-   pins, and re-locks. There is no package index or publish step — the committed wheelhouse IS
-   the release artifact, and the server host receives only the hivemind repo.
-2. **Land hivemind** — the server change, carrying any refreshed `vendor/wheels/` +
-   `pyproject.toml` + `uv.lock` in the same change. The gate is `make check` (format check,
-   lint, strict typecheck, the default pytest suite — the heavy `embed` tier is opt-in).
-3. **Cut the live server over** — `hive upgrade` to a vetted ref (backup-gated, auto-rollback
+1. **Land hivemind** — the server change. The anchor/census engines are first-party subpackages
+   (`hive/matrix`, `hive/combdrift`, `hive/edge`), so an engine change is an ordinary in-repo edit
+   carried in the same commit — there is no wheelhouse to rebuild and no separate engine
+   repository to cut a release over; `uv lock` picks up any engine dependency shift alongside
+   `pyproject.toml`. The gate is `make check` (format check, lint, strict typecheck, the default
+   pytest suite — the heavy `embed` tier is opt-in).
+2. **Cut the live server over** — `hive upgrade` to a vetted ref (backup-gated, auto-rollback
    on failure), or an in-place rebuild + restart from the landed tree, preserving the
    `hive-data` volume. **No compose change is required**: the sync knobs ride `.env`
    (`HIVE_SYNC__*`), the repo registry rides the store, and the mirrors live inside the

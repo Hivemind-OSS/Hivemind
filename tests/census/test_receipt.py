@@ -24,7 +24,7 @@ from pathlib import Path
 
 import pytest
 
-from combdrift import ChangeVerdict, SymbolChange, VerifierVersion
+from hive.combdrift import ChangeVerdict, SymbolChange, VerifierVersion
 
 from hive.census import ChangedFile, ChangeSet, RegressionFinding, coerce_execution
 from hive.census.envelope import canonical_bytes, unsigned_envelope
@@ -73,7 +73,7 @@ class _DecidedResult:
 
 def _hand_inputs() -> dict:
     """The byte-contract fixture inputs; matrix must already be scratch-pinned."""
-    from matrix.version import ModelVersion
+    from hive.matrix.version import ModelVersion
 
     from hive.census.engines import GraphPair
 

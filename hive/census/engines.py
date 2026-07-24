@@ -23,9 +23,8 @@ from typing import TYPE_CHECKING, Any
 from hive.census.diff import Change, ChangeSet
 
 if TYPE_CHECKING:  # annotation targets only; runtime imports stay lazy
-    import combdrift
-    import matrix
-    import matrix.model
+    import hive.combdrift as combdrift
+    import hive.matrix as matrix
 
 
 class EngineError(Exception):
@@ -48,7 +47,7 @@ def ensure_scratch_matrix_out() -> Path:
     """
     global _scratch
     if _scratch is None:
-        if "matrix" in sys.modules:
+        if "hive.matrix" in sys.modules:
             raise EngineError(
                 "matrix was imported before MATRIX_OUT was pinned; the env var "
                 "is read once at matrix import time, so a late pin would be "
@@ -59,7 +58,7 @@ def ensure_scratch_matrix_out() -> Path:
         os.environ["MATRIX_OUT"] = str(scratch)
         _scratch = scratch
         return scratch
-    paths_module = sys.modules.get("matrix.paths")
+    paths_module = sys.modules.get("hive.matrix.paths")
     if paths_module is not None:
         pinned = Path(str(paths_module.MATRIX_OUT))
         if pinned != _scratch and _scratch not in pinned.parents:
@@ -104,12 +103,10 @@ def _graph_offset(tree: Path) -> str:
     unreadable or foreign manifest ⇒ "" — the pre-bridge repo-dialect assumption.
     """
     try:
-        import matrix
-        import matrix.paths
+        import hive.matrix as matrix
+        from hive.matrix import paths
 
-        keys = json.loads(
-            Path(matrix.paths.default_manifest()).read_text(encoding="utf-8")
-        )
+        keys = json.loads(Path(paths.default_manifest()).read_text(encoding="utf-8"))
         offset: str = matrix.root_offset(tree, [Path(key) for key in keys])
         return offset
     except Exception:
@@ -125,7 +122,7 @@ def build_graphs(change: Change) -> GraphPair:
     path-dialect offset is captured immediately after its build — the second
     build overwrites the manifest the first offset derives from.
     """
-    from matrix import build_graph, version_stamp
+    from hive.matrix import build_graph, version_stamp
 
     base = build_graph(change.base_tree)
     base_offset = _graph_offset(change.base_tree)
@@ -339,7 +336,7 @@ def node_change(
     no SymbolChange. Reason strings come back with machine-stable prefixes
     plus ": <detail>" suffixes and are never rewritten here.
     """
-    import combdrift
+    import hive.combdrift as combdrift
 
     return combdrift.verify_change(
         str(change.base_tree),

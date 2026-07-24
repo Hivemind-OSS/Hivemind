@@ -238,7 +238,7 @@ def test_authoritative_elides_files_and_records_mode(tmp_path: Path) -> None:
 def test_blast_radius_receives_the_registry_glob_union(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    import matrix
+    import hive.matrix as matrix
 
     seen: list[object] = []
 

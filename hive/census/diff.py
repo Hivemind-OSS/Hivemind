@@ -77,7 +77,7 @@ def _git(repo: Path, *args: str) -> str:
     # Call-time import: gitenv lives in the matrix package (the ONE denylist
     # owner), and hive.census loads engine packages only inside calls — the
     # census CLI pins MATRIX_OUT to a scratch dir before any engine import.
-    from matrix import gitenv
+    from hive.matrix import gitenv
 
     proc = subprocess.run(
         ["git", "-C", str(repo), *args],

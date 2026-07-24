@@ -32,7 +32,7 @@ A connected agent gets exactly eight tools:
 | `hive_prune(episode_id)` | Retire an incorrect or misleading memory with no replacement (it stays in the audit ledger) — machine-gated, same rule. |
 | `hive_flag(a, b, kind)` | Advisory only: record that two memories conflict or one supersedes the other. Retires nothing and never qualifies the retirement gate. |
 | `hive_outcome(helped=[…], hurt=[…])` | Log which recalled memories helped or hurt the task; evidence only. Helped rows fuel promotion; hurt rows feed the machine retirement gate. |
-| `hive_health(...)` | Liveness/identity snapshot; `include_trends=true` adds convergence KPIs, `include_gaps=true` the demand-gap report, `include_conflicts=true` the contested-memory worklist; further flags: `suspect_consensus`, `stale_suspects` (graph-propagated staleness), `census_health` (per-repo census/sync state), `meta_versions`. |
+| `hive_health(...)` | Liveness/identity snapshot; `include_trends=true` adds convergence KPIs, `include_gaps=true` the demand-gap report, `include_conflicts=true` the contested-memory worklist; further flags: `include_suspect_consensus`, `include_stale_suspects` (graph-propagated staleness), `include_census_health` (per-repo census/sync state), `include_meta_versions`. |
 
 ## Requirements
 
@@ -174,7 +174,8 @@ KPIs).
 ## Code anchors & staleness (server-side)
 
 Anchor fingerprints and staleness verdicts are computed **in the server**: the anchor/census
-engines ship inside the image as vendored wheels (`vendor/wheels/`), and the sync daemon runs
+engines are first-party subpackages of the `hive` distribution (`hive/matrix`, `hive/combdrift`,
+`hive/edge`), built into the image from this repository, and the sync daemon runs
 them per registered repo — minting fingerprints for stored anchors and materializing per-anchor
 drift verdicts at the canonical tip (and at branch tips recall asked about). Every recall hit
 carries the result as its `drift` field, and a hit the server already knows is stale arrives
@@ -193,12 +194,12 @@ full text and attribution travel with this repository in
 ## Repository layout
 
 ```
-hive/                 the server: domain core, adapters (SQLite store, embedder), MCP app, CLI, sync daemon
+hive/                 the server: domain core, adapters (SQLite store, embedder), MCP app, CLI, sync daemon, and the first-party engine subpackages (matrix/combdrift/edge)
 tests/                the test suite
 compose.yaml          the single-service stack (+ opt-in ngrok tunnel profile)
 Dockerfile            the hermetically-offline server image (embedder baked at build)
 Makefile              the canonical mechanical gate — `make check` (format, lint, strict typecheck, tests)
-vendor/wheels/        the vendored anchor/census engine wheels the image bakes (server-side only)
+docs/engines/         reference docs for the first-party anchor/census engines (matrix, comb-drift)
 llms.txt              link index to the project docs (llmstxt.org convention)
 llms-full.txt         the complete, self-contained operating guide for agents & integrators
 HIVE-ADMIN.md         admin & operator guide
