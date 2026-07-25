@@ -24,6 +24,28 @@ def test_enabled_scanner_clean_on_benign():
     assert DefaultSecretScanner().scan("a perfectly ordinary note").action == CLEAN
 
 
+def test_enabled_scanner_admits_identifier_shaped_memory_text():
+    # BUG-018 through the injected-threshold wrapper: the structural exclusion is a
+    # property of the pure scan, so the configured floor carries it unchanged and an
+    # operator can leave HIVE_SECRET_SCAN__ENABLED on without losing legitimate writes.
+    s = DefaultSecretScanner()
+    for benign in (
+        "interval_s/webhook_secret/mirror_dir/drift_per_tick/backfill_per_tick/workers",
+        ".claude/hooks/mint_fp.py",
+        "hive/adapters/store_sqlite.py::repo_remove",
+    ):
+        assert s.scan(f"the fix is at {benign}").action == CLEAN, benign
+
+
+def test_configured_floor_is_still_the_entropy_lever_not_the_exclusion():
+    # the exclusion is structural and threshold-free: a prefix-less blob is refused at
+    # the shipped floor, and RAISING the injected floor (never lowering it — pypi
+    # macaroons sit at H≈3.98) is what changes the entropy leg's reach.
+    blob = "2mK9pQ7xZ4vL8nR3wT6yB1cF5hJ0dG2sA9eU4iO7kM3qX8zV"
+    assert DefaultSecretScanner().scan(blob).action == REFUSE
+    assert DefaultSecretScanner(entropy_bits_floor=6.0).scan(blob).action == CLEAN
+
+
 # ── disabled: the operator opt-OUT bypasses the scan ──────────────────────────
 def test_disabled_scanner_returns_clean_on_secret():
     # enabled=False ⇒ a credential-bearing text scans CLEAN (the floor is bypassed).

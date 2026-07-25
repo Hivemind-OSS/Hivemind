@@ -5,9 +5,9 @@ Per registered repo: a fail-open report of how long ago the last SHA-bound
 change_outcome evidence row landed FOR THAT REPO (attribution via the canonical
 payload's ``repo`` key; the raw day-count, no invented staleness threshold — THEORY §9
 #14), plus — when the sync daemon has left ``sync:<name>:*`` meta — a ``sync``
-observability block. With sync configured, darkness is REINTERPRETED as ``status:
-"sync stalled"``. An empty registry serves ``repos == {}`` (never the old flat
-single-repo shape).
+observability block. With sync configured, darkness reads ``status: "no change_outcome
+evidence yet"`` — the measured fact, never a daemon verdict this reader cannot observe.
+An empty registry serves ``repos == {}`` (never the old flat single-repo shape).
 
 The ``fleet`` block is the home for what belongs to no repo (BUG-062): the daemon's own
 ``last_sync_ts`` / ``last_error``, read from the 2-part ``sync:<field>`` keys. It is
@@ -192,20 +192,46 @@ def test_tracked_ref_and_last_sync_ts_null_only_when_meta_absent():
     assert block["last_sync_ts"] is None
 
 
-def test_sync_configured_and_dark_reads_sync_stalled():
+def test_dark_sync_block_status_string():
+    # the WIRE string: it names the fact the reader measured (no change_outcome row
+    # for this repo yet), never a verdict about a daemon it never observed.
     store = _store("alpha")
     store.meta_set("sync:alpha:last_tip", "a" * 40)
     block = _repos(store)["alpha"]
     assert block["days_since_last_change_outcome"] is None
-    assert block["sync"]["status"] == "sync stalled"
+    assert block["sync"]["status"] == "no change_outcome evidence yet"
 
 
-def test_sync_configured_and_live_carries_no_stalled_status():
+def test_live_and_dark_block_carries_no_fault_claim():
+    # the observed false-alarm shape: watermark advancing, no error, counter climbing
+    # — and still no change_outcome row. Nothing here measured daemon liveness, so
+    # nothing here may allege a stall.
+    store = _store("alpha")
+    store.meta_set("sync:alpha:last_tip", "a" * 40)
+    store.meta_set("sync:alpha:last_sync_ts", str(int(time.time())))
+    store.meta_set("sync:alpha:backfilled_total", "17")
+    sync = _repos(store)["alpha"]["sync"]
+    assert sync["last_error"] is None and sync["backfilled_total"] == 17
+    assert "stall" not in " ".join(str(v) for v in sync.values()).lower()
+
+
+def test_status_is_present_only_when_dark():
     # status is present-only-when-dark (an unconditional attach is the mutation target).
     store = _store("alpha")
     _insert_outcome(store, int(time.time()), "alpha")
     store.meta_set("sync:alpha:last_tip", "a" * 40)
     assert "status" not in _repos(store)["alpha"]["sync"]
+
+
+def test_sticky_last_error_does_not_resurrect_a_stall_claim():
+    # last_error is sticky (no clean tick clears it), so it can never become the
+    # condition for a verdict — it is served verbatim and the key stays factual.
+    store = _store("alpha")
+    store.meta_set("sync:alpha:last_tip", "a" * 40)
+    store.meta_set("sync:alpha:last_error", "fetch: transient DNS failure")
+    sync = _repos(store)["alpha"]["sync"]
+    assert sync["last_error"] == "fetch: transient DNS failure"
+    assert sync["status"] == "no change_outcome evidence yet"
 
 
 def test_sync_counters_absent_or_garbage_read_null_never_zero():
@@ -327,7 +353,7 @@ def test_health_serves_per_repo_blocks_over_mcp():
     assert set(repos) == {"alpha", "beta"}
     assert repos["alpha"]["sync"]["configured"] is True
     assert repos["alpha"]["sync"]["last_tip"] == "c" * 40
-    assert repos["alpha"]["sync"]["status"] == "sync stalled"  # configured + dark
+    assert repos["alpha"]["sync"]["status"] == "no change_outcome evidence yet"
     assert "sync" not in repos["beta"]
     assert "days_since_last_change_outcome" not in repos, (
         "the flat single-repo shape is gone"

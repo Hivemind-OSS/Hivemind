@@ -4,10 +4,13 @@ WHICH repos the daemon feeds is OPERATIONAL data (the store registry), not boot
 config: ``SyncConfig`` carries only the loop's own knobs ({interval_s,
 webhook_secret, mirror_dir} — repo_url/token/verify_candidates are GONE), a
 leftover ``HIVE_SYNC__REPO_URL``/``TOKEN``/``VERIFY_CANDIDATES`` or
-``HIVE_CENSUS__CANONICAL_REF`` env var is an ignored unknown-field/group WARN
-(never a live switch, never a crash), and ``webhook_secret`` is
-STANDALONE-valid (no pairing rule). ``start_sync`` ALWAYS starts the daemon
-thread — an empty registry is an inert tick, not an unarmed daemon, so
+``HIVE_CENSUS__CANONICAL_REF`` env var never REACHES ``SyncConfig`` (it degrades
+to the unknown-field/group WARN — never a live switch here, never a crash), and
+``webhook_secret`` is STANDALONE-valid (no pairing rule). What the config surface
+cannot say is that such a key is inert everywhere: ``HIVE_SYNC__TOKEN`` is read
+per tick by ``sync.py:_resolve_token`` as the fleet-default git credential, on a
+path that never travels through ``Config`` at all. ``start_sync`` ALWAYS starts
+the daemon thread — an empty registry is an inert tick, not an unarmed daemon, so
 registering the first repo needs no restart.
 """
 
@@ -81,9 +84,11 @@ def test_capacity_knobs_default_and_validate():
     assert cfg.sync.webhook_secret == "hook-credential"
 
 
-def test_deleted_env_vars_are_ignored_never_a_switch():
-    """The v2 arming vars are structurally gone: they coerce to nothing, flip
-    nothing, and the config loads at pure defaults."""
+def test_deleted_env_vars_never_reach_syncconfig():
+    """The v2 arming vars are structurally gone FROM THE CONFIG SURFACE: they
+    coerce to nothing here, flip nothing here, and the config loads at pure
+    defaults. This says nothing about whether another component reads one —
+    ``HIVE_SYNC__TOKEN`` is live on the daemon's own env path."""
     cfg = Config.load(
         db_path=":memory:",
         env={

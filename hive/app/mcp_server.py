@@ -46,7 +46,7 @@ import logging
 import os
 import sys
 from dataclasses import dataclass
-from typing import Any, Callable, Mapping, Optional, TextIO
+from typing import Any, Callable, Mapping, Optional, Sequence, TextIO
 
 from hive.app.anchors import BadAnchors, normalize_anchors, normalize_repos
 from hive.app.census_health import census_health_report
@@ -82,7 +82,7 @@ from hive.domain.meta import BadMeta, normalize_meta
 from hive.domain.models import CONFIDENT, AnchorRef, Episode
 from hive.domain.recall import RecallScope
 from hive.domain.retirement import Eligibility, retirement_evidence
-from hive.domain.secret_scan import ScanVerdict
+from hive.domain.secret_scan import REFUSE, ScanVerdict, SecretFinding
 
 _log = logging.getLogger("hive.app.mcp_server")
 
@@ -253,12 +253,37 @@ def _preview(text: str) -> str:
     return text if len(text) <= _PREVIEW_LEN else text[:_PREVIEW_LEN] + "…"
 
 
+def _findings_wire(findings: Sequence[SecretFinding]) -> list[dict[str, Any]]:
+    """Per-finding ``{rule, start, end}`` — the rule LABEL plus the CHAR SPAN it
+    fired on (offsets into the submitted text), NEVER the matched bytes. The span
+    is what makes a refusal actionable: without it a writer whose legitimate text
+    tripped a rule can only bisect its own memory by hand (BUG-018)."""
+    return [{"rule": f.rule, "start": f.span[0], "end": f.span[1]} for f in findings]
+
+
 def _scan_report(verdict: ScanVerdict) -> dict[str, Any]:
-    """The ScanReport envelope — rule NAMES + count only, NEVER the secret bytes."""
+    """The ScanReport envelope — rule NAMES + count + spans, NEVER the secret bytes."""
     return {
         "action": verdict.action,
         "rules": [f.rule for f in verdict.findings],
         "n_findings": len(verdict.findings),
+        "findings": _findings_wire(verdict.findings),
+    }
+
+
+def _refused_envelope(e: SecretRefused) -> dict[str, Any]:
+    """The ONE refused-by-the-secret-floor envelope, shared by write / capture /
+    flag so the three cannot fork. Nothing was written (0 rows, 0 blobs); the
+    report names the fired rules and their spans and carries no secret bytes."""
+    return {
+        "status": "refused",
+        "reason": str(e),
+        "scan": {
+            "action": REFUSE,
+            "rules": e.rules,
+            "n_findings": e.n_findings,
+            "findings": _findings_wire(e.findings),
+        },
     }
 
 
@@ -709,26 +734,36 @@ class HiveMCPServer:
         except BadAnchors as e:
             return {"status": "refused", "reason": str(e)}  # nothing stored
 
-        # ── the §3.2 replaces= retirement rider, gated BEFORE any store mutation.
-        # UNKNOWN target ⇒ the rider passes through and admission fails the WHOLE call
-        # loudly (nothing stored — a caller bug, not an unqualified target). A KNOWN
-        # target is retired IFF the gate qualifies; else the write still lands and the
-        # envelope reports the rider noop.
+        # ── the replaces= rider. EXISTENCE is checked before anything is staged (an
+        # unknown target is a caller bug: nothing stored, nothing retired), but the
+        # RETIREMENT runs after the winner is in the corpus — the two signals a
+        # correction actually produces (contradiction, winner_near_dup) are measured
+        # BETWEEN the loser and the winner and are unconstructable while the winner
+        # does not exist. // marker: moving this retirement back ahead of
+        # admission.write is the named mutation — it reds
+        # tests/contract/test_write_provisional.py::
+        # test_replaces_near_dup_correction_retires_in_one_call.
         replaces = args.get("replaces")
-        gate: Optional[Eligibility] = None
         rider: Optional[int] = None
         if replaces is not None:
             rider = int(replaces)
-            target = self.store.get_episode(rider)
-            if target is not None:
-                gate = self._retirement_eligibility(target, identity.agent_id)
-                if not gate.eligible:
-                    rider = None  # target untouched; the write proceeds
+            if self.store.get_episode(rider) is None:
+                _log.warning(
+                    "mcp.replaces_unknown_target",
+                    extra={
+                        "event": "mcp.replaces_unknown_target",
+                        "target": rider,
+                        "agent_id": identity.agent_id,
+                    },
+                )
+                raise ValueError(
+                    f"replaces target {rider} does not exist — "
+                    "nothing stored, nothing retired"
+                )
         try:
             res = self.admission.write(
                 text,
                 proposed_by=proposed_by,
-                replaces=rider,
                 polarity=polarity,
                 kind=kind,
                 anchors=anchors,
@@ -736,16 +771,9 @@ class HiveMCPServer:
                 meta=meta,
             )
         except SecretRefused as e:
-            # REFUSE: nothing written (0 rows). Envelope carries rule NAMES, never bytes.
-            return {
-                "status": "refused",
-                "reason": str(e),
-                "scan": {
-                    "action": "refuse",
-                    "rules": e.rules,
-                    "n_findings": e.n_findings,
-                },
-            }
+            # REFUSE: nothing written (0 rows). Envelope carries rule NAMES + spans,
+            # never bytes.
+            return _refused_envelope(e)
         # CLEAN/REDACT both land servable NOW as trust=provisional (v3 §3.1); the
         # envelope labels the row's ACTUAL trust (a dedup onto an established row
         # honestly reads established — a write never demotes).
@@ -761,14 +789,20 @@ class HiveMCPServer:
             "scan": _scan_report(res.scan),
             "deduped": res.deduped,
         }
-        if replaces is not None:
-            out["superseded"] = res.superseded  # int when retired, else null
-            if gate is not None and not gate.eligible:
-                out["supersede_noop"] = GATE_NOOP_SIGNAL
-            elif gate is not None and res.superseded is not None:
-                self._stamp_retirement_audit(
-                    res.superseded, EK_SUPERSEDE, identity.agent_id, gate.signals
+        if rider is not None:
+            retired = False
+            # A write that deduped onto a DEPRECATED row must never retire anything in
+            # favour of a dead winner (the no-revive rule). Everything else routes
+            # through the ONE retirement-with-replacement owner, so the one-call and
+            # two-call corrections cannot diverge again.
+            if ep is not None and ep.trust != DEPRECATED:
+                sup = self._handle_supersede(
+                    {"loser": rider, "winner": int(ep.id)}, identity
                 )
+                retired = sup.get("status") == "superseded"
+            out["superseded"] = rider if retired else None
+            if not retired:
+                out["supersede_noop"] = GATE_NOOP_SIGNAL
         if res.status == "redacted" and res.scan.redacted_text is not None:
             out["redacted_preview"] = _preview(res.scan.redacted_text)
         return out
@@ -804,16 +838,9 @@ class HiveMCPServer:
                 meta=meta,
             )
         except SecretRefused as e:
-            # REFUSE: nothing written (0 rows). Envelope carries rule NAMES, never bytes.
-            return {
-                "status": "refused",
-                "reason": str(e),
-                "scan": {
-                    "action": "refuse",
-                    "rules": e.rules,
-                    "n_findings": e.n_findings,
-                },
-            }
+            # REFUSE: nothing written (0 rows). Envelope carries rule NAMES + spans,
+            # never bytes.
+            return _refused_envelope(e)
         if res.status == "disabled":  # autonomy off — nothing written
             return {"status": "disabled"}
         return {
@@ -1162,15 +1189,7 @@ class HiveMCPServer:
                 proposed_by=identity.agent_id,
             )
         except SecretRefused as e:
-            return {
-                "status": "refused",
-                "reason": str(e),
-                "scan": {
-                    "action": "refuse",
-                    "rules": e.rules,
-                    "n_findings": e.n_findings,
-                },
-            }
+            return _refused_envelope(e)
         except ValueError as e:
             return {"status": "rejected", "reason": str(e)}
         if res.status == "disabled":

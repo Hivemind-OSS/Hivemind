@@ -5,15 +5,19 @@ row is servable immediately with ``trust=provisional`` and a matching recall ser
 it labeled provisional. Full scenario matrix: plain write; anchors in 1 and 2
 repos; general write; dedup onto quarantined (lifts to provisional + audit); dedup
 onto provisional/established (idempotent); dedup onto deprecated (no revive);
-secret refuse (0 rows); redact; ``replaces=`` qualified vs evidence-less vs
+secret refuse (0 rows); redact; ``replaces=`` near-dup-qualified vs
+target-side-qualified vs unrelated vs self-dedup vs dedup-onto-deprecated vs
 unknown target; unknown repo name refused clean.
 """
 
 from __future__ import annotations
 
+import json
+
 import pytest
 
 from hive.domain.lifecycle import DEPRECATED, ESTABLISHED, PROVISIONAL, QUARANTINED
+from tests.fakes._fakes import FakeClusterProvider
 from tests.contract.conftest import (
     NOOP_REASON,
     SECRET_TEXT,
@@ -211,7 +215,39 @@ def test_replaces_qualified_target_is_retired(rig):
     assert target not in served_ids(served)
 
 
-def test_replaces_evidence_less_target_noops_but_write_lands(rig):
+def test_replaces_near_dup_correction_retires_in_one_call(tmp_path):
+    """I1 — the case the rider exists for. A correction whose text answers the same
+    need as its target (cos >= conflict.tau) carries its OWN qualifying signal, and
+    that signal is measured BETWEEN the loser and the winner — so it is constructable
+    only once the winner is in the corpus. One call retires; no follow-up needed."""
+    rig = make_rig(tmp_path, embedder=FakeClusterProvider(d=32))
+    target = write_ok(rig.server, "cid=31 the deploy step runs the linter")
+    env = write(
+        rig.server, "cid=31 the deploy step runs the formatter now", replaces=target
+    )
+    assert env.get("status") == "approved"
+    assert env.get("superseded") == target, (
+        f"a near-dup correction qualifies its own retirement in ONE call: {env}"
+    )
+    assert "supersede_noop" not in env, f"nothing no-oped: {env}"
+    assert trust_of(rig.store, target) == DEPRECATED
+    stamped = " ".join(
+        str(json.loads(r["payload"]).get("signals", ""))
+        for r in evidence_rows(rig.store, target)
+        if r["payload"].startswith("{")
+    )
+    assert "winner_near_dup" in stamped, (
+        f"the audit stamps WHICH signal qualified: {stamped!r}"
+    )
+    assert target not in served_ids(
+        recall(rig.server, "cid=31 the deploy step runs the linter")
+    )
+
+
+def test_replaces_unrelated_winner_on_healthy_target_is_still_a_noop(rig):
+    """The rider grants NO new retirement authority. The rig's per-text hash vectors
+    are near-orthogonal, so this correction is unrelated to its target and produces
+    no signal of its own — a healthy, evidence-less target stays servable."""
     target = write_ok(rig.server, "the cache TTL is five minutes")
     before = trust_of(rig.store, target)
     env = write(rig.server, "the cache TTL is ten minutes", replaces=target)
@@ -226,6 +262,75 @@ def test_replaces_evidence_less_target_noops_but_write_lands(rig):
     assert trust_of(rig.store, target) == before == PROVISIONAL
     served = recall(rig.server, "the cache TTL is five minutes")
     assert target in served_ids(served), "the healthy target keeps serving"
+
+
+def test_replaces_rider_noop_leaves_the_write_landed_and_servable(rig):
+    """I3 — whatever the rider decides, the WRITE stands: no partial state, and the
+    new memory answers recall immediately."""
+    target = write_ok(rig.server, "the retry budget is three attempts")
+    env = write(
+        rig.server, "an unrelated fact about the log rotation cadence", replaces=target
+    )
+    assert env.get("status") == "approved" and env.get("supersede_noop") == NOOP_REASON
+    new_id = env["id"]
+    assert trust_of(rig.store, new_id) == PROVISIONAL
+    served = recall(rig.server, "an unrelated fact about the log rotation cadence")
+    assert new_id in served_ids(served), (
+        f"a noop rider never costs the write its servability: {served}"
+    )
+
+
+def test_supersede_refusal_still_leaves_the_write_landed(tmp_path, monkeypatch):
+    """The store refusing the supersede (a lost race, a target that vanished) is
+    benign: both rows coexist, which is the pre-supersession status quo. The write
+    is already committed when the rider runs, so it can never be rolled back."""
+    rig = make_rig(tmp_path, embedder=FakeClusterProvider(d=32))
+    target = write_ok(rig.server, "cid=41 the queue drains oldest-first")
+    monkeypatch.setattr(rig.store, "supersede", lambda *a, **kw: False, raising=False)
+    env = write(rig.server, "cid=41 the queue drains newest-first now", replaces=target)
+    assert env.get("status") == "approved", f"the write still lands: {env}"
+    assert env.get("superseded") is None, "a refused supersede retires nothing"
+    assert env.get("supersede_noop") == NOOP_REASON
+    assert trust_of(rig.store, target) == PROVISIONAL, "both versions coexist"
+    assert trust_of(rig.store, env["id"]) == PROVISIONAL, "the new row is servable"
+    assert env["id"] in served_ids(
+        recall(rig.server, "cid=41 the queue drains newest-first now")
+    )
+
+
+def test_replaces_self_dedup_is_a_noop_never_a_self_supersede(rig):
+    """A write whose text dedups onto the very row it names: a memory can never
+    retire itself, and the envelope reports the noop like any other."""
+    target = write_ok(rig.server, "exactly this text and nothing else")
+    env = write(rig.server, "exactly this text and nothing else", replaces=target)
+    assert env.get("id") == target and env.get("deduped") is True
+    assert env.get("superseded") is None, "a memory can never retire itself"
+    assert env.get("supersede_noop") == NOOP_REASON, (
+        f"the envelope is consistent — a null superseded always names its reason: {env}"
+    )
+    assert trust_of(rig.store, target) == PROVISIONAL
+
+
+def test_replaces_dedup_onto_deprecated_retires_nothing(rig):
+    """The no-revive rule survives the rider: a write that dedups onto a DEPRECATED
+    row must never retire anything in favour of a dead winner."""
+    dead = write_ok(rig.server, "an old fact that will be retired")
+    insert_verify_audit(rig.store, dead, "outcome_verified_hurt", ts=100)
+    assert (
+        payload(call(rig.server, "hive_prune", {"episode_id": dead})).get("status")
+        == "pruned"
+    )
+    assert trust_of(rig.store, dead) == DEPRECATED
+
+    target = write_ok(rig.server, "a healthy memory about the scheduler")
+    insert_verify_audit(rig.store, target, "outcome_verified_hurt", ts=100)
+    env = write(rig.server, "an old fact that will be retired", replaces=target)
+    assert env.get("id") == dead and env.get("deduped") is True
+    assert env.get("superseded") is None, (
+        f"nothing is ever retired in favour of a dead winner: {env}"
+    )
+    assert trust_of(rig.store, target) != DEPRECATED, "the qualified target survives"
+    assert trust_of(rig.store, dead) == DEPRECATED, "the dead row is not revived"
 
 
 def test_replaces_unknown_target_fails_whole_call_nothing_stored(rig):

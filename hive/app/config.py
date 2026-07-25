@@ -279,9 +279,13 @@ class SyncConfig:
 # HIVE_AUTH__MODE switch to resolve here.
 # The v3 deletions are structural: the ``agi`` and ``census`` groups no longer exist, and
 # ``sync`` lost repo_url/token/verify_candidates (the repo registry replaced them) — a
-# leftover HIVE_AGI__* / HIVE_CENSUS__* env var degrades to the existing unknown-group
-# WARN, and a leftover HIVE_SYNC__REPO_URL/TOKEN/VERIFY_CANDIDATES to the unknown-field
-# WARN: ignored, never a live switch, never a crash.
+# leftover HIVE_AGI__* / HIVE_CENSUS__* env var degrades to the unknown-GROUP WARN and a
+# leftover HIVE_SYNC__REPO_URL/TOKEN/VERIFY_CANDIDATES to the unknown-FIELD WARN: never a
+# live switch HERE, never a crash. "Not a config key" is the whole verdict this layer can
+# give — HIVE_SYNC__TOKEN (hive/app/sync.py's fleet-default credential) and
+# HIVE_STORE__DB_PATH (the hive/tools/* entry points) are read straight from the
+# environment on paths that never travel through Config, so calling an unknown key
+# "ignored" would assert something this layer cannot see (BUG-075).
 _GROUP_TYPES: dict[str, type] = {
     "runtime": RuntimeConfig,
     "embedding": EmbeddingConfig,
@@ -398,13 +402,25 @@ def _apply_env(merged: dict[str, dict[str, Any]], env: Mapping[str, str]) -> Non
         group_tok, _, field_tok = body.partition("__")
         group = group_by_upper.get(group_tok.upper())
         if group is None:
-            _log.warning("config.env_unknown_group key=%s ignored", raw_key)
+            # The verdict names only what THIS layer measured. Whether some other
+            # component reads the var is unknowable here (config cannot import its
+            # own consumers), so calling it "ignored" was a claim about the whole
+            # process — and false for the two vars read straight from the env.
+            _log.warning(
+                "config.env_unknown_group key=%s not_a_config_group "
+                "(this layer does not read it; another component may)",
+                raw_key,
+            )
             continue
         typ = _GROUP_TYPES[group]
         field_by_upper = {f.name.upper(): f for f in fields(typ)}
         fld = field_by_upper.get(field_tok.upper())
         if fld is None:
-            _log.warning("config.env_unknown_field key=%s ignored", raw_key)
+            _log.warning(
+                "config.env_unknown_field key=%s not_a_config_field "
+                "(this layer does not read it; another component may)",
+                raw_key,
+            )
             continue
         try:
             merged[group][fld.name] = _coerce(raw_val, fld.type, fld.name)

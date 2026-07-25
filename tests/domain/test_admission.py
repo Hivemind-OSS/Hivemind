@@ -7,8 +7,9 @@ v3 (thin-agent): there is NO approver anywhere — ``write`` lands
 ``trust='quarantined'`` (embedded, structurally unservable). The deterministic
 secret scan stays the ONE non-bypassable gate (refuse = 0 rows, redact = masked
 text only, meta refuse-only), anchors + repo scope thread to ``stage`` in the same
-tx, ``replaces`` validates its target before anything is staged, and a write that
-dedups onto a QUARANTINED row LIFTS it to provisional WITH its audit row."""
+tx, and a write that dedups onto a QUARANTINED row LIFTS it to provisional WITH
+its audit row. The retirement rider (``hive_write(replaces=)``) is NOT here — it is
+the boundary's, evaluated after the winner lands, with ONE owner."""
 
 from __future__ import annotations
 
@@ -69,7 +70,6 @@ class _Store:
         self.audits: list[tuple] = []
         self.stage_calls: list[dict] = []
         self.complete_calls: list[dict] = []
-        self.supersede_calls: list[tuple] = []
         self.rejected: list[int] = []
         self.fail_set_trust = False
         self.fail_complete = False
@@ -191,21 +191,6 @@ class _Store:
         self.audits.append((int(episode_id), kind, actor, int(ts), payload))
         return len(self.audits)
 
-    def supersede(self, target_id, replacement_id, *, actor, ts):
-        self.supersede_calls.append(
-            (int(target_id), int(replacement_id), actor, int(ts))
-        )
-        row = self.rows.get(int(target_id))
-        if (
-            row is None
-            or int(target_id) == int(replacement_id)
-            or row["trust"] == DEPRECATED
-        ):
-            return False
-        row["trust"] = DEPRECATED
-        row["superseded_by"] = int(replacement_id)
-        return True
-
 
 class _RecordingLifecycle:
     """The trigger seam capture drives: the synchronous promotion check + the
@@ -253,12 +238,37 @@ def test_capture_has_no_replaces_parameter():
         svc.capture("a fact", proposed_by="a", replaces=7)
 
 
+def test_write_has_no_replaces_parameter():
+    # the retirement rider is the BOUNDARY's: it needs store reads (the gate feeds)
+    # and must run once the winner exists, neither of which belongs in the pure
+    # domain. One owner, so the one-call and two-call corrections cannot diverge.
+    svc, *_ = _svc()
+    with pytest.raises(TypeError):
+        svc.write("a fact", proposed_by="a", replaces=7)
+
+
+def test_write_result_has_no_superseded_field():
+    import dataclasses
+
+    assert "superseded" not in {f.name for f in dataclasses.fields(WriteResult)}, (
+        "the domain carrier reports only what admission did"
+    )
+
+
+def test_admission_store_protocol_has_no_supersede_member():
+    from hive.domain.admission import _AdmissionStore
+
+    assert not hasattr(_AdmissionStore, "supersede"), (
+        "admission consumes no supersede surface — the port narrowed with the rider"
+    )
+
+
 # ── write lands PROVISIONAL, servable now, in one call ─────────────────────────
 def test_write_lands_provisional_materialized():
     svc, store, provider, _ = _svc()
     r = svc.write("vector index rebuild on boot", proposed_by="agent-1")
     assert isinstance(r, WriteResult)
-    assert r.status == "approved" and r.deduped is False and r.superseded is None
+    assert r.status == "approved" and r.deduped is False
     ep = store.get_episode(r.episode_id)
     assert ep.status == "approved" and ep.trust == PROVISIONAL
     assert ep.value is not None and ep.last_active_ts == NOW
@@ -410,10 +420,7 @@ def test_write_dedup_onto_established_never_demotes():
 def test_write_dedup_onto_deprecated_does_not_revive():
     svc, store, *_ = _svc()
     old = svc.write("the port is 5432", proposed_by="a")
-    new = svc.write(
-        "the port is 6543 since the migration", proposed_by="a", replaces=old.episode_id
-    )
-    assert new.superseded == old.episode_id
+    store.rows[old.episode_id]["trust"] = DEPRECATED  # retired by the boundary
     again = svc.write("the port is 5432", proposed_by="b")  # dedups onto the dead row
     assert again.deduped is True and again.episode_id == old.episode_id
     assert store.get_episode(old.episode_id).trust == DEPRECATED  # NOT revived
@@ -445,48 +452,6 @@ def test_lift_failure_raises_loud():
     store.fail_set_trust = True  # lost-update race on the lift
     with pytest.raises(RuntimeError, match="lift-on-dedup"):
         svc.write("a fact first seen autonomously", proposed_by="agent-2")
-
-
-# ── the replaces rider: validate-first, benign-refused, applied-after-land ─────
-def test_write_replaces_supersedes_existing_target():
-    svc, store, *_ = _svc()
-    old = svc.write("the port is 5432", proposed_by="a")
-    new = svc.write(
-        "the port is 6543 since the migration", proposed_by="a", replaces=old.episode_id
-    )
-    assert new.superseded == old.episode_id
-    dead = store.get_episode(old.episode_id)
-    assert dead.trust == DEPRECATED and dead.superseded_by == new.episode_id
-    assert store.supersede_calls[-1][:2] == (old.episode_id, new.episode_id)
-
-
-def test_write_replaces_unknown_target_fails_whole_call():
-    svc, store, *_ = _svc()
-    with pytest.raises(ValueError, match="does not exist"):
-        svc.write("a correction aimed at nothing", proposed_by="a", replaces=424242)
-    assert store.stage_calls == [] and store.rows == {}  # nothing stored
-
-
-def test_write_replaces_self_dedup_is_benign_noop():
-    svc, store, *_ = _svc()
-    old = svc.write("exactly this text", proposed_by="a")
-    r = svc.write("exactly this text", proposed_by="a", replaces=old.episode_id)
-    assert r.deduped is True and r.episode_id == old.episode_id
-    assert r.superseded is None  # a memory can never retire itself
-    ep = store.get_episode(old.episode_id)
-    assert ep.trust == PROVISIONAL and ep.superseded_by is None
-
-
-def test_write_replaces_store_refusal_is_benign():
-    # the store refuses the supersede (target already deprecated): the write
-    # STANDS, superseded is None — both rows coexist (pre-supersession status quo).
-    svc, store, *_ = _svc()
-    old = svc.write("the port is 5432", proposed_by="a")
-    store.rows[old.episode_id]["trust"] = DEPRECATED
-    store.rows[old.episode_id]["superseded_by"] = None
-    r = svc.write("a brand new correction", proposed_by="a", replaces=old.episode_id)
-    assert r.status == "approved" and r.superseded is None
-    assert store.get_episode(r.episode_id).trust == PROVISIONAL
 
 
 # ── no-leak on downstream failure ──────────────────────────────────────────────

@@ -44,7 +44,12 @@ def test_capture_and_write_envelopes_byte_identical_when_meta_absent():
         {
             "status": "quarantined",
             "id": 1,
-            "scan": {"action": "clean", "rules": [], "n_findings": 0},
+            "scan": {
+                "action": "clean",
+                "rules": [],
+                "n_findings": 0,
+                "findings": [],
+            },
             "deduped": False,
         }
     )
@@ -56,7 +61,12 @@ def test_capture_and_write_envelopes_byte_identical_when_meta_absent():
             "status": "approved",
             "id": 2,
             "trust": "provisional",
-            "scan": {"action": "clean", "rules": [], "n_findings": 0},
+            "scan": {
+                "action": "clean",
+                "rules": [],
+                "n_findings": 0,
+                "findings": [],
+            },
             "deduped": False,
         }
     )

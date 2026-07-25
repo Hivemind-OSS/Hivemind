@@ -278,16 +278,12 @@ class ConflictFlagService:
                 extra={
                     "event": "conflict.flag_refused",
                     "rules": [f.rule for f in verdict.findings],
+                    "spans": [list(f.span) for f in verdict.findings],
                     "proposed_by": proposed_by,
                     "request_id": request_id,
                 },
             )
-            raise SecretRefused(
-                f"refused: credential in resolution "
-                f"({len(verdict.findings)} finding(s))",
-                rules=[f.rule for f in verdict.findings],
-                n_findings=len(verdict.findings),
-            )
+            raise SecretRefused("credential in resolution", findings=verdict.findings)
         stored = (
             (verdict.redacted_text or "")
             if verdict.action == REDACT

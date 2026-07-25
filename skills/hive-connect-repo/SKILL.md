@@ -109,7 +109,7 @@ says otherwise.
 
 | What the repo's block shows | Meaning | Action |
 |---|---|---|
-| `sync` sub-block with `last_tip` + `tracked_ref` set and `last_error` null | **PASS** — mirror cloned, branch resolved, feed live and baselined | Done. (`status: "sync stalled"` may show — it only means "no `change_outcome` row for this repo yet," not a fault.) |
+| `sync` sub-block with `last_tip` + `tracked_ref` set and `last_error` null | **PASS** — mirror cloned, branch resolved, feed live and baselined | Done. (`status: "no change_outcome evidence yet"` shows until this repo's first change-outcome row lands.) |
 | no block for the repo at all | the repo is not registered (or the name differs) | `hive repos` — check the slug; re-run `hive repo add` |
 | block present, no `sync` sub-block after ≥1 interval | the daemon has not completed a tick for it | check `hive logs` for that repo's sync errors; wait one more interval |
 | `sync` with `last_error`, no `last_tip` | the first clone/fetch faulted | `last_error` (redacted) names the leg: **auth** (bad/expired token, missing Contents: Read) or **unreachable** (bad URL / no egress) — fix; the next tick retries |
