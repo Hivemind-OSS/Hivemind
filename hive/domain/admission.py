@@ -67,17 +67,15 @@ class WriteResult:
         the text was never even scanned).
     The domain NEVER returns ``refused`` (refuse RAISES SecretRefused, nothing
     written); the MCP layer maps that exception to a ``refused`` JSON envelope.
-    ``superseded`` carries the retired target id when ``write(replaces=...)``
-    applied its retirement rider (the §3.2 machine-signal gating of that rider
-    lives at the boundary, which passes ``replaces`` through only when the
-    target qualifies)."""
+    There is no retirement field: retirement-with-replacement has ONE owner at the
+    boundary, which runs it after this call returns (the signals a correction
+    produces are measured between the loser and the already-stored winner)."""
 
     status: str
     episode_id: Optional[int]
     content_hash: Optional[str]  # hex; sha256(post-redaction stored text)
     scan: Optional[ScanVerdict]
     deduped: bool = False
-    superseded: Optional[int] = None
 
 
 class _AdmissionStore(Protocol):
@@ -110,9 +108,6 @@ class _AdmissionStore(Protocol):
     ) -> bool: ...
     def reject(self, episode_id: int, *, keep: bool = False) -> None: ...
     def set_trust(self, episode_id: int, new_trust: str, *, now: int) -> bool: ...
-    def supersede(
-        self, target_id: int, replacement_id: int, *, actor: str, ts: int
-    ) -> bool: ...
     def get_episode(self, episode_id: int) -> Optional[Episode]: ...
     def insert_audit(
         self, episode_id: int, kind: str, actor: str, ts: int, payload: str
@@ -160,17 +155,13 @@ class AdmissionService:
                     "event": "admission.refused",
                     "rules": [f.rule for f in verdict.findings],
                     "n_findings": len(verdict.findings),
+                    "spans": [list(f.span) for f in verdict.findings],
                     "proposed_by": proposed_by,
                     "text_len": len(text),
                     "request_id": request_id,
                 },
             )
-            raise SecretRefused(
-                f"refused: credential detected ({len(verdict.findings)} finding(s), "
-                f"rules={[f.rule for f in verdict.findings]})",
-                rules=[f.rule for f in verdict.findings],
-                n_findings=len(verdict.findings),
-            )
+            raise SecretRefused("credential detected", findings=verdict.findings)
         if verdict.action == REDACT:
             _log.info(
                 "admission.redacted",
@@ -199,53 +190,14 @@ class AdmissionService:
                     "event": "admission.meta_refused",
                     "rules": [f.rule for f in verdict.findings],
                     "n_findings": len(verdict.findings),
+                    "spans": [list(f.span) for f in verdict.findings],
                     "proposed_by": proposed_by,
                     "request_id": request_id,
                 },
             )
             raise SecretRefused(
-                f"refused: credential detected in meta ({len(verdict.findings)} "
-                f"finding(s), rules={[f.rule for f in verdict.findings]})",
-                rules=[f.rule for f in verdict.findings],
-                n_findings=len(verdict.findings),
+                "credential detected in meta", findings=verdict.findings
             )
-
-    def _apply_supersession(
-        self, replaces: Optional[int], new_id: int, *, actor: str, request_id: str
-    ) -> Optional[int]:
-        """Run the retirement rider AFTER the replacement landed. A refused
-        supersede (self-supersede via dedup, or a target that vanished between
-        validation and now) is benign — the new memory IS stored; both versions
-        coexisting is the pre-supersession status quo. The §3.2 machine-signal
-        gate on this rider lives at the boundary (which passes ``replaces``
-        through only for a qualifying target)."""
-        if replaces is None:
-            return None
-        ok = self._store.supersede(
-            int(replaces), int(new_id), actor=actor, ts=self._now()
-        )
-        if ok:
-            _log.info(
-                "admission.superseded",
-                extra={
-                    "event": "admission.superseded",
-                    "target": int(replaces),
-                    "replacement": int(new_id),
-                    "actor": actor,
-                    "request_id": request_id,
-                },
-            )
-            return int(replaces)
-        _log.info(
-            "admission.supersede_noop",
-            extra={
-                "event": "admission.supersede_noop",
-                "target": int(replaces),
-                "replacement": int(new_id),
-                "request_id": request_id,
-            },
-        )
-        return None
 
     @staticmethod
     def _anchor_tuples(anchors: Sequence[AnchorRef]) -> list[tuple[str, str]]:
@@ -261,7 +213,6 @@ class AdmissionService:
         proposed_by: str,
         weight: float = 1.0,
         request_id: str = "-",
-        replaces: Optional[int] = None,
         polarity: str = "neutral",
         kind: str = DEFAULT_KIND,
         anchors: Sequence[AnchorRef] = (),
@@ -282,30 +233,10 @@ class AdmissionService:
         ``name@branch`` scope grammar), stored verbatim in ``episode_refs``;
         ``ref == ''`` stays canonical (no declared line, no row).
 
-        ``replaces`` (the retirement rider): the named target is retired in
-        favor of this write — validated to EXIST before anything is staged (an
-        unknown target fails the WHOLE call: no stored-but-not-retired partial);
-        the supersession itself runs after the new row lands. The §3.2
-        machine-signal gate on the rider is the BOUNDARY's job.
-
         ``meta`` is the already-normalized serialized carrier (the boundary owns the
         grammar); it is secret-scanned refuse-only BEFORE the text gauntlet. On a
         dedup hit the existing row is returned UNCHANGED — meta is NOT merged
         (immutability: a new meta needs new text or supersession). // O(1) DB ops + one embed."""
-        if replaces is not None and self._store.get_episode(int(replaces)) is None:
-            _log.warning(
-                "admission.replaces_unknown_target",
-                extra={
-                    "event": "admission.replaces_unknown_target",
-                    "target": int(replaces),
-                    "proposed_by": proposed_by,
-                    "request_id": request_id,
-                },
-            )
-            raise ValueError(
-                f"replaces target {int(replaces)} does not exist — "
-                "nothing stored, nothing retired"
-            )
         self._meta_gate(meta, proposed_by=proposed_by, request_id=request_id)
         verdict = self._scan_gate(text, proposed_by=proposed_by, request_id=request_id)
         staged_text = (
@@ -358,16 +289,12 @@ class AdmissionService:
                         "request_id": request_id,
                     },
                 )
-                superseded = self._apply_supersession(
-                    replaces, eid, actor=proposed_by, request_id=request_id
-                )
                 return WriteResult(
                     status=status,
                     episode_id=eid,
                     content_hash=h,
                     scan=verdict,
                     deduped=True,
-                    superseded=superseded,
                 )
             if ep.trust == DEPRECATED:
                 # a retired row is never silently revived by re-writing its old text;
@@ -433,16 +360,12 @@ class AdmissionService:
                     "request_id": request_id,
                 },
             )
-            superseded = self._apply_supersession(
-                replaces, eid, actor=proposed_by, request_id=request_id
-            )
             return WriteResult(
                 status=status,
                 episode_id=eid,
                 content_hash=h,
                 scan=verdict,
                 deduped=True,
-                superseded=superseded,
             )
 
         # embed (pure, no DB) then flip pending→approved as PROVISIONAL + index,
@@ -524,16 +447,12 @@ class AdmissionService:
                 "request_id": request_id,
             },
         )
-        superseded = self._apply_supersession(
-            replaces, eid, actor=proposed_by, request_id=request_id
-        )
         return WriteResult(
             status=status,
             episode_id=eid,
             content_hash=h,
             scan=verdict,
             deduped=deduped,
-            superseded=superseded,
         )
 
     # ── capture: the unclear-value tail — lands embedded but UNSERVABLE ────────
@@ -553,8 +472,9 @@ class AdmissionService:
         """Capture WITHOUT serving: scan → stage (dedup) → embed → complete
         ``trust='quarantined'`` (embedded but structurally unservable until
         measured demand promotes it) → synchronous promotion check → decay
-        sweep. Deliberately has NO ``replaces``: a quarantined capture must
-        never gain retirement power. With autonomy disabled, returns
+        sweep. Neither verb here carries a retirement rider — retirement is the
+        boundary's, and a quarantined capture never gains that power at all
+        (``hive_capture`` has no ``replaces`` on its schema). With autonomy disabled, returns
         ``status='disabled'`` before anything (even the scan) runs — the store
         is untouched. The secret floor is IDENTICAL to write's (refuse raises,
         0 rows); ``meta`` (the already-normalized serialized carrier) is scanned

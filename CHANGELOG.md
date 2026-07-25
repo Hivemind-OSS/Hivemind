@@ -3,6 +3,64 @@
 All notable changes to this project are documented here.
 
 ## Fixed
+- **`hive_write(replaces=<id>)` can now actually retire the memory it corrects.** The rider was
+  gated BEFORE the new row was written, so at gate time the winner did not exist — and the two
+  signals a correction produces (`contradiction`, `winner_near_dup`) are both measured BETWEEN
+  two present rows. Only target-side evidence (drift, verify-stale, other-identity hurt) could
+  ever qualify, which is precisely what a fresh self-correction does not have: the advertised
+  correction path returned a benign-looking `supersede_noop` while the wrong memory kept serving,
+  and an agent following the contract moved on. The retirement now runs AFTER the write lands,
+  through the same single owner `hive_supersede` uses, so a one-call correction reaches the
+  identical verdict as the two-call one and the divergence is unconstructable rather than
+  re-tested. Admission's second, partial copy of the rider is deleted — the retirement decision
+  and its execution now live in one place. The write always lands whatever the rider decides; an
+  unknown target still fails the whole call loudly with nothing stored; and a write that dedups
+  onto a retired row retires nothing (never a dead winner).
+- **The boot log no longer calls a live credential "ignored".** `config.env_unknown_field
+  key=HIVE_SYNC__TOKEN ignored` was flatly false: the sync daemon reads that var from the
+  environment every tick as the fleet-default git credential for any repo registered without
+  `--token-env`, on a path that never travels through `Config`. `HIVE_STORE__DB_PATH` — read by
+  the entrypoint, healthcheck, backupctl, censusctl and repoctl — got the same verdict from the
+  unknown-group branch. An operator or agent reading that line concludes a working credential is
+  inert. Both branches now report only what the config layer can actually see
+  (`not_a_config_group` / `not_a_config_field`, "this layer does not read it; another component
+  may"). The level stays WARNING so a real typo is still loud, and no value is ever echoed.
+- **A healthy census feed no longer reports itself stalled.** A registered repo's health block
+  attached `status: "sync stalled"` whenever no `change_outcome` row existed for it yet — with no
+  input from any liveness field — so every freshly connected repo read as faulted while the
+  watermark advanced and the error stayed null. The shipped runbook had degraded to telling
+  operators to ignore the field, which meant a real stall read identically to the benign case.
+  The key keeps its slot; the string now states the fact measured:
+  `status: "no change_outcome evidence yet"`. Whether the feed is actually stuck is answered
+  where it always was — `last_error` / `last_sync_ts` and the `fleet` block.
+- **`.env.example` no longer advertises knobs that set nothing.** The `HIVE_AGI__MODE` block
+  (the `agi` config group is gone), `HIVE_SYNC__REPO_URL` and `HIVE_SYNC__VERIFY_CANDIDATES` are
+  removed, and the sync section no longer claims the feed is armed by an env var — it is armed by
+  the durable repo registry (`hive repo add`), re-read every tick. `HIVE_SYNC__WEBHOOK_SECRET` is
+  documented as standalone-valid (one nudge wakes the loop for every registered repo), not as
+  requiring a repo URL that no longer exists. A contract test now resolves every `HIVE_*` key in
+  the template against the live config surface, so a dead knob cannot reappear silently.
+- **The secret floor no longer refuses legitimate memory text that merely names a path or a list
+  of field names.** The entropy catch-all scores symbol DIVERSITY, and `/`, `_` and `-` are all
+  inside its candidate charset — so slash-joining ordinary words manufactured a high-entropy run
+  out of nothing secret, and writes were refused for containing `.claude/hooks/mint_fp.py` (H≈4.25)
+  or `interval_s/webhook_secret/mirror_dir/drift_per_tick/backfill_per_tick/workers` (H=4.07). That
+  collided head-on with the served capture discipline, which asks every memory to name its WHERE as
+  `path/file.py::symbol` in the body text (BUG-018). The catch-all now skips IDENTIFIER-SHAPED
+  tokens — ≥2 segments split on `/ _ - =`, every one of them a word (ASCII-alphanumeric, ≤20 chars,
+  no internal case mixing). The 4.0-bit floor is unchanged in both directions, because it is
+  immovable: real `pypi-` macaroons sit just UNDER it at H≈3.98, so the miss side closes with named
+  prefixes, not a lower threshold. The exclusion is structural rather than a threshold move
+  precisely so it cannot open the miss side: a single-segment run is never exempt (prefix-less
+  random tokens, hex and base32 are still judged on entropy alone), and one case-mixed segment
+  keeps the whole run on the entropy path — so an AWS secret access key is still refused despite
+  its two `/` separators.
+- **A refused write now tells you WHICH span fired, not just which rule.** The finding always
+  carried its char offsets, but the envelope dropped them, so an agent whose legitimate text tripped
+  a rule saw only `rules=['entropy']` and had to bisect its own memory text to get the write
+  accepted. The refusal now carries `scan.findings=[{rule,start,end}]` and repeats the offsets in
+  `reason`, for writes, captures and flags alike. Offsets and rule labels only — the matched bytes
+  are still never surfaced, logged, or stored.
 - **A repo's mirror is now bound to the repository it is a mirror OF, not just to its registry
   name.** Removing a repo and re-adding the same name against a DIFFERENT URL — the only way to
   change a registered URL, and nothing forces a sync tick between the two — left the previous

@@ -114,11 +114,67 @@ def test_supersede_on_healthy_target_is_benign_noop():
 def test_write_replaces_healthy_target_rider_noops_but_write_lands():
     server, _ = build_real_server()
     target = write_text(server, "the pool size is eight")["id"]
-    env = write_text(server, "the pool size is sixteen", replaces=target)
+    env = write_text(server, "an unrelated note about log rotation", replaces=target)
     assert env["status"] == "approved"  # the WRITE always proceeds
     assert env["superseded"] is None
     assert env["supersede_noop"] == GATE_NOOP_SIGNAL  # reported literally
     assert server.store.get_episode(target).trust == "provisional"
+
+
+def test_write_replaces_retirement_runs_after_the_write():
+    """The A ordering itself, asserted as an ORDER not a result: the winner must be
+    in the corpus before the retirement is attempted, because the two signals a
+    correction actually produces (contradiction, winner_near_dup) are measured
+    BETWEEN the loser and the winner. Anything else makes them unconstructable."""
+    server, _ = build_real_server(embedder=FakeClusterProvider(d=64))
+    target = write_text(server, "cid=51 the report is generated nightly")["id"]
+
+    order: list = []
+    real_write = server.admission.write
+    real_supersede = server.store.supersede
+
+    def spy_write(*a, **kw):
+        res = real_write(*a, **kw)
+        order.append(("write_returned", res.episode_id))
+        return res
+
+    def spy_supersede(target_id, replacement_id, **kw):
+        order.append(("supersede", int(target_id), int(replacement_id)))
+        return real_supersede(target_id, replacement_id, **kw)
+
+    server.admission.write = spy_write  # type: ignore[method-assign]
+    server.store.supersede = spy_supersede  # type: ignore[method-assign]
+    env = write_text(
+        server, "cid=51 the report is generated hourly now", replaces=target
+    )
+
+    assert env["superseded"] == target, env
+    kinds = [step[0] for step in order]
+    assert kinds == ["write_returned", "supersede"], (
+        f"the retirement runs AFTER the write lands, never before: {order}"
+    )
+    assert order[1][1:] == (target, env["id"]), (
+        f"the retirement names (loser, the just-written winner): {order}"
+    )
+
+
+def test_write_replaces_deprecated_winner_never_supersedes():
+    """The no-revive guard: a write whose text dedups onto a DEPRECATED row must
+    never retire anything in favour of a dead winner — even a fully qualified
+    target."""
+    server, _ = build_real_server()
+    dead = write_text(server, "an old fact soon to be retired")["id"]
+    _verify_row(server, dead, "outcome_verified_hurt", ts=100)
+    assert _prune(server, dead)["status"] == "pruned"
+
+    target = write_text(server, "a separate memory about the scheduler")["id"]
+    _verify_row(server, target, "outcome_verified_hurt", ts=100)
+    env = write_text(server, "an old fact soon to be retired", replaces=target)
+    assert env["id"] == dead and env["deduped"] is True
+    assert env["superseded"] is None, "no retirement in favour of a dead winner"
+    assert env["supersede_noop"] == GATE_NOOP_SIGNAL
+    assert server.store.get_episode(target).trust != "deprecated"
+    assert server.store.get_episode(dead).trust == "deprecated"  # never revived
 
 
 def test_write_replaces_unknown_target_fails_whole_call_nothing_stored():

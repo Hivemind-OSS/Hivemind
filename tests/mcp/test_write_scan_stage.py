@@ -81,3 +81,57 @@ def test_refused_envelope_carries_no_secret_bytes():
 
     blob = _json.dumps(out)
     assert "sk-ABCDEFGHIJKLMNOPQRSTUVWXYZ012345" not in blob
+
+
+# ── the refusal names WHICH SPAN fired (BUG-018: names-not-bytes ≠ names-only) ──
+def test_refused_envelope_carries_the_finding_span():
+    server, _ = build_real_server(scanner=FakeScanner())
+    out = content(tool_call(server, "hive_write", {"text": _SECRET}))
+    findings = out["scan"]["findings"]
+    assert len(findings) == out["scan"]["n_findings"] >= 1
+    f = findings[0]
+    assert f["rule"] == "openai_key"
+    # the offsets index back into the SUBMITTED text — the writer can locate the run
+    # it must fix instead of bisecting its own memory by hand
+    assert _SECRET[f["start"] : f["end"]] == "sk-ABCDEFGHIJKLMNOPQRSTUVWXYZ012345"
+    # …and the span is offsets only: deleting it from the envelope is the mutation
+    assert isinstance(f["start"], int) and isinstance(f["end"], int)
+
+
+def test_refused_reason_string_names_the_span_too():
+    # a client that surfaces only `reason` must still see the span (the reason IS
+    # the message SecretRefused builds from its findings)
+    server, _ = build_real_server(scanner=FakeScanner())
+    out = content(tool_call(server, "hive_write", {"text": _SECRET}))
+    f = out["scan"]["findings"][0]
+    assert f"spans=[[{f['start']}, {f['end']}]]" in out["reason"]
+    assert "sk-ABCDEFGHIJKLMNOPQRSTUVWXYZ012345" not in out["reason"]
+
+
+def test_capture_refusal_shares_the_same_envelope():
+    # write / capture / flag render the refusal through ONE owner — they cannot fork
+    server, _ = build_real_server(scanner=FakeScanner())
+    out = content(tool_call(server, "hive_capture", {"text": _SECRET}))
+    assert out["status"] == "refused" and out["scan"]["action"] == "refuse"
+    assert out["scan"]["findings"][0]["rule"] == "openai_key"
+    assert server.store.counts() == (0, 0)
+
+
+def test_clean_write_reports_empty_findings_list():
+    # the clean report carries the same key, empty — one ScanReport shape, always
+    server, _ = build_real_server()
+    out = content(tool_call(server, "hive_write", {"text": "a clean durable insight"}))
+    assert out["scan"]["findings"] == [] and out["scan"]["n_findings"] == 0
+
+
+def test_write_of_identifier_shaped_memory_text_is_admitted():
+    """BUG-018 end-to-end: the memory text that took the live floor offline —
+    a slash-joined list of config field names — now lands instead of refusing."""
+    server, _ = build_real_server()
+    text = (
+        "sync capacity knobs: interval_s/webhook_secret/mirror_dir/"
+        "drift_per_tick/backfill_per_tick/workers live on hive/app/config.py::SyncConfig"
+    )
+    out = content(tool_call(server, "hive_write", {"text": text}))
+    assert out["status"] == "approved"
+    assert out["scan"]["action"] == "clean" and out["scan"]["findings"] == []

@@ -8,9 +8,9 @@ REPO — the cheap window into "has this repo's census feed gone dark" (attribut
 the canonical payload's ``repo`` key; a legacy repo-less row attributes to nobody —
 honest under-claim); (2) when the sync daemon has left ``sync:<name>:*`` meta for the
 repo, its observable state — the durable watermark, the last surfaced fault, and the
-counters. With sync configured for a repo, darkness is REINTERPRETED: census is
-server-automatic, so a dark feed reads ``status: "sync stalled"``
-(present-only-when-dark).
+counters. With sync configured for a repo, a dark feed reads
+``status: "no change_outcome evidence yet"`` (present-only-when-dark) — the fact this
+reader actually measured, never a verdict about the daemon, which it never observes.
 
 ``fleet`` answers the question the repo-keyed map structurally could not (BUG-062): is
 the DAEMON alive? A tick-shell fault — the registry read failing, anything escaping a
@@ -168,9 +168,13 @@ def _repo_blocks(store: Any, conn: Any) -> dict[str, Any]:
             for field in COUNTER_FIELDS:
                 sync_block[field] = _counter(meta.get(field))
             if block["days_since_last_change_outcome"] is None:
-                # marker: an unconditional attach reds
-                # test_sync_configured_and_live_carries_no_stalled_status.
-                sync_block["status"] = "sync stalled"
+                # The key states the MEASURED fact, never a verdict about the daemon:
+                # nothing read here observes liveness, and a fresh store legitimately
+                # has no change_outcome row yet. Whether the feed is actually stuck is
+                # answered by last_error / last_sync_ts and by the fleet block — never
+                # by this key. // marker: an unconditional attach reds
+                # test_status_is_present_only_when_dark.
+                sync_block["status"] = "no change_outcome evidence yet"
             block["sync"] = sync_block
         report[name] = block
     return report

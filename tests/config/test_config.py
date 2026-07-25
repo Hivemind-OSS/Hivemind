@@ -13,10 +13,37 @@ Grounded deviations (built-decision-wins, documented in the deliverable):
 from __future__ import annotations
 
 import dataclasses
+import logging
+from contextlib import contextmanager
+from typing import Iterator
 
 import pytest
 
 from hive.app.config import Config
+
+
+@contextmanager
+def config_records() -> Iterator[list[logging.LogRecord]]:
+    """Capture the config layer's OWN records off its own logger. Boot-time
+    observability sets ``propagate=False`` on the ``hive`` logger for the whole
+    process, so a root-level capture can silently see nothing once any test has
+    booted the server."""
+    logger = logging.getLogger("hive.config")
+    records: list[logging.LogRecord] = []
+
+    class _Sink(logging.Handler):
+        def emit(self, record: logging.LogRecord) -> None:
+            records.append(record)
+
+    sink = _Sink(level=logging.DEBUG)
+    prior = logger.level
+    logger.addHandler(sink)
+    logger.setLevel(logging.DEBUG)
+    try:
+        yield records
+    finally:
+        logger.removeHandler(sink)
+        logger.setLevel(prior)
 
 
 # ── happy path / defaults ─────────────────────────────────────────────────────
@@ -50,6 +77,60 @@ def test_env_noncoercible_value_skipped_with_warn(caplog):
     env = {"HIVE_RECALL__RECALL_TOP_N": "not-an-int"}
     cfg = Config.load(db_path=":memory:", env=env)
     assert cfg.recall.recall_top_n == 10
+
+
+# ── the unknown-key verdict states only what THIS layer knows ────────────────
+def test_unknown_field_warn_states_only_what_config_knows():
+    """``HIVE_SYNC__TOKEN`` is not a ``SyncConfig`` field — but ``hive/app/sync.py``
+    reads it every tick as the fleet-default credential. This layer may report that
+    the key is not a config field; it may NOT report that the key is ignored, which
+    is a claim about the whole process it has no way to check."""
+    with config_records() as records:
+        Config.load(db_path=":memory:", env={"HIVE_SYNC__TOKEN": "tok-credential"})
+    rows = [r.getMessage() for r in records if "HIVE_SYNC__TOKEN" in r.getMessage()]
+    assert rows, f"the unknown-field row must NAME the key: {records}"
+    for row in rows:
+        assert "ignored" not in row.lower(), (
+            f"the config layer cannot know whether another component reads it: {row!r}"
+        )
+        assert "not_a_config_field" in row, f"it states what it DID measure: {row!r}"
+        assert "tok-credential" not in row, "never the value"
+
+
+def test_unknown_group_warn_states_only_what_config_knows():
+    """The group branch — the one BUG-075 does not name. ``HIVE_STORE__DB_PATH`` has
+    no ``store`` group at all, yet the entrypoint, healthcheck, backupctl, censusctl
+    and repoctl all read it."""
+    with config_records() as records:
+        Config.load(db_path=":memory:", env={"HIVE_STORE__DB_PATH": "/data/shared.db"})
+    rows = [r.getMessage() for r in records if "HIVE_STORE__DB_PATH" in r.getMessage()]
+    assert rows, f"the unknown-group row must NAME the key: {records}"
+    for row in rows:
+        assert "ignored" not in row.lower(), (
+            f"the config layer cannot know whether another component reads it: {row!r}"
+        )
+        assert "not_a_config_group" in row, f"it states what it DID measure: {row!r}"
+        assert "/data/shared.db" not in row, "never the value"
+
+
+def test_env_warn_level_stays_warning():
+    """An honest verdict must not become a quiet one: a genuine typo (the case the
+    WARN exists for) stays at WARNING on BOTH branches. Downgrading to INFO would
+    trade one silent failure for another."""
+    with config_records() as records:
+        Config.load(
+            db_path=":memory:",
+            env={"HIVE_RECALL__TAU_SERVEE": "0.9", "HIVE_RECAL__TAU_SERVE": "0.9"},
+        )
+    by_key = {
+        key: [r for r in records if key in r.getMessage()]
+        for key in ("HIVE_RECALL__TAU_SERVEE", "HIVE_RECAL__TAU_SERVE")
+    }
+    for key, rows in by_key.items():
+        assert rows, f"a mistyped key must still be surfaced: {key}"
+        assert all(r.levelno == logging.WARNING for r in rows), (
+            f"a mistyped key stays LOUD: {key} at {[r.levelname for r in rows]}"
+        )
 
 
 # ── 3-layer precedence: defaults < HIVE_* env < explicit overrides ────────────
@@ -398,9 +479,11 @@ def test_sync_deleted_fields_raise_as_unknown_overrides():
             Config.load(sync=dead)
 
 
-def test_sync_deleted_env_vars_are_ignored_not_crash():
-    # leftover env from a v2 deployment degrades to the unknown-field WARN — ignored, and
-    # never echoed (the value could be a credential).
+def test_sync_deleted_env_vars_never_reach_syncconfig():
+    # leftover env from a v2 deployment degrades to the unknown-field WARN — it sets
+    # nothing HERE, and is never echoed (the value could be a credential). Inertness
+    # elsewhere is not this layer's to claim: HIVE_SYNC__TOKEN is live on sync.py's
+    # own env path.
     env = {
         "HIVE_SYNC__REPO_URL": "https://example.invalid/x.git",
         "HIVE_SYNC__TOKEN": "tok-value",

@@ -126,17 +126,21 @@ def test_supersede_on_healthy_target_is_benign_noop(tmp_path):
     _assert_gate_noop(env, rig, loser)
 
 
-def test_write_replaces_healthy_target_rider_noops(tmp_path):
+def test_write_replaces_unrelated_winner_noops(tmp_path):
+    # the rider grants NO new authority: an unrelated correction (near-orthogonal
+    # vectors) against a healthy target produces no signal on either side.
     rig = _rig(tmp_path)
     target = write_ok(rig.server, "the pool size is eight")
-    env = write(rig.server, "the pool size is sixteen", replaces=target)
+    env = write(rig.server, "an unrelated note about log rotation", replaces=target)
     assert env.get("status") == "approved", "the WRITE itself always lands"
     assert env.get("superseded") is None
     assert env.get("supersede_noop") == NOOP_REASON
     assert trust_of(rig.store, target) == PROVISIONAL
 
 
-def test_write_replaces_qualified_target_retires(tmp_path):
+def test_replaces_drift_qualified_target_still_retires(tmp_path):
+    # the target-side clause is unchanged by the reordering: drift on the memory's
+    # own line qualifies whether or not the winner adds a signal.
     rig = _rig(tmp_path)
     target = write_ok(
         rig.server,
@@ -152,6 +156,85 @@ def test_write_replaces_qualified_target_retires(tmp_path):
         f"a drift-qualified replaces target IS retired by the rider: {env}"
     )
     assert trust_of(rig.store, target) == DEPRECATED
+    _assert_retired(rig, target, expect_signal_substr="drift")
+
+
+def test_replaces_contradiction_correction_stamps_both_signals(tmp_path):
+    # a correction that both answers the same need AND opposes its target's polarity
+    # is the strongest correction shape there is — both between-row signals fire.
+    rig = _rig(tmp_path, cluster=True)
+    target = write_ok(
+        rig.server, "cid=33 do retry idempotent posts automatically", polarity="do"
+    )
+    env = write(
+        rig.server,
+        "cid=33 dont retry posts automatically ever",
+        replaces=target,
+        polarity="dont",
+    )
+    assert env.get("superseded") == target, (
+        f"a contradicting near-dup correction retires in one call: {env}"
+    )
+    _assert_retired(rig, target, expect_signal_substr="contradiction")
+    audits = [
+        json.loads(r["payload"])
+        for r in evidence_rows(rig.store, target)
+        if r["payload"].startswith("{")
+    ]
+    signals = [s for body in audits for s in (body.get("signals") or [])]
+    assert "winner_near_dup" in signals and "contradiction" in signals, (
+        f"both between-row signals are stamped: {signals}"
+    )
+
+
+def test_one_call_and_two_call_correction_reach_the_same_verdict(tmp_path):
+    """I2 — the divergence that caused BUG-074 is unconstructable: the one-call rider
+    IS the two-call path, so two identical fixtures reach the same trust and the same
+    stamped signal set whichever verb the agent used."""
+
+    def _fresh(name: str, *, cluster: bool = False):
+        root = tmp_path / name
+        root.mkdir()
+        return _rig(root, cluster=cluster)
+
+    def _signals(rig, eid) -> set:
+        out: set = set()
+        for row in evidence_rows(rig.store, eid):
+            if not row["payload"].startswith("{"):
+                continue
+            body = json.loads(row["payload"])
+            out.update(body.get("signals") or [])
+        return out
+
+    # near-dup pair — both must retire, on the same signal set
+    one = _fresh("one", cluster=True)
+    loser_a = write_ok(one.server, "cid=34 the cache is warmed at boot")
+    env = write(one.server, "cid=34 the cache is warmed lazily now", replaces=loser_a)
+    assert env.get("superseded") == loser_a
+
+    two = _fresh("two", cluster=True)
+    loser_b = write_ok(two.server, "cid=34 the cache is warmed at boot")
+    winner_b = write_ok(two.server, "cid=34 the cache is warmed lazily now")
+    assert _supersede(two, loser_b, winner_b).get("status") == "superseded"
+
+    assert trust_of(one.store, loser_a) == trust_of(two.store, loser_b) == DEPRECATED
+    assert _signals(one, loser_a) == _signals(two, loser_b), (
+        "the one-call and two-call corrections cannot reach different verdicts"
+    )
+
+    # unrelated pair — both must noop
+    three = _fresh("three")
+    loser_c = write_ok(three.server, "an isolated fact about the scheduler")
+    env = write(three.server, "an isolated fact about the linter", replaces=loser_c)
+    assert env.get("superseded") is None
+
+    four = _fresh("four")
+    loser_d = write_ok(four.server, "an isolated fact about the scheduler")
+    winner_d = write_ok(four.server, "an isolated fact about the linter")
+    assert _supersede(four, loser_d, winner_d).get("status") == "noop"
+    assert (
+        trust_of(three.store, loser_c) == trust_of(four.store, loser_d) == PROVISIONAL
+    )
 
 
 # ── the qualifying signals ────────────────────────────────────────────────────

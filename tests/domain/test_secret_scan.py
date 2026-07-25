@@ -20,6 +20,7 @@ from hive.domain.secret_scan import (
     REFUSE,
     ScanVerdict,
     SecretFinding,
+    is_identifier_shaped,
     scan,
     token_entropy_bits,
 )
@@ -27,6 +28,145 @@ from hive.domain.secret_scan import (
 
 def _rules(v: ScanVerdict) -> set[str]:
     return {f.rule for f in v.findings}
+
+
+# ── the two corpora: every row is a real string from this codebase / its memory
+#    store (clean) or a SYNTHETIC credential (refused). This is the regression
+#    baseline BUG-018 is judged against — the structural exclusion must close the
+#    false-positive side WITHOUT opening the miss side. ─────────────────────────
+MUST_NOT_FLAG = [
+    # the live refusal that took the floor offline: 77 chars, H=4.07
+    (
+        "config_field_list",
+        "interval_s/webhook_secret/mirror_dir/drift_per_tick/backfill_per_tick/workers",
+    ),
+    (
+        "hook_path_mint_fp",
+        ".claude/hooks/mint_fp.py",
+    ),  # BUG-018's original case, H≈4.25
+    (
+        "hook_path_stop_capture",
+        ".claude/hooks/stop-capture.py",
+    ),  # H≈3.9, passed before too
+    ("module_path", "hive/tools/entrypoint.py"),
+    ("anchor_class", "hive/app/config.py::SyncConfig"),
+    ("anchor_function", "hive/app/sync.py::authenticated_url"),
+    ("anchor_method", "hive/adapters/store_sqlite.py::repo_remove"),
+    ("git_sha_40", "86011691f602670f562dda9fe345e2d9c4158128"),
+    ("remote_url", "https://github.com/Hivemind-OSS/Hivemind.git"),
+    ("env_var_sync", "HIVE_SYNC__DRIFT_PER_TICK"),
+    ("env_var_scan", "HIVE_SECRET_SCAN__ENABLED"),
+    (
+        "env_assignment",
+        "HIVE_SECRET_SCAN__ENABLED=false",
+    ),  # `=` is an identifier joiner
+    ("verdict_blast_radius", "blast_radius_changed"),
+    ("verdict_anchor_changed", "anchor_changed"),
+    ("signal_winner_near_dup", "winner_near_dup"),
+]
+
+MUST_FLAG = [
+    ("github_pat", "ghp_A1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6Q7r8", "github_pat"),
+    ("aws_akia", "AKIAIOSFODNN7EXAMPLE", "aws_akia"),
+    (
+        "anthropic_key",
+        "sk-ant-api03-Xy9Kd0Lm2Np4Qr6St8Uv1Wx3Yz5Ab7Cd9Ef1Gh3Ij5Kl7Mn9",
+        "openai_key",
+    ),
+    # Deliberately NOT shaped like a real Slack token (no `-<digits>-<digits>-<alnum>`
+    # body): GitHub push protection blocks a fixture that mimics the real structure, so a
+    # realistic-looking value here makes the repo unpushable. It still exercises the rule —
+    # that is all the prefix regex reads.
+    (
+        "slack_token",
+        "xoxb-EXAMPLEFIXTUREONLYNOTREAL",
+        "slack_token",
+    ),
+    # H≈3.98 — the standing proof the floor must not move; the PREFIX catches it
+    (
+        "pypi_macaroon",
+        "pypi-AgEIcHlwaS5vcmcCJDk0Y2FhZDQyLTk3ZDMtNGY2Yi1hOGY0LTZk",
+        "pypi_token",
+    ),
+    ("pem_header", "-----BEGIN RSA PRIVATE KEY-----", "pem_private_key"),
+    # the exact shape this system writes into a mirror's .git/config
+    (
+        "mirror_remote",
+        "https://x-access-token:ghp_A1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6Q7r8@github.com/o/r.git",
+        "connection_string",
+    ),
+    # NO named prefix — ONLY the entropy leg catches this, so weakening it leaks
+    ("ngrok_prefixless", "2mK9pQ7xZ4vL8nR3wT6yB1cF5hJ0dG2sA9eU4iO7kM3qX8zV", "entropy"),
+    # an AWS SECRET access key: 2 `/` segments, but case-MIXED ⇒ no path exemption
+    ("aws_secret_key", "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY", "entropy"),
+]
+
+
+@pytest.mark.parametrize("case,text", MUST_NOT_FLAG, ids=[c for c, _ in MUST_NOT_FLAG])
+def test_legitimate_memory_text_is_clean(case: str, text: str):
+    # bare AND embedded in prose (the real write shape) — both must be admitted
+    assert scan(text).action == CLEAN, case
+    assert scan(f"gotcha: the fix lives at {text} — see the note").action == CLEAN, case
+
+
+@pytest.mark.parametrize("case,text,rule", MUST_FLAG, ids=[c for c, _, _ in MUST_FLAG])
+def test_credential_is_refused(case: str, text: str, rule: str):
+    for probe in (text, f"deploy note: {text} do not leak"):
+        v = scan(probe)
+        assert v.action == REFUSE, case
+        assert rule in _rules(v), case
+
+
+# ── the structural exclusion itself (the BUG-018 mechanism) ───────────────────
+def test_identifier_shape_requires_two_word_segments():
+    # multi-segment word runs: paths, snake_case, SCREAMING_SNAKE, TitleCase, digits
+    for ident in (
+        "claude/hooks/mint_fp",
+        "interval_s/webhook_secret/mirror_dir",
+        "HIVE_SYNC__DRIFT_PER_TICK",
+        "com/Hivemind-OSS/Hivemind",
+        "hive/app/v2/config_2026",
+    ):
+        assert is_identifier_shaped(ident), ident
+    # mutation #1: a SINGLE-segment run is never exempt, whatever its entropy —
+    # this is what keeps prefix-less blobs (and base32/hex) on the entropy path
+    for bare in (
+        "2mK9pQ7xZ4vL8nR3wT6yB1cF5hJ0dG2sA9eU4iO7kM3qX8zV",
+        "0123456789abcdefghij",
+    ):
+        assert not is_identifier_shaped(bare), bare
+
+
+def test_identifier_shape_rejects_one_bad_segment():
+    # mutation #2: ONE non-word segment keeps the WHOLE run on the entropy path
+    assert not is_identifier_shaped(
+        "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"
+    )  # case-mixed
+    assert not is_identifier_shaped("hooks/mint/" + "a" * 21)  # over-long segment
+    assert not is_identifier_shaped("abc+defghij_klmnopqrst")  # `+` is not a joiner
+    # …while the same run with every segment word-shaped IS exempt (the contrast)
+    assert is_identifier_shaped("hooks/mint/" + "a" * 20)
+
+
+def test_entropy_leg_still_fires_on_prefixless_blobs():
+    # the exclusion narrows the entropy leg by SHAPE, never by threshold: single-case
+    # blobs, base64 padding and `+`-bearing runs are all still refused
+    for blob in (
+        "2mk9pq7xz4vl8nr3wt6yb1cf5hj0dg2sa9eu4io7km3qx8zv",  # all lower
+        "2MK9PQ7XZ4VL8NR3WT6YB1CF5HJ0DG2SA9EU4IO7KM3QX8ZV",  # all upper
+        "YWJjZGVmZ2hpamtsbW5vcHFyc3R1dnd4eXo=",  # base64, terminal padding
+        "2mK9pQ7xZ4vL/8nR3wT6yB1cF/5hJ0dG2sA9eU4",  # blob split by `/`
+    ):
+        assert scan(f"token {blob} end").action == REFUSE, blob
+
+
+def test_identifier_shaped_residual_is_deliberately_clean():
+    # The NAMED residual this exclusion buys: a credential whose every segment is a
+    # short single-case word is exempted along with the paths it admits. Accepted
+    # because a random run has case-mixed or over-long segments with overwhelming
+    # probability, and no single-segment run is ever exempt. If you close it, update
+    # the secret_scan residual note and flip this expectation deliberately.
+    assert scan("token abcdefghij_klmnopqrst end").action == CLEAN
 
 
 # ── one test per named-rule family (delete-the-regex ⟹ this test red) ─────────

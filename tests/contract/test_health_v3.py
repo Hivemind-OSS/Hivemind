@@ -81,6 +81,86 @@ def test_census_health_empty_registry_block(rig):
     )
 
 
+# ── the per-repo block never alleges a fault it did not measure (I9) ─────────
+
+
+def _dark_but_live(rig, name: str = "alpha") -> dict:
+    """A repo whose daemon is demonstrably TICKING — watermark advancing, no error,
+    backfill counter climbing — and which simply has no ``change_outcome`` row yet.
+    The shape observed on a healthy fleet that nevertheless read as stalled."""
+    register_repo(rig.store, name, f"https://example.invalid/{name}.git")
+    rig.store.meta_set(f"sync:{name}:last_tip", "a" * 40)
+    rig.store.meta_set(f"sync:{name}:last_sync_ts", str(int(rig.clock.now())))
+    rig.store.meta_set(f"sync:{name}:backfilled_total", "17")
+    env = _health(rig, include_census_health=True)
+    return env["census_health"]["repos"][name]["sync"]
+
+
+def test_live_daemon_with_no_change_outcome_never_reports_a_fault(rig):
+    """The false alarm itself: nothing in this block was measured about the
+    daemon's liveness, so nothing in it may allege the daemon has stalled."""
+    sync = _dark_but_live(rig)
+    assert sync["last_error"] is None and sync["backfilled_total"] == 17, (
+        f"the fixture must be a demonstrably LIVE feed: {sync}"
+    )
+    serialized = " ".join(str(v) for v in sync.values())
+    for alleged in ("stalled", "stall", "stuck", "dead", "down"):
+        assert alleged not in serialized.lower(), (
+            f"a block that measured only evidence-darkness cannot allege a daemon "
+            f"fault ({alleged!r}): {sync}"
+        )
+
+
+def test_dark_block_states_the_measured_fact_not_a_verdict(rig):
+    """The key keeps its slot and its present-only-when-true idiom — only the CLAIM
+    changes, from a verdict about the daemon to the fact actually measured."""
+    sync = _dark_but_live(rig)
+    assert "status" in sync, "the key keeps its slot — the fact is still worth serving"
+    assert sync["status"] == "no change_outcome evidence yet", (
+        f"the string states what was measured: {sync['status']!r}"
+    )
+
+
+def test_sticky_last_error_does_not_resurrect_a_stall_claim(rig):
+    """``sync:<name>:last_error`` is STICKY — no clean tick clears it — so a single
+    transient fault must never turn into a permanent verdict. The block reports the
+    error verbatim and still refuses to editorialize."""
+    register_repo(rig.store, "alpha", "https://example.invalid/alpha.git")
+    rig.store.meta_set("sync:alpha:last_tip", "a" * 40)
+    rig.store.meta_set("sync:alpha:last_error", "fetch: transient DNS failure")
+    rig.store.meta_set("sync:alpha:last_sync_ts", str(int(rig.clock.now())))
+    sync = _health(rig, include_census_health=True)["census_health"]["repos"]["alpha"][
+        "sync"
+    ]
+    assert sync["last_error"] == "fetch: transient DNS failure", (
+        "the measured fault is served verbatim — that is the liveness channel"
+    )
+    assert sync["status"] == "no change_outcome evidence yet", (
+        f"the evidence key still states only evidence: {sync}"
+    )
+
+
+def test_census_health_regression_pins_bug060_and_bug062(rig):
+    """The reordered function must not silently drop its neighbours: a re-registered
+    repo still serves NO sync block (BUG-060), and the fleet slot still answers
+    independently of every per-repo block (BUG-062)."""
+    register_repo(rig.store, "alpha", "https://example.invalid/alpha.git")
+    rig.store.meta_set("sync:alpha:last_tip", "a" * 40)
+    rig.store.repo_remove("alpha")
+    rig.store.repo_add(
+        name="alpha", url="https://example.invalid/alpha.git", added_ts=9
+    )
+    rig.store.meta_set("sync:last_error", "registry: RuntimeError: store is gone")
+    block = _health(rig, include_census_health=True)["census_health"]
+    assert "sync" not in block["repos"]["alpha"], (
+        "a re-registered repo has no feed state until its first tick (BUG-060)"
+    )
+    assert block["fleet"]["last_error"] == "registry: RuntimeError: store is gone", (
+        f"the daemon's own fault belongs to no repo and still serves (BUG-062): "
+        f"{block['fleet']}"
+    )
+
+
 def test_conflicts_bucket_by_repo_and_anchor(tmp_path):
     rig = make_rig(tmp_path, embedder=FakeClusterProvider(d=32))
     register_repo(rig.store, "alpha", "https://example.invalid/alpha.git")
