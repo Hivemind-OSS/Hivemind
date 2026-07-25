@@ -212,6 +212,16 @@ with N anchored memories needs `ceil(N / DRIFT_PER_TICK)` ticks to reconverge. R
 count when many repos make one serial pass longer than the interval (each repo already has its own
 mirror, credential, and error key, so they are isolated by construction).
 
+**The daemon's git children inherit the server's git configuration environment** (only the
+repo-discovery vars — the `GIT_DIR` family — are stripped, so a hook-planted checkout can never
+retarget a mirror). A `url.<internal>.insteadOf` rewrite set image- or environment-wide therefore
+applies to mirror clones and fetches too, which is what you want when the deployment reaches its
+remotes through an internal proxy or mirror — common on-prem and required air-gapped. Be aware of
+the one consequence: git records the URL it was *given*, so the mirror's `remote.origin.url` stays
+the registry URL while the transport follows the rewrite. If the proxy serves a stale or different
+repository, the feed diverges with every identity check reading correct. Point rewrites at a
+faithful mirror of the registered remote.
+
 No compose change is needed: knobs ride `.env`, the registry rides the store, and the mirrors
 live in the existing volume. Watch the feed via `hive_health(include_census_health=true)` — a
 per-repo census/sync block plus the daemon's own `fleet` block (§6). Arm and test a repo with the
