@@ -1,7 +1,7 @@
 """CT-9 — N-repo sync feeds per-repo canonical evidence (plan §4 intent 9, §3.6,
 §6 step 5).
 
-Two registered repos each get their own mirror (``<mirror_dir>/<name>``),
+Two registered repos each get their own mirror (``<mirror_dir>/<name>-<digest>``),
 watermark (``sync:<name>:last_tip``), receipt build and ingest — rows repo-keyed;
 one repo's fault never blocks the other; verified riders now land from the
 canonical POST_MERGE ingest under a full stamp (the ``phase=='pre_merge'`` gate
@@ -49,10 +49,10 @@ def test_two_repo_tick_isolation_and_watermarks(sync_store, tmp_path):
     syncer = make_syncer(sync_store, tmp_path)
     syncer.service.tick()
 
-    assert mirror_is_git(syncer.mirror_base, "alpha"), (
-        "each registered repo gets its own mirror at <mirror_dir>/<name>"
+    assert mirror_is_git(syncer.mirror_base, "alpha", a.url), (
+        "each registered repo gets its own mirror at <mirror_dir>/<name>-<url-digest>"
     )
-    assert mirror_is_git(syncer.mirror_base, "beta")
+    assert mirror_is_git(syncer.mirror_base, "beta", b.url)
     assert meta_value(sync_store, "sync:alpha:last_tip") == a.origin_sha(
         "refs/heads/main"
     )
@@ -251,8 +251,8 @@ def test_repo_fanout_reaches_the_same_state_as_the_serial_loop(sync_store, tmp_p
     syncer = make_syncer(sync_store, tmp_path, workers=4)
     syncer.service.tick()
 
-    assert mirror_is_git(syncer.mirror_base, "alpha")
-    assert mirror_is_git(syncer.mirror_base, "beta")
+    assert mirror_is_git(syncer.mirror_base, "alpha", a.url)
+    assert mirror_is_git(syncer.mirror_base, "beta", b.url)
     assert meta_value(sync_store, "sync:alpha:last_tip") == a.origin_sha(
         "refs/heads/main"
     )

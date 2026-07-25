@@ -3,6 +3,29 @@
 All notable changes to this project are documented here.
 
 ## Fixed
+- **A repo's mirror is now bound to the repository it is a mirror OF, not just to its registry
+  name.** Removing a repo and re-adding the same name against a DIFFERENT URL — the only way to
+  change a registered URL, and nothing forces a sync tick between the two — left the previous
+  incarnation's clone in place, so the daemon fetched, censused and materialized drift for the OLD
+  repository under the NEW name (BUG-072). Every receipt, watermark and verdict the new
+  registration earned was measured on a repository the operator did not register, and the deepest
+  of those writes — outcome-verified ledger rows, `established` promotions, and the absent-only
+  fingerprint carriers — cannot be corrected after the fact. Mirrors therefore live at
+  `<mirror_dir>/<name>-<url-digest>/`: a changed URL is a different directory, so reusing the dead
+  incarnation's checkout is not detected, it is unconstructable, and the superseded directory is
+  reaped by the same reconciliation prune that already retires a deregistered repo's mirror — in
+  the same tick that clones its replacement. **Operator-visible consequence: the first tick after
+  upgrade re-clones every mirror once**, because mirrors moved to the identity-bound path. No
+  action is required and no data is at risk — the mirror is a rebuildable cache.
+- **Rotating a repo's git credential now takes effect.** The token entered the mirror once, at
+  clone time, and every later fetch read it back out of the mirror's own git config, so a new
+  value in the var named by `token_env` (or a changed `token_env`) did nothing: while the old
+  token was still valid this was invisible, and once it was revoked that repo failed open on every
+  tick forever with no way to self-repair (BUG-073). The mirror's remote is now reconciled against
+  the freshly-resolved credential on every tick and rewritten in place when it differs — no
+  re-clone. A remote that cannot be read at all means the checkout can no longer prove what it is
+  a mirror of, so it is rebuilt rather than fetched from; a failed rewrite skips that repo's tick
+  under its own error key rather than fetching with a credential the registry no longer names.
 - The retirement gate's **ledger** clause now judges a memory at its own declared line, exactly as
   its drift clause already did. A memory scoped to `repo@feature` could be retired by staleness the
   daemon measured on `main` — the declared line protected it from one clause but not the other

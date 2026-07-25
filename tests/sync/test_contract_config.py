@@ -122,14 +122,14 @@ def test_start_sync_always_starts_thread_empty_registry_inert(store, tmp_path):
 
 def test_registered_repo_is_cloned_by_the_running_daemon(origin, store, tmp_path):
     """The registry arms the daemon: a registered repo's mirror appears at
-    ``<mirror_dir>/<name>`` and its watermark lands, driven by the REAL
+    ``<mirror_dir>/<name>-<url-digest>`` and its watermark lands, driven by the REAL
     ``start_sync`` thread (control events carried for the webhook door)."""
     register_repo(store, "alpha", origin.url)
     thread = sync_mod.start_sync(
         _root_cfg(tmp_path, interval_s=5), store, _evidence(store), threading.Lock()
     )
     try:
-        mirror = tmp_path / "mirrors" / "alpha"
+        mirror = tmp_path / "mirrors" / sync_mod.mirror_dirname("alpha", origin.url)
         deadline = time.time() + 30
         while time.time() < deadline and meta(store, "sync:alpha:last_tip") is None:
             time.sleep(0.05)

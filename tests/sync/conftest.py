@@ -247,7 +247,8 @@ def make_service(
 ):
     """A v3 SyncService wired the entrypoint way: the real store as
     reader/appender/ranges AND the repo registry (rows pre-registered by the
-    test), one fresh global lock, mirrors under ``tmp_path/mirrors/<name>``.
+    test), one fresh global lock, mirrors under
+    ``tmp_path/mirrors/<name>-<url-digest>``.
     ``run``/``now`` inject the spawn/clock seams; ``lifecycle`` injects the
     post-ingest promotion sweep handle; None keeps each real default."""
     from hive.app.config import SyncConfig

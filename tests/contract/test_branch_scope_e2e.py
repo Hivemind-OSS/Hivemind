@@ -384,10 +384,6 @@ def test_a_reregistered_repo_never_serves_a_verdict_from_its_previous_incarnatio
     assert server.store.get_episode(eid) is not None
     assert [a.repo for a in server.store.get_episode(eid).anchors] == ["alpha"]
 
-    # a tick with the name deregistered is what retires its mirror (_prune_mirrors),
-    # so the re-registration below really re-clones rather than reusing the old one
-    syncer.tick()
-
     # re-register the SAME name against a remote with no `feature` line at all,
     # so nothing can overwrite a surviving watermark on the first tick
     fresh_origin = Origin(tmp_path / "remote2")

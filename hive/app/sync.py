@@ -5,7 +5,10 @@ One daemon thread (ALWAYS started by ``start_sync``; the entrypoint arms it afte
 serve-ready) re-reads the durable repo REGISTRY every tick — registering a repo
 needs no restart, an empty registry is an inert tick — and, per registered repo
 under its OWN fail-open guard, runs three legs against that repo's mirror at
-``<mirror_dir>/<name>/``. The repos of one tick run serially by default and
+``<mirror_dir>/<name>-<url-digest>/`` — the digest is identity, not decoration:
+a mirror is a cache of ONE remote, so binding the URL into the path makes a
+re-registered name reaching the previous repository's checkout unconstructable
+(``mirror_dirname``). The repos of one tick run serially by default and
 concurrently at ``sync.workers > 1`` (an isolated-by-construction fan-out; same
 verdict, less wall-clock):
 
@@ -46,7 +49,10 @@ Named safe directions (Law 6):
   dir).
 - A DEREGISTERED REPO LOSES ITS MIRROR (BUG-050): every tick reconciles the
   mirrors dir against the live registry — ``repo_remove`` stops the feed, the
-  next tick deletes ``mirrors/<name>/``. Only direct, slug-named, non-symlink
+  next tick deletes that repo's mirror. The same sweep reaps a SUPERSEDED
+  incarnation: the prune runs before the repo legs, so a name re-registered at
+  a new URL has its old directory reaped and the new one cloned within ONE
+  tick. Only direct, slug-named, non-symlink
   children resolving strictly under the configured base are ever deleted, each
   under its own fail-open guard.
 - THE SIDE-CHANNEL FAILS OPEN PER REPO, THE SERVE NEVER DOES: every repo runs
@@ -63,7 +69,10 @@ Named safe directions (Law 6):
   NAME of a token env var, resolved at tick time per repo; the rewritten remote
   URL lives ONLY in the mirror's git config; logs and error meta pass
   ``_redact`` first. A row-named var absent at tick fails that repo open with
-  the var NAMED (the boot-time EX_CONFIG probe is the entrypoint's).
+  the var NAMED (the boot-time EX_CONFIG probe is the entrypoint's). The
+  mirror's remote is RECONCILED against that freshly-resolved credential every
+  tick, so rotating the secret takes effect without a re-clone (BUG-073) — the
+  registry is truth and the mirror's own config is never authoritative.
 - THE VERSION GATE NEVER SCREAMS STALE (BUG-037): an incomparable stored token
   version materializes silence/``unverifiable`` — ``hive-edge verify`` gates
   the resolved-symbol path itself, and the pre-spawn belt here covers the
@@ -84,6 +93,7 @@ ONE nudge wakes the loop for ALL registered repos.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import os
@@ -118,7 +128,8 @@ _log = logging.getLogger("hive.sync")
 # census_health reads back. Two namespaces: the per-repo builders (`sync:<repo>:<field>`)
 # and the 2-part tick-SHELL fleet builders (`sync:<field>`), stamped with no repo in
 # scope and served in the report's own `fleet` block rather than any repo's.
-_DEFAULT_MIRROR_DIR = "/data/sync/mirror"  # the base dir; mirrors live at <base>/<name>
+# the base dir; mirrors live at <base>/<name>-<url-digest> (see mirror_dirname)
+_DEFAULT_MIRROR_DIR = "/data/sync/mirror"
 _DEFAULT_TOKEN_ENV = "HIVE_SYNC__TOKEN"  # the fleet-default credential var (D2)
 # The registry name grammar (store_sqlite.repo_add's gate, mirrored): only names
 # the registry could ever have minted are prune candidates — anything else in
@@ -175,6 +186,24 @@ def authenticated_url(url: str, token: str) -> str:
     if not token or not url.startswith("https://"):
         return url
     return "https://x-access-token:" + token + "@" + url[len("https://") :]
+
+
+def mirror_dirname(name: str, url: str) -> str:
+    """The directory a repo's mirror lives in, ``<name>-<sha256(url)[:16]>``.
+
+    The mirror is a cache of ONE remote, so its identity is (registry name, URL) —
+    not the name alone. Binding the URL into the PATH makes reuse across a
+    re-registration at a different URL unconstructable rather than merely checked
+    (Law 2): a changed URL is a different directory, so the old checkout is a
+    leftover the reconciliation prune reaps and the new one is a fresh clone.
+    The name stays the prefix so mirrors remain greppable by registry name, and
+    the result stays inside the prune's candidate grammar (_REPO_SLUG_RE) — a
+    result outside it would make mirrors unreapable and silently undo BUG-050.
+
+    Two registry rows naming the SAME url keep separate mirrors (the name is in
+    the path), so no checkout is ever shared and the prune needs no refcount.
+    """
+    return f"{name}-{hashlib.sha256(url.encode('utf-8')).hexdigest()[:16]}"
 
 
 def _redact(text: str, token: str) -> str:
@@ -288,7 +317,7 @@ class SyncService:
         # Reconciliation BEFORE the inert early-return: deregistering the LAST
         # repo must still prune its leftover mirror. (A failed registry read
         # returned above — the live set is unknown, so nothing may be deleted.)
-        clean = self._prune_mirrors({row.name for row in rows})
+        clean = self._prune_mirrors({mirror_dirname(r.name, r.url) for r in rows})
         if not rows:
             # marker: spawning ANYTHING here (a clone, a fetch, an engine spawn)
             # or creating the mirrors dir reds CT-9's test_empty_registry_is_inert
@@ -410,11 +439,15 @@ class SyncService:
         return os.environ.get(_DEFAULT_TOKEN_ENV, "")
 
     # ── registry reconciliation: a deregistered repo loses its mirror ──────────
-    def _prune_mirrors(self, live: set[str]) -> bool:
-        """Delete ``<mirror_dir>/<name>/`` for every name NO LONGER in the live
-        registry — ``repo_remove`` stops the feed; THIS is where the mirror goes
-        away (BUG-050; ``repo_remove``'s docstring names this tick). Guard
-        rails: the mirrors dir is never created (absent ⇒ no-op, so the
+    def _prune_mirrors(self, live_dirs: set[str]) -> bool:
+        """Delete every mirror directory NO LONGER named by the live registry —
+        ``repo_remove`` stops the feed; THIS is where the mirror goes away
+        (BUG-050; ``repo_remove``'s docstring names this tick). ``live_dirs``
+        holds DIRECTORY names (``mirror_dirname(name, url)``), not registry
+        names, so a name re-registered against a different URL presents a
+        different directory and its predecessor is reaped here like any other
+        leftover — reuse across incarnations is unconstructable, not detected.
+        Guard rails: the mirrors dir is never created (absent ⇒ no-op, so the
         empty-registry tick stays inert); only DIRECT children named by the
         registry slug grammar are candidates (anything else was never this
         daemon's mirror, so it is not ours to delete); a symlink, a
@@ -431,7 +464,15 @@ class SyncService:
         clean = True
         for child in children:
             name = child.name
-            if name in live or _REPO_SLUG_RE.match(name) is None:
+            # marker: the live set and these children must be the SAME grammar.
+            # Computing it from row.name instead of mirror_dirname(row.name,
+            # row.url) reds test_reregistration_with_the_same_url_reuses_the_mirror
+            # — no live directory would ever match, so every mirror is reaped and
+            # re-cloned each tick; keying the mirror PATH by row.name reds
+            # test_reregistration_with_a_new_url_never_feeds_the_old_remote — the
+            # mirror would again be keyed by a name that outlives the repository
+            # it mirrors.
+            if name in live_dirs or _REPO_SLUG_RE.match(name) is None:
                 continue
             try:
                 if (
@@ -456,17 +497,43 @@ class SyncService:
 
     # ── the mirror (a rebuildable cache — never the durable truth) ─────────────
     def ensure_mirror(self, repo: _RegistryRow, token: str = "") -> Path:
-        """Clone ``repo`` at ``<mirror_dir>/<name>/`` when absent or broken (a
-        broken checkout is wiped and recloned — the mirror is a cache); a healthy
-        mirror is a no-op. The name is a slug by registry construction, so the
-        path cannot escape the base. The (possibly token-rewritten) URL lands
-        ONLY in the clone's remote config."""
-        mirror = self.mirror_base / repo.name
+        """Clone ``repo`` at ``<mirror_dir>/<name>-<url-digest>/`` when absent or
+        broken (a broken checkout is wiped and recloned — the mirror is a cache);
+        a healthy mirror whose remote already matches the registry is a no-op. The
+        directory name comes from ``mirror_dirname``, so it is a slug that cannot
+        escape the base AND it pins WHICH repository this is a mirror of.
+
+        The health probe alone answers "is this a git checkout?", never "of what?",
+        so it is followed by a reconcile against the registry: the path already
+        pins the repository, so a differing ``remote.origin.url`` can only be the
+        CREDENTIAL and is rewritten in place (BUG-073 — a rotated token would
+        otherwise stay frozen at the value ``git clone`` persisted). A remote that
+        cannot be read at all is a broken cache and is rebuilt. The (possibly
+        token-rewritten) URL lands ONLY in the mirror's remote config."""
+        mirror = self.mirror_base / mirror_dirname(repo.name, repo.url)
         probe = self._run(
             ["git", "-C", str(mirror), "rev-parse", "--git-dir"], env=_clean_env()
         )
         if probe.returncode == 0:
-            return mirror
+            want = authenticated_url(repo.url, token)
+            cfg = self._run(
+                ["git", "-C", str(mirror), "config", "--get", "remote.origin.url"],
+                env=_clean_env(),
+            )
+            have = (cfg.stdout or "").strip() if cfg.returncode == 0 else ""
+            if have == want:
+                return mirror
+            if have:
+                # marker: returning the mirror without this reconcile reds
+                # test_a_rotated_token_is_reconciled_without_a_reclone — a rotated
+                # credential would stay frozen at the value `git clone` persisted,
+                # forever. Neither `want` nor `have` may reach a log line: they
+                # carry the token.
+                self._git(mirror, "remote", "set-url", "origin", want)
+                return mirror
+            # Empty/unreadable config: the checkout cannot prove what it is a
+            # mirror OF, so it is a BROKEN cache — fall through to the rmtree +
+            # reclone below. Direction (Law 6): fail toward REBUILD, never reuse.
         if mirror.exists():
             shutil.rmtree(mirror, ignore_errors=True)  # broken cache: rebuild whole
         mirror.parent.mkdir(parents=True, exist_ok=True)

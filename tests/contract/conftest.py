@@ -506,7 +506,7 @@ def seed_scoped_episode(
 class SyncRig:
     service: Any
     store: SqliteEpisodeStore
-    mirror_base: Any  # Path — mirrors live at <mirror_base>/<name>
+    mirror_base: Any  # Path — mirrors live at <mirror_base>/<name>-<url-digest>
 
 
 def make_syncer(
@@ -521,9 +521,10 @@ def make_syncer(
     """A v3 ``SyncService`` wired the entrypoint way: the real store as
     reader/appender/ranges, one fresh global lock, and the v3 ``SyncConfig``
     surface only (no repo_url, no token, no verify_candidates). Repos come from
-    the STORE REGISTRY, read each tick. Mirrors land at ``<mirror_dir>/<name>``
-    (plan §6 step 5). ``cfg_kw`` reaches ``SyncConfig`` verbatim — that is how a
-    test drives the capacity knobs (``workers`` / ``*_per_tick``)."""
+    the STORE REGISTRY, read each tick. Mirrors land at
+    ``<mirror_dir>/<name>-<url-digest>`` — resolve one with ``mirror_is_git`` or
+    ``mirror_dirname``, never by hand. ``cfg_kw`` reaches ``SyncConfig`` verbatim —
+    that is how a test drives the capacity knobs (``workers`` / ``*_per_tick``)."""
     import threading
 
     from hive.app.config import SyncConfig
@@ -549,8 +550,13 @@ def sync_store() -> SqliteEpisodeStore:
     return SqliteEpisodeStore(connect(":memory:", check_same_thread=False))
 
 
-def mirror_is_git(mirror_base, name: str) -> bool:
-    path = mirror_base / name
+def mirror_is_git(mirror_base, name: str, url: str) -> bool:
+    """Is (name, url)'s mirror a healthy checkout? The directory is resolved through
+    ``mirror_dirname`` — the production owner of that name — never re-derived here,
+    so a test can never assert a layout the daemon does not use."""
+    from hive.app.sync import mirror_dirname
+
+    path = mirror_base / mirror_dirname(name, url)
     if not path.exists():
         return False
     proc = git(path, "rev-parse", "--git-dir", check=False)
