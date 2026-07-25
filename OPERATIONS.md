@@ -176,8 +176,8 @@ webhook (`HIVE_SYNC__WEBHOOK_SECRET`, HMAC-gated on the tunnel door) only wakes 
 one nudge wakes all registered repos; the poll interval stays the correctness floor. Watch the
 feed via `hive_health(include_census_health=true)`, which answers in two slots: `repos` — per
 registered repo, days since the last `change_outcome` plus that repo's sync state
-(`tracked_ref`, `last_tip`, `last_sync_ts`, `last_error`, `backfilled_total`, and `status: "sync
-stalled"` only when the feed is configured yet dark) — and `fleet`, the daemon's own
+(`tracked_ref`, `last_tip`, `last_sync_ts`, `last_error`, `backfilled_total`, and
+`status: "no change_outcome evidence yet"` only when the feed is configured yet dark) — and `fleet`, the daemon's own
 `last_sync_ts` + `last_error`. Read `fleet` first: a fault in the tick shell (the registry read,
 anything escaping a whole tick) is recorded before any repo is reached, so every repo block stays
 frozen at its last healthy values and reads as passing while the daemon is down. A `fleet`
@@ -230,7 +230,7 @@ leverage on the outcome, but part of the full surface.
 | `HIVE_SUSPECT_CONSENSUS__TOP_N` | `10` | cap on the suspect-consensus worklist |
 | `HIVE_SYNC__INTERVAL_S` | `60` | census-sync daemon poll cadence in seconds (floor 5; an empty repo registry is an inert tick) |
 | `HIVE_SYNC__WEBHOOK_SECRET` | *(unset)* | arms the `POST /census-webhook` nudge on the tunnel door — one nudge wakes the poll for all registered repos |
-| `HIVE_SYNC__MIRROR_DIR` | `""` ⇒ `/data/sync/mirror` | where the sync daemon keeps its per-repo mirrors (`<dir>/<name>` — rebuildable caches in the hive-data volume) |
+| `HIVE_SYNC__MIRROR_DIR` | `""` ⇒ `/data/sync/mirror` | where the sync daemon keeps its per-repo mirrors (`<dir>/<name>-<sha256(url)[:16]>` — rebuildable caches in the hive-data volume) |
 | `HIVE_SYNC__DRIFT_PER_TICK` | `200` | verify spawns per repo per tick (floor 1); the rest carries over — raise it when a repo's anchor count makes drift lag a push |
 | `HIVE_SYNC__BACKFILL_PER_TICK` | `200` | fingerprint-mint spawns per repo per tick (floor 1); the rest carries over |
 | `HIVE_SYNC__WORKERS` | `1` | registered repos ticking concurrently (floor 1); raise toward the repo count when one serial pass outlasts the interval |

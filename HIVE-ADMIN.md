@@ -107,7 +107,7 @@ an old `.env` is ignored (a WARN, not a crash) — remove it. Offboard a seat an
 All config is applied **only at boot** — restart to change it; there is no live reload. Override by
 copying `.env.example` to `.env` and setting `HIVE_<GROUP>__<FIELD>`. An out-of-range value **fails
 boot loudly** (it never silently clamps); an env key naming an unknown group or field is ignored
-with a WARN (so a leftover key from an older config is never a live switch). The defaults are a
+with a WARN (this layer's own verdict only — a leftover key from an older config is usually inert, but `HIVE_SYNC__TOKEN` / `HIVE_STORE__DB_PATH` are read directly elsewhere and stay live regardless). The defaults are a
 conservative starting point — recalibrate the empirical floors (`tau_serve`, `conflict.tau`,
 `demand_m`) against your real corpus and query distribution.
 

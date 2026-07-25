@@ -3,6 +3,13 @@
 All notable changes to this project are documented here.
 
 ## Fixed
+- **Two operator docs caught up to already-landed signal-honesty and mirror-identity fixes.**
+  `HIVE-ADMIN.md` still claimed an unknown-config-key WARN means the key "is never a live
+  switch" — false for `HIVE_SYNC__TOKEN`/`HIVE_STORE__DB_PATH`, which are read directly outside
+  `Config` and stay live regardless (the wording is now scoped to what this layer can actually
+  see). `OPERATIONS.md` still described a repo's mirror directory as `<dir>/<name>` (the
+  pre-mirror-identity path) and the dark-feed KPI status as `"sync stalled"` (the wording that
+  fix replaced); both now match `mirror_dirname()` and `census_health.py`'s current strings.
 - **`hive_write(replaces=<id>)` can now actually retire the memory it corrects.** The rider was
   gated BEFORE the new row was written, so at gate time the winner did not exist — and the two
   signals a correction produces (`contradiction`, `winner_near_dup`) are both measured BETWEEN
