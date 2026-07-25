@@ -145,13 +145,15 @@ def test_remove_stops_feeding_and_prunes_the_mirror(sync_store, tmp_path):
     register_repo(sync_store, "alpha", origin.url, canonical_ref="main")
     syncer = make_syncer(sync_store, tmp_path)
     syncer.service.tick()
-    assert mirror_is_git(syncer.mirror_base, "alpha"), "precondition: mirrored"
+    assert mirror_is_git(syncer.mirror_base, "alpha", origin.url), (
+        "precondition: mirrored"
+    )
 
     remove = getattr(sync_store, "repo_remove", None)
     assert remove is not None, "v3 store surface repo_remove missing"
     remove("alpha")
     syncer.service.tick()
-    assert not mirror_is_git(syncer.mirror_base, "alpha"), (
+    assert not mirror_is_git(syncer.mirror_base, "alpha", origin.url), (
         "a removed repo's mirror is pruned — it stops feeding"
     )
 

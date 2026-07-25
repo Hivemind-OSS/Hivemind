@@ -181,7 +181,10 @@ Episode scope rows ARE kept — they record what a writer declared, not what the
 so a re-registered repo picks its memories, and their declared lines, straight back up.
 
 Per registered repo (each under its own fail-open guard) the daemon mirrors the remote at
-`<mirror_dir>/<name>/` and runs three legs: it feeds every landing on the canonical branch into
+`<mirror_dir>/<name>-<url-digest>/` — the directory is bound to the repository it is a mirror OF,
+so re-using a name against a different URL can never be fed from the previous remote, and the
+mirror's credential is reconciled against the registry each tick so a rotated token takes effect
+without a re-clone — and runs three legs: it feeds every landing on the canonical branch into
 the change-outcome evidence ledger (one unsigned receipt per new watermark..tip range, ingested
 post-merge, then the verified-outcome `established` sweep runs), backfills missing anchor
 fingerprints against the canonical tip, and materializes per-anchor staleness (drift) verdicts —
@@ -194,7 +197,7 @@ untouched. The loop's own knobs:
 |---|---|---|
 | `HIVE_SYNC__INTERVAL_S` | `60` | poll cadence in seconds (floor 5) |
 | `HIVE_SYNC__WEBHOOK_SECRET` | *(unset)* | arms `POST /census-webhook` on the tunnel door (constant-time HMAC-SHA256 vs `X-Hub-Signature-256`) — a push wakes the poll early for ALL registered repos; the interval stays the correctness floor |
-| `HIVE_SYNC__MIRROR_DIR` | `/data/sync/mirror` | base dir for the per-repo mirrors (`<dir>/<name>` — rebuildable caches inside the `hive-data` volume) |
+| `HIVE_SYNC__MIRROR_DIR` | `/data/sync/mirror` | base dir for the per-repo mirrors (`<dir>/<name>-<url-digest>` — rebuildable caches inside the `hive-data` volume) |
 | `HIVE_SYNC__DRIFT_PER_TICK` | `200` | max `hive-edge verify` spawns per repo per tick (floor 1); the remainder carries over to the next tick |
 | `HIVE_SYNC__BACKFILL_PER_TICK` | `200` | max `hive-edge mint` spawns per repo per tick (floor 1); the remainder carries over |
 | `HIVE_SYNC__WORKERS` | `1` | how many registered repos tick concurrently (floor 1); `1` is the serial loop |
