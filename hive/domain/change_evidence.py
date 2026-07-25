@@ -691,6 +691,28 @@ def render_verify_payload(
     )
 
 
+def verify_payload_ref(payload: str) -> str:
+    """The LINE a ``verify_*`` row was measured on — the ``ref`` this module's own
+    ``render_verify_payload`` stamps into the body.
+
+    "" for anything undecidable: an empty, unparseable or non-object body, or a
+    legacy pre-stamp row that carries no ref (render emits the key only when
+    non-empty — its Law-7 marker). The SINGLE owner of READING what
+    ``render_verify_payload`` WRITES; every consumer (the retirement gate's ledger
+    feed, the recall rider's line scoping) goes through here rather than spelling
+    the grammar again. Total, never raises. PURE: stdlib json only. // O(len)."""
+    if not payload:
+        return ""
+    try:
+        body = json.loads(payload)
+    except Exception:  # noqa: BLE001 — unparseable body ⇒ line unknown
+        return ""
+    if not isinstance(body, dict):
+        return ""
+    ref = body.get("ref")
+    return ref if isinstance(ref, str) else ""
+
+
 def render_suspect_payload(
     subject: TouchedSubject, seed: str, drift: str, stamp: dict[str, Any]
 ) -> str:

@@ -51,7 +51,7 @@ from typing import Any, Callable, Mapping, Optional, TextIO
 from hive.app.anchors import BadAnchors, normalize_anchors, normalize_repos
 from hive.app.census_health import census_health_report
 from hive.app.contract import REMEDIATION_NOTICE, SERVER_INSTRUCTIONS
-from hive.app.drift import attach_drift, canonical_tip_key
+from hive.app.drift import attach_drift, tip_for
 from hive.app.gaps import cluster_misses
 from hive.app.trends import compute_trends
 from hive.app.tool_defs import TOOL_DEFINITIONS
@@ -79,7 +79,7 @@ from hive.domain.evidence_kinds import (
 from hive.domain.kinds import DEFAULT_KIND
 from hive.domain.lifecycle import DEPRECATED, is_servable
 from hive.domain.meta import BadMeta, normalize_meta
-from hive.domain.models import CONFIDENT, Episode
+from hive.domain.models import CONFIDENT, AnchorRef, Episode
 from hive.domain.recall import RecallScope
 from hive.domain.retirement import Eligibility, retirement_evidence
 from hive.domain.secret_scan import ScanVerdict
@@ -262,6 +262,19 @@ def _scan_report(verdict: ScanVerdict) -> dict[str, Any]:
     }
 
 
+def _anchor_to_wire(a: AnchorRef, declared_refs: Mapping[str, str]) -> dict[str, Any]:
+    """One served anchor entry: ``{repo, anchor}`` plus the memory's DECLARED
+    ``ref`` for that repo when it named one — omitted when canonical (the
+    no-line envelope stays byte-inert), never a caller-supplied value.
+    ``declared_refs`` is the episode's own ``episode_refs`` projection (repo ->
+    ref), the input a branch-scoped drift verdict routes an anchor on."""
+    d: dict[str, Any] = {"repo": a.repo, "anchor": a.anchor}
+    ref = declared_refs.get(a.repo, "")
+    if ref:
+        d["ref"] = ref
+    return d
+
+
 def _abstain_note(state: str) -> str:
     """A neutral, non-instruction note for an empty/abstained recall."""
     if state == "EMPTY_NO_DATA":
@@ -349,7 +362,6 @@ class HiveMCPServer:
         flag_service: Any = None,
         suspect_consensus: Any = None,
         secret_scan_enabled: bool = True,
-        canonical_ref: str = "",
     ) -> None:
         self.admission = admission  # AdmissionService: write + capture
         self.recall = recall  # RecallPipeline: recall(query, *, agent_id)
@@ -395,11 +407,6 @@ class HiveMCPServer:
         # surface the loosened posture in hive_health (a disabled floor must never be silent — it
         # is also WARN-logged at boot). Default True ⇒ no health key ⇒ byte-identical envelope.
         self.secret_scan_enabled = bool(secret_scan_enabled)
-        # The last_verified-rider ref scoping. "" (the default) keeps the unscoped read —
-        # the recall rider then derives from the newest verify row regardless of which
-        # line it measured. (v3 note: per-repo canonical refs live in the repo registry;
-        # this single label only scopes the ledger rider, never drift.)
-        self.canonical_ref = canonical_ref
         self._tool_handlers: dict[
             str, Callable[[dict[str, Any], ServerIdentity], dict[str, Any]]
         ] = {
@@ -560,28 +567,63 @@ class HiveMCPServer:
         return tuple(n for n in notes if n.a_id == int(ep.id) or n.b_id == int(ep.id))
 
     def _gate_drift_verdicts(self, ep: Episode) -> list[str]:
-        """§3.2 clause 1a feed: the materialized drift verdicts for the target's anchors
-        at each anchor repo's CANONICAL tip (the sync watermark meta key). An unknown
-        tip / un-materialized anchor contributes nothing (absence never qualifies).
-        Raises freely — the caller owns the fail-closed."""
+        """§3.2 clause 1a feed: the materialized drift verdicts for the target's
+        anchors at each anchor repo's OWN declared tip — ``ref_tip(repo,
+        declared_ref)`` when the episode declared a line for that repo (via
+        ``episode_refs``), else the CANONICAL tip (the sync watermark meta key).
+        ``branch_route_verdict`` is deliberately NOT applied here: consumer ==
+        declared by construction, so ``branch_scoped`` can never arise and a
+        dead anchor on the memory's own line still qualifies for retirement —
+        this is what keeps a declared ref from becoming caller-asserted
+        immunity (THEORY §9 #6). An unknown tip / un-materialized anchor
+        contributes nothing (absence never qualifies). Raises freely — the
+        caller owns the fail-closed."""
         verdicts: list[str] = []
         if not ep.anchors:
             return verdicts  # general/scope-only: drift is n/a
         by_repo: dict[str, list[str]] = {}
         for a in ep.anchors:
             by_repo.setdefault(a.repo, []).append(a.anchor)
+        declared = self.store.episode_refs(int(ep.id))
         for repo, anchors in by_repo.items():
-            row = self.store.conn.execute(
-                "SELECT value FROM meta WHERE key=?", (canonical_tip_key(repo),)
-            ).fetchone()
-            tip = row["value"] if row is not None else None
-            if not isinstance(tip, str) or not tip:
+            tip = tip_for(self.store, repo, declared.get(repo, ""))
+            if not tip:
                 continue
             cached = self.store.drift_get(repo, tip, anchors)
             for entry in cached.values():
                 if isinstance(entry, (tuple, list)) and entry:
                     verdicts.append(str(entry[0]))
         return verdicts
+
+    def _gate_own_lines(self, ep: Episode) -> Optional[frozenset[str]]:
+        """§3.2 clause 1b's line filter: the line whose ledger evidence is THIS
+        memory's own. A verify payload stamps the LINE it was measured on but NOT
+        the repo, so a row is attributable only when the memory has exactly ONE
+        anchored repo:
+
+          - no anchors           -> None  (clause 1b is unreachable for an
+                                           anchor-less memory: change_evidence.
+                                           ingest joins only anchored_episodes(),
+                                           which filters anchor != '')
+          - != 1 anchored repo   -> frozenset()  (nothing attributable — under-claim)
+          - 1 repo, declared ref -> frozenset({ref})
+          - 1 repo, no declared  -> None  (it named no line, so canonical rows ARE
+                                           its own; byte-identical to
+                                           pre-declared-line behaviour)
+
+        Under-claim, never over-claim. Raises freely — the caller owns the
+        fail-closed. // marker: returning a non-empty set for a memory with MORE
+        THAN ONE anchored repo is the named mutation — the payload carries no
+        repo, so another repo's staleness on a same-named line would retire it
+        (reds tests/mcp/test_retirement_gate_boundary.py::
+        test_multi_repo_memory_is_never_attributable and its unknown-line twin)."""
+        repos = {a.repo for a in ep.anchors}
+        if not repos:
+            return None  # clause 1b is unreachable for an anchor-less memory
+        if len(repos) != 1:
+            return frozenset()  # whose line is it? undecidable ⇒ nothing qualifies
+        ref = self.store.episode_refs(int(ep.id)).get(next(iter(repos)), "")
+        return frozenset({ref}) if ref else None
 
     def _retirement_eligibility(
         self, ep: Episode, caller_identity: str, winner: Optional[Episode] = None
@@ -612,6 +654,7 @@ class HiveMCPServer:
                 evidence_rows=rows,
                 conflict_pairs=pairs,
                 winner_cosine=winner_cosine,
+                own_lines=self._gate_own_lines(ep),
             )
         except Exception:  # noqa: BLE001 — undecidable ⇒ noop
             _log.warning(
@@ -665,7 +708,6 @@ class HiveMCPServer:
             scope = normalize_repos(args.get("repos"), known_repos=known)
         except BadAnchors as e:
             return {"status": "refused", "reason": str(e)}  # nothing stored
-        repos = [name for name, _branch in scope]
 
         # ── the §3.2 replaces= retirement rider, gated BEFORE any store mutation.
         # UNKNOWN target ⇒ the rider passes through and admission fails the WHOLE call
@@ -690,7 +732,7 @@ class HiveMCPServer:
                 polarity=polarity,
                 kind=kind,
                 anchors=anchors,
-                repos=repos,
+                repos=scope,
                 meta=meta,
             )
         except SecretRefused as e:
@@ -758,7 +800,7 @@ class HiveMCPServer:
                 polarity=polarity,
                 kind=kind,
                 anchors=anchors,
-                repos=[name for name, _b in scope],
+                repos=scope,
                 meta=meta,
             )
         except SecretRefused as e:
@@ -829,6 +871,7 @@ class HiveMCPServer:
                     },
                 )
                 continue
+            declared_refs = self.store.episode_refs(ep.id) if h.anchors else {}
             hit = {
                 "episode_id": h.episode_id,
                 "text": h.text,
@@ -837,9 +880,11 @@ class HiveMCPServer:
                 "ts": h.ts,
                 "polarity": h.polarity,
                 "kind": h.kind,
-                # §3.4: repos/anchors ride EVERY hit ([] = general/scope-only)
+                # §3.4: repos/anchors ride EVERY hit ([] = general/scope-only); each
+                # anchor also carries the memory's declared ref for that repo, when
+                # it named one (omitted when canonical).
                 "repos": list(h.repos),
-                "anchors": [{"repo": a.repo, "anchor": a.anchor} for a in h.anchors],
+                "anchors": [_anchor_to_wire(a, declared_refs) for a in h.anchors],
             }
             if h.meta:  # omit-when-empty: the no-meta envelope is byte-inert
                 hit["meta"] = h.meta
@@ -856,9 +901,21 @@ class HiveMCPServer:
         # the kernel never judges churn — the stamp is carried, the edge decides.
         if hits:
             try:
+                # scoped to each memory's OWN declared line(s), read straight off
+                # the anchors already built above (no second store read): the
+                # rider must never report a memory stale on a line it never
+                # claimed — the advisory twin of the retirement gate's own-line
+                # rule. A memory that declared nothing filters nothing.
                 lv = self.store.last_verification(
                     [h["episode_id"] for h in hits],
-                    canonical_ref=self.canonical_ref or None,
+                    own_refs={
+                        h["episode_id"]: frozenset(
+                            ref
+                            for a in h["anchors"]
+                            if isinstance(a, dict) and (ref := a.get("ref"))
+                        )
+                        for h in hits
+                    },
                 )
                 for hit in hits:
                     stamp = lv.get(hit["episode_id"])
@@ -1189,11 +1246,14 @@ class HiveMCPServer:
             # config knob; dropping the request flag ⇒ always-emits mutation.
             if args.get("include_stale_suspects"):
                 snap["stale_suspects"] = self._stale_suspects_report()
-            # the passive census-feed staleness signal, v3: PER-REPO blocks keyed by
-            # registry name ({} on an empty registry). Same sole-request-flag gate, no
-            # config knob; census_health_report self-wraps fail-open, so it is called
-            # directly (no wrapper method); dropping the request flag ⇒ always-emits
-            # mutation.
+            # the passive census-feed staleness signal: {"repos": per-repo blocks keyed
+            # by registry name, "fleet": the tick shell's own state}. The fleet slot is
+            # what makes a DEAD daemon visible — its fault belongs to no repo, and no
+            # sentinel key inside the repo-keyed map could be reserved (the registry
+            # slug gate would let a real repo collide with it). Same sole-request-flag
+            # gate, no config knob; census_health_report self-wraps fail-open, so it is
+            # called directly (no wrapper method); dropping the request flag ⇒
+            # always-emits mutation.
             if args.get("include_census_health"):
                 snap["census_health"] = census_health_report(self.store)
             # the corpus token-version histogram (the meta envelope law's no-migration
@@ -1223,20 +1283,25 @@ class HiveMCPServer:
 
     # ── health helpers ────────────────────────────────────────────────────────
     def _solo_hint(self) -> Optional[str]:
-        """When single-IDENTITY traffic is WASTING demand (≥ demand_m window
-        misses, all from ≤1 identity) under the anti-gaming rule, promotion is
-        silently inert — return the self-describing hint. None when autonomy is
-        off, the store is empty/quiet, ≥2 identities are present, or the probe
-        faults (telemetry only, never breaks health). With the solo-mode span
-        bypass removed, this is the ONLY feedback signal that turns a silent
-        identity-collapse into a visible, actionable one."""
+        """When window demand is WASTING itself on ONE identity under the
+        anti-gaming rule, promotion is silently inert — return the self-describing
+        hint. None when autonomy is off, the store is quiet, ≥2 identities are
+        present, or the probe faults (telemetry only, never breaks health). With
+        the solo-mode span bypass removed, this is the ONLY feedback signal that
+        turns a silent identity-collapse into a visible, actionable one.
+
+        The identity-collapse clause below is what actually detects the condition;
+        there is deliberately NO ``demand_m`` floor here. The real bar
+        (``lifecycle``) counts misses from identities OTHER than the writer, which
+        is not what a window-wide ``len(misses)`` measures — reading the same knob
+        over a different quantity made this hint's own description false."""
         try:
             if not bool(getattr(self.autonomy, "enabled", True)):
                 return None
             window_s = int(self.autonomy.demand_window_days) * _DAY_S
             misses = self.store.misses_window(int(self.now()) - window_s)
-            if len(misses) < int(self.autonomy.demand_m):  # ← the wasted-demand floor
-                return None
+            if not misses:
+                return None  # a quiet store has no demand to waste
             if len({m.agent_id for m in misses}) > 1:
                 return None
             return (

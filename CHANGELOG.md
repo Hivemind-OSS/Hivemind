@@ -2,6 +2,52 @@
 
 All notable changes to this project are documented here.
 
+## Fixed
+- The retirement gate's **ledger** clause now judges a memory at its own declared line, exactly as
+  its drift clause already did. A memory scoped to `repo@feature` could be retired by staleness the
+  daemon measured on `main` — the declared line protected it from one clause but not the other
+  (BUG-069). A verify payload stamps the LINE it was measured on but not the REPO, so the gate
+  attributes a ledger row only when the memory is anchored in exactly one repo; a memory anchored
+  in several attributes none and is judged by the repo-keyed drift clause alone. That is an
+  under-claim by design — the gate may refuse a retirement it could have allowed, never the
+  reverse. Reading that payload grammar now has one owner beside the render that writes it, so the
+  pure domain no longer parses JSON at all.
+- The served `last_verified` rider is scoped the same way, per memory rather than by a
+  server-level label that was never wired and therefore never ran (BUG-070). A memory that
+  declared its own line is no longer stamped "stale" off a line it never claimed. The filter only
+  ever withholds a stamp — it can never upgrade one to "current" — and a legacy ref-less ledger
+  row still counts, so pre-stamp corpora are unaffected.
+- **Deregistering a repo now forgets the feed and everything derived from it**, in the same
+  transaction: the per-ref watermarks (`ref_tips`), the materialized verdicts keyed on them
+  (`anchor_drift`), and the materializer's work list (`ref_requests`) join the `sync:<name>:*`
+  state that already went. Re-registering the same name previously let a branch-scoped recall
+  resolve the DEAD incarnation's tip and read its surviving verdicts as `fresh` (BUG-068) — the
+  same class of defect the earlier feed-state sweep closed, on the one table that sweep could not
+  reach. All three are rebuildable caches and re-materialize on the first tick. Memory-side scope
+  (`episode_anchors` / `episode_refs`) is deliberately kept: it records what a WRITER declared, not
+  what the daemon observed, so a re-registered repo picks its memories and their lines back up.
+- `ref_tips` is bounded again: the sync tick reconciles it against the refs it actually resolved,
+  beside the existing drift-cache prune, so a branch that stops being canonical, declared, or
+  demanded loses its watermark on the same tick it leaves the work list (BUG-067). Dropping a
+  watermark fails safe — the next read is `unverifiable` and the ref re-resolves next tick.
+- The advertised drift vocabulary is now **projected** from the one object that defines it, so the
+  enum agents are told and the enum writers can emit cannot drift apart; the `repos` schema
+  property states the same `name@branch` grammar the surrounding directive already directed.
+
+## Changed
+- Several facts that had acquired two owners now have one: the "anchor moved" verdict tier
+  (shared by the retirement gate and the branch-routing softener), the tip resolver, the
+  verify-payload `ref` reader, and the not-retired work-list SQL predicate. The MCP boundary holds
+  no raw `meta` reads at all. Executable production code is smaller after this change than before
+  it; the files are longer only because the surviving code now records why it is shaped that way.
+- `hive_health`'s single-identity hint no longer reads the promotion bar's threshold over a
+  different quantity (a window-wide miss count rather than the other-identity count the bar
+  actually uses). The identity-collapse clause is what detects the condition; the misapplied floor
+  is gone.
+- Operator docs corrected where they contradicted the code: the demand bar counts non-writer
+  *misses*, not distinct non-writer *identities*, and the contested-memory report scans the whole
+  servable set rather than the established tier alone.
+
 ## Added
 - `hive-upgrade` operator skill (`skills/hive-upgrade/`) — the runbook for moving a running server
   to a different release ref, plus a **schema pre-flight** (`preflight.py`) that answers "will this
@@ -552,6 +598,112 @@ All notable changes to this project are documented here.
   transitive packages.
 
 ## Fixed
+- A branch-scoped recall now reads the verdict the sync daemon actually computed, instead of
+  `unverifiable` forever. Any queried ref other than a repo's canonical branch hit a guard that
+  recorded a null tip and skipped the drift-cache read entirely — the write side really did
+  resolve and verify a demanded branch's tip, but nothing on the read side could ever see it,
+  even though the recall's own demand is what put that branch on the materializer's work list in
+  the first place. `hive/app/drift.py` gains the single tip resolver `_tip_for(store, repo,
+  ref)` — the per-ref watermark table `ref_tips` for a non-canonical ref, else the canonical
+  watermark — and the dead guard is deleted. The sync daemon now writes each resolved `(ref,
+  sha)` to `ref_tips` BEFORE running that tip's verify batch, so a budget-starved tick reads
+  "tip known, verdict absent" as `unverifiable`, never a `fresh` inherited from an older tip.
+- `branch_scoped` is reachable on the served path — an agent can now actually see the verdict
+  the drift vocabulary has advertised since the branch-scope tagging feature landed. The break
+  was upstream of the sync daemon: the write handlers discarded the branch an agent had already
+  declared (`repos=['alpha@feature']` landed as bare `alpha`), so nothing server-side ever
+  recorded which line a memory was about. `hive_write`/`hive_capture` now thread the declared
+  `(name, branch)` pair through to a new `episode_refs` row (one per `(episode_id, repo)`; a
+  plain `repos=['alpha']` stores no row — canonical means no row, and a dedup'd re-write does not
+  restate a previously declared line), and every served anchor carries that declared line when
+  it has one. At read time, a new pure router compares a memory's declared line against the
+  consumer's effective line (the queried branch, else canonical): a stale-tier verdict read off
+  a *different* line downgrades to the advisory `branch_scoped` — never upgrading to `fresh`,
+  never touching a `fresh`/`unverifiable` base — while a verdict read on the memory's own
+  declared line rides verbatim. The retirement gate deliberately skips this routing: it resolves
+  each anchor's tip at the memory's *own* declared line directly, so a dead anchor on that line
+  still qualifies for retirement — a declared ref can never become caller-asserted immunity.
+  Fingerprints stay server-minted-only throughout, and no new write-door grammar was added:
+  `repos=['name@branch']` was already advertised, validated, and parsed.
+- A retired memory's anchor now leaves the sync daemon's verify and mint-backfill work lists the
+  same tick its retirement lands, instead of consuming the capped per-tick budget forever.
+  Retirement flips an episode's trust to `deprecated` but leaves it `status='approved'` (by
+  design — the row stays in the append-only ledger), and the daemon's work-list queries filtered
+  only on `status`, so a pruned or superseded memory's anchor kept being re-verified and
+  re-minted at every new tip indefinitely, starving genuinely-servable anchors of budget on a
+  repo with a long prune history. Both work-list queries — the daemon's inlined SQL and the
+  store's fingerprint-backfill sweep — now share one predicate excluding `deprecated` rows via a
+  new store verb, `anchor_carriers`; quarantined and provisional rows stay eligible (a
+  quarantined memory can still be promoted and needs its fingerprints). Closing the work-list
+  leak alone would have opened a false-fresh path — a *new* episode binding the same
+  now-untracked anchor could read a stale cached verdict computed against the retired episode's
+  fingerprint — so the drift-cache pruner gained a `keep_anchors` parameter and the daemon now
+  always passes its current work set, dropping a departed anchor's cached rows in the same tick
+  it leaves the sweep.
+- The demand-promotion gate now subtracts the writer's own misses from the count instead of only
+  checking that at least one non-writer identity exists somewhere in the window. The old ladder
+  gated on the total matched-miss count with a separate always-on non-writer floor — at the old
+  default of 3 required misses, the writer's own two abstaining recalls plus one other
+  identity's miss were enough to promote, letting the writer supply two of the three.
+  `DemandRule.decide` now gates on the single clause "non-writer misses >= the bar", diagnosing
+  `self_demand` (matched misses exist but every one is the writer's own) or
+  `insufficient_demand` (some non-writer misses matched, just not enough of them); the audit
+  record keeps reporting both the total matched count and the non-writer count separately. The
+  default `HIVE_AUTONOMY__DEMAND_M` moves **3 → 1**: once self-identity is subtracted, one
+  non-writer miss is already demand, and any value above 1 is now a sensitivity dial rather than
+  an anti-gaming property — a quarantined row's liveness clock does not restart on a miss, so a
+  higher bar mostly meant a capture TTL-expired unpromoted while still being actively sought.
+  Accepted trade-off, recorded rather than silently absorbed: a promotion that clears the new
+  floor at exactly one non-writer miss can never trip the thin-independence suspect-consensus
+  flag (it is mathematically unflaggable at that vote count) — the flag is advisory-only and
+  gates nothing, so this is a lost operator hint on the modal promotion, not a lost safety
+  property, and its own sensitivity floor is deliberately left untouched by this change.
+- A dead sync daemon now says so. `hive_health(include_census_health=true)` returned a bare
+  `{repo_name: block}` map, so a fault in the tick *shell* — the registry read failing, anything
+  escaping a whole tick, a mirror prune stuck under a deregistered name — had nowhere to surface:
+  it was recorded on a fleet-wide key nothing read. Worse, that fault returns from the tick before
+  any repo is reached, so no per-repo key is written *or cleared* and every block keeps its
+  last-healthy `tracked_ref` and `last_tip` with a null `last_error` — the exact shape the connect
+  runbook calls a PASS. The daemon could be down for a week with every registered repo dark while
+  health reported N healthy repos and the store held the diagnosis the whole time. The report is
+  now `{"repos": {…}, "fleet": {…}}`: the fleet slot carries the daemon's own `last_sync_ts` and
+  `last_error`, always present, each field null exactly when its meta is genuinely absent. It had
+  to be a sibling slot rather than a reserved key inside the map, because the registry slug gate
+  admits `_fleet`, `daemon` and `sync` as legal repo names that would collide with it. The two
+  legs are independent and both fail open, so a registry fault empties `repos` while `fleet` still
+  serves the fault that emptied it. The fleet field set comes from the same key grammar as the
+  per-repo one, and a static test now walks the daemon's AST to assert each fleet field's key
+  reaches a real store write — a permanently-null field there would read as "the daemon has never
+  faulted." The connect, operate and upgrade runbooks now diagnose the daemon before the repo.
+- Deregistering a repo now forgets its feed state. `repo_remove` deleted only the registry row,
+  leaving every `sync:<name>:*` key behind, so re-registering the same name — a flow the connect
+  runbook explicitly recommends — served a fully-populated health block from the previous
+  incarnation before the daemon had ticked once, reading as a passing connection that had never
+  been attempted, and resumed the ledger from a watermark whose mirror had been pruned and
+  re-cloned. The keys now go in the same transaction as the row, so a re-registered repo
+  re-clones and re-baselines exactly as a fresh registration does. The observations built from
+  the feed — memories, their repo scope, the rebuildable drift cache — are not feed state and
+  are deliberately kept, so a re-registered repo still picks its memories straight back up.
+- A failed mirror prune is recorded where it can be read. The fault was written to
+  `sync:<name>:last_error` for a name that had just been DEREGISTERED, so it belonged to no
+  health block and was readable by nobody — a mirror stuck on disk leaked in silence. It now
+  rides the tick-shell error key, which is the honest home for a fault belonging to no live repo,
+  with the name kept in the leg label.
+- Every field the per-repo `sync` health block advertises now has a writer behind it. Four of
+  six read empty on a demonstrably healthy feed: `tracked_ref` and `candidates_evaluated` had no
+  writer anywhere, while `last_sync_ts` and `backfilled_total` were single-repo-era globals the
+  per-repo reader skips by design. The daemon now stamps `tracked_ref` with the branch it
+  actually resolved (on faulted ticks too — "which line do you think you track" is what a fault
+  needs answered), stamps `last_sync_ts` per repo when that repo's every leg ran clean, and
+  bumps `backfilled_total` under the repo that earned it; `candidates_evaluated` is gone with
+  the PR-candidate machinery it counted. Counters serve `null` rather than a confident `0` when
+  there is no readable count, since a `0` reads as a measurement and is exactly what disguised
+  this in production. The underlying cause was a lost coupling: the reader once imported the key
+  names as symbols from the daemon, so deleting a writer broke the import — replacing them with
+  its own string literals made the same deletion silent, and a test that hand-seeded all six
+  keys certified the gap. Both sides now import one grammar (`hive/app/sync_keys.py`), and a
+  static test walks the daemon's AST to assert every advertised field's key builder is really
+  called there. The operator runbooks that keyed a PASS off a dead field are corrected.
 - The advertised anchor grammar now matches the grammar the census join parses. The
   `hive_write` schema, the `anchors` property, the contract served at MCP `initialize`, and the
   Python client all told agents to write `path/file.py:symbol` — a single colon, which the

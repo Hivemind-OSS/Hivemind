@@ -13,11 +13,12 @@ sweep materializes.
 
 Promotion out of quarantine is MECHANICAL DEMAND: a quarantined memory matching
 enough PARTITION-COMPATIBLE recall misses (the §3.6 scope clause — a miss scoped
-to another repo never counts), from at least one identity other than its writer
-(the structural anti-gaming clause — the writer cannot manufacture both supply
-and demand), with no partition-compatible servable row already answering the
-need (the near-dup competitor veto, partition-scoped), auto-promotes to
-provisional. Promotion means "demanded, unique, and not self-demanded" — NOT
+to another repo never counts) FROM IDENTITIES OTHER THAN ITS WRITER (THEORY §9
+#6 — the writer's own misses are subtracted from the count entirely, not merely
+required to share the tally with one other ask; the writer cannot manufacture
+both supply and demand), with no partition-compatible servable row already
+answering the need (the near-dup competitor veto, partition-scoped), auto-promotes
+to provisional. Promotion means "demanded, unique, and not self-demanded" — NOT
 "true"; the guards against wrongness are the trust label on every served hit,
 machine-gated retirement, and decay.
 
@@ -188,11 +189,14 @@ def _demand_independence(matched: Sequence["MissRow"]) -> tuple[float, float]:
 @dataclass(frozen=True, slots=True)
 class PromotionDecision:
     """The machine-readable verdict on one quarantined candidate — its fields go
-    verbatim into the ``promote`` audit payload. ``reason`` names the FIRST failed
-    clause in rule order (insufficient_demand → self_demand → competitor_answers),
-    ``non_finite`` for undecidable inputs, ``demand`` on promotion. ``rho_bar`` / ``n_eff``
-    are the decorrelated-demand stamp (computed on the promote path only, value-INDEPENDENT
-    of the verdict — they record HOW independent the demand was, never gate it); both keep the
+    verbatim into the ``promote`` audit payload. ``reason`` names the failed clause:
+    the single demand-count gate (``n_other >= demand_m``) diagnoses itself as
+    ``self_demand`` (matched misses exist but every one is the writer's own) or
+    ``insufficient_demand`` (some non-writer misses matched, just not enough of
+    them), then ``competitor_answers``; ``non_finite`` for undecidable inputs,
+    ``demand`` on promotion. ``rho_bar`` / ``n_eff`` are the decorrelated-demand
+    stamp (computed on the promote path only, value-INDEPENDENT of the verdict —
+    they record HOW independent the demand was, never gate it); both keep the
     under-claiming 0.0 on every non-promote path."""
 
     promote: bool
@@ -211,9 +215,12 @@ class DemandRule:
                        BEFORE the cosine clause — an out-of-partition miss is skipped,
                        never measured)
                    and cos(m.vector, candidate) >= demand_tau]
-        len(matched) >= demand_m                                  (enough demand)
-        AND any(m.agent_id != candidate_writer for m in matched)  (anti-gaming:
-            demand consisting solely of the writer's own misses never promotes)
+        n_other = count(m in matched if m.agent_id != candidate_writer)
+        n_other >= demand_m                                       (enough demand FROM
+            IDENTITIES OTHER THAN THE WRITER — THEORY §9 #6: the writer's own
+            matched misses are counted in ``n_misses`` for the audit but subtracted
+            out of the bar itself, so the writer cannot manufacture both supply and
+            demand by asking after its own capture)
         AND competitor_top_sim < competitor_tau                   (a servable row
             this close already answers it — near-dup pile-up prevention; the
             caller supplies a PARTITION-COMPATIBLE top sim)
@@ -267,12 +274,15 @@ class DemandRule:
                 if c >= self.demand_tau:
                     matched.append(m)
             n_other = sum(1 for m in matched if m.agent_id != candidate_writer)
-            if len(matched) < self.demand_m:
-                return PromotionDecision(
-                    False, len(matched), n_other, comp, "insufficient_demand"
+            if n_other < self.demand_m:
+                # the writer's own misses are not demand (THEORY §9 #6). Both diagnoses stay
+                # live: no other identity at all vs. not enough of them.
+                reason = (
+                    "self_demand"
+                    if (matched and n_other == 0)
+                    else "insufficient_demand"
                 )
-            if n_other == 0:  # the always-on anti-gaming floor (SOLE rule)
-                return PromotionDecision(False, len(matched), 0, comp, "self_demand")
+                return PromotionDecision(False, len(matched), n_other, comp, reason)
             if comp >= self.competitor_tau:
                 return PromotionDecision(
                     False, len(matched), n_other, comp, "competitor_answers"

@@ -9,7 +9,7 @@ from __future__ import annotations
 from hive.domain.models import content_hash
 from hive.domain.secret_scan import REDACT
 from tests.fakes._fakes import FakeScanner
-from tests.mcp._helpers import build_real_server, content, tool_call
+from tests.mcp._helpers import build_real_server, content, register_repo, tool_call
 
 _SECRET = "deploy key sk-ABCDEFGHIJKLMNOPQRSTUVWXYZ012345 do not leak"
 
@@ -58,6 +58,20 @@ def test_write_planted_secret_refused_before_write():
         ).fetchone()
         is None
     )
+
+
+def test_write_refused_with_declared_branch_stores_no_ref_row():
+    # the scan gate runs BEFORE stage(): a declared branch on a refused write must
+    # not leak an episode_refs row when nothing else is stored either.
+    server, _ = build_real_server(scanner=FakeScanner())  # default: REFUSE
+    register_repo(server, "alpha")
+    out = content(
+        tool_call(server, "hive_write", {"text": _SECRET, "repos": ["alpha@feature"]})
+    )
+    assert out["status"] == "refused"
+    assert server.store.counts() == (0, 0)
+    n = server.store.conn.execute("SELECT COUNT(*) FROM episode_refs").fetchone()[0]
+    assert n == 0
 
 
 def test_refused_envelope_carries_no_secret_bytes():

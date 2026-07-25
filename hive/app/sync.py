@@ -27,8 +27,17 @@ verdict, less wall-clock):
   ``anchor_drift`` cache — a worktree at the tip, ``hive-edge verify`` per
   anchor with the stored fingerprints, the output mapped through
   ``hive.app.drift.wire_verdict`` (the cache stores wire vocabulary VERBATIM).
-  Tips = the canonical tip plus branch tips recall demanded via ``ref_requests``
-  within the 7-day demand window; capped, carried over; old tips pruned.
+  Tips = the canonical tip (first — the served-most line never starves), plus
+  every ref a LIVE episode of the repo DECLARES (``store.declared_refs`` —
+  coverage a memory's own line earns whether or not anyone ever recalled it),
+  plus branch tips recall DEMANDED via ``ref_requests`` within the 7-day
+  demand window; capped, carried over; old tips pruned, and a retired
+  memory's anchor is excluded from the work list and its cached rows dropped
+  even at a tip that is still canonical (BUG-065). Every resolved declared or
+  demanded ref is recorded into ``ref_tips`` before its tip is verified, so
+  the recall-side reader can resolve a branch's tip to read the real verdict
+  once it lands, rather than degrading forever (BUG-063), and the retirement
+  gate can judge a memory at its own declared line (BUG-064).
 
 Named safe directions (Law 6):
 - AN EMPTY REGISTRY IS INERT: no git, no clone, no engine import — the tick
@@ -45,10 +54,11 @@ Named safe directions (Law 6):
   repos are untouched), every leg under its own guard inside that, and the
   tick shell survives everything — nothing here can take the serve down.
 - THE WATERMARK IS THE DURABLE TRUTH (``sync:<name>:last_tip`` store meta —
-  the SAME key ``attach_drift`` resolves canonical tips from); the mirror and
-  the drift cache are rebuildable caches — losing either can never open a
-  coverage gap or serve a wrong verdict (an un-materialized anchor reads
-  ``unverifiable``, never false-fresh, never false-stale).
+  the SAME key ``attach_drift`` resolves canonical tips from; ``ref_tips`` is
+  its branch twin, resolved by the same reader for a queried non-canonical
+  ref); the mirror and the drift cache are rebuildable caches — losing either
+  can never open a coverage gap or serve a wrong verdict (an un-materialized
+  anchor reads ``unverifiable``, never false-fresh, never false-stale).
 - CREDENTIALS STAY IN ENV VIA INDIRECTION (D2): a registry row stores only the
   NAME of a token env var, resolved at tick time per repo; the rewritten remote
   URL lives ONLY in the mirror's git config; logs and error meta pass
@@ -89,19 +99,25 @@ from pathlib import Path
 from typing import Any, Callable, Mapping, Optional, Protocol, Sequence
 
 from hive.app.config import Config, SyncConfig
-from hive.app.drift import DRIFT_UNVERIFIABLE, canonical_tip_key, wire_verdict
+from hive.app.drift import DRIFT_UNVERIFIABLE, wire_verdict
+from hive.app.sync_keys import (
+    backfilled_total_key,
+    canonical_tip_key,
+    fleet_last_error_key,
+    fleet_last_sync_ts_key,
+    last_error_key,
+    last_sync_ts_key,
+    tracked_ref_key,
+)
 from hive.domain.change_evidence import ChangeEvidenceService
 from hive.domain.meta import token_version
 
 _log = logging.getLogger("hive.sync")
 
-META_LAST_ERROR = (
-    "sync:last_error"  # tick-SHELL faults only (per-repo faults ride their own key)
-)
-META_LAST_SYNC_TS = (
-    "sync:last_sync_ts"  # ts of the last fault-free tick (via the now seam)
-)
-META_BACKFILLED_TOTAL = "sync:backfilled_total"  # anchor carriers fp-backfilled, ever
+# EVERY key this daemon writes comes from hive.app.sync_keys — the ONE grammar
+# census_health reads back. Two namespaces: the per-repo builders (`sync:<repo>:<field>`)
+# and the 2-part tick-SHELL fleet builders (`sync:<field>`), stamped with no repo in
+# scope and served in the report's own `fleet` block rather than any repo's.
 _DEFAULT_MIRROR_DIR = "/data/sync/mirror"  # the base dir; mirrors live at <base>/<name>
 _DEFAULT_TOKEN_ENV = "HIVE_SYNC__TOKEN"  # the fleet-default credential var (D2)
 # The registry name grammar (store_sqlite.repo_add's gate, mirrored): only names
@@ -114,12 +130,6 @@ _REF_REQUEST_WINDOW_S = (
 _ENGINE_TIMEOUT_S = 600  # the ONE bound on hive-edge mint/verify spawns
 _FP_KEY = "combdrift/fp"  # the stored interface-fingerprint carrier key
 _SUBGRAPH_KEY = "matrix/subgraph_fp"  # the stored dependency-neighborhood carrier key
-
-
-def last_error_key(repo: str) -> str:
-    """The per-repo fault surface (``sync:<name>:last_error``) — the twin of
-    ``hive.app.drift.canonical_tip_key`` for the error side."""
-    return f"sync:{repo}:last_error"
 
 
 # The spawn seam (mirrors hive.tools.cli's Run/default_run shape): full child argv
@@ -296,7 +306,7 @@ class SyncService:
                 # marker: stamping this on a faulted tick reds
                 # test_repo_fault_does_not_advance_last_sync_ts — a fault anywhere
                 # means the sync did NOT complete, and the timestamp must not lie.
-                self._store.meta_set(META_LAST_SYNC_TS, str(self._now()))
+                self._store.meta_set(fleet_last_sync_ts_key(), str(self._now()))
 
     def _repo_fanout(self, rows: Sequence[_RegistryRow]) -> bool:
         """Tick every repo CONCURRENTLY, ``cfg.workers`` at a time. Opt-in only:
@@ -337,12 +347,19 @@ class SyncService:
     def _repo_tick(self, row: _RegistryRow) -> bool:
         """Mirror + fetch, then the three legs, for ONE registry row. Returns True
         iff every leg ran fault-free; every fault is logged + recorded under THIS
-        repo's ``sync:<name>:last_error`` and never raises past here."""
+        repo's ``sync:<name>:last_error`` and never raises past here.
+
+        Two observability stamps ride this method for the health block: the RESOLVED
+        tracked branch as soon as it is known (stamped even when a later leg faults —
+        "which line do you think you track" is exactly what a fault needs answered),
+        and this repo's own clean-tick timestamp when every leg ran fault-free."""
         token = ""
         try:
             token = self._resolve_token(row)
             mirror = self.ensure_mirror(row, token=token)
             branch = self._tracked_branch(mirror, row.canonical_ref)
+            with self._lock:
+                self._store.meta_set(tracked_ref_key(row.name), branch)
             prev_local = self._rev(mirror, f"refs/remotes/origin/{branch}")
             self._fetch(mirror)
         except Exception as exc:  # noqa: BLE001 — marker: re-raising breaks
@@ -371,6 +388,13 @@ class SyncService:
         except Exception as exc:  # noqa: BLE001 — the leg fails open too
             self._note_repo_error(row.name, "drift", exc, token)
             ok = False
+        if ok:
+            # marker: stamping this unconditionally reds
+            # test_repo_fault_does_not_advance_its_own_last_sync_ts — the per-repo
+            # twin of the tick shell's rule, and for the same reason: a faulted leg
+            # means THIS repo did not sync, and its timestamp must not lie.
+            with self._lock:
+                self._store.meta_set(last_sync_ts_key(row.name), str(self._now()))
         return ok
 
     @staticmethod
@@ -422,7 +446,11 @@ class SyncService:
                 # test_prune_fault_fails_open_tick_continues — a stuck leftover
                 # is a logged per-name skip; the repos, the tick, and the serve
                 # path never feel it.
-                self._note_repo_error(name, "prune", exc, "")
+                # The fault rides the tick-SHELL key, not a per-repo one (BUG-061):
+                # `name` here is DEREGISTERED, so it has no health block, and a
+                # per-repo key written under it is readable by nobody — the stuck
+                # mirror would leak disk in total silence.
+                self._note_error(f"prune[{name}]", exc)
                 clean = False
         return clean
 
@@ -622,7 +650,7 @@ class SyncService:
                     eid, row.name, anchor, {**minted, "hive-sync/minted": provenance}
                 ):
                     filled += 1
-                    self._bump_counter_locked(META_BACKFILLED_TOTAL)
+                    self._bump_counter_locked(backfilled_total_key(row.name))
         if filled:
             _log.info(
                 "sync.backfilled repo=%s carriers=%d tip=%.12s ref=%s",
@@ -660,26 +688,54 @@ class SyncService:
         self, row: _RegistryRow, mirror: Path, canonical_tip: str
     ) -> None:
         """Materialize the ``anchor_drift`` cache for THIS repo at the canonical
-        tip plus every branch tip recall demanded (``ref_requests`` within the
-        demand window): a detached worktree per tip, ``hive-edge verify`` per
-        anchor with the STORED fingerprints, verdicts through ``wire_verdict``
-        into ``drift_put`` (the cache stores wire vocabulary verbatim). Already-
+        tip, every ref a LIVE episode of the repo DECLARES (``store.declared_refs``),
+        and every branch tip recall DEMANDED (``ref_requests`` within the demand
+        window) — canonical first (the served-most line never starves under the
+        budget), declared next, demanded last, deduped by resolved SHA: a
+        detached worktree per tip, ``hive-edge verify`` per anchor with the
+        STORED fingerprints, verdicts through ``wire_verdict`` into
+        ``drift_put`` (the cache stores wire vocabulary verbatim). Already-
         materialized (repo, tip, anchor) rows are skipped — that is both the
-        carry-over and the cheap steady state; ``drift_prune`` drops every tip no
-        longer live. Capped at ``cfg.drift_per_tick`` verify spawns per repo per
-        tick, the rest carry over next tick."""
+        carry-over and the cheap steady state. Every DECLARED or DEMANDED ref
+        that resolves to a real remote tip is recorded into ``ref_tips``
+        BEFORE any verifying happens — so a budget-starved tick still leaves
+        the tip KNOWN (the recall-side reader then reads "tip known, verdicts
+        absent" as ``unverifiable``, never a ``fresh`` inherited from an older
+        tip; BUG-063) and the retirement gate can resolve a memory's own
+        declared tip even before its verdicts land (BUG-064). ``drift_prune``
+        always runs against the CURRENT work list (``keep_anchors=anchors``):
+        it drops every tip no longer live AND every row whose anchor has left
+        the work list (a retired memory's anchor), even at a tip that is
+        still canonical — an empty work list drops the repo's whole cache
+        (BUG-065's false-fresh close). Capped at ``cfg.drift_per_tick`` verify
+        spawns per repo per tick, the rest carry over next tick."""
         name = row.name
         with self._lock:
             fps = self._repo_fps(name)
+            declared = self._store.declared_refs(name)
+        anchors = sorted(fps)
+        now = int(self._now())
         tips = [canonical_tip]
-        for ref in self._requested_refs(name):
+        resolved_refs: list[tuple[str, str, str, int]] = []
+        seen_refs: set[str] = set()
+        for ref in (*declared, *self._requested_refs(name)):
+            if ref in seen_refs:
+                continue
+            seen_refs.add(ref)
             sha = self._rev(mirror, f"refs/remotes/origin/{ref}")
-            if sha is not None and sha not in tips:
-                tips.append(sha)  # a deleted/unknown ref is silently skipped
-        if fps:
-            anchors = sorted(fps)
+            if sha is not None:
+                resolved_refs.append((name, ref, sha, now))
+                if sha not in tips:
+                    tips.append(sha)  # a deleted/unknown ref is silently skipped
+        if resolved_refs:
+            # marker: skipping this write (or writing only for tips that later
+            # got VERIFIED) reds test_unmaterialized_branch_tip_is_unverifiable_not_fresh
+            # — a resolved-but-not-yet-verified branch tip must still be a KNOWN
+            # tip on the next read, never fall back to an unknown one.
+            with self._lock:
+                self._store.ref_tips_put(resolved_refs)
+        if anchors:
             budget = self._cfg.drift_per_tick
-            now = int(self._now())
             out: list[tuple[str, str, str, str, str, int]] = []
             for tip in tips:
                 if budget <= 0:
@@ -699,31 +755,35 @@ class SyncService:
                 with self._lock:
                     self._store.drift_put(out)
         with self._lock:
-            self._store.drift_prune(name, tips)
+            self._store.drift_prune(name, tips, keep_anchors=anchors)
+            # the ref_tips twin of the same bound: a ref that stopped being
+            # declared, demanded, or resolvable leaves the work list, so its
+            # watermark goes with it. ``resolved_refs`` is the exact set the tip
+            # list was built from above — no second computation. Dropping a
+            # watermark fails SAFE: the next read is unverifiable and the ref
+            # re-resolves on the next tick.
+            self._store.ref_tips_prune(
+                name, keep_refs=[ref for _n, ref, _sha, _ts in resolved_refs]
+            )
 
     def _repo_fps(self, name: str) -> dict[str, tuple[str, str]]:
-        """anchor → (combdrift fp, subgraph fp) over the repo's approved anchor
-        bindings — first carrier wins per anchor; an empty/unparseable carrier
-        contributes empty tokens (verify then judges existence alone). Raw SQL at
-        the driving-adapter boundary (the ``_meta_get`` idiom — the v3 store
-        surface exposes the lacking-fp sweep, not this read). Caller HOLDS the
-        one global lock."""
+        """anchor → (combdrift fp, subgraph fp) over the repo's approved,
+        non-retired anchor bindings — first carrier wins per anchor; an
+        empty/unparseable carrier contributes empty tokens (verify then judges
+        existence alone). The join and the not-retired predicate live in
+        ``store.anchor_carriers`` (BUG-065's mint-backfill twin,
+        ``anchors_lacking_fp``, shares the exact same predicate so the
+        exclusion cannot fork between the two sweeps); this method owns only
+        the JSON parse and the first-wins-per-anchor reduction over the raw
+        carrier body. Caller HOLDS the one global lock."""
         out: dict[str, tuple[str, str]] = {}
-        rows = self._store.conn.execute(
-            "SELECT ea.anchor, ea.fp_meta FROM episode_anchors ea "
-            "JOIN episodes e ON e.id = ea.episode_id "
-            "WHERE ea.repo=? AND ea.anchor != '' AND e.status='approved' "
-            "ORDER BY ea.episode_id, ea.anchor",
-            (name,),
-        )
-        for r in rows:
-            anchor = r["anchor"]
+        for anchor, fp_meta in self._store.anchor_carriers(name):
             if anchor in out:
                 continue
             fp = sub = ""
-            if r["fp_meta"]:
+            if fp_meta:
                 try:
-                    parsed = json.loads(r["fp_meta"])
+                    parsed = json.loads(fp_meta)
                 except ValueError:
                     parsed = None
                 if isinstance(parsed, dict):
@@ -904,12 +964,15 @@ class SyncService:
 
     def _note_error(self, leg: str, exc: BaseException) -> None:
         """Fail-open surfacing for tick-SHELL faults (no repo in scope): logged and
-        recorded under the global ``sync:last_error`` — never raised past the tick."""
+        recorded under the fleet ``sync:last_error`` — never raised past the tick.
+        That key is SERVED, in the health report's ``fleet`` block: a registry read
+        that fails returns before any per-repo key is written or cleared, so this is
+        the ONLY in-band statement that the daemon is down (BUG-062)."""
         message = f"{leg}: {type(exc).__name__}: {exc}"[:500]
         _log.warning("sync.tick_failed leg=%s error=%s", leg, message)
         try:
             with self._lock:
-                self._store.meta_set(META_LAST_ERROR, message)
+                self._store.meta_set(fleet_last_error_key(), message)
         except Exception:  # noqa: BLE001 — surfacing must never become the fault
             _log.warning("sync.last_error_write_failed leg=%s", leg)
 

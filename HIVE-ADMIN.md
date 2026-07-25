@@ -125,7 +125,7 @@ conservative starting point — recalibrate the empirical floors (`tau_serve`, `
 | Env var | Default | Controls |
 |---|---|---|
 | `HIVE_AUTONOMY__ENABLED` | `true` | master switch; `false` makes the whole lifecycle inert (no capture, promotion, or decay) |
-| `HIVE_AUTONOMY__DEMAND_M` | `3` | independent recall-misses needed to promote a quarantined memory — your coverage↔safety dial |
+| `HIVE_AUTONOMY__DEMAND_M` | `1` | non-writer recall-misses needed to promote a quarantined memory (the writer's own misses never count) — the anti-gaming floor, and your coverage↔safety dial above it |
 | `HIVE_AUTONOMY__DEMAND_WINDOW_DAYS` | `14` | window over which demand is counted |
 | `HIVE_AUTONOMY__DEMAND_TAU` | `0.75` | miss↔candidate cosine floor (what counts as "this demand matches this memory") |
 | `HIVE_AUTONOMY__COMPETITOR_TAU` | `0.85` | candidate↔servable cosine above which the demand is "already answered" (no promotion) |
@@ -172,15 +172,21 @@ Rows land in the store's `repos` table. `--name` defaults to the URL basename (s
 never the token, and unset it falls back to the fleet-default `HIVE_SYNC__TOKEN`, resolved from
 the environment at tick time. At boot the entrypoint probes that every registered credential var
 is present and fails loudly (`EX_CONFIG`, naming the vars) if one is missing. Removing a repo
-stops the feed and prunes its mirror next tick; episode scope rows are kept, so a re-registered
-repo picks its memories straight back up.
+stops the feed and prunes its mirror next tick, and drops — in the same transaction as the
+registry row — the repo's `sync:<name>:*` daemon state and every cache derived from that feed:
+its per-ref tip watermarks, its materialized drift verdicts, and the materializer's work list.
+All of those are rebuildable and re-materialize on the re-registered repo's first tick, so
+re-using a name re-baselines from scratch instead of answering from the previous incarnation.
+Episode scope rows ARE kept — they record what a writer declared, not what the daemon observed —
+so a re-registered repo picks its memories, and their declared lines, straight back up.
 
 Per registered repo (each under its own fail-open guard) the daemon mirrors the remote at
 `<mirror_dir>/<name>/` and runs three legs: it feeds every landing on the canonical branch into
 the change-outcome evidence ledger (one unsigned receipt per new watermark..tip range, ingested
 post-merge, then the verified-outcome `established` sweep runs), backfills missing anchor
 fingerprints against the canonical tip, and materializes per-anchor staleness (drift) verdicts —
-at the canonical tip plus any branch tips recall demanded. Every leg is fail-open: an unreachable
+at the canonical tip, every line a live memory DECLARES (`repos=["name@branch"]`), and any branch
+tip recall demanded. Every leg is fail-open: an unreachable
 remote or a broken leg skips that repo's tick and the next tick retries; the other repos are
 untouched. The loop's own knobs:
 
@@ -205,8 +211,8 @@ mirror, credential, and error key, so they are isolated by construction).
 
 No compose change is needed: knobs ride `.env`, the registry rides the store, and the mirrors
 live in the existing volume. Watch the feed via `hive_health(include_census_health=true)` — a
-per-repo census/sync block (§6). Arm and test a repo with the runnable **`hive-connect-repo`**
-skill (`skills/hive-connect-repo/SKILL.md`).
+per-repo census/sync block plus the daemon's own `fleet` block (§6). Arm and test a repo with the
+runnable **`hive-connect-repo`** skill (`skills/hive-connect-repo/SKILL.md`).
 
 **Fixed by the image (not runtime knobs).** The embedder is **Qwen3-Embedding-0.6B**, baked in at
 build and run fully offline (`HF_HUB_OFFLINE=1`) — it emits a native 1024-dim vector and there is no
@@ -234,7 +240,7 @@ Everything runs through the `hive` CLI (it drives Docker Compose for you):
 | `hive token <seat>` | mint a per-seat token (printed once) |
 | `hive revoke <seat>` | offboard a seat (next request → 401) |
 | `hive repo add <url>` | register a repo for the server-side census sync (picked up next tick; `--name` / `--branch` / `--token-env` — §4) |
-| `hive repo remove <name>` | deregister a repo (stops feeding; the mirror is pruned next tick, scope rows kept) |
+| `hive repo remove <name>` | deregister a repo (stops feeding; the mirror is pruned next tick; the feed state and every cache derived from it — watermarks, branch tips, drift verdicts — are dropped, scope rows kept) |
 | `hive repos` | list registered repos (names + urls; never a secret) |
 | `hive backup` | snapshot the store now — manual (no scheduler); keeps the `backup_keep` most-recent |
 | `hive ingest <receipt.json>` | feed an unsigned census receipt's change outcome into the append-only evidence ledger — the MANUAL escape hatch (the sync daemon feeds every registered repo itself, §4); idempotent (an already-ingested `(repo, base, head, phase)` range is skipped whole, reported `range_skipped`); refused receipts write zero rows; `--post-merge --verdict pass\|fail --signal randomized\|canary\|none` for rollout outcomes |
@@ -256,7 +262,7 @@ fail-open rot:
 | `hive_health(include_conflicts=true)` | near-duplicate / contradicting memories + agent advisories, bucketed by repo and anchor | `hive_supersede` |
 | `hive_health(include_suspect_consensus=true)` | provisionals promoted on thin effective independence | re-examine / retire |
 | `hive_health(include_stale_suspects=true)` | servable memories whose anchor sat in the blast radius of a breaking change | re-verify against the code, then `hive_supersede` / `hive_prune` |
-| `hive_health(include_census_health=true)` | per-repo census/sync block for every registered repo — days since the last `change_outcome`, sync state (`last_tip`, `last_error`; a dark feed reads null) | check the registry row / remote reachability (§4) |
+| `hive_health(include_census_health=true)` | `repos`: per registered repo — days since the last `change_outcome`, sync state (`tracked_ref`, `last_tip`, `last_sync_ts`, `last_error`, `backfilled_total`; a dark feed reads null). `fleet`: the sync daemon's OWN `last_sync_ts` + `last_error` | a `fleet` `last_error` (or a frozen `fleet` `last_sync_ts`) = the daemon itself is down and every repo block is a stale snapshot — read `hive logs`. Otherwise check the registry row / remote reachability (§4) |
 
 Highest-leverage operator moves: run agents as **distinct sessions** (that diversity is what
 promotes good captures); **keep the store small** — let unused memory expire rather than lengthening

@@ -94,7 +94,7 @@ def test_scope_is_the_union_of_anchor_repos_and_declared_scope():
         "scoped fact",
         trust=ESTABLISHED,
         anchors=[("beta", "b.py::g"), ("alpha", "a.py::f")],
-        repos=["gamma"],
+        repos=[("gamma", "")],
     )
     scope, pairs = s.servable_scopes(now=NOW, provisional_ttl_s=P_TTL)[eid]
     assert scope == frozenset({"alpha", "beta", "gamma"})
@@ -111,7 +111,7 @@ def test_general_memory_reads_explicit_empty_scope():
 def test_scope_only_membership_has_no_anchor_pairs():
     s = _store()
     eid = _materialize(
-        s, "repo-scoped, no code binding", trust=ESTABLISHED, repos=["alpha"]
+        s, "repo-scoped, no code binding", trust=ESTABLISHED, repos=[("alpha", "")]
     )
     scope, pairs = s.servable_scopes(now=NOW, provisional_ttl_s=P_TTL)[eid]
     assert scope == frozenset({"alpha"}) and pairs == ()

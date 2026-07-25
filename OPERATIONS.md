@@ -51,7 +51,8 @@ them. The anti-gaming clause is load-bearing: with a single demand identity, **c
 collapses to 0** in the model — a lone agent cannot vote up its own captures, so nothing
 unvetted is served. The cost of safety here is paid in latency, not in poison.
 - **Levers:** per-session identity is the promotion fuel (distinct agent sessions promote
-  each other); `HIVE_AUTONOMY__DEMAND_M` (default 3), `HIVE_AUTONOMY__DEMAND_WINDOW_DAYS`
+  each other); `HIVE_AUTONOMY__DEMAND_M` (default 1 — the writer's own misses never count, so
+  this is non-writer misses required), `HIVE_AUTONOMY__DEMAND_WINDOW_DAYS`
   (14); the demand-match cosine floors `HIVE_AUTONOMY__DEMAND_TAU` (0.75 — what counts as a
   recall-miss matching a quarantined candidate) and `HIVE_AUTONOMY__COMPETITOR_TAU` (0.85 —
   above which an already-servable answer covers the demand, so no promotion fires); the
@@ -79,7 +80,8 @@ Good memories quietly going out of date erodes the store faster than injected po
 in the model the good→stale path is the single largest degradation. Established memories
 **never decay mechanically** — no TTL cleans them; retirement is the only exit.
 - **Levers:** every recall hit carries its `trust`, `ts`, and a per-anchor `drift` verdict
-  (the sync daemon materializes drift at each repo's canonical tip);
+  (the sync daemon materializes drift at each repo's canonical tip, every line a live memory
+  declares, and any branch tip recall demanded);
   `hive_health(include_stale_suspects=true)` surfaces servable memories whose anchor sat in
   the blast radius of a breaking change; `hive_supersede` / `hive_write(replaces=<id>)` /
   `hive_prune` retire — machine-gated, so the server retires only a target it can qualify
@@ -112,14 +114,20 @@ the field stays clean.
   serve-confidence trend (below) — a falling `confident_rate` with a too-high floor is
   silent coverage starvation.
 
-### 6. `demand_m` is your coverage ↔ safety dial
+### 6. `demand_m` is your coverage ↔ safety dial, floored at 1 non-writer miss
 Raising the promotion bar trades recall for cleanliness, roughly linearly: in the model
 `demand_m=1` gave coverage 0.94 / false-serve 0.09, while `demand_m=5` gave coverage 0.34 /
-false-serve 0.01.
-- **Lever:** `HIVE_AUTONOMY__DEMAND_M` (3).
-- **Operate:** choose it from the *asymmetry of your costs*. If a wrong answer is expensive
-  (production code, security), raise it; if a missing answer wastes more time than a
-  questionable one, lower it.
+false-serve 0.01. The `demand_m=1` point is exact under the current counting rule — it already
+required exactly one identity other than the writer. The `demand_m=5` point predates subtracting
+the writer's own misses from the count: under the corrected rule a bar of 5 now demands five
+non-writer misses (from any number of non-writer identities), not one non-writer miss plus four of the writer's
+own, so that reading is a lower bound on how strict `demand_m=5` now serves and wants a rerun
+before it drives a decision.
+- **Lever:** `HIVE_AUTONOMY__DEMAND_M` (1) — the anti-gaming floor itself; the writer's own
+  misses never count toward it.
+- **Operate:** choose anything above the floor from the *asymmetry of your costs*. If a wrong
+  answer is expensive (production code, security), raise it; the floor of 1 is already the most
+  permissive safe setting, so there is nowhere lower to go.
 
 ### 7. Seeding trusted answers is the biggest positive lever; retirement only helps the established tier
 Seeding good answers via `hive_write` was the single strongest mover toward a clean,
@@ -142,7 +150,7 @@ All read-only over MCP, off the warm store:
 |---|---|---|---|
 | `confident_rate`, `demand_entropy` (+ 7d deltas) | `hive_health(include_trends=true)` | silent fail-open rot; coverage starvation; demand diversity | `tau_serve`, `demand_m` |
 | demand-gap report | `hive_health(include_gaps=true)` | topics wanted but uncovered (each gap names the repos that asked) | `hive_write` those answers |
-| contested-memory report | `hive_health(include_conflicts=true)` | established rows with competing versions, bucketed by repo and anchor | `hive_supersede` the wrong one |
+| contested-memory report | `hive_health(include_conflicts=true)` | servable rows with competing versions, bucketed by repo and anchor | `hive_supersede` the wrong one |
 | suspect-consensus worklist | `hive_health(include_suspect_consensus=true)` | promotions on thin *effective* independence | re-examine / retire |
 | stale-suspect worklist | `hive_health(include_stale_suspects=true)` | servable memories in the blast radius of a breaking/removed change | re-verify against the code, then retire |
 | anomaly cluster flags | promote audit | compact near-identical clusters (flood signature) | investigate before trusting |
@@ -153,20 +161,28 @@ read it on a fixed cadence (weekly is enough for a small team). Convert gaps int
 
 The evidence ledger has two inputs. The automatic one is **server-side and per-repo**:
 register each repo the fleet works on (`hive repo add <url> [--name <slug>] [--branch <ref>]
-[--token-env <ENVNAME>]`; `hive repos` lists, `hive repo remove <name>` stops) and the sync
+[--token-env <ENVNAME>]`; `hive repos` lists, `hive repo remove <name>` stops feeding and forgets
+that repo's feed state and every cache derived from it, keeping its memories' scope) and the sync
 daemon — re-reading the registry every tick, so registration needs no restart — mirrors each
 registered repo and feeds every landing on its canonical branch into the ledger: one unsigned
 receipt per new watermark..tip range, ingested post-merge in-process, after which the
 verified-outcome `established` sweep runs (the only trust movement the feed drives). The same
 tick backfills absent anchor fingerprints against the canonical tip and materializes per-anchor
-drift verdicts (the canonical tip plus branch tips recall demanded). The SHA-bound verified rows
+drift verdicts (the canonical tip, every line a live memory declares, plus branch tips recall
+demanded). The SHA-bound verified rows
 it writes are also what the verified-promotion rung (`HIVE_AUTONOMY__VERIFIED_PROMOTION`,
 default on) uses to promote a quarantined memory. Every leg is fail-open per repo; a push
 webhook (`HIVE_SYNC__WEBHOOK_SECRET`, HMAC-gated on the tunnel door) only wakes the poll early —
 one nudge wakes all registered repos; the poll interval stays the correctness floor. Watch the
-feed via `hive_health(include_census_health=true)`: a per-repo block — days since the last
-`change_outcome`, plus the sync state (`tracked_ref`, `last_tip`, `last_error`, and
-`status: "sync stalled"` only when the feed is configured yet dark). The manual escape hatch
+feed via `hive_health(include_census_health=true)`, which answers in two slots: `repos` — per
+registered repo, days since the last `change_outcome` plus that repo's sync state
+(`tracked_ref`, `last_tip`, `last_sync_ts`, `last_error`, `backfilled_total`, and `status: "sync
+stalled"` only when the feed is configured yet dark) — and `fleet`, the daemon's own
+`last_sync_ts` + `last_error`. Read `fleet` first: a fault in the tick shell (the registry read,
+anything escaping a whole tick) is recorded before any repo is reached, so every repo block stays
+frozen at its last healthy values and reads as passing while the daemon is down. A `fleet`
+`last_error`, or a `fleet` `last_sync_ts` far behind now, means every repo block below it is a
+stale snapshot. The manual escape hatch
 remains `hive ingest <receipt.json>`: append a hand-built unsigned receipt's SHA-bound change
 outcome — append-only, idempotent (an exact already-ingested `(repo, base, head, phase)` range
 is skipped whole and reported `range_skipped`), trust-untouched; see

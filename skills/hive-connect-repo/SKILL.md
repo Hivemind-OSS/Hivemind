@@ -1,6 +1,6 @@
 ---
 name: hive-connect-repo
-description: "Register a repo with the server-side census sync: `hive repo add <url>` writes the durable repo registry (the sync daemon picks it up on its next tick — no restart), private remotes authenticate via a token env var NAME (never a stored secret), and `hive_health(include_census_health=true)` verifies the per-repo change-outcome feed is live. Use when asked to connect / register / wire a repo to the hive, turn on the automatic census feed, add or remove a synced repo, list registered repos, or test whether the change-outcome feed is working."
+description: "Register a repo with the server-side census sync: `hive repo add <url>` writes the durable repo registry (the sync daemon picks it up on its next tick — no restart), private remotes authenticate via a token env var NAME (never a stored secret), and `hive_health(include_census_health=true)` verifies both that the sync daemon itself is alive (the `fleet` block) and that the per-repo change-outcome feed is live (the `repos` blocks). Use when asked to connect / register / wire a repo to the hive, turn on the automatic census feed, add or remove a synced repo, list registered repos, or test whether the change-outcome feed is working."
 ---
 
 # hive-connect-repo — register a repo & test the census feed
@@ -88,24 +88,52 @@ What the daemon then does, per registered repo, each tick:
 hive_health(include_census_health=true)
 ```
 
-`census_health` carries **one block per registered repo**, keyed by registry name. Give the
-daemon one poll interval (default **60 s**), then read your repo's block:
+`census_health` answers in two slots: **`repos`** — one block per registered repo, keyed by
+registry name — and **`fleet`**, the sync daemon's own state. Give the daemon one poll interval
+(default **60 s**), then read them in that order: **`fleet` first, always.**
+
+**Step 1 — is the daemon alive?** A fault in the tick *shell* (the registry read failing, a whole
+tick blowing up, a mirror prune stuck on a deregistered name) happens **before any repo is
+reached**, so no per-repo key is written *or cleared*: every `repos` block keeps its last-healthy
+values and reads character-for-character as the PASS row below. `fleet` is the only place that
+says otherwise.
+
+| What `fleet` shows | Meaning | Action |
+|---|---|---|
+| `last_error` null, `last_sync_ts` advancing across two intervals | the daemon is ticking cleanly fleet-wide | go to step 2 |
+| **`last_error` set** | **the daemon itself is failing** — every `repos` block below is a frozen snapshot from the last healthy tick, however passing it looks | the message names the leg: `registry:` (the store read — check `hive logs` and disk/permissions), `tick:` (an unhandled fault escaping a whole tick — a bug, capture `hive logs`), `prune[<name>]:` (a deregistered repo's mirror is stuck on disk, leaking it — free the path) |
+| `last_sync_ts` null or frozen far behind now, `last_error` null | no tick has completed with *every* repo clean since then | expected while any one repo is faulting (step 2 finds it); with zero repos registered it stays null forever, because a repo-less tick is inert — that is correct, not a fault |
+
+**Step 2 — is *this repo* connected?** Only once `fleet` is clean, read your repo's block under
+`repos`:
 
 | What the repo's block shows | Meaning | Action |
 |---|---|---|
-| `sync` sub-block with `tracked_ref` + `last_tip` set, no fresh `last_error` | **PASS** — mirror cloned, feed live and baselined | Done. (`status: "sync stalled"` may show — it only means "no `change_outcome` row for this repo yet," not a fault.) |
+| `sync` sub-block with `last_tip` + `tracked_ref` set and `last_error` null | **PASS** — mirror cloned, branch resolved, feed live and baselined | Done. (`status: "sync stalled"` may show — it only means "no `change_outcome` row for this repo yet," not a fault.) |
 | no block for the repo at all | the repo is not registered (or the name differs) | `hive repos` — check the slug; re-run `hive repo add` |
 | block present, no `sync` sub-block after ≥1 interval | the daemon has not completed a tick for it | check `hive logs` for that repo's sync errors; wait one more interval |
 | `sync` with `last_error`, no `last_tip` | the first clone/fetch faulted | `last_error` (redacted) names the leg: **auth** (bad/expired token, missing Contents: Read) or **unreachable** (bad URL / no egress) — fix; the next tick retries |
 | boot fails `EX_CONFIG` naming an env var | a registered `--token-env` var is unset on the server | set the var in `.env`, or re-register without it |
 
-Two counters in the `sync` sub-block are the positive proof, not just the absence of an error:
+**`last_tip` is the positive proof, not just the absence of an error.** Once it carries the
+tracked branch's current head SHA, the daemon has cloned the mirror, resolved the branch, and
+baselined — the whole outbound path works. Compare it against
+`git ls-remote <url> refs/heads/<branch>`: equal means the feed is current.
 
-- **`backfilled_total`** — fingerprints minted server-side. Any value > 0 proves the whole mint
-  path works end to end: mirror cloned, anchor resolved against the real tree, `hive-edge mint`
-  spawned and parsed. It stays `0` until the repo has at least one **anchored** memory — a fresh
-  registry with no anchored memories yet reads `0` and that is correct, not a fault.
-- **`candidates_evaluated`** — ranges the ledger leg has looked at.
+The rest of the block reads as follows — each field is written by the daemon, so a `null` is
+information, never an unwired field:
+
+- **`tracked_ref`** — the branch the daemon actually RESOLVED. Stamped as soon as the branch is
+  known, so it is present even on a faulted tick; check it when a repo syncs but follows the
+  wrong line. Registering without `--branch` resolves origin's default here.
+- **`last_sync_ts`** — when **this repo** last completed a tick with every leg fault-free. It
+  does not advance on a faulted tick, so `last_sync_ts` far behind now, next to a fresh
+  `last_error`, is the signature of a repo stuck failing.
+- **`backfilled_total`** — fingerprints minted server-side for this repo. Any value > 0 proves
+  the whole mint path works end to end: mirror cloned, anchor resolved against the real tree,
+  `hive-edge mint` spawned and parsed. It stays `0` until the repo has at least one **anchored**
+  memory — a fresh registry with no anchored memories yet reads `0`, and that is correct, not a
+  fault. `null` means the counter has never been bumped at all.
 
 A `change_outcome` row then lands on the **next landing** on the tracked branch (first sync
 baselines the current tip silently — no historical receipt). To confirm the loop end to end,
@@ -149,8 +177,8 @@ If the recall returns nothing at all, that is a **recall-gate** result, not a sy
 `hive_write` serves immediately as `provisional`, so the memory is live — the query simply did
 not clear the relevance gate. Re-query closer to the memory's own wording, and check the scope
 with the exact slug from `hive repos` (that slug is the only name that scopes). Note this is the
-one step that needs an anchored memory to exist: on a repo with none, `backfilled_total` stays
-`0` and no drift verdict can be produced — that is correct, not a fault.
+one step that needs an anchored memory to exist: on a repo with none, `backfilled_total` never
+leaves `0`/`null` and no drift verdict can be produced — that is correct, not a fault.
 
 ## 5. One-time cleanup — leftovers of the old per-repo contract
 

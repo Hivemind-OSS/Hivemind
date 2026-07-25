@@ -22,7 +22,8 @@ from __future__ import annotations
 import logging
 import subprocess
 
-from hive.app.sync import META_LAST_SYNC_TS, default_run
+from hive.app.sync import default_run
+from hive.app.sync_keys import fleet_last_sync_ts_key
 from hive.domain.change_evidence import ChangeEvidenceService
 
 from tests.sync.conftest import (
@@ -219,18 +220,53 @@ def test_ledger_fault_does_not_advance_last_sync_ts(origin, store, tmp_path):
     register_repo(store, REPO, origin.url)
     svc = make_service(store, tmp_path, run=breaking_run, now=lambda: clock[0])
     svc.tick()  # first connect: baseline only — clean
-    assert meta(store, META_LAST_SYNC_TS) == "1000"
+    assert meta(store, fleet_last_sync_ts_key()) == "1000"
 
     origin.commit("app.py", _V2, "move the tip")
     origin.push()
     broken[0], clock[0] = True, 2_000
     svc.tick()  # the build breaks → ledger-leg fault
     assert meta(store, META_LAST_ERROR).startswith("ledger:")
-    assert meta(store, META_LAST_SYNC_TS) == "1000"  # ← the faulted tick held the stamp
+    assert (
+        meta(store, fleet_last_sync_ts_key()) == "1000"
+    )  # ← the faulted tick held the stamp
 
     broken[0], clock[0] = False, 3_000
     svc.tick()  # repaired: the clean tick advances it
-    assert meta(store, META_LAST_SYNC_TS) == "3000"
+    assert meta(store, fleet_last_sync_ts_key()) == "3000"
+
+
+def test_repo_fault_does_not_advance_its_own_last_sync_ts(origin, store, tmp_path):
+    """The per-repo twin of the stamp above (BUG-059): ``sync:<name>:last_sync_ts`` is
+    what census_health serves in THIS repo's block, and it obeys the same rule — only
+    a tick in which every one of this repo's legs ran fault-free advances it. It exists
+    separately from the fleet-wide global because that global means "EVERY repo ran
+    clean", under which one faulted repo would hide every healthy repo's freshness."""
+    per_repo_key = f"sync:{REPO}:last_sync_ts"
+    clock = [1_000]
+    broken = [False]
+
+    def breaking_run(argv, env=None, timeout=None):
+        if broken[0] and "hive.census.cli" in list(argv):
+            return subprocess.CompletedProcess(
+                list(argv), 1, stdout="", stderr="census build broken"
+            )
+        return default_run(argv, env=env, timeout=timeout)
+
+    register_repo(store, REPO, origin.url)
+    svc = make_service(store, tmp_path, run=breaking_run, now=lambda: clock[0])
+    svc.tick()
+    assert meta(store, per_repo_key) == "1000"
+
+    origin.commit("app.py", _V2, "move the tip")
+    origin.push()
+    broken[0], clock[0] = True, 2_000
+    svc.tick()  # this repo's ledger leg faults
+    assert meta(store, per_repo_key) == "1000"  # ← held, not advanced
+
+    broken[0], clock[0] = False, 3_000
+    svc.tick()
+    assert meta(store, per_repo_key) == "3000"
 
 
 def test_legacy_overlap_never_blocks_the_sync_range(origin, store, tmp_path):

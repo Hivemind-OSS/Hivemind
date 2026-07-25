@@ -21,6 +21,7 @@ from __future__ import annotations
 from typing import Any
 
 from hive.app.contract import BAD_VS_STALE, WRITE_VS_CAPTURE
+from hive.app.drift import WIRE_VERDICTS
 from hive.domain.kinds import KINDS, KIND_NAMES, QUERY_GUIDANCE
 
 # Compact call-adjacent guidance, PROJECTED from the registry so the advertised glosses
@@ -33,8 +34,7 @@ _WRITE_GUIDANCE = (
     "recall filter): " + _KIND_GLOSSES + ". Bind the WHERE as anchors=[{repo, anchor}] "
     "(registered repo name + path/file.py::symbol), or repos=[...] for repo scope without a "
     "code anchor; neither = a general, fleet-wide memory. Write one dense, self-contained "
-    "fact — don't pad or restate the obvious; verbosity flattens the embedding and makes "
-    "recall abstain."
+    "fact; verbosity flattens the embedding."
 )
 
 # The optional opaque metadata map on the two write-side verbs — one shared spec so the
@@ -66,13 +66,23 @@ _ANCHORS_PROPERTY: dict[str, Any] = {
     "and judges drift per anchor; an unregistered repo refuses the call.",
 }
 
-# Repo-scope membership without a code anchor (write/capture): registered names only.
+# Repo-scope membership without a code anchor (write/capture): registered names,
+# optionally branch-qualified — the SAME grammar the WRITE_VS_CAPTURE directive
+# composed into these descriptions directs, spelled once here too so the schema
+# and the prose cannot disagree.
 _REPOS_PROPERTY: dict[str, Any] = {
     "type": "array",
     "items": {"type": "string"},
-    "description": "Repo scope without a code anchor: registered repo names. Omitted with "
-    "no anchors = a general (fleet-wide) memory.",
+    "description": "Repo scope without a code anchor: registered repo names, as "
+    "'name' or 'name@branch' when the memory is true only on that line. Omitted "
+    "with no anchors = a general (fleet-wide) memory.",
 }
+
+# The advertised drift vocabulary is PROJECTED from its one owner, never re-typed:
+# adding a member to hive.app.drift.WIRE_VERDICTS changes what agents are told in
+# the same edit. test_verdict_writer_coverage enforces the other direction (every
+# advertised member has a production writer), so I3 now holds both ways.
+_DRIFT_ENUM = " | ".join(WIRE_VERDICTS)
 
 # The eight hive_* verbs. Frozen via the module boundary; handlers read args
 # permissively (.get) so the ONLY required-field guard is _validate over this table.
@@ -82,8 +92,8 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
         "description": "Save a memory that SERVES NOW: it lands trust=provisional, recallable "
         "immediately, and is healed afterward by the server's outcome/drift "
         "machinery (established = outcome-verified on the canonical line). "
-        "Recall the topic first so you don't write a duplicate of — or a rival "
-        "to — an existing memory. Pass replaces=<episode_id> when this CORRECTS "
+        "Recall the topic first so you don't write a duplicate of an existing "
+        "memory. Pass replaces=<episode_id> when this CORRECTS "
         "an existing memory: an unknown target fails the whole call; a known "
         "target is retired ONLY when the server verifies a qualifying machine "
         "signal for it, else the write still lands and the envelope reports "
@@ -142,8 +152,7 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
         "reference_context is []. Each hit carries trust ('established' = "
         "outcome-verified on the canonical line, 'provisional' = unverified), "
         "ts, polarity (do|dont|neutral), kind, repos, anchors ([{repo, "
-        "anchor}]), and drift (fresh | anchor_changed | anchor_missing | "
-        "blast_radius_changed | branch_scoped | unverifiable | n/a — most "
+        "anchor}]), and drift (" + _DRIFT_ENUM + " — most "
         "severe across its anchors; unverifiable is not judged, never proof of "
         "freshness). Treat a drifted hit as REFERENCE ONLY. " + QUERY_GUIDANCE,
         "inputSchema": {
@@ -251,9 +260,11 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
         "worklist: servable memories whose anchor sat in the blast radius of "
         "a breaking/removed change — re-verify each against the code, then "
         "retire via hive_supersede/hive_prune if truly stale. "
-        "include_census_health=true adds a per-repo census/sync block for "
-        "every registered repo (days since last change_outcome, sync state; "
-        "a dark feed reads null). "
+        "include_census_health=true adds {repos: a census/sync block per "
+        "registered repo (days since last change_outcome, sync state; a dark "
+        "feed reads null), fleet: the sync daemon's OWN last_sync_ts + "
+        "last_error — a fleet last_error is the daemon itself failing, under "
+        "which every repo block is a stale snapshot}. "
         "include_meta_versions=true adds the live-corpus per-key "
         "token-version histogram (+absent). "
         "embedder_loaded reports whether this process's embedder is resident "

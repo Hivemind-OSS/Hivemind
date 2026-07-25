@@ -101,6 +101,15 @@ def test_autonomy_verified_promotion_defaults_on_and_env_opts_out():
     assert off.autonomy.verified_promotion is False
 
 
+def test_demand_m_default_is_one():
+    # BUG-066 / THEORY §9 #6: the demand-count gate subtracts self-identity
+    # (n_other >= demand_m). Once the writer's own misses are excluded, any count
+    # above 1 is a sensitivity dial rather than an anti-gaming property, so the
+    # floor rebaselines 3 -> 1: one identity outside the capturing session is
+    # demand. The old default let the writer supply 2 of a 3-count total bar.
+    assert Config.load(db_path=":memory:").autonomy.demand_m == 1
+
+
 def test_autonomy_solo_knobs_removed():
     # MODE-COLLAPSE: solo_mode + solo_min_span_days are deleted (promotion is one
     # identity-diversity rule for solo and team). Each is now an unknown override field.

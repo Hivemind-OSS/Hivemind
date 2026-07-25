@@ -418,3 +418,48 @@ def test_handle_internal_error_is_caught_by_loop():
     err = json.loads(out.getvalue().splitlines()[0])["error"]
     assert err["code"] == -32603
     assert "Traceback" not in out.getvalue()  # stack not leaked
+
+
+def test_the_advertised_drift_enum_is_projected_from_its_one_owner():
+    """J5. The advertised vocabulary and the emittable vocabulary are the SAME
+    object, not two lists that happen to agree. test_verdict_writer_coverage
+    enforces the other direction (every member has a production writer), so I3
+    now holds both ways: a member added to WIRE_VERDICTS changes what agents are
+    told in the same edit, and one added without a writer reds."""
+    from hive.app.drift import WIRE_VERDICTS
+
+    recall = next(t for t in TOOL_DEFINITIONS if t["name"] == "hive_recall")
+    assert " | ".join(WIRE_VERDICTS) in recall["description"], (
+        "the served drift enum must be the joined WIRE_VERDICTS, verbatim"
+    )
+    for verdict in WIRE_VERDICTS:
+        assert verdict in recall["description"], verdict
+
+
+def test_repos_property_names_the_branch_form():
+    """J7 / A-13. The `repos` schema property must state the SAME grammar the
+    write/capture directive composed into the same served string directs — a
+    schema that says "registered repo names" while the prose directs
+    `repos=['name@branch']` is one fact with two spellings."""
+    for name in ("hive_write", "hive_capture"):
+        tool = next(t for t in TOOL_DEFINITIONS if t["name"] == name)
+        described = tool["inputSchema"]["properties"]["repos"]["description"]
+        assert "name@branch" in described, (
+            f"{name}'s repos property must name the branch form: {described}"
+        )
+
+
+def test_the_boundary_holds_no_raw_meta_reads():
+    """J8. Tip and tracked-ref resolution have ONE owner (hive.app.drift.tip_for);
+    the boundary must not reach past it into the meta table with raw SQL. Asserted
+    over the SOURCE (the test_sync_keys idiom) because a runtime check cannot see
+    a read that never fires."""
+    import inspect
+
+    import hive.app.mcp_server as mcp_module
+
+    source = inspect.getsource(mcp_module)
+    assert "FROM meta" not in source, (
+        "the MCP boundary must resolve tips through drift.tip_for, never by "
+        "reading the meta table directly"
+    )

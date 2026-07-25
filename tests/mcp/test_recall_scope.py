@@ -187,6 +187,24 @@ def test_materialized_verdict_rides_the_hit():
     assert hit["anchors"] == [{"repo": "alpha", "anchor": "pkg/mod.py::fn"}]
 
 
+def test_declared_branch_rides_the_served_anchor():
+    # the branch an agent declares at write time (BUG-064) is a durable fact that
+    # rides every served anchor for that repo — omitted for a plain/canonical scope
+    # (test_materialized_verdict_rides_the_hit pins the omitted case).
+    server, _ = _drift_rig()
+    eid = write_text(
+        server,
+        "fact declared on a feature branch",
+        anchors=[{"repo": "alpha", "anchor": "pkg/branch.py::fn"}],
+        repos=["alpha@feature"],
+    )["id"]
+    env = _recall(server, "fact declared on a feature branch")
+    hit = next(h for h in env["reference_context"] if h["episode_id"] == eid)
+    assert hit["anchors"] == [
+        {"repo": "alpha", "anchor": "pkg/branch.py::fn", "ref": "feature"}
+    ]
+
+
 def test_unmaterialized_anchor_reads_unverifiable_general_reads_na():
     server, _ = _drift_rig()
     cold = write_text(

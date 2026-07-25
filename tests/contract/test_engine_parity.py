@@ -124,7 +124,14 @@ SCENARIOS: list[dict] = [
         "bump_fp": True,
     },
     # branch_scoped/off_branch: a would-be-stale anchor scoped to a branch the
-    # consumer is not on.
+    # consumer is not on. NOTE the deliberate, justified divergence from the
+    # server's served drift verdict for the analogous situation: at the ENGINE
+    # level this scenario's radius tier is suppressed for the off-branch
+    # consumer and the golden reads `current` — while the server's served
+    # `drift.type` for an off-line consumer reading an equivalent stale anchor
+    # is the advisory `branch_scoped` (never upgraded to fresh, and strictly
+    # more informative than silence). The server is intentionally more
+    # conservative than the raw engine output; this is not a parity gap.
     {
         "id": "verify_branch_scoped",
         "verb": "verify",

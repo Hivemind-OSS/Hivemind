@@ -11,6 +11,7 @@ from __future__ import annotations
 from typing import (
     TYPE_CHECKING,
     Iterable,
+    Mapping,
     Optional,
     Protocol,
     Sequence,
@@ -127,13 +128,17 @@ class LastVerificationReader(Protocol):
     stay conformant; the SqliteEpisodeStore satisfies it with one read method. A
     never-verified id is simply ABSENT (under-claim — the boundary then emits no key);
     the kernel never judges churn — the stamp is carried, the edge decides.
-    ``canonical_ref`` (a DEFAULTED kwarg — the one conscious, minimal refinement of
-    this port; None/"" keeps today's read, so every legacy caller compiles unchanged)
-    scopes the read to rows whose payload ``ref`` names that line; a legacy ref-less
-    row always counts (the absence rule)."""
+    ``own_refs`` (a DEFAULTED kwarg — the one conscious, minimal refinement of this
+    port; omitted/empty keeps today's unscoped read, so every legacy caller compiles
+    unchanged) maps an episode to the line(s) IT declared, and scopes that id's read
+    to rows measured on them, so the rider never reports a memory stale on a line it
+    never claimed; a legacy ref-less row always counts (the absence rule)."""
 
     def last_verification(
-        self, episode_ids: Sequence[int], *, canonical_ref: Optional[str] = None
+        self,
+        episode_ids: Sequence[int],
+        *,
+        own_refs: Optional[Mapping[int, frozenset[str]]] = None,
     ) -> dict[int, tuple[int, str, str]]: ...
 
 

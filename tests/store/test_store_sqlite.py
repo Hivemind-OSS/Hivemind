@@ -114,7 +114,7 @@ def test_reject_drops_row_and_anchor_rows():
         weight=1.0,
         proposed_by="a",
         anchors=[("alpha", "a.py::f")],
-        repos=["beta"],
+        repos=[("beta", "")],
     )
     assert _anchor_rows(s, eid)  # staged bindings present
     s.reject(eid)
@@ -145,7 +145,7 @@ def test_stage_writes_anchor_and_scope_rows_same_tx():
         weight=1.0,
         proposed_by="a",
         anchors=[("alpha", "a.py::f"), ("alpha", "b.py::g")],
-        repos=["beta", "alpha"],
+        repos=[("beta", ""), ("alpha", "")],
     )
     # anchor pairs land verbatim; the already-covered repo gains NO extra scope row
     assert _anchor_rows(s, eid) == [
@@ -168,7 +168,7 @@ def test_stage_deduplicates_anchor_pairs():
         weight=1.0,
         proposed_by="a",
         anchors=[("alpha", "a.py::f"), ("alpha", "a.py::f")],
-        repos=["alpha", "alpha"],
+        repos=[("alpha", ""), ("alpha", "")],
     )
     assert _anchor_rows(s, eid) == [("alpha", "a.py::f", "")]
 
@@ -185,7 +185,7 @@ def test_stage_dedup_preserves_existing_anchor_rows_unmerged():
         weight=1.0,
         proposed_by="b",
         anchors=[("beta", "b.py::g")],
-        repos=["gamma"],
+        repos=[("gamma", "")],
     )
     assert (b, deduped) == (a, True)
     assert _anchor_rows(s, a) == [("alpha", "a.py::f", "")]
@@ -198,7 +198,7 @@ def test_get_episode_projects_repos_and_anchors():
         weight=1.0,
         proposed_by="a",
         anchors=[("beta", "b.py::g"), ("alpha", "a.py::f")],
-        repos=["gamma"],
+        repos=[("gamma", "")],
     )
     ep = s.get_episode(eid)
     assert ep.repos == ("alpha", "beta", "gamma")  # sorted union of anchors + scope
@@ -215,6 +215,103 @@ def test_get_episode_general_reads_empty_scope():
     eid, _ = s.stage(text="general", weight=1.0, proposed_by="a")
     ep = s.get_episode(eid)
     assert ep.repos == () and ep.anchors == ()
+
+
+# ── episode_refs: the memory's DECLARED line, kept OFF Episode.repos ──────────
+def test_stage_writes_a_declared_ref_for_a_nonempty_branch():
+    s = _store()
+    eid, _ = s.stage(
+        text="declares its line",
+        weight=1.0,
+        proposed_by="a",
+        repos=[("alpha", "feature")],
+    )
+    assert s.episode_refs(eid) == {"alpha": "feature"}
+
+
+def test_stage_writes_no_ref_row_for_an_empty_branch():
+    s = _store()
+    eid, _ = s.stage(
+        text="scope only, no declared line",
+        weight=1.0,
+        proposed_by="a",
+        repos=[("alpha", "")],
+    )
+    assert s.episode_refs(eid) == {}
+
+
+def test_stage_writes_a_declared_ref_even_when_the_repo_is_anchor_covered():
+    # episode_refs is written from the repos pairs regardless of episode_anchors
+    # coverage: a repo already covered by an anchor still gets its declared line.
+    s = _store()
+    eid, _ = s.stage(
+        text="anchored AND declares a line",
+        weight=1.0,
+        proposed_by="a",
+        anchors=[("alpha", "a.py::f")],
+        repos=[("alpha", "feature")],
+    )
+    assert _anchor_rows(s, eid) == [("alpha", "a.py::f", "")]  # no extra scope row
+    assert s.episode_refs(eid) == {"alpha": "feature"}  # but the ref still lands
+
+
+def test_stage_first_nonempty_ref_wins_per_repo():
+    s = _store()
+    eid, _ = s.stage(
+        text="two refs named for the same repo",
+        weight=1.0,
+        proposed_by="a",
+        repos=[("alpha", "feature"), ("alpha", "develop")],
+    )
+    assert s.episode_refs(eid) == {"alpha": "feature"}
+
+
+def test_get_episode_repos_stays_name_only_even_with_a_declared_ref():
+    # Episode.repos is name-keyed (scope_matches matches by name): a declared
+    # branch must never leak into it, or a repos=['alpha@feature'] write would
+    # silently stop matching a plain 'alpha'-scoped recall.
+    s = _store()
+    eid, _ = s.stage(
+        text="declares feature but scopes as alpha",
+        weight=1.0,
+        proposed_by="a",
+        repos=[("alpha", "feature")],
+    )
+    ep = s.get_episode(eid)
+    assert ep.repos == ("alpha",)
+    assert s.episode_refs(eid) == {"alpha": "feature"}
+
+
+def test_stage_dedup_never_restates_or_changes_the_declared_line():
+    # identity is the text hash alone: a re-write naming a DIFFERENT line for the
+    # same text is a no-op — the existing episode_refs row is untouched.
+    s = _store()
+    a, _ = s.stage(
+        text="same text", weight=1.0, proposed_by="a", repos=[("alpha", "feature")]
+    )
+    b, deduped = s.stage(
+        text="same text", weight=1.0, proposed_by="b", repos=[("alpha", "develop")]
+    )
+    assert (b, deduped) == (a, True)
+    assert s.episode_refs(a) == {"alpha": "feature"}
+
+
+def test_reject_drops_declared_ref_rows_too():
+    s = _store()
+    eid, _ = s.stage(
+        text="rejected before completion",
+        weight=1.0,
+        proposed_by="a",
+        repos=[("alpha", "feature")],
+    )
+    assert s.episode_refs(eid) == {"alpha": "feature"}
+    s.reject(eid)
+    assert s.episode_refs(eid) == {}  # no orphaned declared-line row
+
+
+def test_episode_refs_unknown_episode_reads_empty():
+    s = _store()
+    assert s.episode_refs(999) == {}
 
 
 # ── approved-only recall (two fail-closed defenses) ───────────────────────────

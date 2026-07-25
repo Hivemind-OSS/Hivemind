@@ -106,10 +106,14 @@ Then confirm the server is doing real work, not merely healthy:
 hive_health(include_census_health=true)
 ```
 
-Check each registered repo still has its `sync` sub-block with `tracked_ref` + `last_tip` and no
-fresh `last_error`. The repo registry and mirrors live in the `hive-data` volume, so an upgrade
-does not deregister anything — a repo that went dark after an upgrade is a real regression, not
-expected churn (see **hive-connect-repo**). Finally, run one real `hive_recall` against a repo you
+Read the `fleet` block first: `last_error` must be null and `last_sync_ts` must ADVANCE across two
+poll intervals. That block is the daemon itself — if the new image cannot read the registry at
+all, the tick dies in the shell before touching any repo, and every `repos` block below stays
+frozen at its pre-upgrade values and still reads as passing. Then check each entry in `repos`
+still has its `sync` sub-block with `tracked_ref` + `last_tip` set, no fresh `last_error`, and its
+own `last_sync_ts` advancing. The repo registry and mirrors live in the `hive-data` volume, so an
+upgrade does not deregister anything — a repo that went dark after an upgrade is a real
+regression, not expected churn (see **hive-connect-repo**). Finally, run one real `hive_recall` against a repo you
 know has memories: healthy + empty recall is the signature of a store that came up but lost its
 index.
 

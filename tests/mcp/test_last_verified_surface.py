@@ -21,7 +21,12 @@ import numpy as np
 from hive.app.contract import REMEDIATION_NOTICE
 from hive.domain.evidence_kinds import EK_VERIFY_CURRENT, EK_VERIFY_STALE
 from tests.fakes._fakes import FakeProvider
-from tests.mcp._helpers import build_real_server, content, tool_call
+from tests.mcp._helpers import (
+    build_real_server,
+    content,
+    register_repo,
+    tool_call,
+)
 
 _HEAD = "b" * 40
 
@@ -201,70 +206,85 @@ def _full_hit(server, text, rows):
     return env["reference_context"][0]
 
 
-def test_recall_rider_scoped_to_canonical_ref_unset_is_byte_identical():
-    # canonical_ref unset ("") ⇒ the rider derives from the NEWEST row regardless of
-    # its ref — the FULL hit dict equals the pre-scoping build's (a foreign-ref newest
-    # row still riders when unscoped).
+def _declared_hit(server, text, rows, *, ref=""):
+    """A hit whose memory DECLARES its own line (or none), with real ledger rows
+    planted under it — the rider's scoping now comes from the memory, not from a
+    server-level label."""
+    register_repo(server, "alpha", canonical_ref="master")
+    args = {"text": text, "anchors": [{"repo": "alpha", "anchor": "a.py::F"}]}
+    if ref:
+        args["repos"] = [f"alpha@{ref}"]
+    wr = content(tool_call(server, "hive_write", args))
+    server.store.append_evidence(
+        [(int(wr["id"]), kind, "census", ts, payload) for kind, ts, payload in rows]
+    )
+    env = content(tool_call(server, "hive_recall", {"query": text}))
+    assert len(env["reference_context"]) == 1
+    return env["reference_context"][0]
+
+
+def test_recall_rider_on_a_memory_that_declared_no_line_is_unscoped():
+    # no declared line ⇒ the rider derives from the NEWEST row regardless of its ref
+    # — byte-identical to the pre-scoping build (a foreign-ref newest row still
+    # riders when the memory named no line of its own).
     text = "an anchored lesson verified on a feature line"
     rows = [(EK_VERIFY_STALE, 200, _reffed_payload("2" * 40, "feat-y"))]
-    unset_server, _ = build_real_server()
-    scoped_off_server, _ = build_real_server(canonical_ref="")
-    hit_unset = _full_hit(unset_server, text, rows)
-    hit_off = _full_hit(scoped_off_server, text, rows)
-    assert hit_unset == hit_off  # "" == the unscoped default build
-    assert hit_unset["last_verified"] == {"ts": 200, "sha": "2" * 40, "state": "stale"}
-    assert hit_unset["remediation"] == REMEDIATION_NOTICE
+    server, _ = build_real_server()
+    hit = _declared_hit(server, text, rows)
+    assert hit["last_verified"] == {"ts": 200, "sha": "2" * 40, "state": "stale"}
+    assert hit["remediation"] == REMEDIATION_NOTICE
 
 
-def test_recall_rider_scoped_newest_foreign_falls_back_to_older_canonical():
-    # canonical_ref="master": the newest verify_stale from feat-y is SKIPPED; the older
-    # master verify_current answers — the hit reads current, carries NO remediation.
+def test_recall_rider_skips_a_foreign_line_and_an_on_line_row_answers():
+    # the memory declared `master`: the newest verify_stale from feat-y is SKIPPED;
+    # the older master verify_current answers — the hit reads current, no remediation.
     text = "an anchored lesson stale only on a feature line"
     rows = [
         (EK_VERIFY_CURRENT, 100, _reffed_payload("1" * 40, "master")),
         (EK_VERIFY_STALE, 200, _reffed_payload("2" * 40, "feat-y")),
     ]
-    server, _ = build_real_server(canonical_ref="master")
-    hit = _full_hit(server, text, rows)
+    server, _ = build_real_server()
+    hit = _declared_hit(server, text, rows, ref="master")
     assert hit["last_verified"] == {"ts": 100, "sha": "1" * 40, "state": "current"}
     assert "remediation" not in hit
-    # the unscoped control on the SAME rows reads the foreign-newest stale + rider
+    # the control — the SAME rows on a memory that declared nothing — reads the
+    # foreign-newest stale + rider
     control, _ = build_real_server()
-    control_hit = _full_hit(control, text, rows)
+    control_hit = _declared_hit(control, text, rows)
     assert control_hit["last_verified"]["state"] == "stale"
     assert control_hit["remediation"] == REMEDIATION_NOTICE
 
 
-def test_recall_rider_scoped_canonical_row_still_riders():
-    text = "an anchored lesson stale on the canonical line"
-    rows = [(EK_VERIFY_STALE, 200, _reffed_payload("2" * 40, "master"))]
-    server, _ = build_real_server(canonical_ref="master")
-    hit = _full_hit(server, text, rows)
+def test_recall_rider_keeps_a_row_on_the_memorys_own_line():
+    text = "an anchored lesson stale on the line it declared"
+    rows = [(EK_VERIFY_STALE, 200, _reffed_payload("2" * 40, "feat-y"))]
+    server, _ = build_real_server()
+    hit = _declared_hit(server, text, rows, ref="feat-y")
     assert hit["last_verified"] == {"ts": 200, "sha": "2" * 40, "state": "stale"}
     assert hit["remediation"] == REMEDIATION_NOTICE
 
 
-def test_recall_rider_scoped_legacy_refless_row_still_riders():
-    # the ABSENCE RULE: a pre-stamp (ref-less) ledger row still answers under a set
-    # canonical_ref — scoping filters foreign refs, never the legacy corpus.
+def test_recall_rider_legacy_refless_row_still_riders():
+    # the ABSENCE RULE: a pre-stamp (ref-less) ledger row still answers for a memory
+    # that declared a line — scoping filters foreign refs, never the legacy corpus.
     text = "an anchored lesson verified before the ref stamp existed"
     rows = [(EK_VERIFY_STALE, 200, _reffed_payload("2" * 40, None))]
-    server, _ = build_real_server(canonical_ref="master")
-    hit = _full_hit(server, text, rows)
+    server, _ = build_real_server()
+    hit = _declared_hit(server, text, rows, ref="feat-y")
     assert hit["last_verified"] == {"ts": 200, "sha": "2" * 40, "state": "stale"}
     assert hit["remediation"] == REMEDIATION_NOTICE
 
 
-def test_recall_rider_scoped_no_answerable_row_means_no_rider():
-    # every row foreign ⇒ nothing answers ⇒ the hit carries NO last_verified and NO
-    # remediation (absent keys, never null — byte-inert).
-    text = "an anchored lesson verified only on feature lines"
+def test_recall_rider_no_answerable_row_means_no_rider():
+    # every row measured a line the memory never declared ⇒ nothing answers ⇒ the hit
+    # carries NO last_verified and NO remediation (absent keys, never null).
+    text = "an anchored lesson verified only on other feature lines"
     rows = [
         (EK_VERIFY_STALE, 100, _reffed_payload("1" * 40, "feat-a")),
         (EK_VERIFY_STALE, 200, _reffed_payload("2" * 40, "feat-b")),
     ]
-    server, _ = build_real_server(canonical_ref="master")
-    hit = _full_hit(server, text, rows)
+    server, _ = build_real_server()
+    hit = _declared_hit(server, text, rows, ref="master")
     assert "last_verified" not in hit and "remediation" not in hit
 
 

@@ -10,12 +10,17 @@ them), and recall scopes by repo and branch.
 Recall is deliberately conservative: a query is embedded, matched by dense cosine similarity,
 and passed through an **absolute-relevance abstention gate** — when the top match does not
 clear an absolute similarity floor, Hivemind returns nothing rather than guess. `hive_write`
-serves immediately as `provisional`; the trusted `established` tier is reached **only** when a
-verified change outcome on the repo's canonical line confirms the memory. `hive_capture` is the
-unclear-value tail — it lands **quarantined** and becomes servable only once independent fleet
-demand or a verified change outcome promotes it. Retirement is **machine-gated**: the server
-retires a memory only when it verifies a qualifying machine signal (anchor drift at the
-canonical tip, hurt evidence, a mechanical contradiction) — never on an agent's say-so, and an
+serves immediately as `provisional` — prefer it for a lesson that would spare a future agent a
+repeat mistake, a regression, or relearning what led to landed code; the trusted `established`
+tier is reached **only** when a verified change outcome on the repo's canonical line confirms
+the memory. `hive_capture` is for the ambiguous tail — it lands **quarantined** and becomes
+servable only once independent fleet demand or a verified change outcome promotes it. Tag the
+line wherever a memory is about real code (`repos=["name@branch"]` + `anchors=[{repo, anchor}]`)
+— that declared line is what a branch-scoped recall and the retirement gate judge it against.
+Retirement is **machine-gated**: the server
+retires a memory only when it verifies a qualifying machine signal (anchor drift on the
+memory's own declared line, hurt evidence, a mechanical contradiction) — never on an agent's
+say-so, and an
 unqualified call is a benign no-op, not an error. Unused memories decay on a TTL. Nothing is
 auto-trusted, and the store never silently migrates across schema generations.
 
@@ -32,7 +37,7 @@ A connected agent gets exactly eight tools:
 | `hive_prune(episode_id)` | Retire an incorrect or misleading memory with no replacement (it stays in the audit ledger) — machine-gated, same rule. |
 | `hive_flag(a, b, kind)` | Advisory only: record that two memories conflict or one supersedes the other. Retires nothing and never qualifies the retirement gate. |
 | `hive_outcome(helped=[…], hurt=[…])` | Log which recalled memories helped or hurt the task; evidence only. Helped rows fuel promotion; hurt rows feed the machine retirement gate. |
-| `hive_health(...)` | Liveness/identity snapshot; `include_trends=true` adds convergence KPIs, `include_gaps=true` the demand-gap report, `include_conflicts=true` the contested-memory worklist; further flags: `include_suspect_consensus`, `include_stale_suspects` (graph-propagated staleness), `include_census_health` (per-repo census/sync state), `include_meta_versions`. |
+| `hive_health(...)` | Liveness/identity snapshot; `include_trends=true` adds convergence KPIs, `include_gaps=true` the demand-gap report, `include_conflicts=true` the contested-memory worklist; further flags: `include_suspect_consensus`, `include_stale_suspects` (graph-propagated staleness), `include_census_health` (per-repo census/sync state + the sync daemon's own `fleet` block), `include_meta_versions`. |
 
 ## Requirements
 
@@ -104,8 +109,10 @@ tick — no restart. Per repo, the daemon mirrors the remote, feeds every landin
 branch into the change-outcome evidence ledger, mints missing anchor fingerprints, and
 materializes the staleness (drift) verdicts that ride recall hits. `--token-env` is the **name**
 of an env var holding that repo's git token — the registry never stores a secret byte; unset,
-the fleet-default `HIVE_SYNC__TOKEN` is used. Removing a repo stops the feed and prunes its
-mirror; its memories keep their scope, so re-registering picks them straight back up.
+the fleet-default `HIVE_SYNC__TOKEN` is used. Removing a repo stops the feed, prunes its mirror,
+and drops every cache derived from that feed (watermarks, branch tips, drift verdicts), so
+re-registering the name re-baselines from scratch instead of answering from the previous
+incarnation; its memories keep their scope, so re-registering picks them straight back up.
 
 ## Agents
 Read **[`llms-full.txt`](llms-full.txt)** for the complete, self-contained explanation of how
@@ -146,7 +153,7 @@ Loopback never leaves the host, so open exactly one door:
 - **SSH** — `ssh -NL 8765:localhost:8765 you@host`, then the localhost registration line works
   as-is.
 
-Never publish `0.0.0.0:8765` — a bearer token over plain LAN HTTP is cleartext.
+Never publish `0.0.0.0:8765` — that door is tokenless, so publishing it hands unauthenticated recall and write to the whole LAN.
 
 ## Day-2 operations
 

@@ -36,7 +36,6 @@ def build_real_server(
     conflict=None,
     suspect_consensus=None,
     secret_scan_enabled: bool = True,
-    canonical_ref: str = "",
 ):
     """Return (server, clock). ``clock`` is mutable so tests can stamp distinct ts.
     The FULL trust-lifecycle is wired (real DemandRule + LifecycleService on the
@@ -120,7 +119,6 @@ def build_real_server(
         flag_service=flag_service,
         suspect_consensus=suspect_consensus,
         secret_scan_enabled=secret_scan_enabled,
-        canonical_ref=canonical_ref,
     )
     return server, clock
 

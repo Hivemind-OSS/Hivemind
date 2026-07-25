@@ -2,7 +2,7 @@
 fail-closed. Retirement is agent-CALLED but machine-GATED — ``retirement_evidence``
 says whether a qualifying machine signal exists for the target, and an undecidable
 input under-claims (that clause stays unsatisfied; a whole-gate fault returns
-ineligible). Clause coverage: drift at the canonical tip (anchored only),
+ineligible). Clause coverage: drift at the memory's own line (anchored only),
 verify_stale vs verify_current recency, outcome-hurt with the identity-diversity
 rule (same-identity two-call self-destruction blocked), mechanical contradiction +
 the supersede near-dup winner, and general memories on clauses 2–3 only. Advisory
@@ -39,7 +39,14 @@ GENERAL = make_episode(7, "a general memory with no anchors")
 
 
 def _gate(
-    episode=ANCHORED, *, caller=CALLER, drift=(), rows=(), pairs=(), winner=None
+    episode=ANCHORED,
+    *,
+    caller=CALLER,
+    drift=(),
+    rows=(),
+    pairs=(),
+    winner=None,
+    own_lines=None,
 ) -> Eligibility:
     return retirement_evidence(
         episode=episode,
@@ -48,6 +55,7 @@ def _gate(
         evidence_rows=rows,
         conflict_pairs=pairs,
         winner_cosine=winner,
+        own_lines=own_lines,
     )
 
 
@@ -75,7 +83,7 @@ def test_healthy_evidence_less_target_is_ineligible():
     assert _gate(GENERAL) == Eligibility(False, ())
 
 
-# ── clause 1a: materialized drift at the canonical tip (anchored only) ─────────
+# ── clause 1a: materialized drift at the memory's own line (anchored only) ────
 @pytest.mark.parametrize(
     "verdict", ["anchor_missing", "anchor_changed", "blast_radius_changed"]
 )
@@ -143,10 +151,63 @@ def test_verify_tie_disqualifies_fail_closed():
     assert got.eligible is False
 
 
-def test_verify_ledger_clause_reaches_general_memories():
-    # the ledger form of staleness is anchor-independent (any censused memory).
+def test_verify_clause_is_anchor_agnostic_in_the_pure_function():
+    # The PURE clause does not read anchors — but that is a property of this
+    # function, NOT a system fact: no production writer can put a verify row on
+    # an anchor-less memory (the census join reads anchored_episodes(), which
+    # filters anchor != ''). The reachability twin is
+    # tests/contract/test_retirement_gate_e2e.py::
+    # test_an_anchorless_memory_never_acquires_a_verify_row.
     got = _gate(GENERAL, rows=[EvidenceRow(EK_VERIFY_STALE, "census", 100)])
     assert got.eligible is True and got.signals == ("verify_stale",)
+
+
+# ── clause 1b's line filter: own_lines is a TRI-STATE, and it under-claims ─────
+def test_own_lines_none_reads_every_row_exactly_as_before_declared_lines():
+    # the overwhelmingly common case: the memory named no line anywhere, so
+    # canonical rows ARE its own and the clause is byte-identical to its
+    # pre-declared-line behaviour.
+    rows = [EvidenceRow(EK_VERIFY_STALE, "census", 100, "main")]
+    assert _gate(rows=rows, own_lines=None).signals == ("verify_stale",)
+
+
+def test_own_lines_matching_the_rows_line_qualifies():
+    rows = [EvidenceRow(EK_VERIFY_STALE, "census", 100, "feature")]
+    assert _gate(rows=rows, own_lines=frozenset({"feature"})).signals == (
+        "verify_stale",
+    )
+
+
+def test_own_lines_on_another_line_never_qualifies():
+    rows = [EvidenceRow(EK_VERIFY_STALE, "census", 100, "main")]
+    assert _gate(rows=rows, own_lines=frozenset({"feature"})).eligible is False
+
+
+def test_own_lines_empty_set_attributes_nothing():
+    # the under-claim state: the boundary could not decide WHOSE line the row
+    # measured (a memory anchored in more than one repo — the payload stamps the
+    # line but not the repo), so no ledger row qualifies. Clause 1a, which IS
+    # repo-keyed, still judges it.
+    rows = [EvidenceRow(EK_VERIFY_STALE, "census", 100, "feature")]
+    assert _gate(rows=rows, own_lines=frozenset()).eligible is False
+
+
+def test_a_ref_less_row_never_qualifies_under_an_engaged_filter():
+    # a legacy pre-stamp row carries no line; undecidable is NOT "matches".
+    rows = [EvidenceRow(EK_VERIFY_STALE, "census", 100, "")]
+    assert _gate(rows=rows, own_lines=frozenset({"feature"})).eligible is False
+    assert _gate(rows=rows, own_lines=None).eligible is True  # unfiltered, as before
+
+
+def test_an_off_line_current_row_still_refuses_a_matching_stale_row():
+    # the verify_current arm is deliberately UNfiltered: a current row only ever
+    # REFUSES, so dropping an off-line one is the OVER-claiming direction — the
+    # one direction this gate may never take.
+    rows = [
+        EvidenceRow(EK_VERIFY_STALE, "census", 100, "feature"),
+        EvidenceRow(EK_VERIFY_CURRENT, "census", 200, "main"),
+    ]
+    assert _gate(rows=rows, own_lines=frozenset({"feature"})).eligible is False
 
 
 # ── clause 2: outcome-hurt (identity-diverse for the agent-reported kind) ──────

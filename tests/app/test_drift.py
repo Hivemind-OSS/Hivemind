@@ -23,9 +23,10 @@ from hive.app.drift import (
     WIRE_VERDICTS,
     aggregate_verdicts,
     attach_drift,
-    canonical_tip_key,
+    branch_route_verdict,
     wire_verdict,
 )
+from hive.domain.retirement import QUALIFYING_DRIFT
 
 TIP = "a" * 40
 
@@ -43,10 +44,6 @@ def test_severity_order_is_the_normative_one():
         DRIFT_FRESH,
     )
     assert set(WIRE_VERDICTS) == set(SEVERITY_ORDER) | {DRIFT_NA}
-
-
-def test_canonical_tip_key_is_the_sync_watermark():
-    assert canonical_tip_key("alpha") == "sync:alpha:last_tip"
 
 
 # ── verify → wire mapping (§3.4 verbatim, else → unverifiable) ────────────────
@@ -97,6 +94,64 @@ def test_reason_codes_match_by_prefix():
 )
 def test_everything_else_maps_unverifiable(state, reason):
     assert wire_verdict(state, reason) == DRIFT_UNVERIFIABLE
+
+
+# ── branch_route_verdict: routing a materialized verdict through the memory's
+# own declared line (§3.4, branch_scoped computed at read time) ───────────────
+
+
+@pytest.mark.parametrize(
+    "base, declared_ref, consumer_ref, expected",
+    [
+        # declared == consumer (the memory's own line): never softened, whatever
+        # the base — this is what keeps a declared ref from becoming immunity.
+        (DRIFT_ANCHOR_CHANGED, "feature", "feature", DRIFT_ANCHOR_CHANGED),
+        (DRIFT_ANCHOR_MISSING, "feature", "feature", DRIFT_ANCHOR_MISSING),
+        (DRIFT_BLAST_RADIUS_CHANGED, "feature", "feature", DRIFT_BLAST_RADIUS_CHANGED),
+        (DRIFT_FRESH, "feature", "feature", DRIFT_FRESH),
+        # declared != consumer, stale-tier base: routed to the advisory branch_scoped
+        (DRIFT_ANCHOR_CHANGED, "feature", "main", DRIFT_BRANCH_SCOPED),
+        (DRIFT_ANCHOR_MISSING, "feature", "main", DRIFT_BRANCH_SCOPED),
+        (DRIFT_BLAST_RADIUS_CHANGED, "feature", "main", DRIFT_BRANCH_SCOPED),
+        # declared != consumer, fresh base: NEVER downgraded — rides verbatim
+        (DRIFT_FRESH, "feature", "main", DRIFT_FRESH),
+        # declared != consumer, already-advisory/unverifiable/n/a bases: verbatim
+        (DRIFT_UNVERIFIABLE, "feature", "main", DRIFT_UNVERIFIABLE),
+        (DRIFT_NA, "feature", "main", DRIFT_NA),
+        # no declared ref at all: base always verbatim, whatever the consumer
+        (DRIFT_ANCHOR_CHANGED, "", "main", DRIFT_ANCHOR_CHANGED),
+        (DRIFT_ANCHOR_CHANGED, "", "", DRIFT_ANCHOR_CHANGED),
+        # unknown consumer (e.g. a registry/canonical read that came back empty):
+        # base verbatim — routing needs BOTH refs known
+        (DRIFT_ANCHOR_CHANGED, "feature", "", DRIFT_ANCHOR_CHANGED),
+    ],
+)
+def test_branch_route_verdict_truth_table(base, declared_ref, consumer_ref, expected):
+    assert (
+        branch_route_verdict(base, declared_ref=declared_ref, consumer_ref=consumer_ref)
+        == expected
+    )
+
+
+def test_branch_route_verdict_never_returns_fresh_for_a_stale_base():
+    for base in QUALIFYING_DRIFT:
+        for declared, consumer in (
+            ("feature", "main"),
+            ("main", "feature"),
+            ("a", "b"),
+        ):
+            assert (
+                branch_route_verdict(base, declared_ref=declared, consumer_ref=consumer)
+                != DRIFT_FRESH
+            )
+
+
+def test_branch_route_verdict_is_pure_and_total_over_every_wire_member():
+    # every advertised verdict, routed with an off-set pair, either stays put or
+    # becomes the advisory branch_scoped — never anything outside the enum.
+    for base in WIRE_VERDICTS:
+        routed = branch_route_verdict(base, declared_ref="feature", consumer_ref="main")
+        assert routed in (base, DRIFT_BRANCH_SCOPED)
 
 
 # ── most-severe-wins aggregation (the CT-4 property vocabulary) ───────────────
@@ -177,12 +232,16 @@ class _Repo:
 class FakeStore:
     """The duck-typed SqliteEpisodeStore surface attach_drift consumes."""
 
-    def __init__(self, *, registry=(("alpha", "main"),), tips=None, drift=None):
+    def __init__(
+        self, *, registry=(("alpha", "main"),), tips=None, drift=None, ref_tips=None
+    ):
         self._registry = [_Repo(n, c) for n, c in registry]
         self.conn = _FakeConn(tips or {})
         self._drift = drift or {}  # (repo, tip) -> {anchor: (verdict, detail)}
+        self._ref_tips = ref_tips or {}  # (repo, ref) -> tip_sha
         self.touches: list[tuple[str, str, int]] = []
         self.drift_get_calls = 0
+        self.ref_tip_calls = 0
 
     def repo_registry(self):
         return list(self._registry)
@@ -191,6 +250,10 @@ class FakeStore:
         self.drift_get_calls += 1
         rows = self._drift.get((repo, tip_sha), {})
         return {a: rows[a] for a in anchors if a in rows}
+
+    def ref_tip(self, repo, ref):
+        self.ref_tip_calls += 1
+        return self._ref_tips.get((repo, ref))
 
     def touch_ref_request(self, repo, ref, ts):
         self.touches.append((repo, ref, int(ts)))
@@ -303,7 +366,11 @@ def test_out_of_vocabulary_cache_row_serves_unverifiable():
 # ── name@branch ref routing ───────────────────────────────────────────────────
 
 
-def test_queried_branch_degrades_and_records_demand():
+def test_unresolved_queried_branch_degrades_and_records_demand():
+    """No ``ref_tips`` row for ``(alpha, feature)`` yet: the branch tip is
+    genuinely UNKNOWN — ``tip_for`` is consulted (never hardcoded to None) and
+    honestly reports no ``tip_sha``, distinct from a resolved-but-unverified
+    tip (below)."""
     store = _store(drift={("alpha", TIP): {"a.py::f": (DRIFT_FRESH, "{}")}})
     (hit,) = attach_drift(
         [_hit([{"repo": "alpha", "anchor": "a.py::f"}])],
@@ -313,11 +380,58 @@ def test_queried_branch_degrades_and_records_demand():
     )
     drift = hit["drift"]
     assert drift["type"] == DRIFT_UNVERIFIABLE, (
-        "an unmaterialized branch tip must never serve the canonical verdict"
+        "an unresolved branch tip must never serve the canonical verdict"
     )
     assert drift["detail"]["ref"] == "feature"
+    (entry,) = drift["detail"]["per_anchor"]
+    assert "tip_sha" not in entry, "an unresolved tip is honestly absent"
     assert store.touches == [("alpha", "feature", 424_242)]
     assert store.drift_get_calls == 0
+    assert store.ref_tip_calls == 1
+
+
+def test_resolved_queried_branch_serves_its_materialized_verdict():
+    """``tip_for`` is the single owner of tip resolution: a branch tip
+    the materializer already recorded in ``ref_tips`` is looked up and its
+    cached verdict rides the hit — the read half of BUG-063."""
+    feature_tip = "b" * 40
+    store = _store(
+        ref_tips={("alpha", "feature"): feature_tip},
+        drift={("alpha", feature_tip): {"a.py::f": (DRIFT_ANCHOR_CHANGED, "{}")}},
+    )
+    (hit,) = attach_drift(
+        [_hit([{"repo": "alpha", "anchor": "a.py::f"}])],
+        store=store,
+        queried_repos=["alpha@feature"],
+        now=1,
+    )
+    assert hit["drift"]["type"] == DRIFT_ANCHOR_CHANGED
+    assert hit["drift"]["detail"]["ref"] == "feature", (
+        "detail.ref rides whenever a repo was branch-routed, resolved or not"
+    )
+    (entry,) = hit["drift"]["detail"]["per_anchor"]
+    assert entry["tip_sha"] == feature_tip
+    assert entry["verdict"] == DRIFT_ANCHOR_CHANGED
+    assert store.touches == [("alpha", "feature", 1)]  # demand still recorded
+
+
+def test_resolved_but_not_yet_verified_branch_tip_is_unverifiable_not_fresh():
+    """The budget-starved shape (I1): ``ref_tips`` already knows the tip, but no
+    ``anchor_drift`` row exists for it yet — this must read unverifiable WITH
+    the tip known, never fall back to a fresher-looking verdict from a
+    different (e.g. canonical) tip."""
+    feature_tip = "c" * 40
+    store = _store(ref_tips={("alpha", "feature"): feature_tip})  # no drift row yet
+    (hit,) = attach_drift(
+        [_hit([{"repo": "alpha", "anchor": "a.py::f"}])],
+        store=store,
+        queried_repos=["alpha@feature"],
+        now=1,
+    )
+    assert hit["drift"]["type"] == DRIFT_UNVERIFIABLE
+    (entry,) = hit["drift"]["detail"]["per_anchor"]
+    assert entry["tip_sha"] == feature_tip, "the tip is known even though unverified"
+    assert entry["verdict"] == DRIFT_UNVERIFIABLE
 
 
 def test_demand_is_the_query_not_the_hit():
@@ -462,3 +576,29 @@ def test_hostile_scope_entries_are_ignored_not_fatal():
     )
     assert hit["drift"]["type"] == DRIFT_FRESH
     assert store.touches == []
+
+
+def test_the_anchor_moved_tier_has_one_owner():
+    """J8. "Which verdicts mean the anchor MOVED" is ONE fact with two policies —
+    it qualifies a retirement in the gate, and it is what ``branch_route_verdict``
+    may soften to ``branch_scoped``. Asserted by IDENTITY, not by value: a second
+    copy that happens to agree today would pass a value check and drift tomorrow.
+    The tier lives in hive/domain/ because app may import domain, never the
+    reverse."""
+    import hive.app.drift as drift_module
+
+    assert not hasattr(drift_module, "STALE_TIER"), (
+        "the app-side copy of the anchor-moved tier must not exist — one fact, "
+        "one owner"
+    )
+    routed = {
+        base
+        for base in WIRE_VERDICTS
+        # a base that IS branch_scoped rides verbatim — softening is a CHANGE
+        if branch_route_verdict(base, declared_ref="feature", consumer_ref="main")
+        != base
+    }
+    assert routed == QUALIFYING_DRIFT, (
+        "branch_route_verdict must soften EXACTLY the tier the retirement gate "
+        f"qualifies on: {routed} != {set(QUALIFYING_DRIFT)}"
+    )

@@ -28,7 +28,7 @@ Call these from any connected agent (there is no host-side verb):
 | `hive_health(include_conflicts=true)` | near-duplicate / contradicting memories + agent advisories, bucketed by repo and anchor | `hive_supersede` |
 | `hive_health(include_suspect_consensus=true)` | promotions on thin *effective* independence | re-examine; retire via `hive_supersede` / `hive_prune` |
 | `hive_health(include_stale_suspects=true)` | servable memories whose anchor sat in the blast radius of a breaking/removed change | re-verify each against the code; retire the truly stale |
-| `hive_health(include_census_health=true)` | per registered repo: days since the last `change_outcome` + the `sync` block (`last_tip`/`last_error`/counters; `status: "sync stalled"` when configured yet dark) | check the registry (`hive repos`), the token env var, remote reachability |
+| `hive_health(include_census_health=true)` | `repos` — per registered repo: days since the last `change_outcome` + the `sync` block (`tracked_ref`/`last_tip`/`last_sync_ts`/`last_error`/`backfilled_total`; `status: "sync stalled"` when configured yet dark). `fleet` — the daemon's own `last_sync_ts`/`last_error` | read `fleet` FIRST: a `last_error` there (or a frozen `last_sync_ts`) means the daemon is down and every repo block is a stale snapshot that still reads as passing → `hive logs`. Otherwise check the registry (`hive repos`), the token env var, remote reachability |
 
 The **trends window is the only view into silent fail-open rot** — read it on a fixed cadence
 (weekly suffices for a small team).
@@ -49,7 +49,7 @@ worklists only surface it; resolving it is this pass.
 | Knob | Default | Move it when |
 |---|---|---|
 | `HIVE_RECALL__TAU_SERVE` | 0.70 | coverage is starved (gate over-abstains → lower) or weak matches serve (→ raise). Recalibrate on your corpus |
-| `HIVE_AUTONOMY__DEMAND_M` | 3 | your coverage↔safety dial — raise if a wrong answer is expensive, lower if a miss costs more |
+| `HIVE_AUTONOMY__DEMAND_M` | 1 | non-writer misses required — the anti-gaming floor; raise above it if a wrong answer is expensive (there is no lower, safer setting than the floor) |
 | `HIVE_CONFLICT__TAU` | 0.80 | distinct facts get merged (→ raise) or near-duplicate twins slip through (→ lower) |
 | `HIVE_AUTONOMY__QUARANTINE_TTL_DAYS` / `…__PROVISIONAL_TTL_DAYS` | 14 / 45 | **do not lengthen to hoard** — expiry of unused memory is doing real work |
 | `HIVE_SYNC__INTERVAL_S` | 60 | the sync poll cadence (floor 5 s) — the webhook only wakes it early, never replaces it |

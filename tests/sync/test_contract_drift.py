@@ -192,6 +192,40 @@ def test_cache_is_rebuildable(origin, store, tmp_path):
     )
 
 
+# ── BUG-065: a retired memory's anchor leaves the verify work list ────────────
+def test_repo_fps_excludes_a_deprecated_anchors_binding(origin, store, tmp_path):
+    """The daemon's own work-list read inherits the not-retired predicate from
+    ``store.anchor_carriers`` — retirement flips TRUST, not status, so a
+    status-only read would keep offering a pruned/superseded anchor to the
+    verify sweep forever."""
+    eid = seed_episode(store, "greet lesson")
+    svc = _armed(origin, store, tmp_path)
+    assert ANCHOR in svc._repo_fps(REPO)
+
+    assert store.deprecate(eid, actor="agent-a", ts=20)
+    assert ANCHOR not in svc._repo_fps(REPO)
+
+
+def test_deprecated_anchor_is_pruned_from_the_drift_cache_at_a_live_tip(
+    origin, store, tmp_path
+):
+    """The false-fresh close a tip-only prune would miss: a tick that leaves
+    the canonical tip UNCHANGED must still drop a just-retired anchor's cached
+    row there, or a later episode binding the same anchor would read a
+    verdict computed against the retired episode's fingerprint."""
+    eid = seed_episode(store, "greet lesson")
+    svc = _armed(origin, store, tmp_path)
+    svc.tick()
+    tip = origin.origin_sha("refs/heads/main")
+    assert _verdict_for(store, tip) == "fresh"
+
+    assert store.deprecate(eid, actor="agent-a", ts=20)
+    svc.tick()  # no commit in between: the canonical tip does not move
+    assert _verdict_for(store, tip) is None, (
+        "a retired anchor's cached row must not survive at a still-live tip"
+    )
+
+
 def test_verify_cap_carries_over(origin, store, tmp_path):
     origin.commit("util.py", "def helper(x):\n    return x\n", "add util")
     origin.push()

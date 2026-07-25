@@ -269,9 +269,19 @@ def make_service(
 
 
 def build_receipt(
-    repo: Path, base: str, head: str, out_dir: Path, *, repo_id: Optional[str] = None
+    repo: Path,
+    base: str,
+    head: str,
+    out_dir: Path,
+    *,
+    repo_id: Optional[str] = None,
+    ref: Optional[str] = None,
 ) -> dict:
-    """A REAL receipt envelope over base..head via the census CLI subprocess."""
+    """A REAL receipt envelope over base..head via the census CLI subprocess.
+    ``ref`` names the measured LINE in the receipt's provenance — the daemon
+    always passes its canonical tracked branch, so a NON-canonical line is
+    reachable only through this manual door (the same door ``hive ingest``
+    opens)."""
     out = out_dir / f"receipt-{base[:8]}-{head[:8]}.json"
     argv = [
         sys.executable,
@@ -290,6 +300,8 @@ def build_receipt(
     ]
     if repo_id:
         argv += ["--repo-id", repo_id]
+    if ref:
+        argv += ["--ref", ref]
     proc = subprocess.run(argv, capture_output=True, text=True, env=harness_env())
     assert proc.returncode == 0, f"census build failed: {proc.stderr.strip()}"
     return json.loads(out.read_text(encoding="utf-8"))

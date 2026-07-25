@@ -43,7 +43,8 @@ _DAY_S = 86_400
 
 # The tables migrate() asserts are present — a missing one is a botched migration (EX_SOFTWARE),
 # caught at boot rather than at first recall. Includes the v3 repo-partition set: the anchor
-# bindings, the durable repo registry, the materialized drift cache, and the branch-demand list.
+# bindings, the durable repo registry, the materialized drift cache, the branch-demand list,
+# a memory's own declared line (episode_refs), and its per-ref tip watermark (ref_tips).
 _REQUIRED_TABLES = frozenset(
     {
         "blobs",
@@ -55,9 +56,11 @@ _REQUIRED_TABLES = frozenset(
         "conflict_flags",
         "ingested_ranges",
         "episode_anchors",
+        "episode_refs",
         "repos",
         "anchor_drift",
         "ref_requests",
+        "ref_tips",
     }
 )
 
@@ -192,8 +195,8 @@ class Container:
         # The v3 store IS the server's retirement-gate evidence feed (evidence_rows_for +
         # insert_audit), scope reader (repo_registry + scan_servable_labeled), and drift
         # source (drift_get for attach_drift) — one handle wires all three. No AGI sentinel
-        # exists, and no global canonical_ref is passed: per-repo canonical refs live in the
-        # repo registry, so the last_verified rider keeps its unscoped default read.
+        # exists. The last_verified rider needs no construction-time ref: it scopes each
+        # hit to the line THAT MEMORY declared, read off the anchors recall already built.
         db_path = "" if self.cfg.db_path == _MEMORY_DB else self.cfg.db_path
         return HiveMCPServer(
             admission=self.admission,

@@ -406,6 +406,36 @@ def ref_request_rows(store: SqliteEpisodeStore) -> list[dict]:
     ]
 
 
+def episode_ref_rows(
+    store: SqliteEpisodeStore, episode_id: Optional[int] = None
+) -> list[dict]:
+    """Every ``episode_refs`` row — the memory's DECLARED line per repo (the
+    write-side twin of ``ref_request_rows``' recall-side demand). Filters to one
+    episode when given; otherwise the whole table, ordered for stable diffs."""
+    require_table(store, "episode_refs")
+    sql = "SELECT * FROM episode_refs"
+    args: list = []
+    if episode_id is not None:
+        sql += " WHERE episode_id=?"
+        args.append(int(episode_id))
+    return [
+        dict(r) for r in store.conn.execute(sql + " ORDER BY episode_id, repo", args)
+    ]
+
+
+def ref_tip_rows(store: SqliteEpisodeStore, repo: Optional[str] = None) -> list[dict]:
+    """Every ``ref_tips`` row — the materializer's per-ref watermark (the branch
+    twin of the ``sync:<repo>:last_tip`` meta key). Filters to one repo when
+    given; otherwise the whole table, ordered for stable diffs."""
+    require_table(store, "ref_tips")
+    sql = "SELECT * FROM ref_tips"
+    args: list = []
+    if repo is not None:
+        sql += " WHERE repo=?"
+        args.append(repo)
+    return [dict(r) for r in store.conn.execute(sql + " ORDER BY repo, ref", args)]
+
+
 # ── v3 store-level episode seeding (for the server-less sync fixtures) ────────
 
 _vec_provider = None
@@ -425,7 +455,7 @@ def seed_scoped_episode(
     text: str,
     *,
     anchors: Sequence[tuple[str, str]] = (),
-    repos: Sequence[str] = (),
+    repos: Sequence[tuple[str, str]] = (),
     trust: str = "provisional",
     polarity: str = "neutral",
     ts: int = 10,
@@ -433,8 +463,15 @@ def seed_scoped_episode(
     d: int = SYNC_DIM,
 ) -> int:
     """Stage + complete one episode through the v3 store signature:
-    ``stage(..., anchors=[(repo, anchor), ...], repos=[...])`` (plan §6 step 2 —
-    the ``tags``/``provenance`` params are gone)."""
+    ``stage(..., anchors=[(repo, anchor), ...], repos=[(repo, branch), ...])``
+    (the ``tags``/``provenance`` params are gone). ``repos`` mirrors
+    ``normalize_repos``' output shape — one ``(name, branch)`` pair per repo,
+    ``branch=""`` for scope-only/canonical, non-empty to DECLARE a line. No
+    existing caller passes a non-empty ``repos`` here, so this stays a pure
+    type widening for every current site; a caller declaring a real line must
+    guard on the ``episode_refs`` table first (``require_table``) — passing a
+    pair straight into a pre-declared-refs ``stage`` would otherwise write a
+    silently-wrong repo-name row instead of failing cleanly."""
     params = inspect.signature(store.stage).parameters
     assert "anchors" in params and "repos" in params, (
         "v3 stage(anchors=, repos=) signature not implemented (plan §6 step 2)"
@@ -449,7 +486,7 @@ def seed_scoped_episode(
         ts=ts,
         polarity=polarity,
         anchors=[tuple(a) for a in anchors],
-        repos=list(repos),
+        repos=[tuple(r) for r in repos],
     )
     ok = store.complete(
         eid,
