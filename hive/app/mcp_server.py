@@ -52,7 +52,7 @@ from hive.app.anchors import BadAnchors, normalize_anchors, normalize_repos
 from hive.app.census_health import census_health_report
 from hive.app.contract import REMEDIATION_NOTICE, SERVER_INSTRUCTIONS
 from hive.app.drift import attach_drift
-from hive.app.sync_keys import canonical_tip_key
+from hive.app.sync_keys import canonical_tip_key, tracked_ref_key
 from hive.app.gaps import cluster_misses
 from hive.app.trends import compute_trends
 from hive.app.tool_defs import TOOL_DEFINITIONS
@@ -80,7 +80,7 @@ from hive.domain.evidence_kinds import (
 from hive.domain.kinds import DEFAULT_KIND
 from hive.domain.lifecycle import DEPRECATED, is_servable
 from hive.domain.meta import BadMeta, normalize_meta
-from hive.domain.models import CONFIDENT, Episode
+from hive.domain.models import CONFIDENT, AnchorRef, Episode
 from hive.domain.recall import RecallScope
 from hive.domain.retirement import Eligibility, retirement_evidence
 from hive.domain.secret_scan import ScanVerdict
@@ -261,6 +261,19 @@ def _scan_report(verdict: ScanVerdict) -> dict[str, Any]:
         "rules": [f.rule for f in verdict.findings],
         "n_findings": len(verdict.findings),
     }
+
+
+def _anchor_to_wire(a: AnchorRef, declared_refs: Mapping[str, str]) -> dict[str, Any]:
+    """One served anchor entry: ``{repo, anchor}`` plus the memory's DECLARED
+    ``ref`` for that repo when it named one — omitted when canonical (the
+    no-line envelope stays byte-inert), never a caller-supplied value.
+    ``declared_refs`` is the episode's own ``episode_refs`` projection (repo ->
+    ref), the input a branch-scoped drift verdict routes an anchor on."""
+    d: dict[str, Any] = {"repo": a.repo, "anchor": a.anchor}
+    ref = declared_refs.get(a.repo, "")
+    if ref:
+        d["ref"] = ref
+    return d
 
 
 def _abstain_note(state: str) -> str:
@@ -561,21 +574,33 @@ class HiveMCPServer:
         return tuple(n for n in notes if n.a_id == int(ep.id) or n.b_id == int(ep.id))
 
     def _gate_drift_verdicts(self, ep: Episode) -> list[str]:
-        """§3.2 clause 1a feed: the materialized drift verdicts for the target's anchors
-        at each anchor repo's CANONICAL tip (the sync watermark meta key). An unknown
-        tip / un-materialized anchor contributes nothing (absence never qualifies).
-        Raises freely — the caller owns the fail-closed."""
+        """§3.2 clause 1a feed: the materialized drift verdicts for the target's
+        anchors at each anchor repo's OWN declared tip — ``ref_tip(repo,
+        declared_ref)`` when the episode declared a line for that repo (via
+        ``episode_refs``), else the CANONICAL tip (the sync watermark meta key).
+        ``branch_route_verdict`` is deliberately NOT applied here: consumer ==
+        declared by construction, so ``branch_scoped`` can never arise and a
+        dead anchor on the memory's own line still qualifies for retirement —
+        this is what keeps a declared ref from becoming caller-asserted
+        immunity (THEORY §9 #6). An unknown tip / un-materialized anchor
+        contributes nothing (absence never qualifies). Raises freely — the
+        caller owns the fail-closed."""
         verdicts: list[str] = []
         if not ep.anchors:
             return verdicts  # general/scope-only: drift is n/a
         by_repo: dict[str, list[str]] = {}
         for a in ep.anchors:
             by_repo.setdefault(a.repo, []).append(a.anchor)
+        declared = self.store.episode_refs(int(ep.id))
         for repo, anchors in by_repo.items():
-            row = self.store.conn.execute(
-                "SELECT value FROM meta WHERE key=?", (canonical_tip_key(repo),)
-            ).fetchone()
-            tip = row["value"] if row is not None else None
+            declared_ref = declared.get(repo, "")
+            if declared_ref:
+                tip = self.store.ref_tip(repo, declared_ref)
+            else:
+                row = self.store.conn.execute(
+                    "SELECT value FROM meta WHERE key=?", (canonical_tip_key(repo),)
+                ).fetchone()
+                tip = row["value"] if row is not None else None
             if not isinstance(tip, str) or not tip:
                 continue
             cached = self.store.drift_get(repo, tip, anchors)
@@ -583,6 +608,33 @@ class HiveMCPServer:
                 if isinstance(entry, (tuple, list)) and entry:
                     verdicts.append(str(entry[0]))
         return verdicts
+
+    def _gate_own_lines(self, ep: Episode) -> Optional[frozenset[str]]:
+        """§3.2 clause 1b's line filter: the lines whose ledger evidence is THIS
+        memory's own — per repo it is anchored in (or, anchor-less, per repo it
+        scoped), the ref it DECLARED for that repo (``episode_refs``), else that
+        repo's canonical tracked branch (the ``sync:<repo>:tracked_ref``
+        watermark). ``None`` when the memory declared NO line anywhere: the
+        ledger clause then reads every row exactly as it did before declared
+        lines existed — the overwhelmingly common case, unchanged. A repo whose
+        tracked branch is unknown contributes nothing (its rows become
+        unattributable ⇒ under-claim). Raises freely — the caller owns the
+        fail-closed."""
+        declared = self.store.episode_refs(int(ep.id))
+        if not declared:
+            return None  # no declared line ⇒ judged at canonical, as before
+        repos = {a.repo for a in ep.anchors} or set(declared)
+        lines: set[str] = set()
+        for repo in repos:
+            ref = declared.get(repo, "")
+            if not ref:
+                row = self.store.conn.execute(
+                    "SELECT value FROM meta WHERE key=?", (tracked_ref_key(repo),)
+                ).fetchone()
+                ref = row["value"] if row is not None else ""
+            if isinstance(ref, str) and ref:
+                lines.add(ref)
+        return frozenset(lines)
 
     def _retirement_eligibility(
         self, ep: Episode, caller_identity: str, winner: Optional[Episode] = None
@@ -613,6 +665,7 @@ class HiveMCPServer:
                 evidence_rows=rows,
                 conflict_pairs=pairs,
                 winner_cosine=winner_cosine,
+                own_lines=self._gate_own_lines(ep),
             )
         except Exception:  # noqa: BLE001 — undecidable ⇒ noop
             _log.warning(
@@ -666,7 +719,6 @@ class HiveMCPServer:
             scope = normalize_repos(args.get("repos"), known_repos=known)
         except BadAnchors as e:
             return {"status": "refused", "reason": str(e)}  # nothing stored
-        repos = [name for name, _branch in scope]
 
         # ── the §3.2 replaces= retirement rider, gated BEFORE any store mutation.
         # UNKNOWN target ⇒ the rider passes through and admission fails the WHOLE call
@@ -691,7 +743,7 @@ class HiveMCPServer:
                 polarity=polarity,
                 kind=kind,
                 anchors=anchors,
-                repos=repos,
+                repos=scope,
                 meta=meta,
             )
         except SecretRefused as e:
@@ -759,7 +811,7 @@ class HiveMCPServer:
                 polarity=polarity,
                 kind=kind,
                 anchors=anchors,
-                repos=[name for name, _b in scope],
+                repos=scope,
                 meta=meta,
             )
         except SecretRefused as e:
@@ -830,6 +882,7 @@ class HiveMCPServer:
                     },
                 )
                 continue
+            declared_refs = self.store.episode_refs(ep.id) if h.anchors else {}
             hit = {
                 "episode_id": h.episode_id,
                 "text": h.text,
@@ -838,9 +891,11 @@ class HiveMCPServer:
                 "ts": h.ts,
                 "polarity": h.polarity,
                 "kind": h.kind,
-                # §3.4: repos/anchors ride EVERY hit ([] = general/scope-only)
+                # §3.4: repos/anchors ride EVERY hit ([] = general/scope-only); each
+                # anchor also carries the memory's declared ref for that repo, when
+                # it named one (omitted when canonical).
                 "repos": list(h.repos),
-                "anchors": [{"repo": a.repo, "anchor": a.anchor} for a in h.anchors],
+                "anchors": [_anchor_to_wire(a, declared_refs) for a in h.anchors],
             }
             if h.meta:  # omit-when-empty: the no-meta envelope is byte-inert
                 hit["meta"] = h.meta

@@ -552,6 +552,66 @@ All notable changes to this project are documented here.
   transitive packages.
 
 ## Fixed
+- A branch-scoped recall now reads the verdict the sync daemon actually computed, instead of
+  `unverifiable` forever. Any queried ref other than a repo's canonical branch hit a guard that
+  recorded a null tip and skipped the drift-cache read entirely — the write side really did
+  resolve and verify a demanded branch's tip, but nothing on the read side could ever see it,
+  even though the recall's own demand is what put that branch on the materializer's work list in
+  the first place. `hive/app/drift.py` gains the single tip resolver `_tip_for(store, repo,
+  ref)` — the per-ref watermark table `ref_tips` for a non-canonical ref, else the canonical
+  watermark — and the dead guard is deleted. The sync daemon now writes each resolved `(ref,
+  sha)` to `ref_tips` BEFORE running that tip's verify batch, so a budget-starved tick reads
+  "tip known, verdict absent" as `unverifiable`, never a `fresh` inherited from an older tip.
+- `branch_scoped` is reachable on the served path — an agent can now actually see the verdict
+  the drift vocabulary has advertised since the branch-scope tagging feature landed. The break
+  was upstream of the sync daemon: the write handlers discarded the branch an agent had already
+  declared (`repos=['alpha@feature']` landed as bare `alpha`), so nothing server-side ever
+  recorded which line a memory was about. `hive_write`/`hive_capture` now thread the declared
+  `(name, branch)` pair through to a new `episode_refs` row (one per `(episode_id, repo)`; a
+  plain `repos=['alpha']` stores no row — canonical means no row, and a dedup'd re-write does not
+  restate a previously declared line), and every served anchor carries that declared line when
+  it has one. At read time, a new pure router compares a memory's declared line against the
+  consumer's effective line (the queried branch, else canonical): a stale-tier verdict read off
+  a *different* line downgrades to the advisory `branch_scoped` — never upgrading to `fresh`,
+  never touching a `fresh`/`unverifiable` base — while a verdict read on the memory's own
+  declared line rides verbatim. The retirement gate deliberately skips this routing: it resolves
+  each anchor's tip at the memory's *own* declared line directly, so a dead anchor on that line
+  still qualifies for retirement — a declared ref can never become caller-asserted immunity.
+  Fingerprints stay server-minted-only throughout, and no new write-door grammar was added:
+  `repos=['name@branch']` was already advertised, validated, and parsed.
+- A retired memory's anchor now leaves the sync daemon's verify and mint-backfill work lists the
+  same tick its retirement lands, instead of consuming the capped per-tick budget forever.
+  Retirement flips an episode's trust to `deprecated` but leaves it `status='approved'` (by
+  design — the row stays in the append-only ledger), and the daemon's work-list queries filtered
+  only on `status`, so a pruned or superseded memory's anchor kept being re-verified and
+  re-minted at every new tip indefinitely, starving genuinely-servable anchors of budget on a
+  repo with a long prune history. Both work-list queries — the daemon's inlined SQL and the
+  store's fingerprint-backfill sweep — now share one predicate excluding `deprecated` rows via a
+  new store verb, `anchor_carriers`; quarantined and provisional rows stay eligible (a
+  quarantined memory can still be promoted and needs its fingerprints). Closing the work-list
+  leak alone would have opened a false-fresh path — a *new* episode binding the same
+  now-untracked anchor could read a stale cached verdict computed against the retired episode's
+  fingerprint — so the drift-cache pruner gained a `keep_anchors` parameter and the daemon now
+  always passes its current work set, dropping a departed anchor's cached rows in the same tick
+  it leaves the sweep.
+- The demand-promotion gate now subtracts the writer's own misses from the count instead of only
+  checking that at least one non-writer identity exists somewhere in the window. The old ladder
+  gated on the total matched-miss count with a separate always-on non-writer floor — at the old
+  default of 3 required misses, the writer's own two abstaining recalls plus one other
+  identity's miss were enough to promote, letting the writer supply two of the three.
+  `DemandRule.decide` now gates on the single clause "non-writer misses >= the bar", diagnosing
+  `self_demand` (matched misses exist but every one is the writer's own) or
+  `insufficient_demand` (some non-writer misses matched, just not enough of them); the audit
+  record keeps reporting both the total matched count and the non-writer count separately. The
+  default `HIVE_AUTONOMY__DEMAND_M` moves **3 → 1**: once self-identity is subtracted, one
+  non-writer miss is already demand, and any value above 1 is now a sensitivity dial rather than
+  an anti-gaming property — a quarantined row's liveness clock does not restart on a miss, so a
+  higher bar mostly meant a capture TTL-expired unpromoted while still being actively sought.
+  Accepted trade-off, recorded rather than silently absorbed: a promotion that clears the new
+  floor at exactly one non-writer miss can never trip the thin-independence suspect-consensus
+  flag (it is mathematically unflaggable at that vote count) — the flag is advisory-only and
+  gates nothing, so this is a lost operator hint on the modal promotion, not a lost safety
+  property, and its own sensitivity floor is deliberately left untouched by this change.
 - A dead sync daemon now says so. `hive_health(include_census_health=true)` returned a bare
   `{repo_name: block}` map, so a fault in the tick *shell* — the registry read failing, anything
   escaping a whole tick, a mirror prune stuck under a deregistered name — had nowhere to surface:

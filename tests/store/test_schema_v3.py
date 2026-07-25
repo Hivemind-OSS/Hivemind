@@ -106,9 +106,11 @@ def test_v3_tables_present():
     assert {
         "episodes",
         "episode_anchors",
+        "episode_refs",
         "repos",
         "anchor_drift",
         "ref_requests",
+        "ref_tips",
         "blobs",
         "exposure",
         "meta",
@@ -202,6 +204,34 @@ def test_anchor_drift_and_ref_requests_shape():
         )
 
 
+def test_episode_refs_and_ref_tips_shape():
+    conn = connect(":memory:")
+    SqliteEpisodeStore(conn)
+    refs = _cols(conn, "episode_refs")
+    assert set(refs) == {"episode_id", "repo", "ref"}
+    tips = _cols(conn, "ref_tips")
+    assert set(tips) == {"repo", "ref", "tip_sha", "ts"}
+    # PK(episode_id, repo) on episode_refs: one declared line per (episode, repo)
+    conn.execute(
+        "INSERT INTO episode_refs(episode_id, repo, ref) VALUES(1, 'alpha', 'feature')"
+    )
+    with pytest.raises(Exception):
+        conn.execute(
+            "INSERT INTO episode_refs(episode_id, repo, ref) "
+            "VALUES(1, 'alpha', 'develop')"
+        )
+    # PK(repo, ref) on ref_tips
+    conn.execute(
+        "INSERT INTO ref_tips(repo, ref, tip_sha, ts) "
+        "VALUES('alpha', 'feature', 'deadbeef', 0)"
+    )
+    with pytest.raises(Exception):
+        conn.execute(
+            "INSERT INTO ref_tips(repo, ref, tip_sha, ts) "
+            "VALUES('alpha', 'feature', 'other', 1)"
+        )
+
+
 def test_recall_misses_carries_repos_scope():
     conn = connect(":memory:")
     SqliteEpisodeStore(conn)
@@ -291,6 +321,27 @@ def test_fresh_empty_store_boots():
     conn = connect(":memory:")
     SqliteEpisodeStore(conn)
     assert "episode_anchors" in _tables(conn)
+
+
+def test_existing_v3_store_gains_episode_refs_and_ref_tips_without_refusal():
+    # a v3 store from BEFORE episode_refs/ref_tips existed: episode_anchors is
+    # present (so the refusal guard — which inspects only episodes columns and
+    # episode_anchors presence — passes cleanly), but the two new tables are
+    # absent. A new TABLE costs nothing: CREATE TABLE IF NOT EXISTS adds them on
+    # the very next construction, with no refusal and no reset needed on a live
+    # store.
+    conn = connect(":memory:")
+    conn.executescript(_V3_EPISODES_ONLY_SCHEMA)
+    conn.executescript(
+        "CREATE TABLE episode_anchors("
+        "episode_id INTEGER NOT NULL, repo TEXT NOT NULL, "
+        "anchor TEXT NOT NULL DEFAULT '', fp_meta TEXT NOT NULL DEFAULT '', "
+        "PRIMARY KEY(episode_id, repo, anchor));"
+    )
+    assert "episode_refs" not in _tables(conn)
+    assert "ref_tips" not in _tables(conn)
+    SqliteEpisodeStore(conn)  # must not raise
+    assert {"episode_refs", "ref_tips"} <= _tables(conn)
 
 
 def test_default_insert_lands_quarantined():

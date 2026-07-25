@@ -149,3 +149,50 @@ def test_tools_list_is_the_enforced_belt(rig):
     # and hive_recall's scope args pass the belt (advertised ⇒ accepted)
     served = recall(rig.server, "anything at all", repos=[])
     assert "reference_context" in served or served.get("status") == "refused"
+
+
+def test_write_vs_capture_states_the_regression_avoidance_preference(rig):
+    """The write-vs-capture decision rule composed into the floor and both
+    write-side tool descriptions must state the operator ruling: prefer
+    hive_write for a lesson that saves a future agent from repeating a
+    mistake, causing a regression, or relearning a hard-won insight that led
+    to landed code — hive_capture stays the ambiguous tail only. This is
+    decision guidance beyond the existing serve-now-vs-quarantined mechanics."""
+    mod = _contract_mod()
+    low = mod.WRITE_VS_CAPTURE.lower()
+    assert "hive_write" in low and "hive_capture" in low
+    assert "regression" in low or "repeating a mistake" in low, (
+        "the preference ruling (repeating a mistake / causing a regression / "
+        f"relearning what led to landed code) must ride WRITE_VS_CAPTURE: "
+        f"{mod.WRITE_VS_CAPTURE!r}"
+    )
+
+
+def test_write_vs_capture_states_the_branch_anchor_tagging_directive(rig):
+    """The same decision rule must also carry the tagging directive: tag the
+    line with repos=['name@branch'] + anchors=[{repo, anchor}] wherever the
+    memory is about real code — required behavior wherever possible, not an
+    afterthought buried only in the schema's field description."""
+    mod = _contract_mod()
+    low = mod.WRITE_VS_CAPTURE.lower()
+    assert "@branch" in low, (
+        "the repo/branch + anchor tagging directive must ride WRITE_VS_CAPTURE "
+        f"so agents are told to tag the line wherever a memory is about real "
+        f"code: {mod.WRITE_VS_CAPTURE!r}"
+    )
+    assert "anchor" in low
+
+
+def test_hive_write_and_capture_descriptions_carry_the_tagging_directive(rig):
+    """WRITE_VS_CAPTURE composes verbatim into both write-side tool
+    descriptions (one source, no drift) — the tagging directive must therefore
+    be visible on the two tools an agent actually calls, not just the
+    initialize-time floor."""
+    for name in ("hive_write", "hive_capture"):
+        desc = next(
+            t["description"] for t in _tools(rig.server) if t["name"] == name
+        ).lower()
+        assert "@branch" in desc, (
+            f"{name} description must carry the branch+anchor tagging "
+            f"directive composed from WRITE_VS_CAPTURE: {desc!r}"
+        )

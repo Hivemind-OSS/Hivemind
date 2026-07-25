@@ -154,3 +154,29 @@ def test_self_demand_never_promotes(tmp_path):
     assert trust_of(rig.store, eid) == QUARANTINED, (
         "demand consisting solely of the writer's own misses never promotes"
     )
+
+
+def test_writer_misses_do_not_count_toward_the_partition_bar(tmp_path):
+    """THEORY §9 #6's self-identity subtraction combined with the partition
+    scope clause: the writer's own IN-PARTITION miss must not count toward
+    ``demand_m`` any more than an out-of-partition one would — it takes
+    ``demand_m`` misses from OTHER identities, full stop."""
+    rig = _rig(tmp_path)
+    _register(rig)
+    text = "alpha's deploy needs the staging bucket warmed first"
+    eid = _capture_scoped(rig, text, ["alpha"], identity=WRITER)
+
+    _miss(rig, text, repos=["alpha"], identity=WRITER)  # writer's own in-partition miss
+    assert trust_of(rig.store, eid) == QUARANTINED
+
+    _miss(rig, text, repos=["alpha"], identity=ASKER)  # ONE other identity
+    assert trust_of(rig.store, eid) == QUARANTINED, (
+        "one non-writer identity is not enough at demand_m=2 once the writer's "
+        "own in-partition miss stops counting toward the bar"
+    )
+
+    _miss(rig, text, repos=["alpha"], identity=ident("asker-y"))  # a SECOND other
+    assert trust_of(rig.store, eid) == PROVISIONAL, (
+        "two non-writer misses must promote regardless of how many writer "
+        "misses preceded them"
+    )

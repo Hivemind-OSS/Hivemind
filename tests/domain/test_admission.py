@@ -112,7 +112,10 @@ class _Store:
             superseded_by=None,
         )
         self.anchors[eid] = [(r, a) for r, a in anchors]
-        self.scopes[eid] = list(repos)
+        # repos arrives as (repo, ref) pairs (the real store's declared-line
+        # shape); this fake's scope union only ever needs the NAME — Episode.repos
+        # stays name-only regardless of any declared ref.
+        self.scopes[eid] = [r for r, _ref in repos]
         self.by_hash[h] = eid
         return eid, False
 
@@ -282,11 +285,13 @@ def test_write_threads_anchors_and_repos_to_stage():
         "the greet helper trims input",
         proposed_by="a",
         anchors=[AnchorRef(repo="alpha", anchor="app.py::greet")],
-        repos=["beta"],
+        repos=[("beta", "")],
     )
     staged = store.stage_calls[-1]
     assert staged["anchors"] == [("alpha", "app.py::greet")]  # (repo, anchor) pairs
-    assert staged["repos"] == ["beta"]  # declared scope-only
+    assert staged["repos"] == [
+        ("beta", "")
+    ]  # (repo, ref) pairs; '' declares no line (canonical)
 
 
 def test_capture_threads_anchors_and_repos_to_stage():
@@ -295,11 +300,36 @@ def test_capture_threads_anchors_and_repos_to_stage():
         "the loader caches per repo",
         proposed_by="a",
         anchors=[AnchorRef(repo="alpha", anchor="pkg/loader.py")],
-        repos=["alpha"],
+        repos=[("alpha", "")],
     )
     staged = store.stage_calls[-1]
     assert staged["anchors"] == [("alpha", "pkg/loader.py")]
-    assert staged["repos"] == ["alpha"]
+    assert staged["repos"] == [("alpha", "")]
+
+
+# ── a declared branch is threaded through verbatim, never discarded (BUG-064) ──
+def test_write_threads_a_declared_branch_to_stage():
+    svc, store, *_ = _svc()
+    svc.write(
+        "the retry helper backs off on 429 on this branch",
+        proposed_by="a",
+        anchors=[AnchorRef(repo="alpha", anchor="svc.py::retry")],
+        repos=[("alpha", "feature")],
+    )
+    staged = store.stage_calls[-1]
+    assert staged["repos"] == [("alpha", "feature")]  # the branch survives, not ''
+
+
+def test_capture_threads_a_declared_branch_to_stage():
+    svc, store, *_ = _svc()
+    svc.capture(
+        "a captured insight scoped to a feature branch",
+        proposed_by="a",
+        anchors=[AnchorRef(repo="alpha", anchor="svc.py::retry")],
+        repos=[("alpha", "feature")],
+    )
+    staged = store.stage_calls[-1]
+    assert staged["repos"] == [("alpha", "feature")]
 
 
 def test_write_threads_polarity_kind_meta_to_stage():

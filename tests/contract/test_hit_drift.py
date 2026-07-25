@@ -71,7 +71,6 @@ def _drift_of(rig, text: str, eid: int, repos=None) -> dict:
         DRIFT_ANCHOR_CHANGED,
         DRIFT_ANCHOR_MISSING,
         DRIFT_BLAST_RADIUS,
-        DRIFT_BRANCH_SCOPED,
     ],
 )
 def test_materialized_verdict_rides_the_hit(tmp_path, verdict):
@@ -88,6 +87,35 @@ def test_materialized_verdict_rides_the_hit(tmp_path, verdict):
     assert per_anchor[0].get("verdict") == verdict
     assert per_anchor[0].get("repo") == "alpha"
     assert per_anchor[0].get("anchor") == anchor
+
+
+def test_branch_scoped_reached_only_through_the_memorys_declared_line(tmp_path):
+    """Unlike every other member of the wire vocabulary, ``branch_scoped`` is
+    never stored by a materializer — it is a served-time ROUTING of a real
+    stale verdict through the memory's own declared line. Seeding it directly
+    into the cache (as the parametrized case above does for every OTHER
+    verdict) would prove nothing a production writer can reach; this drives
+    the real declared-ref divergence instead — a memory that names a different
+    line than the one it is read from, whose named line's own verdict is
+    stale-tier."""
+    rig = _rig(tmp_path)
+    text = "fact about the branch_scoped anchor"
+    anchor = "pkg/mod_branch_scoped.py::fn"
+    eid = write_ok(
+        rig.server,
+        text,
+        anchors=[{"repo": "alpha", "anchor": anchor}],
+        repos=["alpha@feature"],
+    )
+    # materialized STALE at the canonical tip; the memory's declared line
+    # (feature) is a different line than the one this cache row was judged at.
+    drift_put(rig.store, [("alpha", TIP, anchor, DRIFT_BLAST_RADIUS, "{}", NOW)])
+
+    drift = _drift_of(rig, text, eid, repos=["alpha"])  # consumer on canonical
+    assert drift.get("type") == DRIFT_BRANCH_SCOPED, (
+        f"a memory declared on a different line than the one it is read from "
+        f"must route through branch_scoped, not the raw stale verdict: {drift}"
+    )
 
 
 def test_unmaterialized_tip_reads_unverifiable(tmp_path):

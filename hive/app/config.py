@@ -102,7 +102,7 @@ class AutonomyConfig:
     pre-lifecycle build (labels stay, additive-only)."""
 
     enabled: bool = True
-    demand_m: int = 3  # window misses required to promote
+    demand_m: int = 1  # non-writer window misses required to promote (THEORY §9 #6)
     demand_window_days: int = 14
     demand_tau: float = 0.75  # miss ↔ candidate cosine floor
     competitor_tau: float = (

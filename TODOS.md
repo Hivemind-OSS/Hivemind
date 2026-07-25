@@ -270,3 +270,72 @@ phase (where the candidate cut is decided), not an ad-hoc add.
 (dependency major bump / config key removed / doc section rewritten / runtime jump) is detected
 and relayed as designed, plus the negative case (a benign change ⇒ silence); and the full
 pre-existing corpus serves byte-identically before/after the update.
+
+## TODO 18 — Recall concurrency: split the request lock, hoist the embed, partition the index by repo
+
+**File:** `hive/app/http_server.py` (`_build_handler`, `run_http_dual`), `hive/app/container.py`,
+`hive/adapters/sqlite_db.py`, `hive/domain/recall.py`, `hive/adapters/index_exhaustive.py`,
+`hive/domain/ports.py`, `tests/app/test_http_server.py`, `tests/domain/test_recall.py`,
+`tests/adapters/test_index_exhaustive.py`, a new concurrency suite
+
+Three coupled bottlenecks on one path — the fleet's serving throughput. None is a storage-engine
+problem: SQLite is not on the hot path for recall (the vectors live in a warm in-RAM matrix; the
+store serves durability plus the resolve/partition reads) and is nowhere near its limits. What binds
+is the serialization discipline and the shape of the index scan. Measured against the running
+dogfood server, a warm `hive_recall` round-trip is ~170 ms (166 / 181 ms on consecutive calls,
+near-empty store — so embed-dominated, not scan-dominated). Because that whole call is held under
+one process-wide lock, the fleet ceiling is ~6 requests/second regardless of cores or store size,
+and the 10th concurrent caller waits ~1.7 s. The binding limit is **concurrent agents (roughly a
+dozen), not row count** — and it tightens if request rate is ever multiplied by a per-prompt
+automatic recall path.
+
+**(1) Split the request lock — read/write, not one mutex.** `_build_handler` wraps the entire
+dispatch in `with lock: server.handle(req, identity=ident)`, so reads serialize behind writes and
+behind each other. The invariant that lock actually protects is single-*writer* serialization
+(THEORY §5) — the multi-hop mutation tick (`sqlite_db.tx()` = `BEGIN IMMEDIATE`: stamp trust →
+record exposure → refresh the index row) must stay all-or-nothing, and the daemon shares ONE
+connection across handler threads (`container.py`, `check_same_thread=False`), so writes must remain
+mutually exclusive. Reads do not need that discipline: WAL already gives concurrent readers alongside
+a writer, and `ExhaustiveCosineIndex` carries its own `threading.Lock`. Replace the single mutex with
+a read/write lock, keeping the *same* lock object threaded into both listeners (the dual-door
+property `run_http_dual` documents — no path may construct a per-listener lock). A shared connection
+may still force a read connection (or pool) to realize the win; decide that in the update's own
+planning phase, not here.
+
+**(2) Hoist the embed out of the critical section.** `recall.py` calls `self.embedder.encode(query)`
+inside the pipeline, hence inside the locked handler — so a Qwen3 forward pass, the dominant term in
+that ~170 ms, is held against every other caller. The query vector is a pure function of the query
+text and depends on no store state, so it can be computed before the lock is taken. This is the
+largest single latency win and it is orthogonal to (1): even under a read/write lock, an embed inside
+the critical section keeps readers behind each other.
+
+**(3) Partition the index matrix by repo.** Today there is ONE shared exhaustive matrix and the
+partition lives in the *candidate list*: a scoped recall runs the full global matmul and only then
+filters through `servable_scopes()`. Since scoped recall is the common shape, splitting the matrix
+per repo turns the scan from O(N_global) into O(N_repo) with no loss of exactness and no ANN. Scan
+cost is linear and memory-bandwidth-bound — measured at d=1024 float32: 10k rows ≈ 41 MB / 3.3 ms,
+50k ≈ 205 MB / 10.0 ms, 100k ≈ 410 MB / 21.1 ms, 250k ≈ 1.0 GB / 50.1 ms (one box, indicative). Under
+a global lock that scan time is not merely latency, it is consumed throughput.
+
+**Invariants that must survive (the reason this is a planned update, not a patch):**
+- **No ANN, ever.** Partitioning must stay exact. Growing N may not flip the path, and a scoped
+  recall may not become an approximation of the global one — that is the silent-recall-collapse trap
+  `ExhaustiveCosineIndex` exists to make structurally impossible.
+- **Gate equivalence.** A scoped recall over a per-repo sub-matrix must return byte-identical served
+  results to the current scan-then-filter. The absolute-relevance gate has no distribution-shape
+  dependence, so `tau_serve` is partition-safe by construction — but that must be *proven* by an
+  equivalence test, not assumed.
+- **Global path byte-stable.** Scope `None`/empty must keep its current exact global read.
+- **Law 5 cache purity.** The index stays a warm cache over the store's approved rows; per-repo
+  layout must still rebuild from `scan_approved()` and must not become a second source of truth.
+- **Single-writer atomicity.** The promotion/exposure tick stays one transaction on one connection;
+  no read path may observe a half-applied tick.
+
+**Mutations to verify:** dropping the write-lock acquisition must red a concurrent-mutation atomicity
+test (a half-applied promotion becomes observable); letting a read proceed *inside* a write tick must
+red a torn-read test; making the pre-lock encode depend on store state must red a determinism test;
+routing a scoped recall to the wrong sub-matrix — or silently dropping the global fallback for an
+unpartitioned/unknown scope — must red the scoped≡global-filtered equivalence test; narrowing the
+global scan to a subset of partitions must red an exactness test. Throughput is closed only when a
+concurrency test shows N simultaneous recalls completing in materially less than N × single-call
+latency; the current serialized path is the baseline to beat.

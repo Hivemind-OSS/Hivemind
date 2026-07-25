@@ -31,11 +31,12 @@ def _health(server) -> dict:
 
 def test_health_solo_hint_fires_precisely():
     server, _clock = build_real_server()
-    assert "solo_hint" not in _health(server)  # empty store: no hint
-    _miss_recalls(server, 2)
-    assert "solo_hint" not in _health(server)  # below the demand_m floor
+    # empty store: 0 misses is below the live demand_m=1 floor -> no hint. At
+    # demand_m=1 that floor has no nonzero-but-still-below rung to probe
+    # separately — the very next miss IS the floor.
+    assert "solo_hint" not in _health(server)
     _miss_recalls(server, 1)
-    snap = _health(server)  # 3 misses, ONE identity
+    snap = _health(server)  # 1 miss, ONE identity: precisely at the demand_m=1 floor
     assert (
         "X-Hive-Agent-Id" in snap["solo_hint"]
     )  # the remedy: distinct per-session ids

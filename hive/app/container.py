@@ -43,7 +43,8 @@ _DAY_S = 86_400
 
 # The tables migrate() asserts are present — a missing one is a botched migration (EX_SOFTWARE),
 # caught at boot rather than at first recall. Includes the v3 repo-partition set: the anchor
-# bindings, the durable repo registry, the materialized drift cache, and the branch-demand list.
+# bindings, the durable repo registry, the materialized drift cache, the branch-demand list,
+# a memory's own declared line (episode_refs), and its per-ref tip watermark (ref_tips).
 _REQUIRED_TABLES = frozenset(
     {
         "blobs",
@@ -55,9 +56,11 @@ _REQUIRED_TABLES = frozenset(
         "conflict_flags",
         "ingested_ranges",
         "episode_anchors",
+        "episode_refs",
         "repos",
         "anchor_drift",
         "ref_requests",
+        "ref_tips",
     }
 )
 

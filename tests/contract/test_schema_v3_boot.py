@@ -53,6 +53,8 @@ V3_REQUIRED_TABLES = (
     "blobs",
     "exposure",
     "conflict_flags",
+    "episode_refs",
+    "ref_tips",
 )
 
 NO_MIGRATION_PATTERN = "migration"

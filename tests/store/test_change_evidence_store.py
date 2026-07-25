@@ -123,7 +123,7 @@ def test_anchored_episodes_excludes_scope_only_rows():
         weight=1.0,
         proposed_by="w",
         ts=10,
-        repos=["alpha"],
+        repos=[("alpha", "")],
     )
     assert s.complete(
         eid,

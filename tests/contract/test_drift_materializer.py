@@ -18,7 +18,6 @@ from tests.contract.conftest import (
     DRIFT_ANCHOR_CHANGED,
     DRIFT_ANCHOR_MISSING,
     DRIFT_BLAST_RADIUS,
-    DRIFT_BRANCH_SCOPED,
     DRIFT_FRESH,
     DRIFT_UNVERIFIABLE,
     Origin,
@@ -28,13 +27,16 @@ from tests.contract.conftest import (
     make_syncer,
     register_repo,
     require_method,
+    require_table,
     seed_scoped_episode,
 )
 
 STALE_VERDICTS = {DRIFT_ANCHOR_CHANGED, DRIFT_ANCHOR_MISSING, DRIFT_BLAST_RADIUS}
+# ``branch_scoped`` is deliberately NOT a cache-stored verdict: it is a
+# served-time ROUTING of a real materialized verdict through a memory's
+# declared line, computed on read, never written by the materializer.
 WIRE_VERDICTS = STALE_VERDICTS | {
     DRIFT_FRESH,
-    DRIFT_BRANCH_SCOPED,
     DRIFT_UNVERIFIABLE,
 }
 
@@ -180,4 +182,39 @@ def test_cache_is_rebuildable(sync_store, tmp_path):
     syncer.service.tick()
     assert drift_rows(sync_store, "alpha", tip), (
         "the drift cache is a rebuildable cache (Law 5): wipe → repopulated"
+    )
+
+
+def test_declared_refs_materialize_without_any_recall_demand(sync_store, tmp_path):
+    """The materializer's tip list covers the canonical tip, then every ref a
+    LIVE episode has DECLARED, then refs recall has DEMANDED — declared
+    coverage must not depend on anyone ever having recalled that branch.
+    Guarded on the declared-refs store surface: passing a (repo, branch) pair
+    into today's pre-declared-refs ``stage`` would silently write a garbage
+    repo-name row instead of failing cleanly, so the guard runs first."""
+    require_table(sync_store, "episode_refs")
+    require_method(sync_store, "declared_refs")
+    origin = Origin(tmp_path / "remote")
+    register_repo(sync_store, "alpha", origin.url, canonical_ref="main")
+
+    # a real branch the mirror will see on its very first fetch — never demanded
+    # by any recall, and never touched by ref_requests in this test.
+    git(origin.work, "checkout", "-q", "-b", "feature")
+    origin.commit("app.py", "def other():\n    return 1\n", "break on feature")
+    origin.push("feature")
+    git(origin.work, "checkout", "-q", "main")
+    feature_tip = origin.origin_sha("refs/heads/feature")
+
+    seed_scoped_episode(
+        sync_store,
+        "greet lesson",
+        anchors=[("alpha", ANCHOR)],
+        repos=[("alpha", "feature")],
+    )
+    syncer = make_syncer(sync_store, tmp_path)
+    syncer.service.tick()
+
+    v = _verdict_for(sync_store, feature_tip, ANCHOR)
+    assert v is not None, (
+        "a DECLARED ref must materialize even with zero recall demand for it"
     )

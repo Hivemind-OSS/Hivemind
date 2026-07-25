@@ -19,8 +19,11 @@ Exactly five public names, nothing else:
 - ``REMEDIATION_NOTICE`` — the per-hit rider the server attaches to a recall hit whose anchor
   it already knows is stale, so a stale memory carries its options on every harness with zero
   client tooling. Serving-side text (a tool RESULT, the uncapped channel).
-- ``WRITE_VS_CAPTURE`` — the store-verb decision rule, composed verbatim into the floor and
-  the write/capture tool descriptions (one source, no drift).
+- ``WRITE_VS_CAPTURE`` — the store-verb decision rule: prefer ``hive_write`` for a lesson
+  that spares a future agent a repeat mistake, a regression, or relearning what led to
+  landed code; ``hive_capture`` for the ambiguous tail; tag the line (repo/branch + anchor)
+  wherever the memory is about real code. Composed verbatim into the floor and the
+  write/capture tool descriptions (one source, no drift).
 - ``BAD_VS_STALE`` — the retire diagnosis, composed verbatim into the floor and the
   hive_prune description (one source, no drift).
 """
@@ -32,12 +35,19 @@ Exactly five public names, nothing else:
 METADATA_FIELD_LIMIT: int = 2048
 
 # The store-verb decision rule (v3): the write side is serve-as-provisional-then-heal — no
-# approver exists anywhere on the surface. Composed verbatim into SERVER_INSTRUCTIONS and the
-# hive_write / hive_capture descriptions, one source, no drift.
+# approver exists anywhere on the surface. Carries the operator ruling: prefer hive_write
+# whenever the lesson spares a FUTURE agent (fleet-shared, not personal note-taking) a
+# repeat mistake or a regression, and tag the memory's repo/branch + code anchor wherever
+# it is about real code — a caller-asserted tag would outrank the drift/retirement gate, so
+# this is advisory guidance, never a new refusal path (a scope-less, anchor-less memory
+# stays legal). Composed verbatim into SERVER_INSTRUCTIONS and the hive_write / hive_capture
+# descriptions, one source, no drift.
 WRITE_VS_CAPTURE: str = (
-    "WRITE by default: hive_write serves NOW (trust=provisional) and is healed afterward by "
-    "outcome and drift evidence; hive_capture is the unclear-value tail — quarantined until "
-    "fleet demand promotes it."
+    "WRITE by default: hive_write serves NOW (provisional), healed by outcome/drift. "
+    "Prefer it for a lesson sparing a future agent a repeat mistake, a regression, or "
+    "relearning what led to landed code. hive_capture: the ambiguous tail, quarantined "
+    "until demand promotes it. Tag it: repos=['name@branch'] + anchors=[{repo, anchor}] "
+    "wherever real code is involved."
 )
 
 # The retire diagnosis — STALE (replace) vs BAD (prune) — composed verbatim into
@@ -71,22 +81,21 @@ REMEDIATION_NOTICE: str = (
 SERVER_INSTRUCTIONS: str = (
     "Hivemind — a STIGMERGIC shared episodic memory for a FLEET (NO direct communication): "
     "hive_recall answers only when confident — no trace is served as a command. ONE store, "
-    "partitioned by repo; agents are thin clients — the server owns staleness, outcomes, "
+    "partitioned by repo; the server owns staleness, outcomes, "
     "promotion, retirement. MAINTAINER: keep it LEAN — a FLOW not a stock, a BIGGER store "
     "is a WORSE one.\n\n"
     "EVERY TASK:\n"
     "- RECALL FIRST, SINGLE-POINTED — one intent per query, never bundle. Scope: "
     'repos=["name"] / ["name@branch"]; omit = GLOBAL; anchor_prefix narrows by path. '
-    "Empty/abstained: proceed, NEVER invent a memory.\n"
+    "Empty/abstained: proceed, NEVER invent.\n"
     "- Each hit carries trust (established = outcome-verified on the canonical line; else "
     "provisional), polarity, kind, repos, anchors, drift. Drifted = REFERENCE ONLY — "
-    "re-verify against the code; never follow a 'dont' as a 'do'.\n"
+    "re-verify against the code.\n"
     "- STORE, per durable lesson: WHAT + WHERE + WHY — anchors=[{repo, anchor}] (registered "
     "repo + path/file.py::symbol) or repos=[...] scope-only; neither = general. "
     + WRITE_VS_CAPTURE
-    + " Don't duplicate — recall first. Worth storing: DURABLE, "
-    "REUSABLE, NON-OBVIOUS, EVIDENCE-GROUNDED; never the obvious, transient, secret, or "
-    "already-recallable — nothing clears the bar -> store nothing.\n"
+    + " Don't duplicate — recall first. Store only durable, non-obvious, "
+    "evidence-grounded lessons — nothing else clears the bar -> store nothing.\n"
     "- OUTCOME, task-end: hive_outcome(helped=[ids], hurt=[ids]) — evidence only; fuels "
     "promotion and retirement.\n"
     "- RETIRE (machine-gated): "
@@ -95,7 +104,6 @@ SERVER_INSTRUCTIONS: str = (
     "signal it verifies (drift, other-identity or verified hurt, contradiction); "
     "unqualified = benign no-op, never an error. hive_flag is advisory only — never "
     "retires, never qualifies the gate.\n"
-    "- MAINTAIN: hive_health worklists (conflicts, stale suspects, gaps) surface what "
-    "needs resolving.\n\n"
+    "- MAINTAIN: hive_health worklists surface what needs resolving.\n\n"
     "Identity: per-session (Mcp-Session-Id) — never the bearer token."
 )

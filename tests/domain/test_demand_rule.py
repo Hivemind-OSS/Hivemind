@@ -86,10 +86,11 @@ def test_rule_ctor_validates():
 
 
 def test_promotes_at_m_distinct_demand():
-    misses = [_miss("writer-1"), _miss("other-1"), _miss("other-2")]
+    # m distinct NON-WRITER misses promote on their own — the writer supplies none of them.
+    misses = [_miss("other-1"), _miss("other-2"), _miss("other-3")]
     d = _decide(_rule(), misses)
     assert d.promote is True and d.reason == "demand"
-    assert d.n_misses == 3 and d.n_other_identities == 2
+    assert d.n_misses == 3 and d.n_other_identities == 3
 
 
 def test_writer_only_demand_never_promotes():
@@ -100,8 +101,28 @@ def test_writer_only_demand_never_promotes():
     assert d.n_misses == 3 and d.n_other_identities == 0
 
 
+def test_writer_miss_counts_in_n_misses_but_not_toward_the_bar():
+    # BUG-066: the writer's own miss is tallied in the TOTAL (the audit record stays
+    # complete) but does not help clear demand_m — 1 writer miss + 3 other misses
+    # promotes on the strength of the 3 others alone, not the 4 combined.
+    misses = [_miss("writer-1"), _miss("other-1"), _miss("other-2"), _miss("other-3")]
+    d = _decide(_rule(), misses)
+    assert d.promote is True and d.reason == "demand"
+    assert d.n_misses == 4 and d.n_other_identities == 3
+
+
+def test_writer_miss_plus_insufficient_others_does_not_promote():
+    # THE exact BUG-066 shape: at demand_m=3, the writer's own 2 misses plus ONE
+    # other identity used to promote (total matched=3) under the old total-count
+    # ladder; n_other=1 < demand_m=3 must now refuse.
+    misses = [_miss("writer-1"), _miss("writer-1"), _miss("other-1")]
+    d = _decide(_rule(), misses)
+    assert d.promote is False and d.reason == "insufficient_demand"
+    assert d.n_misses == 3 and d.n_other_identities == 1
+
+
 def test_competitor_vetoes():
-    misses = [_miss("writer-1"), _miss("other-1"), _miss("other-2")]
+    misses = [_miss("writer-1"), _miss("other-1"), _miss("other-2"), _miss("other-3")]
     d = _decide(_rule(), misses, competitor=0.9)  # a servable row this close
     assert d.promote is False and d.reason == "competitor_answers"
     # the veto compare is INCLUSIVE: competitor_top_sim == competitor_tau vetoes
@@ -121,15 +142,15 @@ def test_tau_and_count_boundaries():
     ]
     d = _decide(_rule(tau=0.75), below)
     assert d.promote is False and d.reason == "insufficient_demand" and d.n_misses == 0
-    # …and m−1 matched misses are insufficient even with identity diversity
+    # …and m−1 OTHER-identity matched misses are insufficient
     short = [_miss("writer-1"), _miss("other-1")]
     d2 = _decide(_rule(m=3), short)
     assert (
         d2.promote is False and d2.reason == "insufficient_demand" and d2.n_misses == 2
     )
-    # clearly-above tau counts
+    # clearly-above tau, from identities other than the writer, counts
     above = [_miss("a", cos=0.8), _miss("b", cos=0.8), _miss("c", cos=0.8)]
-    assert _decide(_rule(tau=0.75), above, writer="a").promote is True
+    assert _decide(_rule(tau=0.75), above, writer="writer-x").promote is True
 
 
 @pytest.mark.parametrize(
@@ -242,7 +263,7 @@ def test_scope_clause_runs_before_the_cosine_clause():
         ts=NOW - 10,
         repos=("beta",),
     )
-    good = [_miss("writer-1"), _miss("other-1"), _miss("other-2")]
+    good = [_miss("writer-1"), _miss("other-1"), _miss("other-2"), _miss("other-3")]
     d = _rule().decide(
         candidate_vec=CAND,
         candidate_writer="writer-1",
@@ -356,7 +377,8 @@ def _service(
 
 
 def _demand() -> list[MissRow]:
-    return [_miss("writer-1"), _miss("other-1"), _miss("other-2")]
+    # all non-writer: enough on its own to clear demand_m=3 without the writer's help.
+    return [_miss("other-1"), _miss("other-2"), _miss("other-3")]
 
 
 def test_on_capture_promotes_against_staged_demand():
@@ -381,7 +403,7 @@ def test_on_capture_promotes_against_staged_demand():
     assert body == {
         "rule": "demand",
         "n_misses": 3,
-        "n_other_identities": 2,
+        "n_other_identities": 3,
         "competitor_sim": -1.0,
         "reason": "demand",
     }
@@ -718,7 +740,7 @@ def test_promote_stamps_demand_independence_non_promote_keeps_zero():
     assert d.rho_bar == pytest.approx(1.0, abs=1e-5) and d.n_eff == pytest.approx(
         1.0, abs=1e-5
     )
-    rej = _decide(_rule(), [_miss("writer-1")])  # insufficient demand
+    rej = _decide(_rule(), [_miss("other-1")])  # insufficient demand (1 < demand_m=3)
     assert rej.promote is False and rej.rho_bar == 0.0 and rej.n_eff == 0.0
 
 

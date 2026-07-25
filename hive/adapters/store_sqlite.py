@@ -2,10 +2,13 @@
 ``sqlite_db.tx()`` is the single BEGIN IMMEDIATE lane, used directly by each mutating method.
 
 Schema v3 (repo-partitioned memory): ``episode_anchors`` is the ONE owner of repo scope +
-code bindings (+ per-anchor fingerprint carriers); ``repos`` is the durable operational
+code bindings (+ per-anchor fingerprint carriers); ``episode_refs`` carries the memory's
+own DECLARED line, one ref per (episode, repo); ``repos`` is the durable operational
 repo registry (the authctl-seat pattern); ``anchor_drift`` is the materialized drift-verdict
 cache (rebuildable, Law 5) keyed ``(repo, tip_sha, anchor)``; ``ref_requests`` records
-recall-touched refs wanting on-demand materialization. There is NO approver concept —
+recall-touched refs wanting on-demand materialization, and ``ref_tips`` is the
+materializer's resolved-tip watermark per non-canonical ref (the branch twin of the
+canonical ``sync:<repo>:last_tip`` meta key). There is NO approver concept —
 ``complete`` lands an explicit trust label and nothing on this surface accepts an
 approver identity or vouch timestamp.
 
@@ -98,6 +101,9 @@ CREATE TABLE IF NOT EXISTS episode_anchors(
   anchor TEXT NOT NULL DEFAULT '',
   fp_meta TEXT NOT NULL DEFAULT '',
   PRIMARY KEY(episode_id, repo, anchor));
+CREATE TABLE IF NOT EXISTS episode_refs(
+  episode_id INTEGER NOT NULL, repo TEXT NOT NULL, ref TEXT NOT NULL,
+  PRIMARY KEY(episode_id, repo));
 CREATE TABLE IF NOT EXISTS repos(
   name TEXT PRIMARY KEY,
   url TEXT NOT NULL, canonical_ref TEXT NOT NULL DEFAULT '',
@@ -109,6 +115,9 @@ CREATE TABLE IF NOT EXISTS anchor_drift(
   PRIMARY KEY(repo, tip_sha, anchor));
 CREATE TABLE IF NOT EXISTS ref_requests(
   repo TEXT NOT NULL, ref TEXT NOT NULL, last_requested_ts INTEGER NOT NULL,
+  PRIMARY KEY(repo, ref));
+CREATE TABLE IF NOT EXISTS ref_tips(
+  repo TEXT NOT NULL, ref TEXT NOT NULL, tip_sha TEXT NOT NULL, ts INTEGER NOT NULL,
   PRIMARY KEY(repo, ref));
 CREATE TABLE IF NOT EXISTS exposure(
   trace_id TEXT NOT NULL, episode_id INTEGER NOT NULL, recall_margin REAL NOT NULL,
@@ -247,20 +256,25 @@ class SqliteEpisodeStore:
         kind: str = DEFAULT_KIND,
         meta: str = "",
         anchors: Sequence[tuple[str, str]] = (),
-        repos: Sequence[str] = (),
+        repos: Sequence[tuple[str, str]] = (),
     ) -> tuple[int, bool]:
         """Insert a PENDING row (value NULL — not recallable, not indexed) + its blob
-        + its ``episode_anchors`` rows, all in the SAME tx. Dedup by content_hash: a
-        repeat of identical text returns the existing id, deduped=True, no second row
-        AND no touch of the existing row's labels or anchor rows (identity is the text
-        hash alone). ``polarity`` (do|dont|neutral), ``kind`` (registry vocabulary) and
-        ``meta`` (the serialized opaque map — meta.py owns the grammar) are the
-        carried-not-interpreted consumer labels, never embedded; they default fail-safe
-        (neutral / note / empty). ``anchors`` is the ``(repo, anchor)`` code-binding
-        pairs (fingerprints are server-minted later, never staged); ``repos`` the
-        declared scope-only memberships — a repo already covered by an anchor pair
-        gains no extra row (one canonical encoding: scope-only = an ``anchor=''`` row,
-        general = zero rows)."""
+        + its ``episode_anchors``/``episode_refs`` rows, all in the SAME tx. Dedup by
+        content_hash: a repeat of identical text returns the existing id, deduped=True,
+        no second row AND no touch of the existing row's labels, anchor rows, or
+        declared refs — identity is the text hash alone, so a re-write can never
+        restate, or change, the line a memory already declared. ``polarity``
+        (do|dont|neutral), ``kind`` (registry vocabulary) and ``meta`` (the serialized
+        opaque map — meta.py owns the grammar) are the carried-not-interpreted consumer
+        labels, never embedded; they default fail-safe (neutral / note / empty).
+        ``anchors`` is the ``(repo, anchor)`` code-binding pairs (fingerprints are
+        server-minted later, never staged); ``repos`` is the ``(repo, ref)`` declared-
+        scope pairs — a repo already covered by an anchor pair gains no extra
+        ``episode_anchors`` row (one canonical encoding: scope-only = an ``anchor=''``
+        row, general = zero rows), and a repo whose ``ref`` is non-empty ALSO gets one
+        ``episode_refs`` row — the memory's DECLARED line for that repo (first
+        non-empty ref per repo name wins; ``ref=''`` is never stored — canonical = no
+        declared line)."""
         h = content_hash(text)
         with tx(self.conn):
             existing = self.conn.execute(
@@ -292,13 +306,29 @@ class SqliteEpisodeStore:
                     (eid, repo, anchor),
                 )
             covered = {repo for repo, _anchor in pairs}
-            for repo in dict.fromkeys(str(r) for r in repos):
+            repo_names: list[str] = []
+            seen_repo_names: set[str] = set()
+            declared_ref_by_repo: dict[str, str] = {}
+            for repo, ref in repos:
+                repo = str(repo)
+                if repo not in seen_repo_names:
+                    seen_repo_names.add(repo)
+                    repo_names.append(repo)
+                ref = str(ref)
+                if ref and repo not in declared_ref_by_repo:
+                    declared_ref_by_repo[repo] = ref
+            for repo in repo_names:
                 if repo in covered:
                     continue
                 self.conn.execute(
                     "INSERT INTO episode_anchors(episode_id, repo, anchor) "
                     "VALUES(?,?,'')",
                     (eid, repo),
+                )
+            for repo, ref in declared_ref_by_repo.items():
+                self.conn.execute(
+                    "INSERT INTO episode_refs(episode_id, repo, ref) VALUES(?,?,?)",
+                    (eid, repo, ref),
                 )
             return eid, False
 
@@ -346,9 +376,9 @@ class SqliteEpisodeStore:
         return n == 1
 
     def reject(self, episode_id: int, *, keep: bool = False) -> None:
-        """Drop a pending row (default) AND its anchor rows in the same tx — a staged
-        binding must never outlive its episode. keep_rejected retains the row as
-        non-recallable (never approved ⇒ never indexed)."""
+        """Drop a pending row (default) AND its anchor + declared-ref rows in the same
+        tx — a staged binding must never outlive its episode. keep_rejected retains
+        the row as non-recallable (never approved ⇒ never indexed)."""
         if keep:
             return
         with tx(self.conn):
@@ -358,6 +388,9 @@ class SqliteEpisodeStore:
             if cur.rowcount:
                 self.conn.execute(
                     "DELETE FROM episode_anchors WHERE episode_id=?", (episode_id,)
+                )
+                self.conn.execute(
+                    "DELETE FROM episode_refs WHERE episode_id=?", (episode_id,)
                 )
 
     def scan_servable(
@@ -492,6 +525,19 @@ class SqliteEpisodeStore:
             repos=repos,
             anchors=anchors,
         )
+
+    def episode_refs(self, episode_id: int) -> dict[str, str]:
+        """The memory's DECLARED line per repo — every ``episode_refs`` row of
+        ``episode_id`` as ``{repo: ref}``. A repo absent here declared no line (the
+        canonical reading, not a degenerate ``ref=''`` row — one never exists).
+        Read-only, no DDL. // O(k)."""
+        return {
+            r["repo"]: r["ref"]
+            for r in self.conn.execute(
+                "SELECT repo, ref FROM episode_refs WHERE episode_id=?",
+                (int(episode_id),),
+            )
+        }
 
     def counts(self) -> tuple[int, int]:
         """(n_approved, n_pending) for hive_health — one grouped scan.  // O(N) time."""
@@ -968,20 +1014,26 @@ class SqliteEpisodeStore:
 
     def evidence_rows_for(
         self, episode_id: int, kinds: Sequence[str]
-    ) -> list[tuple[str, str, int]]:
-        """The retirement gate's ledger feed: the target's ``(kind, actor, ts)`` rows
-        restricted to ``kinds``, in insertion order — exactly the 3-sequence shape
-        ``retirement.retirement_evidence`` consumes. Empty ``kinds`` → [] (the caller
-        names what qualifies; an unfiltered read here would hand the gate foreign
-        kinds to ignore). Read-only, no DDL. // O(rows)."""
+    ) -> list[tuple[str, str, int, str]]:
+        """The retirement gate's ledger feed: the target's ``(kind, actor, ts,
+        payload)`` rows restricted to ``kinds``, in insertion order — exactly the
+        4-sequence shape ``retirement.retirement_evidence`` consumes. Empty
+        ``kinds`` → [] (the caller names what qualifies; an unfiltered read here
+        would hand the gate foreign kinds to ignore).
+
+        The payload rides RAW — the store never parses it (meta-envelope law).
+        The gate needs it because a ``verify_*`` row stamps the LINE it was judged
+        on inside that body, and a memory that declared its own line must not be
+        retired on another line's evidence; the parse belongs to the pure gate,
+        not to this adapter. Read-only, no DDL. // O(rows)."""
         ks = [str(k) for k in kinds]
         if not ks:
             return []
         placeholders = ",".join("?" for _ in ks)
         return [
-            (r["kind"], r["actor"], int(r["ts"]))
+            (r["kind"], r["actor"], int(r["ts"]), r["payload"])
             for r in self.conn.execute(
-                f"SELECT kind, actor, ts FROM evidence_events "
+                f"SELECT kind, actor, ts, payload FROM evidence_events "
                 f"WHERE episode_id=? AND kind IN ({placeholders}) ORDER BY id",
                 [int(episode_id), *ks],
             )
@@ -1070,16 +1122,42 @@ class SqliteEpisodeStore:
         approved row's non-empty anchor binding in ``repo`` whose ``fp_meta`` carrier
         is EMPTY (never minted, never pinned). Presence-only — the store never parses
         a non-empty carrier's body (meta-envelope law); a row with ANY carrier is
-        out of the sweep, so a human/edge pin structurally cannot be revisited. ALL
-        trust states included (the anchored_episodes twin — the consumer owns any
-        further filtering). Read-only, no DDL. // O(rows)."""
+        out of the sweep, so a human/edge pin structurally cannot be revisited.
+        Quarantined/provisional/established rows all stay IN (a quarantined memory
+        can still be promoted and needs its fingerprints); ONLY ``trust='deprecated'``
+        (retired: superseded or pruned) is excluded — BUG-065: a retired memory must
+        stop consuming the mint-backfill sweep forever. Read-only, no DDL.
+        // O(rows)."""
         return [
             (int(r["episode_id"]), r["anchor"])
             for r in self.conn.execute(
                 "SELECT ea.episode_id, ea.anchor FROM episode_anchors ea "
                 "JOIN episodes e ON e.id = ea.episode_id "
                 "WHERE ea.repo=? AND ea.anchor != '' AND ea.fp_meta='' "
-                "AND e.status='approved' "
+                "AND e.status='approved' AND e.trust != 'deprecated' "
+                "ORDER BY ea.episode_id, ea.anchor",
+                (repo,),
+            )
+        ]
+
+    def anchor_carriers(self, repo: str) -> list[tuple[str, str]]:
+        """(anchor, fp_meta) for every NON-RETIRED approved anchor binding of
+        ``repo``, in (episode_id, anchor) order — the drift materializer's work
+        list (replaces the daemon's own raw SQL: the same not-retired predicate as
+        ``anchors_lacking_fp``, kept next to it so BUG-065 is fixed in ONE place,
+        not two near-identical joins). The carrier body is returned RAW (the store
+        never parses it — meta-envelope law); the caller owns first-wins-per-anchor
+        (iterating in this order and keeping the first carrier seen per anchor
+        reproduces that rule) and any further parsing of the carrier JSON.
+        Quarantined/provisional/established rows stay in; only
+        ``trust='deprecated'`` is excluded. Read-only, no DDL. // O(rows)."""
+        return [
+            (r["anchor"], r["fp_meta"])
+            for r in self.conn.execute(
+                "SELECT ea.anchor, ea.fp_meta FROM episode_anchors ea "
+                "JOIN episodes e ON e.id = ea.episode_id "
+                "WHERE ea.repo=? AND ea.anchor != '' "
+                "AND e.status='approved' AND e.trust != 'deprecated' "
                 "ORDER BY ea.episode_id, ea.anchor",
                 (repo,),
             )
@@ -1241,24 +1319,97 @@ class SqliteEpisodeStore:
                     (repo, tip_sha, anchor, verdict, detail, int(ts)),
                 )
 
-    def drift_prune(self, repo: str, keep_tips: Sequence[str]) -> int:
-        """Drop a repo's materialized verdicts for every tip NOT in ``keep_tips``
-        (empty ⇒ drop the repo's whole cache) — bounded growth for a rebuildable
-        cache (a pruned tip re-materializes on demand). Other repos untouched.
-        Returns the rows deleted. ONE tx. // O(rows)."""
+    def drift_prune(
+        self,
+        repo: str,
+        keep_tips: Sequence[str],
+        keep_anchors: Sequence[str] | None = None,
+    ) -> int:
+        """Drop a repo's materialized verdicts for every row whose tip is NOT in
+        ``keep_tips`` OR — when ``keep_anchors`` is given — whose anchor is NOT in
+        ``keep_anchors``: bounded growth for a rebuildable cache (a pruned row
+        re-materializes on demand), AND the false-fresh close — once an anchor
+        leaves the live work list, its cached rows at LIVE tips must not survive to
+        answer a later episode that binds the same anchor. ``keep_anchors=None``
+        preserves the tip-only prune EXACTLY (pre-existing behavior, byte-for-byte);
+        an empty-but-given ``keep_anchors`` means no anchor is live, so the whole
+        repo cache drops. Other repos untouched. Returns the rows deleted. ONE tx.
+        // O(rows)."""
         keep = [str(t) for t in keep_tips]
+        with tx(self.conn):
+            if keep_anchors is None:
+                if keep:
+                    placeholders = ",".join("?" for _ in keep)
+                    cur = self.conn.execute(
+                        f"DELETE FROM anchor_drift "
+                        f"WHERE repo=? AND tip_sha NOT IN ({placeholders})",
+                        [repo, *keep],
+                    )
+                else:
+                    cur = self.conn.execute(
+                        "DELETE FROM anchor_drift WHERE repo=?", (repo,)
+                    )
+            else:
+                anchors = [str(a) for a in keep_anchors]
+                tip_clause = (
+                    "tip_sha NOT IN ({})".format(",".join("?" for _ in keep))
+                    if keep
+                    else "1=1"
+                )
+                anchor_clause = (
+                    "anchor NOT IN ({})".format(",".join("?" for _ in anchors))
+                    if anchors
+                    else "1=1"
+                )
+                cur = self.conn.execute(
+                    f"DELETE FROM anchor_drift WHERE repo=? AND ({tip_clause} OR "
+                    f"{anchor_clause})",
+                    [repo, *keep, *anchors],
+                )
+        return int(cur.rowcount)
+
+    # ── the per-ref tip watermark (ref_tips: the branch twin of last_tip) ──────
+    def ref_tip(self, repo: str, ref: str) -> str | None:
+        """The materializer's last-resolved tip for a non-canonical ``(repo,
+        ref)`` — the branch twin of the canonical ``sync:<repo>:last_tip`` meta
+        key. None = never materialized (the fail-safe: the caller reads
+        unverifiable, never a stale or fabricated tip). Read-only, no DDL.
+        // O(1)."""
+        row = self.conn.execute(
+            "SELECT tip_sha FROM ref_tips WHERE repo=? AND ref=?", (repo, ref)
+        ).fetchone()
+        return row["tip_sha"] if row is not None else None
+
+    def ref_tips_put(self, rows: Sequence[tuple[str, str, str, int]]) -> None:
+        """Upsert the materializer's per-ref watermark — ``(repo, ref, tip_sha,
+        ts)`` rows, ONE tx, last-write-wins on the ``(repo, ref)`` key (the
+        ``drift_put`` idiom for its twin cache). // O(batch)."""
+        if not rows:
+            return
+        with tx(self.conn):
+            for repo, ref, tip_sha, ts in rows:
+                self.conn.execute(
+                    "INSERT INTO ref_tips(repo, ref, tip_sha, ts) VALUES(?,?,?,?) "
+                    "ON CONFLICT(repo, ref) DO UPDATE SET "
+                    "tip_sha=excluded.tip_sha, ts=excluded.ts",
+                    (repo, ref, tip_sha, int(ts)),
+                )
+
+    def ref_tips_prune(self, repo: str, keep_refs: Sequence[str]) -> int:
+        """Drop a repo's ``ref_tips`` rows for every ref NOT in ``keep_refs``
+        (empty ⇒ drop the repo's whole ref-tip set) — the ``drift_prune`` twin,
+        bounded growth for a rebuildable watermark. Other repos untouched. Returns
+        the rows deleted. ONE tx. // O(rows)."""
+        keep = [str(r) for r in keep_refs]
         with tx(self.conn):
             if keep:
                 placeholders = ",".join("?" for _ in keep)
                 cur = self.conn.execute(
-                    f"DELETE FROM anchor_drift "
-                    f"WHERE repo=? AND tip_sha NOT IN ({placeholders})",
+                    f"DELETE FROM ref_tips WHERE repo=? AND ref NOT IN ({placeholders})",
                     [repo, *keep],
                 )
             else:
-                cur = self.conn.execute(
-                    "DELETE FROM anchor_drift WHERE repo=?", (repo,)
-                )
+                cur = self.conn.execute("DELETE FROM ref_tips WHERE repo=?", (repo,))
         return int(cur.rowcount)
 
     # ── ref requests (recall-touched refs wanting materialization) ─────────────
@@ -1285,6 +1436,25 @@ class SqliteEpisodeStore:
                 "SELECT ref FROM ref_requests WHERE repo=? AND last_requested_ts>? "
                 "ORDER BY ref",
                 (repo, int(since_ts)),
+            )
+        ]
+
+    def declared_refs(self, repo: str) -> list[str]:
+        """Every DISTINCT ref DECLARED by a live episode of ``repo`` — the
+        materializer's declared-coverage work list, ref-ordered (the
+        ``requested_refs`` demand-side twin: this is coverage a memory's own line
+        earns regardless of whether anyone ever recalled it). 'Live' = the same
+        not-retired reading as the work-list verbs: ``status='approved' AND
+        trust != 'deprecated'`` — a retired memory's declared line stops demanding
+        coverage. Read-only, no DDL. // O(rows)."""
+        return [
+            r["ref"]
+            for r in self.conn.execute(
+                "SELECT DISTINCT er.ref FROM episode_refs er "
+                "JOIN episodes e ON e.id = er.episode_id "
+                "WHERE er.repo=? AND e.status='approved' AND e.trust != 'deprecated' "
+                "ORDER BY er.ref",
+                (repo,),
             )
         ]
 

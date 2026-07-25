@@ -125,7 +125,7 @@ conservative starting point — recalibrate the empirical floors (`tau_serve`, `
 | Env var | Default | Controls |
 |---|---|---|
 | `HIVE_AUTONOMY__ENABLED` | `true` | master switch; `false` makes the whole lifecycle inert (no capture, promotion, or decay) |
-| `HIVE_AUTONOMY__DEMAND_M` | `3` | independent recall-misses needed to promote a quarantined memory — your coverage↔safety dial |
+| `HIVE_AUTONOMY__DEMAND_M` | `1` | non-writer recall-misses needed to promote a quarantined memory (the writer's own misses never count) — the anti-gaming floor, and your coverage↔safety dial above it |
 | `HIVE_AUTONOMY__DEMAND_WINDOW_DAYS` | `14` | window over which demand is counted |
 | `HIVE_AUTONOMY__DEMAND_TAU` | `0.75` | miss↔candidate cosine floor (what counts as "this demand matches this memory") |
 | `HIVE_AUTONOMY__COMPETITOR_TAU` | `0.85` | candidate↔servable cosine above which the demand is "already answered" (no promotion) |
@@ -180,7 +180,8 @@ Per registered repo (each under its own fail-open guard) the daemon mirrors the 
 the change-outcome evidence ledger (one unsigned receipt per new watermark..tip range, ingested
 post-merge, then the verified-outcome `established` sweep runs), backfills missing anchor
 fingerprints against the canonical tip, and materializes per-anchor staleness (drift) verdicts —
-at the canonical tip plus any branch tips recall demanded. Every leg is fail-open: an unreachable
+at the canonical tip, every line a live memory DECLARES (`repos=["name@branch"]`), and any branch
+tip recall demanded. Every leg is fail-open: an unreachable
 remote or a broken leg skips that repo's tick and the next tick retries; the other repos are
 untouched. The loop's own knobs:
 

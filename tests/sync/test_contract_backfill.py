@@ -191,6 +191,21 @@ def test_matches_edge_mint_at_the_moved_tip(origin, store, tmp_path):
     assert meta(store, META_LAST_ERROR) is None
 
 
+def test_deprecated_anchors_carrier_is_not_backfilled(origin, store, tmp_path):
+    """BUG-065's mint-backfill twin of the verify-leg work-list fix: a retired
+    memory's still-empty fp carrier must not be minted. No leg-local code makes
+    this true — the daemon calls ``anchors_lacking_fp`` unchanged and inherits
+    its trust exclusion."""
+    eid = seed_episode(store, "greet growls on empty names")
+    assert store.deprecate(eid, actor="agent-a", ts=20)
+    svc = _armed(origin, store, tmp_path)
+    svc.tick()
+
+    assert anchor_fp(store, eid) == {}
+    assert meta(store, META_BACKFILLED_TOTAL) is None
+    assert meta(store, META_LAST_ERROR) is None
+
+
 def test_cap_carries_over(origin, store, tmp_path):
     first = seed_episode(store, "first anchored memory")
     second = seed_episode(store, "second anchored memory")

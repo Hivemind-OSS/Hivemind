@@ -97,7 +97,7 @@ class _AdmissionStore(Protocol):
         kind: str = ...,
         meta: str = "",
         anchors: Sequence[tuple[str, str]] = (),
-        repos: Sequence[str] = (),
+        repos: Sequence[tuple[str, str]] = (),
     ) -> tuple[int, bool]: ...
     def complete(
         self,
@@ -265,7 +265,7 @@ class AdmissionService:
         polarity: str = "neutral",
         kind: str = DEFAULT_KIND,
         anchors: Sequence[AnchorRef] = (),
-        repos: Sequence[str] = (),
+        repos: Sequence[tuple[str, str]] = (),
         meta: str = "",
     ) -> WriteResult:
         """Store an insight in one call, servable NOW as ``trust='provisional'``
@@ -277,7 +277,10 @@ class AdmissionService:
         ``anchors`` (validated at the boundary — ``normalize_anchors`` owns the
         grammar and the registered-repo check) and ``repos`` are threaded to
         ``stage`` in the same tx: anchors as ``(repo, anchor)`` pairs, repos as
-        the declared scope-only memberships.
+        the caller's own ``(repo, ref)`` pairs — a non-empty ``ref`` is the
+        memory's DECLARED line for that repo (sourced from the boundary's
+        ``name@branch`` scope grammar), stored verbatim in ``episode_refs``;
+        ``ref == ''`` stays canonical (no declared line, no row).
 
         ``replaces`` (the retirement rider): the named target is retired in
         favor of this write — validated to EXIST before anything is staged (an
@@ -544,7 +547,7 @@ class AdmissionService:
         polarity: str = "neutral",
         kind: str = DEFAULT_KIND,
         anchors: Sequence[AnchorRef] = (),
-        repos: Sequence[str] = (),
+        repos: Sequence[tuple[str, str]] = (),
         meta: str = "",
     ) -> WriteResult:
         """Capture WITHOUT serving: scan → stage (dedup) → embed → complete
@@ -557,7 +560,8 @@ class AdmissionService:
         0 rows); ``meta`` (the already-normalized serialized carrier) is scanned
         refuse-only BEFORE the text gauntlet, and on a dedup hit the existing
         row's meta is preserved unmerged (identity is the text hash alone).
-        ``anchors``/``repos`` are threaded to ``stage`` exactly as in ``write``.
+        ``anchors``/``repos`` are threaded to ``stage`` exactly as in ``write``
+        — a captured memory can declare its line too.
         // O(1) DB ops + one embed + the O(Q·d) trigger."""
         if not self._autonomy_enabled:
             _log.info(

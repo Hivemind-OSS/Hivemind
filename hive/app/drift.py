@@ -13,11 +13,24 @@ Wire vocabulary (one enum, most-severe first)::
 Verdict source at recall: the materialized ``anchor_drift`` cache at the TIP of
 the queried ref (``name@branch``) else the repo's canonical ref. The canonical
 tip is the sync watermark meta key ``sync:<repo>:last_tip``; a queried
-non-canonical branch has no recall-side tip record — it degrades to
-``unverifiable`` and records demand in ``ref_requests`` (the materializer's
-work list), so coverage follows use. Every miss is fail-safe: unknown tip,
-un-materialized anchor, out-of-vocabulary cache row, unparseable hit shape —
-all read ``unverifiable``, never false-fresh, never false-stale.
+non-canonical branch resolves its tip from ``ref_tips`` — the materializer's
+per-ref watermark, written as soon as recall's demand pulls that ref onto the
+work list, before the tip's verdicts are even computed. An unresolved branch
+(never yet materialized, or since deleted) degrades to ``unverifiable`` and
+records demand in ``ref_requests`` (the materializer's work list), so coverage
+follows use. Every miss is fail-safe: unknown tip, un-materialized anchor,
+out-of-vocabulary cache row, unparseable hit shape — all read ``unverifiable``,
+never false-fresh, never false-stale.
+
+``branch_scoped`` is the one member computed at SERVE time rather than written
+to the cache. Every served anchor also carries the memory's own DECLARED ref
+for that repo (from ``episode_refs``, empty when canonical); ``branch_route_verdict``
+compares that declared ref against the ref the tip above was actually resolved
+at, and routes a stale-tier verdict (``anchor_missing``/``anchor_changed``/
+``blast_radius_changed``) read off a DIFFERENT line down to the advisory
+``branch_scoped`` — never upgrading, never touching a ``fresh``/``unverifiable``
+base. A verdict read on the memory's own declared line always rides verbatim;
+softening it would turn the declared ref into caller-asserted immunity.
 
 ``attach_drift`` is a fail-open ENRICHMENT of the read path: any reader fault
 degrades that hit to ``unverifiable``; the read itself never breaks.
@@ -67,6 +80,13 @@ SEVERITY_ORDER = (
 _SEVERITY_INDEX = {v: i for i, v in enumerate(SEVERITY_ORDER)}
 _UNVERIFIABLE_IDX = _SEVERITY_INDEX[DRIFT_UNVERIFIABLE]
 
+#: The verdicts that mean "the anchor moved" — the subset ``branch_route_verdict``
+#: may route to ``branch_scoped`` for an off-line consumer. ``fresh``/``unverifiable``
+#: are never in here: neither is ever advisory-softened, and neither ever needs to be.
+STALE_TIER = frozenset(
+    {DRIFT_ANCHOR_MISSING, DRIFT_ANCHOR_CHANGED, DRIFT_BLAST_RADIUS_CHANGED}
+)
+
 
 # ── hive-edge verify → wire mapping (§3.4, verbatim; else → unverifiable) ─────
 
@@ -100,6 +120,28 @@ def wire_verdict(state: object, reason: object = "") -> str:
     if state == "branch_scoped":
         return DRIFT_BRANCH_SCOPED
     return DRIFT_UNVERIFIABLE
+
+
+# ── declared-line routing (§3.4; branch_scoped computed at READ time) ────────
+
+
+def branch_route_verdict(base: str, *, declared_ref: str, consumer_ref: str) -> str:
+    """Route a materialized verdict through the memory's DECLARED line.
+
+    A memory that names its line is not stale to a consumer on another line — it is
+    scoped elsewhere. When both refs are known, differ, and ``base`` is stale-tier,
+    the served verdict is the advisory ``branch_scoped``. Every other combination
+    (no declared ref, same line, unknown consumer, ``fresh``/``unverifiable`` base)
+    returns ``base`` verbatim. Pure, total, and NEVER upgrades to ``fresh`` — the
+    most-advisory verdict this can emit is ``branch_scoped``. // O(1)."""
+    if (
+        declared_ref
+        and consumer_ref
+        and declared_ref != consumer_ref
+        and base in STALE_TIER
+    ):
+        return DRIFT_BRANCH_SCOPED
+    return base
 
 
 # ── most-severe-wins aggregation (§3.4; the CT-4 property surface) ────────────
@@ -150,6 +192,16 @@ def _meta_value(store: object, key: str) -> str | None:
     return value if isinstance(value, str) and value else None
 
 
+def _tip_for(store: object, repo: str, ref: str) -> str | None:
+    """The tip to judge ``repo`` at: ``ref_tips(repo, ref)`` for a non-canonical
+    ref, else the canonical watermark ``sync:<repo>:last_tip``. None = unknown tip
+    (the fail-safe: the caller reads unverifiable, never false-fresh)."""
+    if not ref:
+        return _meta_value(store, canonical_tip_key(repo))
+    tip = store.ref_tip(repo, ref)  # type: ignore[attr-defined]
+    return tip if isinstance(tip, str) and tip else None
+
+
 def _queried_refs(queried_repos: Iterable[object]) -> dict[str, str]:
     """The query's explicit ``name@branch`` routing → ``{name: branch}``.
 
@@ -180,55 +232,66 @@ def _drift_for_hit(
     canonical: dict[str, str],
     queried_ref: dict[str, str],
 ) -> dict[str, Any]:
-    """One hit's ``drift`` object — most-severe across its anchors, judged at
-    the tip of each anchor repo's queried ref else canonical. Raises freely;
-    ``attach_drift`` owns the fail-open."""
+    """One hit's ``drift`` object — most-severe across its anchors, each judged
+    at the tip of its repo's queried ref else canonical, then routed through
+    the memory's OWN declared line for that repo (``branch_route_verdict``): a
+    stale-tier verdict read off a line the memory never named degrades to the
+    advisory ``branch_scoped``, while a verdict read on the memory's own
+    declared line always rides verbatim. Raises freely; ``attach_drift`` owns
+    the fail-open."""
     raw_anchors = hit.get("anchors")
     if not isinstance(raw_anchors, (list, tuple)) or not raw_anchors:
         return {"type": DRIFT_NA, "detail": {"per_anchor": []}}
 
     # per-repo resolution: (tip | None, ref-if-branch-routed), one drift_get per repo
-    parsed: list[tuple[str, str]] = []  # (repo, anchor); "" = unparseable
+    parsed: list[
+        tuple[str, str, str]
+    ] = []  # (repo, anchor, declared_ref); "" = unparseable
     for item in raw_anchors:
         if (
             isinstance(item, dict)
             and isinstance(item.get("repo"), str)
             and isinstance(item.get("anchor"), str)
         ):
-            parsed.append((item["repo"], item["anchor"]))
+            raw_ref = item.get("ref", "")
+            declared_ref = raw_ref if isinstance(raw_ref, str) else ""
+            parsed.append((item["repo"], item["anchor"], declared_ref))
         else:
-            parsed.append(("", ""))  # contributes unverifiable below
+            parsed.append(("", "", ""))  # contributes unverifiable below
     tips: dict[str, str | None] = {}
     branch_of: dict[str, str] = {}
     rows: dict[str, dict[str, tuple[str, str]]] = {}
-    for repo in {r for r, _a in parsed if r}:
+    for repo in {r for r, _a, _d in parsed if r}:
         branch = queried_ref.get(repo, "")
-        if branch and branch != canonical.get(repo, ""):
-            tips[repo] = None  # no recall-side tip record for a branch
+        routed = bool(branch) and branch != canonical.get(repo, "")
+        if routed:
             branch_of[repo] = branch
-            continue
-        tips[repo] = _meta_value(store, canonical_tip_key(repo))
+        tips[repo] = _tip_for(store, repo, branch if routed else "")
         if tips[repo] is not None:
-            anchors = [a for r, a in parsed if r == repo]
+            anchors = [a for r, a, _d in parsed if r == repo]
             rows[repo] = store.drift_get(repo, tips[repo], anchors)  # type: ignore[attr-defined]
 
     per_anchor: list[dict[str, Any]] = []
     routed_ref = ""
-    for repo, anchor in parsed:
+    for repo, anchor, declared_ref in parsed:
         entry: dict[str, Any] = {"repo": repo, "anchor": anchor}
+        if repo in branch_of and not routed_ref:
+            routed_ref = branch_of[repo]  # rides regardless of resolution below
         tip = tips.get(repo)
         if repo and tip is not None:
             entry["tip_sha"] = tip  # tip resolved — honest even on a miss
             cached = rows.get(repo, {}).get(anchor)
-            entry["verdict"] = (
+            base = (
                 _as_wire(cached[0])
                 if isinstance(cached, (tuple, list)) and cached
                 else DRIFT_UNVERIFIABLE
             )
+            consumer_ref = branch_of.get(repo) or canonical.get(repo, "")
+            entry["verdict"] = branch_route_verdict(
+                base, declared_ref=declared_ref, consumer_ref=consumer_ref
+            )
         else:
             entry["verdict"] = DRIFT_UNVERIFIABLE
-            if repo in branch_of and not routed_ref:
-                routed_ref = branch_of[repo]
         per_anchor.append(entry)
 
     detail: dict[str, Any] = {"per_anchor": per_anchor}
@@ -254,10 +317,11 @@ def attach_drift(
     keeps its intrinsic ``n/a``.
 
     ``store`` is duck-typed (the SqliteEpisodeStore surface): ``repo_registry()``,
-    ``drift_get(repo, tip_sha, anchors)``, ``touch_ref_request(repo, ref, ts)``,
-    and ``conn`` for the watermark meta read. ``queried_repos`` is the recall
-    call's validated ``repos`` argument (raw strings or parsed pairs); ``now``
-    stamps the demand touch. // O(hits · anchors)."""
+    ``drift_get(repo, tip_sha, anchors)``, ``ref_tip(repo, ref)``,
+    ``touch_ref_request(repo, ref, ts)``, and ``conn`` for the watermark meta
+    read. ``queried_repos`` is the recall call's validated ``repos`` argument
+    (raw strings or parsed pairs); ``now`` stamps the demand touch.
+    // O(hits · anchors)."""
     try:
         canonical = {row.name: row.canonical_ref for row in store.repo_registry()}  # type: ignore[attr-defined]
     except Exception:

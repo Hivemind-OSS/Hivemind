@@ -10,10 +10,14 @@ them), and recall scopes by repo and branch.
 Recall is deliberately conservative: a query is embedded, matched by dense cosine similarity,
 and passed through an **absolute-relevance abstention gate** — when the top match does not
 clear an absolute similarity floor, Hivemind returns nothing rather than guess. `hive_write`
-serves immediately as `provisional`; the trusted `established` tier is reached **only** when a
-verified change outcome on the repo's canonical line confirms the memory. `hive_capture` is the
-unclear-value tail — it lands **quarantined** and becomes servable only once independent fleet
-demand or a verified change outcome promotes it. Retirement is **machine-gated**: the server
+serves immediately as `provisional` — prefer it for a lesson that would spare a future agent a
+repeat mistake, a regression, or relearning what led to landed code; the trusted `established`
+tier is reached **only** when a verified change outcome on the repo's canonical line confirms
+the memory. `hive_capture` is for the ambiguous tail — it lands **quarantined** and becomes
+servable only once independent fleet demand or a verified change outcome promotes it. Tag the
+line wherever a memory is about real code (`repos=["name@branch"]` + `anchors=[{repo, anchor}]`)
+— that declared line is what a branch-scoped recall and the retirement gate judge it against.
+Retirement is **machine-gated**: the server
 retires a memory only when it verifies a qualifying machine signal (anchor drift at the
 canonical tip, hurt evidence, a mechanical contradiction) — never on an agent's say-so, and an
 unqualified call is a benign no-op, not an error. Unused memories decay on a TTL. Nothing is
@@ -146,7 +150,7 @@ Loopback never leaves the host, so open exactly one door:
 - **SSH** — `ssh -NL 8765:localhost:8765 you@host`, then the localhost registration line works
   as-is.
 
-Never publish `0.0.0.0:8765` — a bearer token over plain LAN HTTP is cleartext.
+Never publish `0.0.0.0:8765` — that door is tokenless, so publishing it hands unauthenticated recall and write to the whole LAN.
 
 ## Day-2 operations
 

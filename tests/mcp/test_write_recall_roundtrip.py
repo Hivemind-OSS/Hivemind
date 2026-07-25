@@ -10,6 +10,7 @@ from tests.mcp._helpers import (
     build_real_server,
     content,
     is_error,
+    register_repo,
     tool_call,
     write_text,
 )
@@ -46,6 +47,42 @@ def test_write_dedup_returns_same_id_no_second_row():
     assert a["id"] == b["id"]
     assert b["deduped"] is True
     assert server.store.counts()[0] == 1  # exactly one approved row
+
+
+# ── the declared branch an agent names is durable, not discarded (BUG-064) ─────
+def test_write_with_declared_branch_persists_the_ref():
+    server, _ = build_real_server()
+    register_repo(server, "alpha")
+    w = write_text(
+        server,
+        "the retry helper backs off on 429",
+        anchors=[{"repo": "alpha", "anchor": "svc.py::retry"}],
+        repos=["alpha@feature"],
+    )
+    assert server.store.episode_refs(w["id"]) == {"alpha": "feature"}
+
+
+def test_write_with_plain_repo_name_stores_no_declared_ref():
+    server, _ = build_real_server()
+    register_repo(server, "alpha")
+    w = write_text(server, "a canonical-scoped fact", repos=["alpha"])
+    assert server.store.episode_refs(w["id"]) == {}  # canonical = no row
+
+
+def test_capture_with_declared_branch_persists_the_ref():
+    server, _ = build_real_server()
+    register_repo(server, "alpha")
+    resp = content(
+        tool_call(
+            server,
+            "hive_capture",
+            {
+                "text": "a captured insight scoped to a feature branch",
+                "repos": ["alpha@feature"],
+            },
+        )
+    )
+    assert server.store.episode_refs(resp["id"]) == {"alpha": "feature"}
 
 
 # ── polarity rides the recall hit: a `dont` write surfaces polarity:"dont" ──────

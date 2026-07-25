@@ -222,7 +222,7 @@ def test_scan_servable_labeled_carries_polarity_anchor_ts():
 
 def test_scan_servable_labeled_general_row_reads_empty_anchor():
     s = _store()
-    _materialize(s, "a general servable fact", trust=ESTABLISHED, repos=["alpha"])
+    _materialize(s, "a general servable fact", trust=ESTABLISHED, repos=[("alpha", "")])
     ((_rid, _val, _pol, anc, _ts, _trust),) = s.scan_servable_labeled(
         now=NOW, provisional_ttl_s=P_TTL
     )

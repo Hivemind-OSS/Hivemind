@@ -27,8 +27,17 @@ verdict, less wall-clock):
   ``anchor_drift`` cache — a worktree at the tip, ``hive-edge verify`` per
   anchor with the stored fingerprints, the output mapped through
   ``hive.app.drift.wire_verdict`` (the cache stores wire vocabulary VERBATIM).
-  Tips = the canonical tip plus branch tips recall demanded via ``ref_requests``
-  within the 7-day demand window; capped, carried over; old tips pruned.
+  Tips = the canonical tip (first — the served-most line never starves), plus
+  every ref a LIVE episode of the repo DECLARES (``store.declared_refs`` —
+  coverage a memory's own line earns whether or not anyone ever recalled it),
+  plus branch tips recall DEMANDED via ``ref_requests`` within the 7-day
+  demand window; capped, carried over; old tips pruned, and a retired
+  memory's anchor is excluded from the work list and its cached rows dropped
+  even at a tip that is still canonical (BUG-065). Every resolved declared or
+  demanded ref is recorded into ``ref_tips`` before its tip is verified, so
+  the recall-side reader can resolve a branch's tip to read the real verdict
+  once it lands, rather than degrading forever (BUG-063), and the retirement
+  gate can judge a memory at its own declared line (BUG-064).
 
 Named safe directions (Law 6):
 - AN EMPTY REGISTRY IS INERT: no git, no clone, no engine import — the tick
@@ -45,10 +54,11 @@ Named safe directions (Law 6):
   repos are untouched), every leg under its own guard inside that, and the
   tick shell survives everything — nothing here can take the serve down.
 - THE WATERMARK IS THE DURABLE TRUTH (``sync:<name>:last_tip`` store meta —
-  the SAME key ``attach_drift`` resolves canonical tips from); the mirror and
-  the drift cache are rebuildable caches — losing either can never open a
-  coverage gap or serve a wrong verdict (an un-materialized anchor reads
-  ``unverifiable``, never false-fresh, never false-stale).
+  the SAME key ``attach_drift`` resolves canonical tips from; ``ref_tips`` is
+  its branch twin, resolved by the same reader for a queried non-canonical
+  ref); the mirror and the drift cache are rebuildable caches — losing either
+  can never open a coverage gap or serve a wrong verdict (an un-materialized
+  anchor reads ``unverifiable``, never false-fresh, never false-stale).
 - CREDENTIALS STAY IN ENV VIA INDIRECTION (D2): a registry row stores only the
   NAME of a token env var, resolved at tick time per repo; the rewritten remote
   URL lives ONLY in the mirror's git config; logs and error meta pass
@@ -678,26 +688,54 @@ class SyncService:
         self, row: _RegistryRow, mirror: Path, canonical_tip: str
     ) -> None:
         """Materialize the ``anchor_drift`` cache for THIS repo at the canonical
-        tip plus every branch tip recall demanded (``ref_requests`` within the
-        demand window): a detached worktree per tip, ``hive-edge verify`` per
-        anchor with the STORED fingerprints, verdicts through ``wire_verdict``
-        into ``drift_put`` (the cache stores wire vocabulary verbatim). Already-
+        tip, every ref a LIVE episode of the repo DECLARES (``store.declared_refs``),
+        and every branch tip recall DEMANDED (``ref_requests`` within the demand
+        window) — canonical first (the served-most line never starves under the
+        budget), declared next, demanded last, deduped by resolved SHA: a
+        detached worktree per tip, ``hive-edge verify`` per anchor with the
+        STORED fingerprints, verdicts through ``wire_verdict`` into
+        ``drift_put`` (the cache stores wire vocabulary verbatim). Already-
         materialized (repo, tip, anchor) rows are skipped — that is both the
-        carry-over and the cheap steady state; ``drift_prune`` drops every tip no
-        longer live. Capped at ``cfg.drift_per_tick`` verify spawns per repo per
-        tick, the rest carry over next tick."""
+        carry-over and the cheap steady state. Every DECLARED or DEMANDED ref
+        that resolves to a real remote tip is recorded into ``ref_tips``
+        BEFORE any verifying happens — so a budget-starved tick still leaves
+        the tip KNOWN (the recall-side reader then reads "tip known, verdicts
+        absent" as ``unverifiable``, never a ``fresh`` inherited from an older
+        tip; BUG-063) and the retirement gate can resolve a memory's own
+        declared tip even before its verdicts land (BUG-064). ``drift_prune``
+        always runs against the CURRENT work list (``keep_anchors=anchors``):
+        it drops every tip no longer live AND every row whose anchor has left
+        the work list (a retired memory's anchor), even at a tip that is
+        still canonical — an empty work list drops the repo's whole cache
+        (BUG-065's false-fresh close). Capped at ``cfg.drift_per_tick`` verify
+        spawns per repo per tick, the rest carry over next tick."""
         name = row.name
         with self._lock:
             fps = self._repo_fps(name)
+            declared = self._store.declared_refs(name)
+        anchors = sorted(fps)
+        now = int(self._now())
         tips = [canonical_tip]
-        for ref in self._requested_refs(name):
+        resolved_refs: list[tuple[str, str, str, int]] = []
+        seen_refs: set[str] = set()
+        for ref in (*declared, *self._requested_refs(name)):
+            if ref in seen_refs:
+                continue
+            seen_refs.add(ref)
             sha = self._rev(mirror, f"refs/remotes/origin/{ref}")
-            if sha is not None and sha not in tips:
-                tips.append(sha)  # a deleted/unknown ref is silently skipped
-        if fps:
-            anchors = sorted(fps)
+            if sha is not None:
+                resolved_refs.append((name, ref, sha, now))
+                if sha not in tips:
+                    tips.append(sha)  # a deleted/unknown ref is silently skipped
+        if resolved_refs:
+            # marker: skipping this write (or writing only for tips that later
+            # got VERIFIED) reds test_unmaterialized_branch_tip_is_unverifiable_not_fresh
+            # — a resolved-but-not-yet-verified branch tip must still be a KNOWN
+            # tip on the next read, never fall back to an unknown one.
+            with self._lock:
+                self._store.ref_tips_put(resolved_refs)
+        if anchors:
             budget = self._cfg.drift_per_tick
-            now = int(self._now())
             out: list[tuple[str, str, str, str, str, int]] = []
             for tip in tips:
                 if budget <= 0:
@@ -717,31 +755,26 @@ class SyncService:
                 with self._lock:
                     self._store.drift_put(out)
         with self._lock:
-            self._store.drift_prune(name, tips)
+            self._store.drift_prune(name, tips, keep_anchors=anchors)
 
     def _repo_fps(self, name: str) -> dict[str, tuple[str, str]]:
-        """anchor → (combdrift fp, subgraph fp) over the repo's approved anchor
-        bindings — first carrier wins per anchor; an empty/unparseable carrier
-        contributes empty tokens (verify then judges existence alone). Raw SQL at
-        the driving-adapter boundary (the ``_meta_get`` idiom — the v3 store
-        surface exposes the lacking-fp sweep, not this read). Caller HOLDS the
-        one global lock."""
+        """anchor → (combdrift fp, subgraph fp) over the repo's approved,
+        non-retired anchor bindings — first carrier wins per anchor; an
+        empty/unparseable carrier contributes empty tokens (verify then judges
+        existence alone). The join and the not-retired predicate live in
+        ``store.anchor_carriers`` (BUG-065's mint-backfill twin,
+        ``anchors_lacking_fp``, shares the exact same predicate so the
+        exclusion cannot fork between the two sweeps); this method owns only
+        the JSON parse and the first-wins-per-anchor reduction over the raw
+        carrier body. Caller HOLDS the one global lock."""
         out: dict[str, tuple[str, str]] = {}
-        rows = self._store.conn.execute(
-            "SELECT ea.anchor, ea.fp_meta FROM episode_anchors ea "
-            "JOIN episodes e ON e.id = ea.episode_id "
-            "WHERE ea.repo=? AND ea.anchor != '' AND e.status='approved' "
-            "ORDER BY ea.episode_id, ea.anchor",
-            (name,),
-        )
-        for r in rows:
-            anchor = r["anchor"]
+        for anchor, fp_meta in self._store.anchor_carriers(name):
             if anchor in out:
                 continue
             fp = sub = ""
-            if r["fp_meta"]:
+            if fp_meta:
                 try:
-                    parsed = json.loads(r["fp_meta"])
+                    parsed = json.loads(fp_meta)
                 except ValueError:
                     parsed = None
                 if isinstance(parsed, dict):

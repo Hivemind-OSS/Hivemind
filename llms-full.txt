@@ -78,9 +78,10 @@ Three principles follow, and every design decision serves them:
 - **QUARANTINED** — where every `hive_capture` lands. Stored and embedded but **not served**.
 - **PROVISIONAL** — the served-but-unverified tier. `hive_write` lands here directly (it
   serves **now**); a quarantined memory reaches it when independent fleet demand promotes it —
-  enough matching recall misses (`demand_m`), from **≥1 identity other than the writer** (so an
-  agent cannot manufacture both supply and demand), and no servable memory already answers it —
-  or when it carries a SHA-bound verified win (the verified-promotion rung).
+  `demand_m` matching recall misses **from identities other than the writer** (the writer's own
+  misses never count toward the bar, so an agent cannot manufacture both supply and demand) and
+  no servable memory already answers it — or when it carries a SHA-bound verified win (the
+  verified-promotion rung).
 - **ESTABLISHED** — the trusted tier. Reached **only mechanically**: the server promotes a
   provisional memory that carries a server-written, SHA-bound verified change outcome on the
   repo's canonical line. No verb sets it and no caller can assert it.
@@ -240,8 +241,9 @@ moves:
   retiring established falsehoods is the only thing that fights the dominant long-run decay.
 - **Set the serve floor just below your true-match cosine.** Too high and the gate abstains on
   everything; recalibrate on your real query distribution.
-- **`demand_m` is your coverage ↔ safety dial.** Raise it when a wrong answer is expensive,
-  lower it when a missing answer wastes more time.
+- **`demand_m` is your coverage ↔ safety dial, floored at 1 non-writer miss.** The writer's own
+  misses never count, so one non-writer miss is already demand; raise it above the floor when a
+  wrong answer is expensive — there is no lower, safer setting than the floor.
 
 Watch these read-only signals over MCP on a fixed cadence (weekly suffices for a small team):
 
@@ -266,7 +268,7 @@ defaults):
 |---|---|---|
 | `HIVE_RECALL__TAU_SERVE` | `0.70` | absolute-relevance serve floor (the never-hallucinate gate) |
 | `HIVE_RECALL__K_MIN` | `1` | how many candidates must clear the floor to serve |
-| `HIVE_AUTONOMY__DEMAND_M` | `3` | recall-misses needed to promote a quarantined memory |
+| `HIVE_AUTONOMY__DEMAND_M` | `1` | non-writer recall-misses needed to promote a quarantined memory (the anti-gaming floor; the writer's own misses never count) |
 | `HIVE_AUTONOMY__DEMAND_WINDOW_DAYS` | `14` | window over which demand is counted |
 | `HIVE_AUTONOMY__QUARANTINE_TTL_DAYS` | `14` | how long an unused quarantined memory lives |
 | `HIVE_AUTONOMY__PROVISIONAL_TTL_DAYS` | `45` | how long an unused provisional memory lives |
@@ -293,11 +295,14 @@ knows what good agent behavior looks like:
   memory when recall is empty.
 - **Store per durable lesson: WHAT + WHERE + WHY.** Bind the WHERE as `anchors=[{repo,
   anchor}]` (registered repo + `path/file.py::symbol`) or `repos=[...]` for scope without a
-  code anchor. **Write by default**: `hive_write` serves now as `provisional` and is healed by
-  outcome and drift evidence; `hive_capture` is the unclear-value tail, quarantined until
-  demand promotes it. Recall before writing to avoid duplicating or rivaling an existing
-  memory. Worth storing: durable, reusable, non-obvious, evidence-grounded — never the
-  obvious, transient, secret, or already-recallable; nothing clears the bar → store nothing.
+  code anchor — tag the line wherever the memory is about real code; that declared line is what
+  a branch-scoped recall and the retirement gate judge the memory against. **Write by default**:
+  prefer `hive_write` for a lesson that spares a future agent a repeat mistake, a regression, or
+  relearning what led to landed code — it serves now as `provisional` and is healed by outcome
+  and drift evidence; `hive_capture` is for the ambiguous tail, quarantined until demand
+  promotes it. Recall before writing to avoid duplicating or rivaling an existing memory. Worth
+  storing: durable, reusable, non-obvious, evidence-grounded — never the obvious, transient,
+  secret, or already-recallable; nothing clears the bar → store nothing.
 - **Report outcomes at task end.** `hive_outcome(helped=[ids], hurt=[ids])` — evidence only;
   helped rows fuel promotion, hurt rows feed the retirement gate.
 - **Maintain — machine-gated.** Stale (has a successor) → `hive_supersede` /

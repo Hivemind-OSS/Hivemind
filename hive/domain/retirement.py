@@ -6,12 +6,13 @@ signal on the target and refuses to retire without one (an unqualified attempt i
 benign no-op at the boundary, never an error). ``retirement_evidence`` is that search's
 pure verdict over feeds the boundary assembles:
 
-  1. **drift**    — a materialized drift verdict at the repo's canonical tip reading
+  1. **drift**    — a materialized drift verdict at the memory's OWN line reading
                     ``anchor_missing`` / ``anchor_changed`` / ``blast_radius_changed``
                     (anchored memories only — a general memory reads drift as n/a);
                     OR a ``verify_stale`` ledger row strictly newer than every
-                    ``verify_current`` (the ledger form of the same fact — reachable
-                    for any memory the census verified, anchored or not).
+                    ``verify_current`` AND judged on that same own line (the ledger
+                    form of the same fact — reachable for any memory the census
+                    verified, anchored or not).
   2. **outcome**  — a server-written ``outcome_verified_hurt`` row; OR an agent-reported
                     ``outcome_hurt`` whose recorded actor ≠ the RETIRING caller (the
                     DemandRule identity-diversity clause applied to retirement: a
@@ -40,6 +41,7 @@ sqlite3 | torch | subprocess | os | git | time imports anywhere in hive/domain/.
 
 from __future__ import annotations
 
+import json
 import math
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Iterable, Optional
@@ -79,12 +81,15 @@ class EvidenceRow:
     """One ledger row of the gate feed — the minimal projection of an
     ``evidence_events`` row the clauses read: the kind (vocabulary of
     ``evidence_kinds``), the recorded actor (the identity-diversity key for
-    agent-reported hurt), and the row timestamp (the stale-vs-current recency
-    order)."""
+    agent-reported hurt), the row timestamp (the stale-vs-current recency
+    order), and the RAW payload body (never parsed by the store — clause 1b
+    reads the line a ``verify_*`` row was judged on out of it; absent ⇒ the
+    line is simply unknown)."""
 
     kind: str
     actor: str
     ts: int
+    payload: str = ""
 
 
 @dataclass(frozen=True, slots=True)
@@ -101,25 +106,45 @@ class Eligibility:
 _INELIGIBLE = Eligibility(False, ())
 
 
-def _row_fields(row: object) -> Optional[tuple[str, str, int]]:
-    """(kind, actor, ts) from an EvidenceRow, an attr-shaped object, or a
-    3-sequence; None for anything undecidable (skipped — under-claim)."""
+def _row_fields(row: object) -> Optional[tuple[str, str, int, str]]:
+    """(kind, actor, ts, payload) from an EvidenceRow, an attr-shaped object, or
+    a 3-/4-sequence (the 4th element is the RAW payload body; a 3-sequence
+    simply carries no payload ⇒ ""); None for anything undecidable (skipped —
+    under-claim)."""
     try:
         if isinstance(row, EvidenceRow):
-            return row.kind, row.actor, int(row.ts)
+            return row.kind, row.actor, int(row.ts), str(row.payload)
         if hasattr(row, "kind"):
             return (
                 str(row.kind),
                 str(getattr(row, "actor", "")),
                 int(getattr(row, "ts", 0)),
+                str(getattr(row, "payload", "")),
             )
-        kind: Any
-        actor: Any
-        ts: Any
-        kind, actor, ts = row  # type: ignore[misc]  # 3-sequence form
-        return str(kind), str(actor), int(ts)
+        fields: Any = list(row)  # type: ignore[call-overload]  # sequence form
+        kind, actor, ts = fields[0], fields[1], fields[2]
+        payload = fields[3] if len(fields) > 3 else ""
+        return str(kind), str(actor), int(ts), str(payload)
     except Exception:  # noqa: BLE001 — undecidable row ⇒ skipped
         return None
+
+
+def _row_line(payload: str) -> Optional[str]:
+    """The LINE a ledger row was judged on — the ``ref`` the census stamps into
+    a ``verify_*`` payload (``change_evidence.render_verify_payload``). None for
+    anything undecidable: an empty, unparseable or non-object body, or one that
+    carries no ref (a legacy, pre-stamp row). Undecidable is NOT "matches" —
+    clause 1b under-claims on it (fail-closed)."""
+    if not payload:
+        return None
+    try:
+        body = json.loads(payload)
+    except Exception:  # noqa: BLE001 — unparseable body ⇒ line unknown
+        return None
+    if not isinstance(body, dict):
+        return None
+    ref = body.get("ref")
+    return ref if isinstance(ref, str) and ref else None
 
 
 def _involves(pair: object, episode_id: int) -> bool:
@@ -144,6 +169,7 @@ def retirement_evidence(
     evidence_rows: Optional[Iterable[object]],
     conflict_pairs: Optional[Iterable[object]],
     winner_cosine: Optional[float] = None,
+    own_lines: Optional[Iterable[str]] = None,
 ) -> Eligibility:
     """Does at least one qualifying machine signal exist for ``episode``?
 
@@ -154,9 +180,14 @@ def retirement_evidence(
         drift-cache clause applies; ``id`` keys the pair check).
       - ``caller_identity`` — the RETIRING caller (never the hurt reporter).
       - ``drift_verdicts`` — the newest materialized §3.4 wire verdicts for the
-        target's anchors at each repo's canonical tip (strings; order free).
+        target's anchors at each repo's OWN line's tip (strings; order free).
       - ``evidence_rows`` — the target's ledger rows (``EvidenceRow`` or
-        (kind, actor, ts) shapes).
+        (kind, actor, ts[, payload]) shapes).
+      - ``own_lines`` — the line(s) whose evidence is THIS memory's own: per
+        anchor repo, the ref it declared for that repo, else that repo's
+        canonical tracked branch. ``None`` ⇒ the memory declared no line
+        anywhere, and clause 1b reads every row exactly as it did before
+        declared lines existed (the common case, unchanged).
       - ``conflict_pairs`` — mechanical detector output (``ConflictNote``-shaped)
         for the co-servable field; NEVER advisory conflict_flags rows.
       - ``winner_cosine`` — supersede only: the measured cos(loser, winner),
@@ -183,19 +214,38 @@ def retirement_evidence(
 
         # ── clause 1b: the ledger form — the newest verify_stale strictly newer
         # than every verify_current (a tie or a newer current disqualifies:
-        # fail-closed, the re-verification wins).
+        # fail-closed, the re-verification wins), judged on the memory's OWN
+        # line. The census ingest runs over a repo's CANONICAL branch only, so a
+        # memory that named another line must not be retired by rows measured on
+        # a line it never claimed (the ledger keeps them — honest history; the
+        # gate decides relevance).
+        #
+        # A verify payload stamps the LINE it was judged on but not the REPO, so
+        # a memory whose repos are judged at DIFFERENT lines can attribute no row
+        # at all: undecidable ⇒ no stale row qualifies (clause 1a, which IS
+        # repo-keyed, still judges it). marker: widening this to "any own line"
+        # re-opens the multi-repo half of the same hole.
+        attributable: Optional[frozenset[str]] = None
+        if own_lines is not None:
+            lines = frozenset(own_lines)
+            attributable = lines if len(lines) == 1 else frozenset()
         stale_ts: Optional[int] = None
         current_ts: Optional[int] = None
-        parsed: list[tuple[str, str, int]] = []
+        parsed: list[tuple[str, str, int, str]] = []
         for row in evidence_rows or ():
             fields = _row_fields(row)
             if fields is None:
                 continue  # malformed row ⇒ under-claim
             parsed.append(fields)
-            kind, _actor, ts = fields
+            kind, _actor, ts, payload = fields
             if kind == EK_VERIFY_STALE:
+                if attributable is not None and _row_line(payload) not in attributable:
+                    continue  # another line's staleness (or an unreadable one)
                 stale_ts = ts if stale_ts is None else max(stale_ts, ts)
             elif kind == EK_VERIFY_CURRENT:
+                # Deliberately UNfiltered: a current row only ever REFUSES a
+                # retirement, so dropping an off-line one is the over-claiming
+                # direction — the one direction this gate may never take.
                 current_ts = ts if current_ts is None else max(current_ts, ts)
         if stale_ts is not None and (current_ts is None or stale_ts > current_ts):
             signals.append(SIG_VERIFY_STALE)
@@ -203,11 +253,11 @@ def retirement_evidence(
         # ── clause 2: outcome-hurt — server-written verified hurt (any actor),
         # or agent-reported hurt from an identity OTHER than the retiring caller
         # (the identity-diversity clause: two-call self-destruction blocked).
-        if any(kind == EK_OUTCOME_VERIFIED_HURT for kind, _a, _t in parsed):
+        if any(kind == EK_OUTCOME_VERIFIED_HURT for kind, _a, _t, _p in parsed):
             signals.append(SIG_VERIFIED_HURT)
         if any(
             kind == EK_OUTCOME_HURT and actor != str(caller_identity)
-            for kind, actor, _t in parsed
+            for kind, actor, _t, _p in parsed
         ):
             signals.append(SIG_HURT_OTHER_IDENTITY)
 

@@ -51,7 +51,8 @@ them. The anti-gaming clause is load-bearing: with a single demand identity, **c
 collapses to 0** in the model — a lone agent cannot vote up its own captures, so nothing
 unvetted is served. The cost of safety here is paid in latency, not in poison.
 - **Levers:** per-session identity is the promotion fuel (distinct agent sessions promote
-  each other); `HIVE_AUTONOMY__DEMAND_M` (default 3), `HIVE_AUTONOMY__DEMAND_WINDOW_DAYS`
+  each other); `HIVE_AUTONOMY__DEMAND_M` (default 1 — the writer's own misses never count, so
+  this is non-writer misses required), `HIVE_AUTONOMY__DEMAND_WINDOW_DAYS`
   (14); the demand-match cosine floors `HIVE_AUTONOMY__DEMAND_TAU` (0.75 — what counts as a
   recall-miss matching a quarantined candidate) and `HIVE_AUTONOMY__COMPETITOR_TAU` (0.85 —
   above which an already-servable answer covers the demand, so no promotion fires); the
@@ -79,7 +80,8 @@ Good memories quietly going out of date erodes the store faster than injected po
 in the model the good→stale path is the single largest degradation. Established memories
 **never decay mechanically** — no TTL cleans them; retirement is the only exit.
 - **Levers:** every recall hit carries its `trust`, `ts`, and a per-anchor `drift` verdict
-  (the sync daemon materializes drift at each repo's canonical tip);
+  (the sync daemon materializes drift at each repo's canonical tip, every line a live memory
+  declares, and any branch tip recall demanded);
   `hive_health(include_stale_suspects=true)` surfaces servable memories whose anchor sat in
   the blast radius of a breaking change; `hive_supersede` / `hive_write(replaces=<id>)` /
   `hive_prune` retire — machine-gated, so the server retires only a target it can qualify
@@ -112,14 +114,20 @@ the field stays clean.
   serve-confidence trend (below) — a falling `confident_rate` with a too-high floor is
   silent coverage starvation.
 
-### 6. `demand_m` is your coverage ↔ safety dial
+### 6. `demand_m` is your coverage ↔ safety dial, floored at 1 non-writer miss
 Raising the promotion bar trades recall for cleanliness, roughly linearly: in the model
 `demand_m=1` gave coverage 0.94 / false-serve 0.09, while `demand_m=5` gave coverage 0.34 /
-false-serve 0.01.
-- **Lever:** `HIVE_AUTONOMY__DEMAND_M` (3).
-- **Operate:** choose it from the *asymmetry of your costs*. If a wrong answer is expensive
-  (production code, security), raise it; if a missing answer wastes more time than a
-  questionable one, lower it.
+false-serve 0.01. The `demand_m=1` point is exact under the current counting rule — it already
+required exactly one identity other than the writer. The `demand_m=5` point predates subtracting
+the writer's own misses from the count: under the corrected rule a bar of 5 now demands five
+genuinely distinct non-writer identities, not one distinct identity plus four of the writer's
+own, so that reading is a lower bound on how strict `demand_m=5` now serves and wants a rerun
+before it drives a decision.
+- **Lever:** `HIVE_AUTONOMY__DEMAND_M` (1) — the anti-gaming floor itself; the writer's own
+  misses never count toward it.
+- **Operate:** choose anything above the floor from the *asymmetry of your costs*. If a wrong
+  answer is expensive (production code, security), raise it; the floor of 1 is already the most
+  permissive safe setting, so there is nowhere lower to go.
 
 ### 7. Seeding trusted answers is the biggest positive lever; retirement only helps the established tier
 Seeding good answers via `hive_write` was the single strongest mover toward a clean,
@@ -159,7 +167,8 @@ registered repo and feeds every landing on its canonical branch into the ledger:
 receipt per new watermark..tip range, ingested post-merge in-process, after which the
 verified-outcome `established` sweep runs (the only trust movement the feed drives). The same
 tick backfills absent anchor fingerprints against the canonical tip and materializes per-anchor
-drift verdicts (the canonical tip plus branch tips recall demanded). The SHA-bound verified rows
+drift verdicts (the canonical tip, every line a live memory declares, plus branch tips recall
+demanded). The SHA-bound verified rows
 it writes are also what the verified-promotion rung (`HIVE_AUTONOMY__VERIFIED_PROMOTION`,
 default on) uses to promote a quarantined memory. Every leg is fail-open per repo; a push
 webhook (`HIVE_SYNC__WEBHOOK_SECRET`, HMAC-gated on the tunnel door) only wakes the poll early —

@@ -49,7 +49,7 @@ worklists only surface it; resolving it is this pass.
 | Knob | Default | Move it when |
 |---|---|---|
 | `HIVE_RECALL__TAU_SERVE` | 0.70 | coverage is starved (gate over-abstains → lower) or weak matches serve (→ raise). Recalibrate on your corpus |
-| `HIVE_AUTONOMY__DEMAND_M` | 3 | your coverage↔safety dial — raise if a wrong answer is expensive, lower if a miss costs more |
+| `HIVE_AUTONOMY__DEMAND_M` | 1 | non-writer misses required — the anti-gaming floor; raise above it if a wrong answer is expensive (there is no lower, safer setting than the floor) |
 | `HIVE_CONFLICT__TAU` | 0.80 | distinct facts get merged (→ raise) or near-duplicate twins slip through (→ lower) |
 | `HIVE_AUTONOMY__QUARANTINE_TTL_DAYS` / `…__PROVISIONAL_TTL_DAYS` | 14 / 45 | **do not lengthen to hoard** — expiry of unused memory is doing real work |
 | `HIVE_SYNC__INTERVAL_S` | 60 | the sync poll cadence (floor 5 s) — the webhook only wakes it early, never replaces it |

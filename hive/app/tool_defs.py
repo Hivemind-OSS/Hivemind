@@ -33,8 +33,7 @@ _WRITE_GUIDANCE = (
     "recall filter): " + _KIND_GLOSSES + ". Bind the WHERE as anchors=[{repo, anchor}] "
     "(registered repo name + path/file.py::symbol), or repos=[...] for repo scope without a "
     "code anchor; neither = a general, fleet-wide memory. Write one dense, self-contained "
-    "fact — don't pad or restate the obvious; verbosity flattens the embedding and makes "
-    "recall abstain."
+    "fact; verbosity flattens the embedding."
 )
 
 # The optional opaque metadata map on the two write-side verbs — one shared spec so the
@@ -82,8 +81,8 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
         "description": "Save a memory that SERVES NOW: it lands trust=provisional, recallable "
         "immediately, and is healed afterward by the server's outcome/drift "
         "machinery (established = outcome-verified on the canonical line). "
-        "Recall the topic first so you don't write a duplicate of — or a rival "
-        "to — an existing memory. Pass replaces=<episode_id> when this CORRECTS "
+        "Recall the topic first so you don't write a duplicate of an existing "
+        "memory. Pass replaces=<episode_id> when this CORRECTS "
         "an existing memory: an unknown target fails the whole call; a known "
         "target is retired ONLY when the server verifies a qualifying machine "
         "signal for it, else the write still lands and the envelope reports "

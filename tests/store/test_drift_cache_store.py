@@ -1,11 +1,17 @@
 """The materialized drift cache (D5 — rebuildable, Law 5): ``drift_put`` (last-write-wins
 on the (repo, tip_sha, anchor) key, §3.5-DDL-ordered row tuples), ``drift_get`` (exact
 (repo, tip) read; an un-materialized anchor is ABSENT — the caller reads absence as
-``unverifiable``, never false-fresh/false-stale), ``drift_prune`` (bounded growth), and
-the ``ref_requests`` demand seam (``touch_ref_request`` / ``requested_refs``). Verdict
-strings ride verbatim — the cache never interprets the wire vocabulary."""
+``unverifiable``, never false-fresh/false-stale), ``drift_prune`` (bounded growth, plus
+the BUG-065 ``keep_anchors`` false-fresh close), the ``ref_requests`` demand seam
+(``touch_ref_request`` / ``requested_refs``), the ``ref_tips`` per-ref tip watermark
+(``ref_tip`` / ``ref_tips_put`` / ``ref_tips_prune`` — the branch twin of the canonical
+``sync:<repo>:last_tip`` meta key), and ``declared_refs`` — the materializer's
+declared-coverage work list. Verdict strings ride verbatim — the cache never
+interprets the wire vocabulary."""
 
 from __future__ import annotations
+
+import numpy as np
 
 from hive.adapters.sqlite_db import connect
 from hive.adapters.store_sqlite import SqliteEpisodeStore
@@ -15,6 +21,27 @@ TIP0, TIP1 = "a" * 40, "b" * 40
 
 def _store() -> SqliteEpisodeStore:
     return SqliteEpisodeStore(connect(":memory:"))
+
+
+def _declared(
+    s: SqliteEpisodeStore,
+    text: str,
+    *,
+    repo: str,
+    ref: str,
+    trust: str = "provisional",
+) -> int:
+    """Stage + complete one episode declaring ``ref`` for ``repo`` — the minimal
+    fixture ``declared_refs`` reads."""
+    eid, _ = s.stage(text=text, weight=1.0, proposed_by="w", ts=10, repos=[(repo, ref)])
+    assert s.complete(
+        eid,
+        np.ones(4, dtype=np.float32),
+        expected_version=0,
+        trust=trust,
+        last_active_ts=10,
+    )
+    return eid
 
 
 def _row(
@@ -108,6 +135,50 @@ def test_prune_empty_keep_wipes_the_repo():
     assert s.drift_get("alpha", TIP0, ["a.py::f"]) == {}
 
 
+# ── drift_prune(keep_anchors=...): the BUG-065 false-fresh close ──────────────
+def test_prune_keep_anchors_none_is_identical_to_omitting_it():
+    # an EXPLICIT keep_anchors=None must reproduce today's tip-only prune
+    # byte-for-byte — no behavior change for any existing caller.
+    s = _store()
+    s.drift_put([_row(tip=TIP0), _row(tip=TIP1), _row(repo="beta", tip=TIP0)])
+    dropped = s.drift_prune("alpha", keep_tips=[TIP1], keep_anchors=None)
+    assert dropped == 1
+    assert s.drift_get("alpha", TIP0, ["a.py::f"]) == {}
+    assert s.drift_get("alpha", TIP1, ["a.py::f"]) != {}
+    assert s.drift_get("beta", TIP0, ["a.py::f"]) != {}  # other repos untouched
+
+
+def test_prune_with_keep_anchors_drops_rows_for_anchors_outside_the_set():
+    # a row can be at a LIVE tip and still be dropped when its anchor left the
+    # work list — the hole that lets a retired episode's stale cache answer a
+    # brand-new episode binding the same anchor.
+    s = _store()
+    s.drift_put(
+        [
+            _row(tip=TIP0, anchor="a.py::f", verdict="fresh"),
+            _row(tip=TIP0, anchor="b.py::g", verdict="fresh"),
+            _row(tip=TIP1, anchor="a.py::f", verdict="anchor_changed"),
+        ]
+    )
+    dropped = s.drift_prune("alpha", keep_tips=[TIP0, TIP1], keep_anchors=["a.py::f"])
+    assert dropped == 1  # b.py::g at TIP0: its tip is live, its anchor is not
+    assert s.drift_get("alpha", TIP0, ["a.py::f", "b.py::g"]) == {
+        "a.py::f": ("fresh", "{}")
+    }
+    assert s.drift_get("alpha", TIP1, ["a.py::f"]) != {}
+
+
+def test_prune_empty_keep_anchors_wipes_the_repo_all_retired():
+    # an all-retired repo has no live anchors: an explicit EMPTY keep_anchors
+    # means no anchor is live, so the whole cache drops even at a kept tip.
+    s = _store()
+    s.drift_put([_row(tip=TIP0), _row(repo="beta", tip=TIP0)])
+    dropped = s.drift_prune("alpha", keep_tips=[TIP0], keep_anchors=[])
+    assert dropped == 1
+    assert s.drift_get("alpha", TIP0, ["a.py::f"]) == {}
+    assert s.drift_get("beta", TIP0, ["a.py::f"]) != {}  # other repos untouched
+
+
 def test_cache_is_rebuildable_wipe_then_repopulate():
     # the Law-5 posture at the store level: a wiped cache accepts the same rows again.
     s = _store()
@@ -149,3 +220,105 @@ def test_touch_keeps_the_newest_request_stamp():
     assert row["last_requested_ts"] == 300
     n = s.conn.execute("SELECT COUNT(*) AS c FROM ref_requests").fetchone()["c"]
     assert n == 1  # upsert, never a second row
+
+
+# ── ref_tips: the materializer's per-ref tip watermark ─────────────────────────
+def test_ref_tip_absent_reads_none():
+    s = _store()
+    assert s.ref_tip("alpha", "feature") is None  # never materialized ⇒ unknown tip
+
+
+def test_ref_tips_put_then_ref_tip_roundtrips():
+    s = _store()
+    s.ref_tips_put([("alpha", "feature", TIP0, 100)])
+    assert s.ref_tip("alpha", "feature") == TIP0
+    assert s.ref_tip("alpha", "develop") is None  # another ref untouched
+    assert s.ref_tip("beta", "feature") is None  # another repo untouched
+
+
+def test_ref_tips_put_is_last_write_wins():
+    s = _store()
+    s.ref_tips_put([("alpha", "feature", TIP0, 100)])
+    s.ref_tips_put([("alpha", "feature", TIP1, 200)])
+    assert s.ref_tip("alpha", "feature") == TIP1
+    n = s.conn.execute("SELECT COUNT(*) AS c FROM ref_tips").fetchone()["c"]
+    assert n == 1  # replaced, never doubled
+
+
+def test_ref_tips_put_empty_batch_is_a_noop():
+    s = _store()
+    s.ref_tips_put([])
+    assert s.conn.execute("SELECT COUNT(*) AS c FROM ref_tips").fetchone()["c"] == 0
+
+
+def test_ref_tips_prune_keeps_listed_refs_only():
+    s = _store()
+    s.ref_tips_put(
+        [
+            ("alpha", "feature", TIP0, 100),
+            ("alpha", "develop", TIP1, 100),
+            ("beta", "feature", TIP0, 100),
+        ]
+    )
+    dropped = s.ref_tips_prune("alpha", keep_refs=["develop"])
+    assert dropped == 1
+    assert s.ref_tip("alpha", "feature") is None
+    assert s.ref_tip("alpha", "develop") == TIP1
+    assert s.ref_tip("beta", "feature") == TIP0  # other repos untouched
+
+
+def test_ref_tips_prune_empty_keep_wipes_the_repo():
+    s = _store()
+    s.ref_tips_put([("alpha", "feature", TIP0, 100), ("alpha", "develop", TIP1, 100)])
+    assert s.ref_tips_prune("alpha", keep_refs=[]) == 2
+    assert s.ref_tip("alpha", "feature") is None
+    assert s.ref_tip("alpha", "develop") is None
+
+
+# ── declared_refs: the materializer's declared-coverage work list ──────────────
+def test_declared_refs_lists_distinct_refs_from_live_episodes():
+    s = _store()
+    _declared(s, "on feature", repo="alpha", ref="feature")
+    _declared(s, "on develop", repo="alpha", ref="develop")
+    _declared(s, "another on feature", repo="alpha", ref="feature")  # dup ref
+    _declared(s, "elsewhere", repo="beta", ref="feature")  # another repo
+    assert s.declared_refs("alpha") == ["develop", "feature"]  # distinct, ref-ordered
+
+
+def test_declared_refs_excludes_scope_only_and_pending_episodes():
+    s = _store()
+    eid, _ = s.stage(
+        text="scope only, no line",
+        weight=1.0,
+        proposed_by="w",
+        ts=10,
+        repos=[("alpha", "")],
+    )
+    assert s.complete(
+        eid,
+        np.ones(4, dtype=np.float32),
+        expected_version=0,
+        trust="provisional",
+        last_active_ts=10,
+    )
+    s.stage(
+        text="pending, never completed",
+        weight=1.0,
+        proposed_by="w",
+        ts=10,
+        repos=[("alpha", "feature")],
+    )
+    assert s.declared_refs("alpha") == []
+
+
+def test_declared_refs_excludes_deprecated_episodes():
+    s = _store()
+    eid = _declared(s, "later retired", repo="alpha", ref="feature")
+    assert s.declared_refs("alpha") == ["feature"]
+    s.conn.execute("UPDATE episodes SET trust='deprecated' WHERE id=?", (eid,))
+    assert s.declared_refs("alpha") == []  # a retired line stops demanding coverage
+
+
+def test_declared_refs_empty_repo_reads_empty():
+    s = _store()
+    assert s.declared_refs("alpha") == []

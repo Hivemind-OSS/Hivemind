@@ -204,6 +204,79 @@ def test_fresh_drift_does_not_qualify():
     _assert_gate_noop(server, _prune(server, eid), eid)
 
 
+def test_declared_line_tip_qualifies_even_when_canonical_is_fresh():
+    """A branch-scoped memory is judged at ITS OWN declared line, not the
+    canonical watermark: the canonical tip stays healthy while the declared
+    line's own tip is dead, and the dead line must still qualify."""
+    server, _ = build_real_server()
+    register_repo(server, "alpha", canonical_ref="main")
+    server.store.meta_set("sync:alpha:last_tip", TIP)
+    feature_tip = "f" * 40
+    server.store.ref_tips_put([("alpha", "feature", feature_tip, 5)])
+    eid = write_text(
+        server,
+        "the greet helper on the feature line trims its input",
+        anchors=[{"repo": "alpha", "anchor": "app.py::greet"}],
+        repos=["alpha@feature"],
+    )["id"]
+    server.store.drift_put([("alpha", TIP, "app.py::greet", "fresh", "{}", 5)])
+    server.store.drift_put(
+        [("alpha", feature_tip, "app.py::greet", "anchor_missing", "{}", 5)]
+    )
+    env = _prune(server, eid)
+    assert env["status"] == "pruned", env
+    assert any(s.startswith("drift:") for s in env["signals"])
+
+
+def test_declared_line_fresh_blocks_even_when_canonical_is_stale():
+    """The other half of the same fix: a memory whose OWN declared line is
+    healthy must NOT qualify just because the canonical line (a line it never
+    named) went stale — the old canonical-only read would have wrongly
+    qualified this."""
+    server, _ = build_real_server()
+    register_repo(server, "alpha", canonical_ref="main")
+    server.store.meta_set("sync:alpha:last_tip", TIP)
+    feature_tip = "f" * 40
+    server.store.ref_tips_put([("alpha", "feature", feature_tip, 5)])
+    eid = write_text(
+        server,
+        "the greet helper on the feature line still trims its input",
+        anchors=[{"repo": "alpha", "anchor": "app.py::greet"}],
+        repos=["alpha@feature"],
+    )["id"]
+    server.store.drift_put([("alpha", TIP, "app.py::greet", "anchor_missing", "{}", 5)])
+    server.store.drift_put([("alpha", feature_tip, "app.py::greet", "fresh", "{}", 5)])
+    _assert_gate_noop(server, _prune(server, eid), eid)
+
+
+def test_declared_ref_read_fault_fails_closed(monkeypatch):
+    """The declared-line lookup is a new gate-feed read (``episode_refs``); a
+    fault there must fail CLOSED like every other feed — undecidable ⇒ noop,
+    never a permitted retirement."""
+    server, _ = build_real_server()
+    register_repo(server, "alpha", canonical_ref="main")
+    server.store.meta_set("sync:alpha:last_tip", TIP)
+    eid = write_text(
+        server,
+        "a branch-scoped memory whose declared-line read explodes",
+        anchors=[{"repo": "alpha", "anchor": "app.py::greet"}],
+        repos=["alpha@feature"],
+    )["id"]
+    server.store.drift_put([("alpha", TIP, "app.py::greet", "anchor_missing", "{}", 5)])
+
+    def boom(*a, **kw):
+        raise RuntimeError("episode_refs read exploded")
+
+    monkeypatch.setattr(server.store, "episode_refs", boom, raising=False)
+    resp = call_as(server, "agent-a", "hive_prune", {"episode_id": eid})
+    env = content(resp)
+    assert not is_error(resp)
+    assert env["status"] == "noop", (
+        "an undecidable declared-line read must never retire"
+    )
+    assert server.store.get_episode(eid).trust != "deprecated"
+
+
 def test_mechanical_contradiction_qualifies():
     server, _ = build_real_server(embedder=FakeClusterProvider(d=64))
     do = write_text(

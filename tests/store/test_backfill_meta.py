@@ -1,9 +1,14 @@
 """The backfill-mint store seam (duck-typed app reads/writes, no port):
 ``anchors_lacking_fp`` — the sweep's candidate read (empty-carrier anchor bindings of
-one repo; presence-only, the store never parses a non-empty carrier's body) — and
-``fill_anchor_fp`` — the ONE-tx absent-only merge into ``episode_anchors.fp_meta``.
-The fingerprint is a carried label: the merge writes ONLY the fp_meta column of ONLY
-the addressed (episode_id, repo, anchor) row; the episode row is untouched.
+one repo; presence-only, the store never parses a non-empty carrier's body) —
+``anchor_carriers`` — the drift materializer's work-list sibling verb (same
+not-retired join, raw ``(anchor, fp_meta)`` rows) — and ``fill_anchor_fp`` — the
+ONE-tx absent-only merge into ``episode_anchors.fp_meta``. Both read verbs exclude
+``trust='deprecated'`` (BUG-065: a retired memory must stop consuming the sweep /
+work list forever) while keeping quarantined/provisional/established rows IN (the
+consumer owns any further filtering). The fingerprint is a carried label: the merge
+writes ONLY the fp_meta column of ONLY the addressed (episode_id, repo, anchor) row;
+the episode row is untouched.
 
 The absent-only guard is STRUCTURAL: the merge spreads the CURRENT map last, so a
 present key cannot be displaced — an overwrite is unconstructable, not merely refused.
@@ -82,13 +87,27 @@ def test_lacking_read_returns_empty_carrier_bindings_of_the_repo():
     assert s.anchors_lacking_fp(REPO) == [(bare, ANCHOR)]
 
 
-def test_lacking_read_includes_all_trust_states():
-    # the anchored_episodes twin: trust is NOT a filter — the consumer owns any
+def test_lacking_read_includes_quarantined_provisional_and_established():
+    # only trust='deprecated' (a retired memory) leaves the sweep — every OTHER
+    # trust state is still a live backfill candidate; the consumer owns any
     # further filtering.
+    s = _store()
+    q = _seed(s, "quarantined stays")
+    s.conn.execute("UPDATE episodes SET trust='quarantined' WHERE id=?", (q,))
+    p = _seed(s, "provisional stays")  # _seed's default complete() trust
+    e = _seed(s, "established stays")
+    s.conn.execute("UPDATE episodes SET trust='established' WHERE id=?", (e,))
+    assert set(s.anchors_lacking_fp(REPO)) == {(q, ANCHOR), (p, ANCHOR), (e, ANCHOR)}
+
+
+def test_lacking_read_excludes_deprecated():
+    # BUG-065: a retired memory's anchor must leave the mint-backfill sweep —
+    # retirement flips trust to 'deprecated' while status stays 'approved' (the
+    # append-only ledger), so status alone can never exclude it.
     s = _store()
     eid = _seed(s, "later deprecated")
     s.conn.execute("UPDATE episodes SET trust='deprecated' WHERE id=?", (eid,))
-    assert s.anchors_lacking_fp(REPO) == [(eid, ANCHOR)]
+    assert s.anchors_lacking_fp(REPO) == []
 
 
 def test_lacking_read_lists_each_binding_separately():
@@ -108,6 +127,60 @@ def test_lacking_read_lists_each_binding_separately():
         last_active_ts=10,
     )
     assert s.anchors_lacking_fp(REPO) == [(eid, "a.py::f"), (eid, "b.py::g")]
+
+
+# ── anchor_carriers: the drift materializer's work-list sibling verb ──────────
+
+
+def test_anchor_carriers_returns_the_raw_carrier_per_binding():
+    s = _store()
+    _seed(s, "bare binding")
+    pinned = _seed(s, "pinned binding")
+    _pin(s, pinned)
+    assert set(s.anchor_carriers(REPO)) == {(ANCHOR, ""), (ANCHOR, FP_PIN)}
+
+
+def test_anchor_carriers_excludes_deprecated_but_keeps_other_trust_states():
+    s = _store()
+    q = _seed(s, "quarantined stays")
+    s.conn.execute("UPDATE episodes SET trust='quarantined' WHERE id=?", (q,))
+    dep = _seed(s, "deprecated excluded")
+    s.conn.execute("UPDATE episodes SET trust='deprecated' WHERE id=?", (dep,))
+    assert s.anchor_carriers(REPO) == [(ANCHOR, "")]  # only the quarantined row
+
+
+def test_anchor_carriers_excludes_scope_only_pending_and_foreign_repo():
+    s = _store()
+    _seed(s, "scope only", anchor="")
+    _seed(s, "pending", complete=False)
+    _seed(s, "another repo", repo="beta")
+    assert s.anchor_carriers(REPO) == []
+
+
+def test_anchor_carriers_orders_by_episode_then_anchor_without_deduping():
+    # the store does NOT dedup per anchor — first-wins-per-anchor is the CALLER's
+    # job (mirroring the daemon's existing "first carrier wins" rule).
+    s = _store()
+    first, _ = s.stage(
+        text="first binding",
+        weight=1.0,
+        proposed_by="w",
+        ts=10,
+        anchors=[(REPO, ANCHOR)],
+    )
+    assert s.complete(
+        first,
+        np.ones(4, dtype=np.float32),
+        expected_version=0,
+        trust="provisional",
+        last_active_ts=10,
+    )
+    _pin(s, first, '{"combdrift/fp":"combdrift-fp/1:first"}')
+    _seed(s, "second binding on the same anchor")  # a later, unpinned binding
+    assert s.anchor_carriers(REPO) == [
+        (ANCHOR, '{"combdrift/fp":"combdrift-fp/1:first"}'),
+        (ANCHOR, ""),
+    ]
 
 
 # ── fill_anchor_fp: the ONE-tx absent-only merge ──────────────────────────────
