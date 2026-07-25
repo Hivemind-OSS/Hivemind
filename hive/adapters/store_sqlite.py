@@ -29,6 +29,7 @@ from typing import Any, Iterable, Mapping, Optional, Protocol, Sequence
 import numpy as np
 
 from hive.adapters.sqlite_db import tx
+from hive.domain.change_evidence import verify_payload_ref
 from hive.domain.evidence_kinds import (
     EK_OUTCOME_HELPED,
     EK_OUTCOME_VERIFIED_HELPED,
@@ -61,6 +62,13 @@ _log = logging.getLogger("hive.store")
 # applies it per row, and it is the ONLY candidate source for recall (scan_approved()
 # is its no-clock fail-closed alias).
 _RECALL_PREDICATE = "status='approved' AND value IS NOT NULL"
+
+# The NOT-RETIRED predicate every materializer work-list verb joins on, spelled ONCE
+# (BUG-065: a retired memory must stop consuming the capped per-tick budgets forever).
+# Interpolated by anchors_lacking_fp / anchor_carriers / declared_refs — the aliased
+# episodes row is `e` in all three, so the fix stays in one place by construction
+# rather than by three near-identical joins agreeing.
+_LIVE_EPISODE_PREDICATE = "e.status='approved' AND e.trust != 'deprecated'"
 
 # "no clock" sentinel for the fail-closed scan_approved() alias: with now pushed to
 # the far future, a provisional row can never prove freshness ⇒ established-only.
@@ -923,7 +931,10 @@ class SqliteEpisodeStore:
         }
 
     def last_verification(
-        self, episode_ids: Sequence[int], *, canonical_ref: Optional[str] = None
+        self,
+        episode_ids: Sequence[int],
+        *,
+        own_refs: Optional[Mapping[int, frozenset[str]]] = None,
     ) -> dict[int, tuple[int, str, str]]:
         """LastVerificationReader: the newest ``verify_current``/``verify_stale``
         ledger row per requested id → ``{eid: (ts, head_sha, state)}``, state derived
@@ -931,10 +942,14 @@ class SqliteEpisodeStore:
         ``promotion_provenance`` idiom): a malformed payload or a missing
         ``stamp.head_sha`` SKIPS that row — an older parseable row may still answer;
         an id with nothing parseable is simply ABSENT (under-claim, never a raise).
-        ``canonical_ref`` (None/"" ⇒ today's unscoped read) additionally SKIPS a row
-        whose payload ``ref`` names a DIFFERENT line — the same first-parseable-wins
-        loop lets an older canonical row answer instead; a legacy ref-LESS row always
-        counts (the absence rule: scoping filters foreign refs, never the pre-stamp
+
+        ``own_refs`` maps an episode to the line(s) IT declared (absent/empty ⇒ an
+        unscoped read of that id, unchanged). A row whose payload ``ref`` names a
+        line the memory never declared is SKIPPED — the same first-parseable-wins
+        loop lets an on-line row answer instead — so the rider never reports a
+        memory stale on a line it never claimed. This only ever WITHHOLDS a stamp;
+        it can never upgrade one to "current". A legacy ref-LESS row always counts
+        (the absence rule: scoping filters foreign refs, never the pre-stamp
         corpus). // O(rows)."""
         ids = [int(e) for e in episode_ids]
         if not ids:
@@ -951,18 +966,14 @@ class SqliteEpisodeStore:
             eid = int(r["episode_id"])
             if eid in out:
                 continue  # already have the newest for this id
+            # marker: skipping legacy ref-less rows under a set own-line filter is a
+            # mutation (the absence rule) — only a PRESENT, FOREIGN ref is skipped.
+            lines = (own_refs or {}).get(eid) or frozenset()
+            row_ref = verify_payload_ref(r["payload"])
+            if lines and row_ref and row_ref not in lines:
+                continue  # measured a line this memory never declared ⇒ skip
             try:
-                payload = json.loads(r["payload"])  # stamp AND ref read from ONE parse
-                # marker: skipping legacy ref-less rows under a set canonical_ref is a
-                # mutation (the absence rule) — only a PRESENT, DIFFERENT ref is foreign.
-                row_ref = payload.get("ref")
-                if (
-                    canonical_ref
-                    and isinstance(row_ref, str)
-                    and row_ref
-                    and row_ref != canonical_ref
-                ):
-                    continue  # measured a foreign line ⇒ skip
+                payload = json.loads(r["payload"])
                 stamp = payload.get("stamp")
                 head_sha = stamp.get("head_sha") if isinstance(stamp, dict) else None
                 if not isinstance(head_sha, str) or not head_sha:
@@ -1016,22 +1027,23 @@ class SqliteEpisodeStore:
         self, episode_id: int, kinds: Sequence[str]
     ) -> list[tuple[str, str, int, str]]:
         """The retirement gate's ledger feed: the target's ``(kind, actor, ts,
-        payload)`` rows restricted to ``kinds``, in insertion order — exactly the
+        ref)`` rows restricted to ``kinds``, in insertion order — exactly the
         4-sequence shape ``retirement.retirement_evidence`` consumes. Empty
         ``kinds`` → [] (the caller names what qualifies; an unfiltered read here
         would hand the gate foreign kinds to ignore).
 
-        The payload rides RAW — the store never parses it (meta-envelope law).
-        The gate needs it because a ``verify_*`` row stamps the LINE it was judged
-        on inside that body, and a memory that declared its own line must not be
-        retired on another line's evidence; the parse belongs to the pure gate,
-        not to this adapter. Read-only, no DDL. // O(rows)."""
+        ``ref`` is the measured LINE, projected by
+        ``change_evidence.verify_payload_ref`` — the gate decides RELEVANCE (a
+        memory that declared its own line must not be retired on another line's
+        evidence), the payload grammar stays in the one module that writes it.
+        "" = unknown line; a kind that stamps no ref (the hurt kinds) always reads
+        "". Read-only, no DDL. // O(rows)."""
         ks = [str(k) for k in kinds]
         if not ks:
             return []
         placeholders = ",".join("?" for _ in ks)
         return [
-            (r["kind"], r["actor"], int(r["ts"]), r["payload"])
+            (r["kind"], r["actor"], int(r["ts"]), verify_payload_ref(r["payload"]))
             for r in self.conn.execute(
                 f"SELECT kind, actor, ts, payload FROM evidence_events "
                 f"WHERE episode_id=? AND kind IN ({placeholders}) ORDER BY id",
@@ -1133,9 +1145,9 @@ class SqliteEpisodeStore:
             for r in self.conn.execute(
                 "SELECT ea.episode_id, ea.anchor FROM episode_anchors ea "
                 "JOIN episodes e ON e.id = ea.episode_id "
-                "WHERE ea.repo=? AND ea.anchor != '' AND ea.fp_meta='' "
-                "AND e.status='approved' AND e.trust != 'deprecated' "
-                "ORDER BY ea.episode_id, ea.anchor",
+                f"WHERE ea.repo=? AND ea.anchor != '' AND ea.fp_meta='' "
+                f"AND {_LIVE_EPISODE_PREDICATE} "
+                f"ORDER BY ea.episode_id, ea.anchor",
                 (repo,),
             )
         ]
@@ -1143,9 +1155,9 @@ class SqliteEpisodeStore:
     def anchor_carriers(self, repo: str) -> list[tuple[str, str]]:
         """(anchor, fp_meta) for every NON-RETIRED approved anchor binding of
         ``repo``, in (episode_id, anchor) order — the drift materializer's work
-        list (replaces the daemon's own raw SQL: the same not-retired predicate as
-        ``anchors_lacking_fp``, kept next to it so BUG-065 is fixed in ONE place,
-        not two near-identical joins). The carrier body is returned RAW (the store
+        list (replaces the daemon's own raw SQL). All three work-list verbs
+        interpolate the ONE ``_LIVE_EPISODE_PREDICATE`` constant, so BUG-065 is
+        fixed in one place by construction, not by three joins agreeing. The carrier body is returned RAW (the store
         never parses it — meta-envelope law); the caller owns first-wins-per-anchor
         (iterating in this order and keeping the first carrier seen per anchor
         reproduces that rule) and any further parsing of the carrier JSON.
@@ -1156,9 +1168,9 @@ class SqliteEpisodeStore:
             for r in self.conn.execute(
                 "SELECT ea.anchor, ea.fp_meta FROM episode_anchors ea "
                 "JOIN episodes e ON e.id = ea.episode_id "
-                "WHERE ea.repo=? AND ea.anchor != '' "
-                "AND e.status='approved' AND e.trust != 'deprecated' "
-                "ORDER BY ea.episode_id, ea.anchor",
+                f"WHERE ea.repo=? AND ea.anchor != '' "
+                f"AND {_LIVE_EPISODE_PREDICATE} "
+                f"ORDER BY ea.episode_id, ea.anchor",
                 (repo,),
             )
         ]
@@ -1262,19 +1274,30 @@ class SqliteEpisodeStore:
         mirror on its next tick; episode scope rows are UNTOUCHED — memories keep
         their partition (a re-registered repo picks them straight back up).
 
-        The repo's ``sync:<name>:*`` daemon state goes WITH the row, in the same tx
-        (BUG-060). Leaving it made re-registering the same name — a documented
-        operator flow — serve a fully-populated health block from the PREVIOUS
-        incarnation before the daemon had ticked once, which reads as a passing
-        connection; and it resumed the ledger from a watermark whose mirror no
-        longer exists. Deregistration therefore means "forget the feed": a
-        re-registered repo re-clones and re-baselines from scratch, which is what a
-        fresh registration is defined to do. The observations built FROM the feed
-        (memories, their scope, the rebuildable drift cache) are not feed state and
-        stay. // O(1)."""
+        Deregistration forgets the feed AND EVERYTHING DERIVED FROM IT, all in the
+        same tx: the ``sync:<name>:*`` daemon state (BUG-060), the per-ref
+        watermarks (``ref_tips``), the materialized verdicts keyed on them
+        (``anchor_drift``), and the materializer's work list (``ref_requests``).
+        Leaving any of them made re-registering the same name — a documented
+        operator flow — answer from the PREVIOUS incarnation: a fully-populated
+        health block before the daemon had ticked once, a ledger resumed from a
+        watermark whose mirror no longer exists, and (BUG-068) a branch-scoped
+        recall served ``fresh`` off a dead incarnation's tip, because ``ref_tips``
+        is the branch twin of ``sync:<name>:last_tip`` living in a table the meta
+        sweep cannot reach. All three caches are rebuildable (Law 5) and
+        re-materialize on the re-registered repo's first tick, which is exactly
+        what a fresh registration is defined to do.
+
+        What survives is MEMORY, not feed: the episodes, their scope
+        (``episode_anchors`` / ``episode_refs`` — the line the WRITER declared,
+        never a daemon observation), and the append-only ledger. A re-registered
+        repo picks them straight back up. // O(1)."""
         with tx(self.conn):
             cur = self.conn.execute("DELETE FROM repos WHERE name=?", (name,))
             self.conn.execute("DELETE FROM meta WHERE key LIKE ?", (f"sync:{name}:%",))
+            self.conn.execute("DELETE FROM ref_tips WHERE repo=?", (name,))
+            self.conn.execute("DELETE FROM anchor_drift WHERE repo=?", (name,))
+            self.conn.execute("DELETE FROM ref_requests WHERE repo=?", (name,))
         if cur.rowcount:
             _log.info("store.repo_removed name=%s", name)
         return cur.rowcount > 0
@@ -1444,16 +1467,17 @@ class SqliteEpisodeStore:
         materializer's declared-coverage work list, ref-ordered (the
         ``requested_refs`` demand-side twin: this is coverage a memory's own line
         earns regardless of whether anyone ever recalled it). 'Live' = the same
-        not-retired reading as the work-list verbs: ``status='approved' AND
-        trust != 'deprecated'`` — a retired memory's declared line stops demanding
-        coverage. Read-only, no DDL. // O(rows)."""
+        not-retired reading as the other work-list verbs — a retired memory's
+        declared line stops demanding
+        coverage — the shared ``_LIVE_EPISODE_PREDICATE``. Read-only, no DDL.
+        // O(rows)."""
         return [
             r["ref"]
             for r in self.conn.execute(
                 "SELECT DISTINCT er.ref FROM episode_refs er "
                 "JOIN episodes e ON e.id = er.episode_id "
-                "WHERE er.repo=? AND e.status='approved' AND e.trust != 'deprecated' "
-                "ORDER BY er.ref",
+                f"WHERE er.repo=? AND {_LIVE_EPISODE_PREDICATE} "
+                f"ORDER BY er.ref",
                 (repo,),
             )
         ]

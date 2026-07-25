@@ -20,13 +20,13 @@ from hive.app.drift import (
     DRIFT_NA,
     DRIFT_UNVERIFIABLE,
     SEVERITY_ORDER,
-    STALE_TIER,
     WIRE_VERDICTS,
     aggregate_verdicts,
     attach_drift,
     branch_route_verdict,
     wire_verdict,
 )
+from hive.domain.retirement import QUALIFYING_DRIFT
 
 TIP = "a" * 40
 
@@ -134,7 +134,7 @@ def test_branch_route_verdict_truth_table(base, declared_ref, consumer_ref, expe
 
 
 def test_branch_route_verdict_never_returns_fresh_for_a_stale_base():
-    for base in STALE_TIER:
+    for base in QUALIFYING_DRIFT:
         for declared, consumer in (
             ("feature", "main"),
             ("main", "feature"),
@@ -368,7 +368,7 @@ def test_out_of_vocabulary_cache_row_serves_unverifiable():
 
 def test_unresolved_queried_branch_degrades_and_records_demand():
     """No ``ref_tips`` row for ``(alpha, feature)`` yet: the branch tip is
-    genuinely UNKNOWN — ``_tip_for`` is consulted (never hardcoded to None) and
+    genuinely UNKNOWN — ``tip_for`` is consulted (never hardcoded to None) and
     honestly reports no ``tip_sha``, distinct from a resolved-but-unverified
     tip (below)."""
     store = _store(drift={("alpha", TIP): {"a.py::f": (DRIFT_FRESH, "{}")}})
@@ -391,7 +391,7 @@ def test_unresolved_queried_branch_degrades_and_records_demand():
 
 
 def test_resolved_queried_branch_serves_its_materialized_verdict():
-    """``_tip_for`` is the single owner of tip resolution: a branch tip
+    """``tip_for`` is the single owner of tip resolution: a branch tip
     the materializer already recorded in ``ref_tips`` is looked up and its
     cached verdict rides the hit — the read half of BUG-063."""
     feature_tip = "b" * 40
@@ -576,3 +576,29 @@ def test_hostile_scope_entries_are_ignored_not_fatal():
     )
     assert hit["drift"]["type"] == DRIFT_FRESH
     assert store.touches == []
+
+
+def test_the_anchor_moved_tier_has_one_owner():
+    """J8. "Which verdicts mean the anchor MOVED" is ONE fact with two policies —
+    it qualifies a retirement in the gate, and it is what ``branch_route_verdict``
+    may soften to ``branch_scoped``. Asserted by IDENTITY, not by value: a second
+    copy that happens to agree today would pass a value check and drift tomorrow.
+    The tier lives in hive/domain/ because app may import domain, never the
+    reverse."""
+    import hive.app.drift as drift_module
+
+    assert not hasattr(drift_module, "STALE_TIER"), (
+        "the app-side copy of the anchor-moved tier must not exist — one fact, "
+        "one owner"
+    )
+    routed = {
+        base
+        for base in WIRE_VERDICTS
+        # a base that IS branch_scoped rides verbatim — softening is a CHANGE
+        if branch_route_verdict(base, declared_ref="feature", consumer_ref="main")
+        != base
+    }
+    assert routed == QUALIFYING_DRIFT, (
+        "branch_route_verdict must soften EXACTLY the tier the retirement gate "
+        f"qualifies on: {routed} != {set(QUALIFYING_DRIFT)}"
+    )

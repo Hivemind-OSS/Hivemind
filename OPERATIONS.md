@@ -120,7 +120,7 @@ Raising the promotion bar trades recall for cleanliness, roughly linearly: in th
 false-serve 0.01. The `demand_m=1` point is exact under the current counting rule — it already
 required exactly one identity other than the writer. The `demand_m=5` point predates subtracting
 the writer's own misses from the count: under the corrected rule a bar of 5 now demands five
-genuinely distinct non-writer identities, not one distinct identity plus four of the writer's
+non-writer misses (from any number of non-writer identities), not one non-writer miss plus four of the writer's
 own, so that reading is a lower bound on how strict `demand_m=5` now serves and wants a rerun
 before it drives a decision.
 - **Lever:** `HIVE_AUTONOMY__DEMAND_M` (1) — the anti-gaming floor itself; the writer's own
@@ -150,7 +150,7 @@ All read-only over MCP, off the warm store:
 |---|---|---|---|
 | `confident_rate`, `demand_entropy` (+ 7d deltas) | `hive_health(include_trends=true)` | silent fail-open rot; coverage starvation; demand diversity | `tau_serve`, `demand_m` |
 | demand-gap report | `hive_health(include_gaps=true)` | topics wanted but uncovered (each gap names the repos that asked) | `hive_write` those answers |
-| contested-memory report | `hive_health(include_conflicts=true)` | established rows with competing versions, bucketed by repo and anchor | `hive_supersede` the wrong one |
+| contested-memory report | `hive_health(include_conflicts=true)` | servable rows with competing versions, bucketed by repo and anchor | `hive_supersede` the wrong one |
 | suspect-consensus worklist | `hive_health(include_suspect_consensus=true)` | promotions on thin *effective* independence | re-examine / retire |
 | stale-suspect worklist | `hive_health(include_stale_suspects=true)` | servable memories in the blast radius of a breaking/removed change | re-verify against the code, then retire |
 | anomaly cluster flags | promote audit | compact near-identical clusters (flood signature) | investigate before trusting |
@@ -161,7 +161,8 @@ read it on a fixed cadence (weekly is enough for a small team). Convert gaps int
 
 The evidence ledger has two inputs. The automatic one is **server-side and per-repo**:
 register each repo the fleet works on (`hive repo add <url> [--name <slug>] [--branch <ref>]
-[--token-env <ENVNAME>]`; `hive repos` lists, `hive repo remove <name>` stops) and the sync
+[--token-env <ENVNAME>]`; `hive repos` lists, `hive repo remove <name>` stops feeding and forgets
+that repo's feed state and every cache derived from it, keeping its memories' scope) and the sync
 daemon — re-reading the registry every tick, so registration needs no restart — mirrors each
 registered repo and feeds every landing on its canonical branch into the ledger: one unsigned
 receipt per new watermark..tip range, ingested post-merge in-process, after which the

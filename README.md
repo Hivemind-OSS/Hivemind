@@ -18,8 +18,9 @@ servable only once independent fleet demand or a verified change outcome promote
 line wherever a memory is about real code (`repos=["name@branch"]` + `anchors=[{repo, anchor}]`)
 — that declared line is what a branch-scoped recall and the retirement gate judge it against.
 Retirement is **machine-gated**: the server
-retires a memory only when it verifies a qualifying machine signal (anchor drift at the
-canonical tip, hurt evidence, a mechanical contradiction) — never on an agent's say-so, and an
+retires a memory only when it verifies a qualifying machine signal (anchor drift on the
+memory's own declared line, hurt evidence, a mechanical contradiction) — never on an agent's
+say-so, and an
 unqualified call is a benign no-op, not an error. Unused memories decay on a TTL. Nothing is
 auto-trusted, and the store never silently migrates across schema generations.
 
@@ -108,8 +109,10 @@ tick — no restart. Per repo, the daemon mirrors the remote, feeds every landin
 branch into the change-outcome evidence ledger, mints missing anchor fingerprints, and
 materializes the staleness (drift) verdicts that ride recall hits. `--token-env` is the **name**
 of an env var holding that repo's git token — the registry never stores a secret byte; unset,
-the fleet-default `HIVE_SYNC__TOKEN` is used. Removing a repo stops the feed and prunes its
-mirror; its memories keep their scope, so re-registering picks them straight back up.
+the fleet-default `HIVE_SYNC__TOKEN` is used. Removing a repo stops the feed, prunes its mirror,
+and drops every cache derived from that feed (watermarks, branch tips, drift verdicts), so
+re-registering the name re-baselines from scratch instead of answering from the previous
+incarnation; its memories keep their scope, so re-registering picks them straight back up.
 
 ## Agents
 Read **[`llms-full.txt`](llms-full.txt)** for the complete, self-contained explanation of how

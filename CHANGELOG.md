@@ -2,6 +2,52 @@
 
 All notable changes to this project are documented here.
 
+## Fixed
+- The retirement gate's **ledger** clause now judges a memory at its own declared line, exactly as
+  its drift clause already did. A memory scoped to `repo@feature` could be retired by staleness the
+  daemon measured on `main` — the declared line protected it from one clause but not the other
+  (BUG-069). A verify payload stamps the LINE it was measured on but not the REPO, so the gate
+  attributes a ledger row only when the memory is anchored in exactly one repo; a memory anchored
+  in several attributes none and is judged by the repo-keyed drift clause alone. That is an
+  under-claim by design — the gate may refuse a retirement it could have allowed, never the
+  reverse. Reading that payload grammar now has one owner beside the render that writes it, so the
+  pure domain no longer parses JSON at all.
+- The served `last_verified` rider is scoped the same way, per memory rather than by a
+  server-level label that was never wired and therefore never ran (BUG-070). A memory that
+  declared its own line is no longer stamped "stale" off a line it never claimed. The filter only
+  ever withholds a stamp — it can never upgrade one to "current" — and a legacy ref-less ledger
+  row still counts, so pre-stamp corpora are unaffected.
+- **Deregistering a repo now forgets the feed and everything derived from it**, in the same
+  transaction: the per-ref watermarks (`ref_tips`), the materialized verdicts keyed on them
+  (`anchor_drift`), and the materializer's work list (`ref_requests`) join the `sync:<name>:*`
+  state that already went. Re-registering the same name previously let a branch-scoped recall
+  resolve the DEAD incarnation's tip and read its surviving verdicts as `fresh` (BUG-068) — the
+  same class of defect the earlier feed-state sweep closed, on the one table that sweep could not
+  reach. All three are rebuildable caches and re-materialize on the first tick. Memory-side scope
+  (`episode_anchors` / `episode_refs`) is deliberately kept: it records what a WRITER declared, not
+  what the daemon observed, so a re-registered repo picks its memories and their lines back up.
+- `ref_tips` is bounded again: the sync tick reconciles it against the refs it actually resolved,
+  beside the existing drift-cache prune, so a branch that stops being canonical, declared, or
+  demanded loses its watermark on the same tick it leaves the work list (BUG-067). Dropping a
+  watermark fails safe — the next read is `unverifiable` and the ref re-resolves next tick.
+- The advertised drift vocabulary is now **projected** from the one object that defines it, so the
+  enum agents are told and the enum writers can emit cannot drift apart; the `repos` schema
+  property states the same `name@branch` grammar the surrounding directive already directed.
+
+## Changed
+- Several facts that had acquired two owners now have one: the "anchor moved" verdict tier
+  (shared by the retirement gate and the branch-routing softener), the tip resolver, the
+  verify-payload `ref` reader, and the not-retired work-list SQL predicate. The MCP boundary holds
+  no raw `meta` reads at all. Executable production code is smaller after this change than before
+  it; the files are longer only because the surviving code now records why it is shaped that way.
+- `hive_health`'s single-identity hint no longer reads the promotion bar's threshold over a
+  different quantity (a window-wide miss count rather than the other-identity count the bar
+  actually uses). The identity-collapse clause is what detects the condition; the misapplied floor
+  is gone.
+- Operator docs corrected where they contradicted the code: the demand bar counts non-writer
+  *misses*, not distinct non-writer *identities*, and the contested-memory report scans the whole
+  servable set rather than the established tier alone.
+
 ## Added
 - `hive-upgrade` operator skill (`skills/hive-upgrade/`) — the runbook for moving a running server
   to a different release ref, plus a **schema pre-flight** (`preflight.py`) that answers "will this

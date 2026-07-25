@@ -172,8 +172,13 @@ Rows land in the store's `repos` table. `--name` defaults to the URL basename (s
 never the token, and unset it falls back to the fleet-default `HIVE_SYNC__TOKEN`, resolved from
 the environment at tick time. At boot the entrypoint probes that every registered credential var
 is present and fails loudly (`EX_CONFIG`, naming the vars) if one is missing. Removing a repo
-stops the feed and prunes its mirror next tick; episode scope rows are kept, so a re-registered
-repo picks its memories straight back up.
+stops the feed and prunes its mirror next tick, and drops — in the same transaction as the
+registry row — the repo's `sync:<name>:*` daemon state and every cache derived from that feed:
+its per-ref tip watermarks, its materialized drift verdicts, and the materializer's work list.
+All of those are rebuildable and re-materialize on the re-registered repo's first tick, so
+re-using a name re-baselines from scratch instead of answering from the previous incarnation.
+Episode scope rows ARE kept — they record what a writer declared, not what the daemon observed —
+so a re-registered repo picks its memories, and their declared lines, straight back up.
 
 Per registered repo (each under its own fail-open guard) the daemon mirrors the remote at
 `<mirror_dir>/<name>/` and runs three legs: it feeds every landing on the canonical branch into
@@ -235,7 +240,7 @@ Everything runs through the `hive` CLI (it drives Docker Compose for you):
 | `hive token <seat>` | mint a per-seat token (printed once) |
 | `hive revoke <seat>` | offboard a seat (next request → 401) |
 | `hive repo add <url>` | register a repo for the server-side census sync (picked up next tick; `--name` / `--branch` / `--token-env` — §4) |
-| `hive repo remove <name>` | deregister a repo (stops feeding; the mirror is pruned next tick, scope rows kept) |
+| `hive repo remove <name>` | deregister a repo (stops feeding; the mirror is pruned next tick; the feed state and every cache derived from it — watermarks, branch tips, drift verdicts — are dropped, scope rows kept) |
 | `hive repos` | list registered repos (names + urls; never a secret) |
 | `hive backup` | snapshot the store now — manual (no scheduler); keeps the `backup_keep` most-recent |
 | `hive ingest <receipt.json>` | feed an unsigned census receipt's change outcome into the append-only evidence ledger — the MANUAL escape hatch (the sync daemon feeds every registered repo itself, §4); idempotent (an already-ingested `(repo, base, head, phase)` range is skipped whole, reported `range_skipped`); refused receipts write zero rows; `--post-merge --verdict pass\|fail --signal randomized\|canary\|none` for rollout outcomes |

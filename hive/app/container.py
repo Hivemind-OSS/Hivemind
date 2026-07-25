@@ -195,8 +195,8 @@ class Container:
         # The v3 store IS the server's retirement-gate evidence feed (evidence_rows_for +
         # insert_audit), scope reader (repo_registry + scan_servable_labeled), and drift
         # source (drift_get for attach_drift) — one handle wires all three. No AGI sentinel
-        # exists, and no global canonical_ref is passed: per-repo canonical refs live in the
-        # repo registry, so the last_verified rider keeps its unscoped default read.
+        # exists. The last_verified rider needs no construction-time ref: it scopes each
+        # hit to the line THAT MEMORY declared, read off the anchors recall already built.
         db_path = "" if self.cfg.db_path == _MEMORY_DB else self.cfg.db_path
         return HiveMCPServer(
             admission=self.admission,

@@ -166,20 +166,73 @@ def _sync_keys(s, repo: str) -> set[str]:
     }
 
 
+def _cache_counts(s, repo: str) -> dict[str, int]:
+    return {
+        table: s.conn.execute(
+            f"SELECT COUNT(*) c FROM {table} WHERE repo=?", (repo,)
+        ).fetchone()["c"]
+        for table in ("ref_tips", "anchor_drift", "ref_requests")
+    }
+
+
 def test_repo_remove_forgets_the_feed_state():
     # BUG-060: deregistering means "forget the FEED". Leaving sync:<name>:* behind
     # made a re-registration resume a watermark whose mirror was pruned, and serve a
     # health block for a feed that had never run.
+    # BUG-068 widened it to EVERYTHING DERIVED FROM the feed: ref_tips is the branch
+    # twin of sync:<name>:last_tip but lives in a table the meta sweep cannot reach,
+    # so a re-registered name resolved a dead incarnation's tip and read its
+    # surviving anchor_drift rows as `fresh`. All three are rebuildable caches
+    # (Law 5) and re-materialize on the re-registered repo's first tick.
     s = _store()
     s.repo_add(name="alpha", url="https://example.invalid/alpha.git", added_ts=1)
     s.repo_add(name="beta", url="https://example.invalid/beta.git", added_ts=2)
     for repo in ("alpha", "beta"):
         for field in ("tracked_ref", "last_tip", "last_sync_ts", "backfilled_total"):
             s.meta_set(f"sync:{repo}:{field}", "x")
+        s.ref_tips_put([(repo, "feature", "a" * 40, 5)])
+        s.drift_put([(repo, "a" * 40, "app.py::greet", "fresh", "{}", 5)])
+        s.touch_ref_request(repo, "feature", 5)
 
     s.repo_remove("alpha")
     assert _sync_keys(s, "alpha") == set()
+    assert _cache_counts(s, "alpha") == {
+        "ref_tips": 0,
+        "anchor_drift": 0,
+        "ref_requests": 0,
+    }, "deregistration forgets the feed AND everything derived from it"
     assert len(_sync_keys(s, "beta")) == 4  # a sibling repo's feed is untouched
+    assert _cache_counts(s, "beta") == {
+        "ref_tips": 1,
+        "anchor_drift": 1,
+        "ref_requests": 1,
+    }
+
+
+def test_repo_remove_keeps_the_memory_side_scope():
+    # the other half of the same invariant: episode_anchors / episode_refs are
+    # MEMORY (the scope a writer declared), not feed observations. Deleting them
+    # would destroy user-declared scope, so a re-registered repo picks them back up.
+    s = _store()
+    s.repo_add(name="alpha", url="https://example.invalid/alpha.git", added_ts=1)
+    eid, _ = s.stage(
+        text="greet stays single-arg",
+        weight=1.0,
+        proposed_by="w",
+        ts=10,
+        polarity="neutral",
+        anchors=[("alpha", "app.py::greet")],
+        repos=[("alpha", "feature")],
+    )
+
+    s.repo_remove("alpha")
+    assert s.episode_refs(eid) == {"alpha": "feature"}
+    assert [
+        r["repo"]
+        for r in s.conn.execute(
+            "SELECT repo FROM episode_anchors WHERE episode_id=?", (eid,)
+        )
+    ] == ["alpha"]
 
 
 def test_repo_remove_leaves_the_tick_shell_globals_alone():

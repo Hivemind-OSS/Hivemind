@@ -45,6 +45,13 @@ from typing import Any
 from hive.app.anchors import split_scope
 from hive.app.sync_keys import canonical_tip_key
 
+# The "anchor moved" tier is IMPORTED, never re-spelled here: one tier, two
+# policies — it qualifies a retirement in the gate and it is the subset
+# ``branch_route_verdict`` may soften to ``branch_scoped`` for an off-line
+# consumer. It lives in hive/domain/ because the dependency rule runs
+# app → domain and never the reverse.
+from hive.domain.retirement import QUALIFYING_DRIFT
+
 _log = logging.getLogger("hive.drift")
 
 # ── the wire vocabulary (§3.4, normative) ─────────────────────────────────────
@@ -79,14 +86,6 @@ SEVERITY_ORDER = (
 
 _SEVERITY_INDEX = {v: i for i, v in enumerate(SEVERITY_ORDER)}
 _UNVERIFIABLE_IDX = _SEVERITY_INDEX[DRIFT_UNVERIFIABLE]
-
-#: The verdicts that mean "the anchor moved" — the subset ``branch_route_verdict``
-#: may route to ``branch_scoped`` for an off-line consumer. ``fresh``/``unverifiable``
-#: are never in here: neither is ever advisory-softened, and neither ever needs to be.
-STALE_TIER = frozenset(
-    {DRIFT_ANCHOR_MISSING, DRIFT_ANCHOR_CHANGED, DRIFT_BLAST_RADIUS_CHANGED}
-)
-
 
 # ── hive-edge verify → wire mapping (§3.4, verbatim; else → unverifiable) ─────
 
@@ -138,7 +137,7 @@ def branch_route_verdict(base: str, *, declared_ref: str, consumer_ref: str) -> 
         declared_ref
         and consumer_ref
         and declared_ref != consumer_ref
-        and base in STALE_TIER
+        and base in QUALIFYING_DRIFT
     ):
         return DRIFT_BRANCH_SCOPED
     return base
@@ -192,10 +191,13 @@ def _meta_value(store: object, key: str) -> str | None:
     return value if isinstance(value, str) and value else None
 
 
-def _tip_for(store: object, repo: str, ref: str) -> str | None:
+def tip_for(store: object, repo: str, ref: str) -> str | None:
     """The tip to judge ``repo`` at: ``ref_tips(repo, ref)`` for a non-canonical
     ref, else the canonical watermark ``sync:<repo>:last_tip``. None = unknown tip
-    (the fail-safe: the caller reads unverifiable, never false-fresh)."""
+    (the fail-safe: the caller reads unverifiable, never false-fresh).
+
+    The SINGLE owner of "which tip do I judge repo R at", shared by the recall
+    enrichment here and the retirement gate's drift feed at the MCP boundary."""
     if not ref:
         return _meta_value(store, canonical_tip_key(repo))
     tip = store.ref_tip(repo, ref)  # type: ignore[attr-defined]
@@ -266,7 +268,7 @@ def _drift_for_hit(
         routed = bool(branch) and branch != canonical.get(repo, "")
         if routed:
             branch_of[repo] = branch
-        tips[repo] = _tip_for(store, repo, branch if routed else "")
+        tips[repo] = tip_for(store, repo, branch if routed else "")
         if tips[repo] is not None:
             anchors = [a for r, a, _d in parsed if r == repo]
             rows[repo] = store.drift_get(repo, tips[repo], anchors)  # type: ignore[attr-defined]

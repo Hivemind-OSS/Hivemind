@@ -756,6 +756,15 @@ class SyncService:
                     self._store.drift_put(out)
         with self._lock:
             self._store.drift_prune(name, tips, keep_anchors=anchors)
+            # the ref_tips twin of the same bound: a ref that stopped being
+            # declared, demanded, or resolvable leaves the work list, so its
+            # watermark goes with it. ``resolved_refs`` is the exact set the tip
+            # list was built from above — no second computation. Dropping a
+            # watermark fails SAFE: the next read is unverifiable and the ref
+            # re-resolves on the next tick.
+            self._store.ref_tips_prune(
+                name, keep_refs=[ref for _n, ref, _sha, _ts in resolved_refs]
+            )
 
     def _repo_fps(self, name: str) -> dict[str, tuple[str, str]]:
         """anchor → (combdrift fp, subgraph fp) over the repo's approved,

@@ -134,21 +134,24 @@ def _reffed_payload(head_sha: str, ref: str | None) -> str:
     return json.dumps(body, sort_keys=True, separators=(",", ":"))
 
 
-def test_canonical_ref_none_is_todays_read():
+def test_no_declared_line_is_an_unscoped_read():
+    # a memory that named no line filters nothing — canonical rows ARE its own.
     s = _store()
     eid = _seed(s, "unscoped read")
     s.insert_audit(
         eid, EK_VERIFY_STALE, "census", 200, _reffed_payload("2" * 40, "feat-y")
     )
     assert (
-        s.last_verification([eid], canonical_ref=None)
+        s.last_verification([eid], own_refs={eid: frozenset()})
+        == s.last_verification([eid], own_refs=None)
         == s.last_verification([eid])
         == {eid: (200, "2" * 40, "stale")}
     )
 
 
-def test_canonical_ref_skips_newest_foreign_row_older_canonical_answers():
-    # The newest row measured a foreign line: skipped; the older canonical row wins.
+def test_a_foreign_line_is_skipped_and_an_on_line_row_answers_instead():
+    # The newest row measured a line this memory never declared: skipped; the older
+    # on-line row wins. The rider must never report a memory stale on a foreign line.
     s = _store()
     eid = _seed(s, "foreign-newest ledger")
     s.insert_audit(
@@ -157,35 +160,48 @@ def test_canonical_ref_skips_newest_foreign_row_older_canonical_answers():
     s.insert_audit(
         eid, EK_VERIFY_STALE, "census", 200, _reffed_payload("2" * 40, "feat-y")
     )
-    assert s.last_verification([eid], canonical_ref="master") == {
+    assert s.last_verification([eid], own_refs={eid: frozenset({"master"})}) == {
         eid: (100, "1" * 40, "current")
     }
 
 
-def test_canonical_ref_keeps_canonical_row():
+def test_a_row_on_a_declared_line_still_counts():
     s = _store()
-    eid = _seed(s, "canonical ledger")
+    eid = _seed(s, "on-line ledger")
     s.insert_audit(
-        eid, EK_VERIFY_STALE, "census", 200, _reffed_payload("2" * 40, "master")
+        eid, EK_VERIFY_STALE, "census", 200, _reffed_payload("2" * 40, "feat-y")
     )
-    assert s.last_verification([eid], canonical_ref="master") == {
+    assert s.last_verification([eid], own_refs={eid: frozenset({"feat-y"})}) == {
         eid: (200, "2" * 40, "stale")
     }
 
 
-def test_canonical_ref_keeps_legacy_refless_row():
+def test_any_of_several_declared_lines_counts():
+    # a memory anchored in two repos may declare a line in each; a row on EITHER is
+    # its own. Widening here only ever ADDS a stamp the memory earned.
+    s = _store()
+    eid = _seed(s, "multi-line ledger")
+    s.insert_audit(
+        eid, EK_VERIFY_STALE, "census", 200, _reffed_payload("2" * 40, "feat-b")
+    )
+    assert s.last_verification(
+        [eid], own_refs={eid: frozenset({"feat-a", "feat-b"})}
+    ) == {eid: (200, "2" * 40, "stale")}
+
+
+def test_a_legacy_refless_row_still_counts_under_a_declared_line():
     # marker target: a legacy row carries NO ref — the ABSENCE RULE keeps it counting
-    # under a set canonical_ref (skipping it would silently blind the rider on every
+    # under an engaged filter (skipping it would silently blind the rider on every
     # pre-stamp ledger).
     s = _store()
     eid = _seed(s, "legacy ledger")
     s.insert_audit(eid, EK_VERIFY_STALE, "census", 200, _reffed_payload("2" * 40, None))
-    assert s.last_verification([eid], canonical_ref="master") == {
+    assert s.last_verification([eid], own_refs={eid: frozenset({"feat-y"})}) == {
         eid: (200, "2" * 40, "stale")
     }
 
 
-def test_canonical_ref_all_foreign_rows_means_absent():
+def test_all_foreign_rows_means_absent():
     s = _store()
     eid = _seed(s, "all-foreign ledger")
     s.insert_audit(
@@ -194,4 +210,28 @@ def test_canonical_ref_all_foreign_rows_means_absent():
     s.insert_audit(
         eid, EK_VERIFY_STALE, "census", 200, _reffed_payload("2" * 40, "feat-b")
     )
-    assert s.last_verification([eid], canonical_ref="master") == {}
+    assert s.last_verification([eid], own_refs={eid: frozenset({"master"})}) == {}
+
+
+def test_the_filter_is_per_episode_not_global():
+    # the whole point of A-3a: one server-level label could not express "this memory
+    # declared feat-a while that one declared feat-b".
+    s = _store()
+    a = _seed(s, "declares feat-a")
+    b = _seed(s, "declares feat-b")
+    s.insert_audit(
+        a, EK_VERIFY_STALE, "census", 100, _reffed_payload("1" * 40, "feat-a")
+    )
+    s.insert_audit(
+        b, EK_VERIFY_STALE, "census", 200, _reffed_payload("2" * 40, "feat-b")
+    )
+    assert s.last_verification(
+        [a, b], own_refs={a: frozenset({"feat-a"}), b: frozenset({"feat-b"})}
+    ) == {a: (100, "1" * 40, "stale"), b: (200, "2" * 40, "stale")}
+    # and each is blind to the OTHER's line
+    assert (
+        s.last_verification(
+            [a, b], own_refs={a: frozenset({"feat-b"}), b: frozenset({"feat-a"})}
+        )
+        == {}
+    )

@@ -129,12 +129,13 @@ def test_agi_wiring_is_gone():
         _build(agi={"mode": True})
 
 
-def test_no_global_canonical_ref_threads_to_the_server():
-    # per-repo canonical refs live in the repo registry rows; the container passes no
-    # global one, so the server's last_verified rider keeps its unscoped default ("").
+def test_no_global_canonical_ref_exists_to_thread():
+    # per-repo canonical refs live in the repo registry rows, and the last_verified
+    # rider scopes each hit to the line THAT MEMORY declared — so there is no
+    # server-level ref label to construct, pass, or leave unreachable (BUG-070).
     c = _build()
     assert not hasattr(c.cfg, "census")
-    assert c.make_server().canonical_ref == ""
+    assert not hasattr(c.make_server(), "canonical_ref")
 
 
 # ── secret floor threads cfg → scanner + make_server (default ON; OFF only when opted out) ──

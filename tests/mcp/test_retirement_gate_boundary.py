@@ -23,6 +23,7 @@ from hive.app.mcp_server import (
     MCPRequest,
     ServerIdentity,
 )
+from hive.domain.evidence_kinds import EK_VERIFY_STALE
 from tests.fakes._fakes import FakeClusterProvider
 from tests.mcp._helpers import (
     build_real_server,
@@ -400,3 +401,94 @@ def test_approved_by_arg_is_ignored_extra_never_a_refusal():
     assert out["status"] == "noop"  # the GATE noop, no AGI refusal
     assert "agi_mode" not in out
     assert "AGI" not in json.dumps(out)
+
+
+def test_multi_repo_memory_is_never_attributable():
+    """A verify payload stamps the LINE it was measured on but NOT the repo, so a
+    memory anchored in MORE THAN ONE repo can attribute no ledger row at all —
+    even when every repo declares the same line, since another repo's staleness
+    on a same-named line would otherwise retire it. Under-claim: clause 1a, which
+    IS repo-keyed, still judges each repo correctly."""
+    server, _ = build_real_server()
+    register_repo(server, "alpha", canonical_ref="main")
+    register_repo(server, "beta", canonical_ref="main")
+    eid = write_text(
+        server,
+        "the greet helper trims its input on both feature lines",
+        anchors=[
+            {"repo": "alpha", "anchor": "app.py::greet"},
+            {"repo": "beta", "anchor": "app.py::greet"},
+        ],
+        repos=["alpha@feature", "beta@feature"],
+    )["id"]
+    _verify_row(server, eid, EK_VERIFY_STALE, ts=100)  # stamped ref="main"
+    _assert_gate_noop(server, _prune(server, eid), eid)
+
+    # and the same holds on the line BOTH repos declared — the recorded coverage
+    # loss of "one anchored repo or nothing" (A-1), pinned so it stays a decision
+    server.store.insert_audit(
+        eid,
+        EK_VERIFY_STALE,
+        "census",
+        200,
+        json.dumps(
+            {
+                "schema": "verify/v1",
+                "stamp": {"head_sha": "cafe" * 10},
+                "ref": "feature",
+            }
+        ),
+    )
+    _assert_gate_noop(server, _prune(server, eid), eid)
+
+
+def test_a_second_repo_with_an_unknown_line_cannot_be_collapsed_away():
+    """The over-claim window the collapse rule left open: N repos where all but
+    one resolve to the same line and the rest are unknown. The second repo's
+    rows are indistinguishable from the first's, so nothing is attributable."""
+    server, _ = build_real_server()
+    register_repo(server, "alpha", canonical_ref="main")
+    register_repo(server, "beta", canonical_ref="main")
+    eid = write_text(
+        server,
+        "greet trims its input; beta declares no line at all",
+        anchors=[
+            {"repo": "alpha", "anchor": "app.py::greet"},
+            {"repo": "beta", "anchor": "app.py::greet"},
+        ],
+        repos=["alpha@feature", "beta"],  # beta names no branch, tracked_ref unset
+    )["id"]
+    server.store.insert_audit(
+        eid,
+        EK_VERIFY_STALE,
+        "census",
+        100,
+        json.dumps(
+            {
+                "schema": "verify/v1",
+                "stamp": {"head_sha": "cafe" * 10},
+                "ref": "feature",
+            }
+        ),
+    )
+    _assert_gate_noop(server, _prune(server, eid), eid)
+
+
+def test_a_single_anchored_repo_with_no_declared_line_stays_unfiltered():
+    """The boundary must return None — not an empty set — for a memory that
+    declared no line for its one anchored repo: it named no line, so canonical
+    rows ARE its own and the ledger clause keeps working exactly as it did
+    before declared lines existed."""
+    server, _ = build_real_server()
+    register_repo(server, "alpha", canonical_ref="main")
+    register_repo(server, "beta", canonical_ref="main")
+    eid = write_text(
+        server,
+        "greet trims its input, judged on whatever line the census measured",
+        anchors=[{"repo": "alpha", "anchor": "app.py::greet"}],
+        repos=["beta@feature"],  # a declared line for a repo it is NOT anchored in
+    )["id"]
+    _verify_row(server, eid, EK_VERIFY_STALE, ts=100)  # stamped ref="main"
+    env = _prune(server, eid)
+    assert env["status"] == "pruned", env
+    assert "verify_stale" in env["signals"], env

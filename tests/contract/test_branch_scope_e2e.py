@@ -331,3 +331,127 @@ def test_a_faulting_ref_tip_read_degrades_the_hit_not_the_read(rig, monkeypatch)
         f"a faulting ref_tip read must degrade this hit, never raise into the "
         f"read: {hit['drift']}"
     )
+
+
+def _cache_rows(store, repo: str) -> dict[str, int]:
+    """Every feed-DERIVED cache row count for one repo, read straight from the
+    tables the deregistration sweep must reach."""
+    return {
+        table: store.conn.execute(
+            f"SELECT COUNT(*) c FROM {table} WHERE repo=?", (repo,)
+        ).fetchone()["c"]
+        for table in ("ref_tips", "anchor_drift", "ref_requests")
+    }
+
+
+def test_a_reregistered_repo_never_serves_a_verdict_from_its_previous_incarnation(
+    rig, tmp_path
+):
+    """J3 / BUG-068. Deregistration forgets the feed AND everything derived from
+    it. ``ref_tips`` is the branch twin of ``sync:<repo>:last_tip`` but lives in a
+    table the BUG-060 meta sweep cannot reach — so a re-registered name used to
+    resolve a DEAD incarnation's tip and read its surviving ``anchor_drift`` rows
+    as ``fresh``. The canonical path was already immune; the branch path was not."""
+    origin, server, syncer = rig
+    eid = call(
+        server,
+        "hive_write",
+        {"text": TEXT, "anchors": [{"repo": "alpha", "anchor": ANCHOR}]},
+    )["id"]
+    origin.push("HEAD:refs/heads/feature")
+    call(server, "hive_recall", {"query": TEXT, "repos": ["alpha@feature"]})
+    syncer.tick()  # really materializes a `fresh` verdict at the feature tip
+
+    env = call(server, "hive_recall", {"query": TEXT, "repos": ["alpha@feature"]})
+    hit = next(h for h in env["reference_context"] if h["episode_id"] == eid)
+    assert hit["drift"]["type"] == "fresh", hit["drift"]
+    assert _cache_rows(server.store, "alpha")["ref_tips"] > 0
+
+    # deregister: the feed AND everything derived from it must go, same tx
+    assert server.store.repo_remove("alpha") is True
+    assert _cache_rows(server.store, "alpha") == {
+        "ref_tips": 0,
+        "anchor_drift": 0,
+        "ref_requests": 0,
+    }, "a deregistered repo must hold zero feed-derived cache rows"
+
+    # while deregistered the NAME is unknown, so the scope is refused outright —
+    # the recall never reaches the drift rider at all
+    env = call(server, "hive_recall", {"query": TEXT, "repos": ["alpha@feature"]})
+    assert env["status"] == "refused", env
+
+    # the memory and its scope survive: they are MEMORY, not feed
+    assert server.store.get_episode(eid) is not None
+    assert [a.repo for a in server.store.get_episode(eid).anchors] == ["alpha"]
+
+    # a tick with the name deregistered is what retires its mirror (_prune_mirrors),
+    # so the re-registration below really re-clones rather than reusing the old one
+    syncer.tick()
+
+    # re-register the SAME name against a remote with no `feature` line at all,
+    # so nothing can overwrite a surviving watermark on the first tick
+    fresh_origin = Origin(tmp_path / "remote2")
+    server.store.repo_add(
+        name="alpha",
+        url=fresh_origin.url,
+        canonical_ref="main",
+        token_env="",
+        added_ts=1,
+    )
+    call(server, "hive_recall", {"query": TEXT, "repos": ["alpha@feature"]})
+    syncer.tick()
+
+    env = call(server, "hive_recall", {"query": TEXT, "repos": ["alpha@feature"]})
+    hit = next(h for h in env["reference_context"] if h["episode_id"] == eid)
+    assert hit["drift"]["type"] == "unverifiable", (
+        "a re-registered name must never serve a verdict measured on the previous "
+        f"incarnation's tip: {hit['drift']}"
+    )
+
+
+def test_a_ref_that_leaves_the_work_list_loses_its_watermark_on_the_same_tick(
+    rig, tmp_path
+):
+    """J4 / BUG-067. ``ref_tips`` is a rebuildable cache with the same bound as its
+    ``drift_prune`` sibling: a ref that stops being canonical, declared, or demanded
+    leaves the work list, so its watermark goes with it — and a recall on it reads
+    the fail-safe ``unverifiable``, never a tip that no longer exists."""
+    origin, server, syncer = rig
+    eid = call(
+        server,
+        "hive_write",
+        {"text": TEXT, "anchors": [{"repo": "alpha", "anchor": ANCHOR}]},
+    )["id"]
+    for branch in ("keep", "drop-a", "drop-b"):
+        origin.push(f"HEAD:refs/heads/{branch}")
+        call(server, "hive_recall", {"query": TEXT, "repos": [f"alpha@{branch}"]})
+    syncer.tick()
+
+    tips = {
+        r["ref"]
+        for r in server.store.conn.execute(
+            "SELECT ref FROM ref_tips WHERE repo='alpha'"
+        )
+    }
+    assert {"keep", "drop-a", "drop-b"} <= tips, tips
+
+    # two branches really disappear from the remote; demand for `keep` is renewed
+    for branch in ("drop-a", "drop-b"):
+        origin.push(f":refs/heads/{branch}")
+    call(server, "hive_recall", {"query": TEXT, "repos": ["alpha@keep"]})
+    syncer.tick()
+
+    tips = {
+        r["ref"]
+        for r in server.store.conn.execute(
+            "SELECT ref FROM ref_tips WHERE repo='alpha'"
+        )
+    }
+    assert "keep" in tips
+    assert not ({"drop-a", "drop-b"} & tips), (
+        f"a ref that left the work list must lose its watermark: {tips}"
+    )
+
+    env = call(server, "hive_recall", {"query": TEXT, "repos": ["alpha@drop-a"]})
+    hit = next(h for h in env["reference_context"] if h["episode_id"] == eid)
+    assert hit["drift"]["type"] == "unverifiable", hit["drift"]

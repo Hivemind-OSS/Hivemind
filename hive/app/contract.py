@@ -69,7 +69,8 @@ REMEDIATION_NOTICE: str = (
     "diagnose per BAD_VS_STALE: it has a SUCCESSOR (STALE) -> hive_supersede(loser, winner) or "
     "hive_write(replaces=...) carrying the corrected fact; it was wrong even when written "
     "(BAD) -> hive_prune(episode_id). Retirement is MACHINE-GATED: the server itself verifies "
-    "a qualifying machine signal for the target (anchor drift at the canonical tip, hurt "
+    "a qualifying machine signal for the target (anchor drift on the memory's own declared "
+    "line, hurt "
     "evidence from another identity or a verified outcome, mechanical contradiction) — an "
     "unqualified call is a benign no-op: nothing retired, never an error."
 )

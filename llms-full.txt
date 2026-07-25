@@ -89,8 +89,9 @@ Three principles follow, and every design decision serves them:
   memories never decay mechanically — retirement is their only exit. Retirement
   (`hive_supersede` / `hive_prune` / `hive_write(replaces=)`) is agent-called but
   **machine-gated**: the server retires the target only when it verifies a qualifying machine
-  signal itself — anchor drift at the canonical tip, hurt evidence from another identity or a
-  verified outcome, a mechanical contradiction, or (for supersede) a near-duplicate successor.
+  signal itself — anchor drift on the memory's OWN declared line (the canonical tip when it
+  named none), hurt evidence from another identity or a verified outcome, a mechanical
+  contradiction, or (for supersede) a near-duplicate successor.
   An unqualified call is a **benign no-op, never an error**: nothing is retired, the memory
   stays. `hive_flag` is advisory only and never qualifies the gate.
 
@@ -326,7 +327,7 @@ Everything runs through the `hive` CLI (it drives Docker Compose for you):
 | `hive token <seat>` | mint a per-seat token (printed once) |
 | `hive revoke <seat>` | offboard a seat (next request → 401) |
 | `hive repo add <url> [--name --branch --token-env]` | register a repo for the server-side census sync (picked up next tick; the registry stores env-var names, never a secret) |
-| `hive repo remove <name>` | deregister a repo (stops feeding; the mirror is pruned next tick, memory scope kept) |
+| `hive repo remove <name>` | deregister a repo (stops feeding; the mirror is pruned next tick; the feed state and every cache derived from it — watermarks, branch tips, drift verdicts — are dropped, memory scope kept) |
 | `hive repos` | list registered repos (names + urls; never a secret) |
 | `hive backup` | atomic snapshot of the store (manual; keeps the `backup_keep` most-recent) |
 | `hive ingest <receipt.json>` | feed an unsigned census receipt's change outcome into the append-only evidence ledger (the manual escape hatch — the sync daemon feeds registered repos itself; idempotent; refused receipts write zero rows; `--post-merge --verdict pass\|fail --signal randomized\|canary\|none` for rollout outcomes) |

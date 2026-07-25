@@ -21,6 +21,7 @@ from __future__ import annotations
 from typing import Any
 
 from hive.app.contract import BAD_VS_STALE, WRITE_VS_CAPTURE
+from hive.app.drift import WIRE_VERDICTS
 from hive.domain.kinds import KINDS, KIND_NAMES, QUERY_GUIDANCE
 
 # Compact call-adjacent guidance, PROJECTED from the registry so the advertised glosses
@@ -65,13 +66,23 @@ _ANCHORS_PROPERTY: dict[str, Any] = {
     "and judges drift per anchor; an unregistered repo refuses the call.",
 }
 
-# Repo-scope membership without a code anchor (write/capture): registered names only.
+# Repo-scope membership without a code anchor (write/capture): registered names,
+# optionally branch-qualified — the SAME grammar the WRITE_VS_CAPTURE directive
+# composed into these descriptions directs, spelled once here too so the schema
+# and the prose cannot disagree.
 _REPOS_PROPERTY: dict[str, Any] = {
     "type": "array",
     "items": {"type": "string"},
-    "description": "Repo scope without a code anchor: registered repo names. Omitted with "
-    "no anchors = a general (fleet-wide) memory.",
+    "description": "Repo scope without a code anchor: registered repo names, as "
+    "'name' or 'name@branch' when the memory is true only on that line. Omitted "
+    "with no anchors = a general (fleet-wide) memory.",
 }
+
+# The advertised drift vocabulary is PROJECTED from its one owner, never re-typed:
+# adding a member to hive.app.drift.WIRE_VERDICTS changes what agents are told in
+# the same edit. test_verdict_writer_coverage enforces the other direction (every
+# advertised member has a production writer), so I3 now holds both ways.
+_DRIFT_ENUM = " | ".join(WIRE_VERDICTS)
 
 # The eight hive_* verbs. Frozen via the module boundary; handlers read args
 # permissively (.get) so the ONLY required-field guard is _validate over this table.
@@ -141,8 +152,7 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
         "reference_context is []. Each hit carries trust ('established' = "
         "outcome-verified on the canonical line, 'provisional' = unverified), "
         "ts, polarity (do|dont|neutral), kind, repos, anchors ([{repo, "
-        "anchor}]), and drift (fresh | anchor_changed | anchor_missing | "
-        "blast_radius_changed | branch_scoped | unverifiable | n/a — most "
+        "anchor}]), and drift (" + _DRIFT_ENUM + " — most "
         "severe across its anchors; unverifiable is not judged, never proof of "
         "freshness). Treat a drifted hit as REFERENCE ONLY. " + QUERY_GUIDANCE,
         "inputSchema": {
