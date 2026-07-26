@@ -27,6 +27,7 @@ from pathlib import Path
 from hive.combdrift.resolution import fingerprint_anchor, resolve_anchor
 from hive.combdrift.types import (
     REASON_FILE_MISSING,
+    REASON_NO_FINGERPRINT,
     REASON_OK,
     REASON_PARSE_ERROR,
     REASON_SIGNATURE_CHANGED,
@@ -56,13 +57,16 @@ def _repo(make_repo, files: dict[str, str] | None = None, name: str = "repo") ->
     return make_repo(files or {"pkg/auth.c": _AUTH}, name=name)
 
 
-# --- found (fresh) ------------------------------------------------------------
+# --- found (existence) --------------------------------------------------------
 
 
 def test_c_function_definition_found_with_location(make_repo):
+    # No baseline fingerprint, so no shape comparison ever ran: the symbol
+    # resolves with its location, but `ok` would claim a comparison that
+    # never happened, so an uncompared callable reports no_fingerprint.
     res = resolve_anchor(_repo(make_repo), Anchor("pkg/auth.c", "refresh"))
     assert res.found is True
-    assert res.reason == REASON_OK
+    assert res.reason == REASON_NO_FINGERPRINT
     assert res.location == "pkg/auth.c:1"
 
 

@@ -23,11 +23,20 @@ pure verdict over feeds the boundary assembles:
                     through the manual ``hive ingest`` door — 1b protects
                     canonical-line memories, not branch-scoped ones.
                     Its VALUE, and why it is not redundant with 1a: 1a compares
-                    against a stored, server-minted carrier its own backfill can
-                    corrupt (BUG-071); 1b's baseline is re-derived by the census
-                    from the range's own base tree and cannot be. 1b is also the
-                    only clause that reaches a DEREGISTERED repo, and it is
-                    O(changed) where 1a is O(anchors × live tips)).
+                    against a stored, server-minted carrier whose baseline window
+                    is NARROWED but not closed. The backfill now defers any anchor
+                    the same tick's own receipt reported changed (BUG-071), so a
+                    break the server watched land can no longer be baselined away —
+                    but three windows remain: FIRST CONNECT (the daemon baselines
+                    at the remote tip and mints no historical receipt, so it has
+                    never observed the anchor's earlier state), the RADIUS tier
+                    (a neighbourhood can move without appearing in the receipt's
+                    touched subjects), and history from before the repo was
+                    registered at all. 1b's baseline is instead re-derived by the
+                    census from the range's own base tree and no backfill can
+                    corrupt it. 1b is also the only clause that reaches a
+                    DEREGISTERED repo, and it is O(changed) where 1a is
+                    O(anchors × live tips). A minimality pass must not delete it).
   2. **outcome**  — a server-written ``outcome_verified_hurt`` row; OR an agent-reported
                     ``outcome_hurt`` whose recorded actor ≠ the RETIRING caller (the
                     DemandRule identity-diversity clause applied to retirement: a

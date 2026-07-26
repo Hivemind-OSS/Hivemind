@@ -12,6 +12,15 @@ unresolvable anchors skip silently with the loop alive; the cap carries over;
 backfilled keys are BYTE-EQUAL to a direct edge mint on the same tree —
 asserted against a second real ``hive-edge mint`` subprocess, never a mock.
 
+The leg is DEPENDENT on the same tick's ledger leg, and that dependence is part
+of the contract pinned here: an anchor whose file THIS tick's own receipt
+reported changed is DEFERRED (baselining it from the post-change tree would
+record the changed shape as the reference and freeze the anchor ``fresh`` for a
+break that already landed), and a FAULTED ledger leg — the server then does not
+know what the range changed at all — skips the backfill leg WHOLE for that repo
+that tick. Both are transient: the anchor mints on the first tick whose range
+leaves its file alone, and until then its empty carrier reads ``unverifiable``.
+
 NOTE: the FROZEN suite (tests/contract/test_server_mint.py) imports
 ``direct_mint`` from this module — it may grow but never rename.
 """
@@ -28,7 +37,9 @@ from hive.app.census_health import census_health_report
 from tests.sync.conftest import (
     ANCHOR,
     REPO,
+    RecordingRun,
     anchor_fp,
+    completed,
     harness_env,
     make_service,
     meta,
@@ -43,6 +54,9 @@ META_BACKFILLED_TOTAL = f"sync:{REPO}:backfilled_total"
 FP_KEY = "combdrift/fp"
 SUBGRAPH_KEY = "matrix/subgraph_fp"
 PROVENANCE_KEY = "hive-sync/minted"
+# the seeded ``app.py::greet`` widened — a shape change the mint MUST see, so a
+# fingerprint taken from the wrong tree is caught byte-for-byte rather than by luck
+WIDENED_GREET = 'def greet(name, punct):\n    return "hi " + name + punct\n'
 
 
 def _edge_cli() -> str:
@@ -68,6 +82,13 @@ def direct_mint(repo: Path, anchor: str, home: Path) -> dict:
 def _armed(origin, store, tmp_path, **kw):
     register_repo(store, REPO, origin.url)
     return make_service(store, tmp_path, **kw)
+
+
+def _mint_spawns(calls) -> list[list[str]]:
+    """The ``hive-edge mint`` spawns among recorded argvs (argv[1] is the verb) —
+    how "the backfill leg did not run" is observed at the seam rather than inferred
+    from an empty carrier, which an unresolvable anchor would also produce."""
+    return [argv for argv in calls if argv[1:2] == ["mint"]]
 
 
 def test_fills_absent_carrier(origin, store, tmp_path):
@@ -166,21 +187,25 @@ def test_skips_unresolvable_silently_loop_alive(origin, store, tmp_path):
     assert meta(store, META_LAST_ERROR) is None
 
 
-def test_matches_edge_mint_at_the_moved_tip(origin, store, tmp_path):
+def test_matches_edge_mint_at_a_tip_the_range_left_alone(origin, store, tmp_path):
     """Byte-equivalence: the fp keys the backfill writes are EXACTLY what a direct
     edge mint yields on the same tree — including after the tip MOVES, so the
-    server must mint the TIP tree, never the clone-time checkout."""
+    server must mint the TIP tree, never the clone-time checkout.
+
+    The anchored file was widened in an EARLIER range (censused while no carrier
+    wanted filling, so the checkout never moved off the clone), and the range this
+    tick censuses touches an unrelated module only — so the anchor is mintable now
+    and the tree it is minted from is the only thing left under test."""
     svc = _armed(origin, store, tmp_path)
-    svc.tick()  # clone + baseline at seed tip
-    origin.commit(
-        "app.py",
-        'def greet(name, punct):\n    return "hi " + name + punct\n',
-        "widen greet",
-    )
+    svc.tick()  # clone + baseline at seed tip; the checkout IS that tree
+    origin.commit("app.py", WIDENED_GREET, "widen greet")
+    origin.push()
+    svc.tick()  # censused with no carriers to fill — the checkout stays behind
+    origin.commit("notes.py", "def note():\n    return 1\n", "add a note module")
     origin.push()
     tip = origin.origin_sha("refs/heads/main")
     eid = seed_episode(store, "greet growls on empty names")
-    svc.tick()  # fetch + backfill at the NEW tip
+    svc.tick()  # this range left app.py alone ⇒ mint, at the NEW tip
 
     reference = direct_mint(origin.work, ANCHOR, tmp_path / "edge-home-direct")
     assert reference, "the reference anchor must resolve"
@@ -189,6 +214,73 @@ def test_matches_edge_mint_at_the_moved_tip(origin, store, tmp_path):
         assert got[key] == value  # byte-equal, key by key
     assert got[PROVENANCE_KEY] == f"hive-sync-minted/1:server@{tip} main"
     assert meta(store, META_LAST_ERROR) is None
+
+
+def test_defers_an_anchor_the_same_range_changed(origin, store, tmp_path):
+    """An anchor whose file THIS tick's own receipt reported changed is NOT
+    baselined that tick: the fingerprint would record the post-change shape as the
+    reference and freeze the anchor ``fresh`` for a break the server had just
+    watched land. The carrier stays empty — ``unverifiable``, the honest unknown —
+    and this is a deferral, not a fault: no counter moves, no error is surfaced.
+
+    The deferral lifts on the first tick whose range leaves the file alone, and
+    what lands then is byte-equal to a direct edge mint at that same tip."""
+    svc = _armed(origin, store, tmp_path)
+    svc.tick()  # clone + baseline at seed tip
+    eid = seed_episode(store, "greet growls on empty names")
+    origin.commit("app.py", WIDENED_GREET, "widen greet")
+    origin.push()
+    tip = origin.origin_sha("refs/heads/main")
+    svc.tick()  # the censused range changed app.py ⇒ deferred
+
+    assert anchor_fp(store, eid) == {}
+    assert meta(store, META_BACKFILLED_TOTAL) is None
+    assert meta(store, META_LAST_ERROR) is None  # deferred, never faulted
+
+    svc.tick()  # a quiet range ⇒ the deferral lifts
+    reference = direct_mint(origin.work, ANCHOR, tmp_path / "edge-home-direct")
+    assert reference, "the reference anchor must resolve"
+    got = anchor_fp(store, eid)
+    for key, value in reference.items():
+        assert got[key] == value  # byte-equal, key by key
+    assert got[PROVENANCE_KEY] == f"hive-sync-minted/1:server@{tip} main"
+    assert meta(store, META_BACKFILLED_TOTAL) == "1"
+    assert meta(store, META_LAST_ERROR) is None
+
+
+def test_ledger_fault_skips_the_whole_backfill_leg(origin, store, tmp_path):
+    """A faulted ledger leg means the server does not know what the range changed
+    AT ALL, so no anchor of that repo may be baselined from that tree — the leg is
+    skipped whole, not merely run without deferrals. Nothing is minted (observed at
+    the spawn seam), the carrier stays empty, and the fault surfaces on THIS repo's
+    own error key; the next clean tick censuses the same range and mints."""
+    broken = [False]
+    run = RecordingRun(
+        [
+            (
+                lambda argv: broken[0] and "hive.census.cli" in argv,
+                completed(rc=1, stderr="census build broken"),
+            )
+        ]
+    )
+    svc = _armed(origin, store, tmp_path, run=run)
+    svc.tick()  # clone + baseline at seed tip — clean
+    eid = seed_episode(store, "greet growls on empty names")
+    origin.commit("notes.py", "def note():\n    return 1\n", "add a note module")
+    origin.push()
+    spawns_before = len(run.calls)
+    broken[0] = True
+    svc.tick()  # the build breaks → ledger-leg fault → no backfill at all
+
+    assert _mint_spawns(run.calls[spawns_before:]) == []
+    assert anchor_fp(store, eid) == {}
+    assert meta(store, META_BACKFILLED_TOTAL) is None
+    assert meta(store, META_LAST_ERROR).startswith("ledger:")
+
+    broken[0] = False
+    svc.tick()  # repaired: the range censuses, and the anchor it spared mints
+    assert FP_KEY in anchor_fp(store, eid)
+    assert meta(store, META_BACKFILLED_TOTAL) == "1"
 
 
 def test_deprecated_anchors_carrier_is_not_backfilled(origin, store, tmp_path):

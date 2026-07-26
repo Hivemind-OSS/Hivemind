@@ -9,9 +9,28 @@ from hive.combdrift.types import Anchor
 from hive.combdrift.verdict import verify_record
 
 
+def _current_anchor(repo: str, path: str, symbol: str) -> tuple[str, str, str]:
+    """Anchor triple carrying a real minted baseline, so it can verdict `current`.
+
+    A found callable with NO recorded fingerprint is unverifiable — its shape was
+    never compared — so any anchor a test needs to be current must first be made
+    measurable against the working tree it will be verified in.
+    """
+    token = fingerprint_anchor(repo, Anchor(path, symbol))
+    assert token is not None  # the fixture symbol must be a single mintable callable
+    return (path, symbol, token)
+
+
 def test_verify_record_all_found_is_current(tmp_repo: Path, make_record):
-    rec = make_record("m1", ("pkg/auth.py", "refresh"), ("pkg/parser.py", "parse"))
-    rv = verify_record(str(tmp_repo), rec)
+    # Both anchors carry a minted baseline: `current` is a claim that a shape
+    # comparison actually ran, not merely that the symbols still exist.
+    repo = str(tmp_repo)
+    rec = make_record(
+        "m1",
+        _current_anchor(repo, "pkg/auth.py", "refresh"),
+        _current_anchor(repo, "pkg/parser.py", "parse"),
+    )
+    rv = verify_record(repo, rec)
     assert rv.id == "m1"
     assert rv.verdict == "current"
     assert all(a.found for a in rv.anchors)
@@ -81,10 +100,12 @@ def test_verify_record_precedence_unverifiable_dominates_stale(
 
 
 def test_verify_record_precedence_stale_dominates_current(tmp_repo: Path, make_record):
-    # One found anchor + one missing-symbol anchor -> stale (not current).
+    # One current anchor + one missing-symbol anchor -> stale (not current). The
+    # current anchor is fingerprinted so it contributes a genuine current signal;
+    # bare, it would raise the record to unverifiable and hide the precedence.
     rec = make_record(
         "m8",
-        ("pkg/auth.py", "refresh"),  # found
+        _current_anchor(str(tmp_repo), "pkg/auth.py", "refresh"),  # current
         ("pkg/auth.py", "gone"),  # stale-signal
     )
     rv = verify_record(str(tmp_repo), rec)
@@ -117,6 +138,28 @@ def test_verify_record_preserves_anchor_order(tmp_repo: Path, make_record):
 
 
 # --- Layer B: fingerprint drift verdicts --------------------------------------
+
+
+def test_found_but_unfingerprinted_is_unverifiable_not_current(
+    tmp_repo: Path, make_record
+):
+    # The recorded baseline is the ONLY difference between the two records here.
+    # Resolving a symbol proves it exists, not that its call shape still fits, so
+    # an uncompared callable abstains; it earns `current` once a comparison runs.
+    repo = str(tmp_repo)
+    bare = make_record("nofp", ("pkg/auth.py", "refresh"), ("pkg/parser.py", "parse"))
+    rv = verify_record(repo, bare)
+    assert rv.verdict == "unverifiable"
+    assert all(a.found for a in rv.anchors)  # existence proven, shape unknown
+    assert [a.reason for a in rv.anchors] == ["no_fingerprint", "no_fingerprint"]
+    assert [a.location for a in rv.anchors] == ["pkg/auth.py:4", "pkg/parser.py:1"]
+
+    minted = make_record(
+        "fp",
+        _current_anchor(repo, "pkg/auth.py", "refresh"),
+        _current_anchor(repo, "pkg/parser.py", "parse"),
+    )
+    assert verify_record(repo, minted).verdict == "current"
 
 
 def test_py_fingerprint_capture_then_unchanged_is_current(tmp_repo: Path, make_record):
@@ -177,8 +220,15 @@ def test_fingerprint_version_mismatch_dominates_signature_changed(
 
 
 def test_verify_ts_record_all_found_is_current(tmp_ts_repo: Path, make_record):
-    rec = make_record("t1", ("src/auth.ts", "refresh"), ("src/component.tsx", "Button"))
-    assert verify_record(str(tmp_ts_repo), rec).verdict == "current"
+    # Minted baselines, as for Python: a TS callable is current because its shape
+    # was compared, not merely because the declaration is still there.
+    repo = str(tmp_ts_repo)
+    rec = make_record(
+        "t1",
+        _current_anchor(repo, "src/auth.ts", "refresh"),
+        _current_anchor(repo, "src/component.tsx", "Button"),
+    )
+    assert verify_record(repo, rec).verdict == "current"
 
 
 def test_verify_ts_truly_absent_symbol_is_stale(tmp_ts_repo: Path, make_record):
@@ -194,8 +244,11 @@ def test_verify_ts_interface_is_unverifiable(tmp_ts_repo: Path, make_record):
 
 
 def test_verify_ts_found_despite_error_is_current(tmp_ts_repo: Path, make_record):
-    rec = make_record("t3", ("src/broken.ts", "good"))
-    assert verify_record(str(tmp_ts_repo), rec).verdict == "current"
+    # A symbol declared cleanly ahead of the file's syntax error still mints and
+    # compares, so error recovery costs it nothing.
+    repo = str(tmp_ts_repo)
+    rec = make_record("t3", _current_anchor(repo, "src/broken.ts", "good"))
+    assert verify_record(repo, rec).verdict == "current"
 
 
 def test_verify_ts_error_region_symbol_is_unverifiable(tmp_ts_repo: Path, make_record):
@@ -220,8 +273,15 @@ def test_verify_unsupported_dominates_stale(tmp_ts_repo: Path, make_record):
 
 
 def test_verify_mixed_python_and_ts_record_is_current(tmp_ts_repo: Path, make_record):
-    rec = make_record("t7", ("src/auth.ts", "refresh"), ("src/legacy.py", "old"))
-    assert verify_record(str(tmp_ts_repo), rec).verdict == "current"
+    # One record spanning two languages: both anchors compare against a minted
+    # baseline, so the cross-language record is current on measured evidence.
+    repo = str(tmp_ts_repo)
+    rec = make_record(
+        "t7",
+        _current_anchor(repo, "src/auth.ts", "refresh"),
+        _current_anchor(repo, "src/legacy.py", "old"),
+    )
+    assert verify_record(repo, rec).verdict == "current"
 
 
 # --- schema verdicts ----------------------------------------------------------

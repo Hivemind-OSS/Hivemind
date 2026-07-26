@@ -16,6 +16,7 @@ from hive.combdrift.symbols import SymbolLookup
 from hive.combdrift.types import (
     REASON_FILE_MISSING,
     REASON_FINGERPRINT_VERSION_MISMATCH,
+    REASON_NO_FINGERPRINT,
     REASON_NO_SYMBOL_REQUESTED,
     REASON_OK,
     REASON_PARSE_ERROR,
@@ -204,12 +205,34 @@ def _to_anchor_result(
         )
     location = f"{source_path}:{lookup.lineno}"
     if anchor.fingerprint is None:
+        if lookup.interface is None:
+            # No comparable call shape EXISTS for this symbol — a declared-schema
+            # anchor carries no Layer-B fingerprint at all, and an overload set has
+            # no single interface — so nothing was withheld: existence is the whole
+            # claim this binding ever made, exactly as for a file-scoped anchor.
+            # (With a fingerprint RECORDED the direction flips: a shape claim we
+            # cannot evaluate abstains, in _compare_fingerprint's own branch. What
+            # decides the tier is whether a claim exists, not whether a comparison
+            # ran.)
+            return AnchorResult(
+                path=anchor.path,
+                symbol=anchor.symbol,
+                found=True,
+                location=location,
+                reason=REASON_OK,
+            )
+        # // marker: reporting REASON_OK here (the pre-fix behaviour) is a mutation —
+        # `ok` reads as `current` and serves as `fresh`, a positive claim about a
+        # comparison that never ran, on a symbol whose shape COULD have been
+        # compared. `found`/`location` stay populated exactly as in
+        # _compare_fingerprint's branches: the symbol exists; only its shape is
+        # unknown. A file-scoped anchor is untouched above — existence IS its claim.
         return AnchorResult(
             path=anchor.path,
             symbol=anchor.symbol,
             found=True,
             location=location,
-            reason=REASON_OK,
+            reason=REASON_NO_FINGERPRINT,
         )
     return _compare_fingerprint(anchor, lookup, location)
 

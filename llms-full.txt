@@ -142,7 +142,9 @@ carry no special field — retirement is adjudicated server-side by the machine 
 `polarity` ∈ `{do, dont, neutral}`. Both are carried-not-interpreted labels that ride every hit
 but are **not** recall filters — recall matches the body text, so put the discriminating terms
 there. Code binding is structured: `anchors=[{repo, anchor}]` — `repo` a **registered** repo
-name (an unregistered name refuses the call), `anchor` the WHERE as `path/file.py::symbol`;
+name (an unregistered name refuses the call), `anchor` the WHERE as `path/file.py::symbol` — the
+separator is `::`, and a single-colon anchor refuses the call too, because it matches no code
+change and the memory could never be outcome-verified; a bare `path/file.py` binds file-scoped.
 `repos=[...]` gives repo scope without a code anchor; neither = a general, fleet-wide memory.
 The server mints fingerprints and judges drift per anchor — callers never supply fingerprint
 material. `meta` is an optional opaque string map, served back verbatim, never interpreted.

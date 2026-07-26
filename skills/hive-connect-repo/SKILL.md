@@ -152,11 +152,18 @@ hive_write(
 )
 ```
 
-> **The separator is `::`, not `:`.** `path/file.py::Symbol` binds at the precise symbol tier;
-> a bare `path/file.py` binds file-scoped. Both are correct. A **single** colon
-> (`path/file.py:Symbol`) is not: drift still reports on it, so it looks fine, but it never
-> joins the census subject feed — that memory can never be outcome-verified, never reaches
-> `established`, and expires at the provisional TTL while still being true.
+> **The separator is `::`, not `:`, and the server now REFUSES the wrong form.**
+> `path/file.py::Symbol` binds at the precise symbol tier; a bare `path/file.py` binds
+> file-scoped. Both are correct. A **single** colon (`path/file.py:Symbol`) is not, and the write
+> returns a `status="refused"` envelope naming the clause — nothing is stored, so fix the anchor
+> and write again. The refusal exists because such an anchor never joins the census subject feed:
+> drift would still report on it, so it would look fine, while the memory could never be
+> outcome-verified, never reach `established`, and would expire at the provisional TTL while still
+> being true. Also refused, for the same reason: `path/file.py::` (a separator naming no symbol —
+> drop the `::` to bind the file) and `path/file.py::42` (a line number is not a symbol).
+> Memories written in the old form BEFORE this gate landed keep serving and keep a real drift
+> verdict; re-bind one with `hive_write(replaces=<id>, anchors=[{...canonical...}])` when you
+> next touch it.
 
 Wait one poll interval, then:
 

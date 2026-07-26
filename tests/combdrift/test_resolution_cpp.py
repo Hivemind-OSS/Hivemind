@@ -33,6 +33,7 @@ from hive.combdrift.resolution import fingerprint_anchor, resolve_anchor
 from hive.combdrift.types import (
     REASON_FILE_MISSING,
     REASON_FINGERPRINT_VERSION_MISMATCH,
+    REASON_NO_FINGERPRINT,
     REASON_OK,
     REASON_PARSE_ERROR,
     REASON_SIGNATURE_CHANGED,
@@ -75,13 +76,16 @@ def _repo(make_repo, files: dict[str, str] | None = None, name: str = "repo") ->
     return make_repo(files or {"pkg/auth.cpp": _AUTH}, name=name)
 
 
-# --- found (fresh) ------------------------------------------------------------
+# --- found (existence) --------------------------------------------------------
 
 
 def test_cpp_free_function_found_with_location(make_repo):
+    # A single unambiguous declaration HAS a comparable shape, but no baseline
+    # fingerprint was minted here, so nothing was compared: the symbol resolves
+    # with its location, and the uncompared shape reports no_fingerprint.
     res = resolve_anchor(_repo(make_repo), Anchor("pkg/auth.cpp", "refresh"))
     assert res.found is True
-    assert res.reason == REASON_OK
+    assert res.reason == REASON_NO_FINGERPRINT
     assert res.location == "pkg/auth.cpp:1"
 
 

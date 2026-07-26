@@ -60,9 +60,12 @@ print(summary.current, summary.stale, summary.unverifiable)
 
 ## Verdicts
 
-- `current` — every anchor resolves: the file exists and, if a symbol is given,
-  it resolves as a callable and (when a fingerprint is recorded) its call shape
-  is unchanged or only additively changed.
+- `current` — every anchor resolves AND every claim it makes was actually
+  measured: the file exists and, if a symbol is given, it resolves as a callable
+  and its call shape is unchanged or only additively changed against the recorded
+  fingerprint. A symbol whose shape COULD have been compared but for which no
+  fingerprint was supplied is **not** current — it is `unverifiable`
+  (`no_fingerprint`), because `current` is a positive claim.
 - `stale` — at least one anchor is provably broken: its file or symbol is gone
   (the name is bound nowhere in a cleanly-parsed file, including a symbol deleted
   at the source of a re-export Comb-Drift follows), or a recorded interface
@@ -72,8 +75,10 @@ print(summary.current, summary.stale, summary.unverifiable)
   cannot be parsed or its language is unsupported, the symbol is present only
   indirectly (a re-export Comb-Drift cannot follow — a wildcard/barrel, a bare or
   absolute specifier, or a further hop — a data/type declaration, or a nested or
-  possibly-inherited definition), or a recorded fingerprint cannot be compared
-  (a future version, or an overloaded symbol).
+  possibly-inherited definition), a recorded fingerprint cannot be compared
+  (a future version, or an overloaded symbol), or a symbol that DOES have a
+  comparable call shape carries no recorded fingerprint at all, so nothing was
+  compared.
 
 Precedence (one source of truth): `unverifiable` > `stale` > `current`.
 
@@ -164,9 +169,12 @@ single in-repo target. The following are **not** followed and remain
 ## Interface fingerprints (call-shape drift)
 
 Symbol existence alone misses a whole class of staleness: a memory like "`parse`
-takes three arguments" stays *current* by existence even after `parse` drops an
-argument. An optional, opt-in interface fingerprint closes that gap without ever
-risking a false `stale`.
+takes three arguments" is not contradicted by existence at all — `parse` can drop
+an argument and still resolve. An interface fingerprint closes that gap without
+ever risking a false `stale`. It is opt-in in the sense that a caller need not
+supply one; the consequence of not supplying one is that the shape claim is
+reported as **unverifiable** (`no_fingerprint`) rather than silently passing as
+`current` — existence answers a question the memory did not ask.
 
 The flow has two halves:
 
@@ -405,12 +413,26 @@ AnchorResult(path: str, symbol: str | None, found: bool,
              location: str | None, reason: str)
 ```
 `location` is e.g. `"pkg/auth.py:42"` when found, else `None` — but it stays
-populated for `signature_changed`, where the symbol exists and only its shape
-drifted, and points at the **source** file when a re-export was followed.
+populated for `signature_changed` and `no_fingerprint`, where the symbol exists
+and only its shape is in question, and points at the **source** file when a
+re-export was followed.
 `reason` is a machine-stable code, optionally with a `: <detail>`
-suffix — one of: `ok`, `no_symbol_requested`, `file_missing`, `symbol_missing`,
-`symbol_indirect`, `signature_changed`, `fingerprint_version_mismatch`,
-`path_outside_repo`, `parse_error`, `unsupported_language`.
+suffix — one of: `ok`, `no_fingerprint`, `no_symbol_requested`, `file_missing`,
+`symbol_missing`, `symbol_indirect`, `signature_changed`,
+`fingerprint_version_mismatch`, `path_outside_repo`, `parse_error`,
+`unsupported_language`.
+
+`no_fingerprint` routes to **unverifiable**: the symbol was found but NO recorded
+fingerprint was supplied, so its call shape was never compared. Reporting `ok`
+there would classify `current` — a positive claim about a comparison that did not
+happen. Two arms deliberately keep `ok` without a fingerprint, because for them
+existence *is* the whole claim: a file-scoped anchor (`symbol is None`, which
+reports `no_symbol_requested`), and a symbol for which no comparable call shape
+exists at all — a declared-schema anchor (`.sql` / `*.schema.json`, which carry no
+Layer-B interface) or an overload set. The rule is whether a shape CLAIM exists
+that could not be evaluated, not whether an evaluation ran: with a fingerprint
+recorded AND no single interface, the direction flips back to
+`fingerprint_version_mismatch` (unverifiable) in the comparison branch.
 
 ```python
 RecordVerdict(id: str, verdict: Verdict, anchors: tuple[AnchorResult, ...])

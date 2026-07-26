@@ -23,6 +23,7 @@ from pathlib import Path
 from hive.combdrift.resolution import fingerprint_anchor, resolve_anchor
 from hive.combdrift.types import (
     REASON_FILE_MISSING,
+    REASON_NO_FINGERPRINT,
     REASON_OK,
     REASON_PARSE_ERROR,
     REASON_SIGNATURE_CHANGED,
@@ -59,13 +60,16 @@ def _repo(make_repo, files: dict[str, str] | None = None, name: str = "repo") ->
     return make_repo(files or {"pkg/auth.rs": _AUTH}, name=name)
 
 
-# --- found (fresh) ------------------------------------------------------------
+# --- found (existence) --------------------------------------------------------
 
 
 def test_rust_function_found_with_location(make_repo):
+    # No baseline fingerprint, so no shape comparison ever ran: the symbol
+    # resolves with its location, but `ok` would claim a comparison that
+    # never happened, so an uncompared callable reports no_fingerprint.
     res = resolve_anchor(_repo(make_repo), Anchor("pkg/auth.rs", "refresh"))
     assert res.found is True
-    assert res.reason == REASON_OK
+    assert res.reason == REASON_NO_FINGERPRINT
     assert res.location == "pkg/auth.rs:1"
 
 
@@ -271,8 +275,11 @@ def test_rust_unrelated_edit_is_not_stale(make_repo):
 # --- pub use re-export follow (the Rust mirror of JS/TS `export … from`) -------
 
 
-def test_rust_follow_relative_reexport_to_found_is_current(make_repo):
+def test_rust_follow_relative_reexport_to_found_locates_the_source(make_repo):
     # `pub use self::core::parse` follows to the submodule file src/api/core.rs.
+    # The hop lands on a real callable, so the anchor resolves; it carries no
+    # baseline fingerprint, so the followed shape was never compared and the
+    # result reports no_fingerprint rather than a positive `ok`.
     repo = make_repo(
         {
             "src/api.rs": "pub use self::core::parse;\n",
@@ -281,7 +288,7 @@ def test_rust_follow_relative_reexport_to_found_is_current(make_repo):
     )
     res = resolve_anchor(repo, Anchor("src/api.rs", "parse"))
     assert res.found is True
-    assert res.reason == REASON_OK
+    assert res.reason == REASON_NO_FINGERPRINT
     assert res.location == "src/api/core.rs:1"  # points at the SOURCE declaration
 
 

@@ -115,6 +115,17 @@ def _fp(repo: Path, anchor: str = _ANCHOR) -> str:
     return out["matrix/subgraph_fp"]
 
 
+def _anchor_fp(repo: Path, anchor: str = _ANCHOR) -> str:
+    """The ANCHOR tier's own interface fingerprint, minted from the current tree — the `--fp`
+    every radius test stores beside its subgraph token. An anchor carrying no fingerprint has
+    no call shape to compare against, so it reads `unverifiable`; only a genuinely COMPARED
+    anchor reads `current`, which is what the radius tier must be shown not to move."""
+    path, symbol = cli._split_anchor(anchor)
+    token = combdrift.fingerprint_anchor(str(repo), combdrift.Anchor(path, symbol))
+    assert isinstance(token, str), f"no interface fingerprint for {anchor}"
+    return token
+
+
 def _tokens(repo: Path, anchor: str = _ANCHOR) -> list[str]:
     graph = cli._load_graph(str(repo))
     assert graph is not None
@@ -457,6 +468,10 @@ def test_verify_radius_works_for_natural_anchor_on_single_root_repo(
     # advisory radius.
     anchor = "src/two.py:beta"
     token = _fp(single_root_repo, anchor)
+    # Both tiers store a real token: beta's own call shape (so `current` is a COMPARED
+    # verdict) beside its neighborhood fp. The edit below moves only alpha — beta's shape
+    # is untouched — so the anchor tier holds while the radius tier flips.
+    fp = _anchor_fp(single_root_repo, anchor)
     code, out, _ = _run(
         [
             "verify",
@@ -464,6 +479,8 @@ def test_verify_radius_works_for_natural_anchor_on_single_root_repo(
             str(single_root_repo),
             "--anchor",
             anchor,
+            "--fp",
+            fp,
             "--subgraph-fp",
             token,
         ],
@@ -480,6 +497,8 @@ def test_verify_radius_works_for_natural_anchor_on_single_root_repo(
             str(single_root_repo),
             "--anchor",
             anchor,
+            "--fp",
+            fp,
             "--subgraph-fp",
             token,
         ],
@@ -494,7 +513,10 @@ def test_verify_radius_works_for_natural_anchor_on_single_root_repo(
 
 
 def test_verify_radius_current_when_neighborhood_unchanged(graph_repo, capsys):
+    # The stored `--fp` is mid_fn's real call shape, so `current` is a verdict the anchor
+    # tier actually COMPUTED rather than the absence of anything to compare.
     token = _fp(graph_repo)
+    fp = _anchor_fp(graph_repo)
     code, out, _ = _run(
         [
             "verify",
@@ -502,6 +524,8 @@ def test_verify_radius_current_when_neighborhood_unchanged(graph_repo, capsys):
             str(graph_repo),
             "--anchor",
             _ANCHOR,
+            "--fp",
+            fp,
             "--subgraph-fp",
             token,
         ],
@@ -525,6 +549,9 @@ def test_verify_radius_changed_when_dependency_changes_and_anchor_still_current(
     # two are separate channels: a changed neighborhood does not mean the memory is wrong,
     # so no remediation (and no notice text) rides the verify output.
     token = _fp(graph_repo)
+    # mid_fn's own shape is stored too, so the anchor tier COMPARES it against the post-edit
+    # tree and finds it unmoved — the edit lands on helper, never on mid_fn's signature.
+    fp = _anchor_fp(graph_repo)
     _edit(graph_repo, "pkg/svc.py", "def helper(x):", "def helper(x, y=0):")
     code, out, _ = _run(
         [
@@ -533,6 +560,8 @@ def test_verify_radius_changed_when_dependency_changes_and_anchor_still_current(
             str(graph_repo),
             "--anchor",
             _ANCHOR,
+            "--fp",
+            fp,
             "--subgraph-fp",
             token,
         ],
@@ -549,14 +578,16 @@ def test_verify_radius_key_omitted_without_stored_token(
     graph_repo, capsys, monkeypatch
 ):
     # An old memory carries no subgraph token: the output shape must be byte-identical to
-    # the pre-radius contract — no radius key, and NO graph work paid at all.
+    # the pre-radius contract — no radius key, and NO graph work paid at all. It still
+    # carries the anchor's own fingerprint, so `current` is the compared verdict.
+    fp = _anchor_fp(graph_repo)
     monkeypatch.setattr(
         cli,
         "_load_graph",
         lambda repo: pytest.fail("graph loaded with no stored token"),
     )
     code, out, _ = _run(
-        ["verify", "--repo", str(graph_repo), "--anchor", _ANCHOR], capsys
+        ["verify", "--repo", str(graph_repo), "--anchor", _ANCHOR, "--fp", fp], capsys
     )
     assert code == 0
     assert out["verdict"] == "current"
@@ -567,6 +598,7 @@ def test_verify_radius_key_omitted_when_recompute_fails(
     graph_repo, capsys, monkeypatch
 ):
     stored = f"matrix-subgraph-fp/1:{'0' * 64}"
+    fp = _anchor_fp(graph_repo)  # the anchor tier's answer must be a COMPARED `current`
     # A dead graph engine yields {} from the fp core: the key is OMITTED — never a bogus
     # "changed" — and the anchor tier still answers (fail-open, bias toward keep).
     monkeypatch.setattr(cli, "_load_graph", lambda repo: None)
@@ -577,6 +609,8 @@ def test_verify_radius_key_omitted_when_recompute_fails(
             str(graph_repo),
             "--anchor",
             _ANCHOR,
+            "--fp",
+            fp,
             "--subgraph-fp",
             stored,
         ],
@@ -610,6 +644,7 @@ def test_verify_radius_omitted_when_reader_is_ahead_of_stored_token(
     # INCOMPARABLE — the radius key is OMITTED (silence), NEVER a false `changed` on
     # every old memory — and the expensive graph recompute is not even attempted.
     token = _fp(graph_repo)  # a real v1 token, minted pre-bump
+    fp = _anchor_fp(graph_repo)  # the anchor tier's own shape — unaffected by the bump
     monkeypatch.setattr(cli, "SUBGRAPH_FP_VERSION", "2")
     monkeypatch.setattr(
         cli,
@@ -623,6 +658,8 @@ def test_verify_radius_omitted_when_reader_is_ahead_of_stored_token(
             str(graph_repo),
             "--anchor",
             _ANCHOR,
+            "--fp",
+            fp,
             "--subgraph-fp",
             token,
         ],
@@ -638,6 +675,7 @@ def test_verify_radius_omitted_on_future_version_token(graph_repo, capsys):
     # The mirror direction: a FUTURE token (minted by a newer edge) under the real
     # reader is equally incomparable — omit, never compare across versions.
     stored = "matrix-subgraph-fp/999:deadbeef"
+    fp = _anchor_fp(graph_repo)  # the anchor tier answers on its own compared token
     code, out, _ = _run(
         [
             "verify",
@@ -645,6 +683,8 @@ def test_verify_radius_omitted_on_future_version_token(graph_repo, capsys):
             str(graph_repo),
             "--anchor",
             _ANCHOR,
+            "--fp",
+            fp,
             "--subgraph-fp",
             stored,
         ],
@@ -657,7 +697,9 @@ def test_verify_radius_omitted_on_future_version_token(graph_repo, capsys):
 
 def test_verify_radius_omitted_on_malformed_subgraph_token(graph_repo, capsys):
     # A malformed stored token (no recognized prefix / no version) has no envelope to
-    # read: omit the radius; the anchor verdict/reason are untouched.
+    # read: omit the radius; the anchor verdict/reason are untouched — and they are a real
+    # comparison against the anchor's own stored shape.
+    fp = _anchor_fp(graph_repo)
     code, out, _ = _run(
         [
             "verify",
@@ -665,6 +707,8 @@ def test_verify_radius_omitted_on_malformed_subgraph_token(graph_repo, capsys):
             str(graph_repo),
             "--anchor",
             _ANCHOR,
+            "--fp",
+            fp,
             "--subgraph-fp",
             "garbage",
         ],

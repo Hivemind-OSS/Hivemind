@@ -43,6 +43,7 @@ import json
 from dataclasses import dataclass
 from typing import Any, Callable, Optional, Sequence
 
+from hive.domain.anchor_grammar import split_anchor
 from hive.domain.evidence_kinds import (
     EK_CHANGE_OUTCOME,
     EK_OUTCOME_VERIFIED_HELPED,
@@ -170,7 +171,14 @@ class IngestReport:
     the batch (mirroring ``matched``'s join-level semantics) — a re-ingest keeps the
     counts while ``already_recorded`` absorbs the skips. ``range_skipped`` True means
     the range ledger absorbed the whole receipt BEFORE any join/render — every other
-    field is then zero (nothing was done)."""
+    COUNT is then zero (nothing was done).
+
+    ``touched_paths`` is the exception, and deliberately so: it is not a count of
+    work DONE, it is a statement of what the range CONTAINED — the repo-relative
+    paths of the receipt's joinable subjects. The sync daemon reads it to defer
+    baselining an anchor whose file the same tick just watched change (BUG-071), so
+    a range-skipped report that reported nothing touched would silently reopen the
+    exact window the deferral exists to close. Both return sites populate it."""
 
     inserted: tuple[int, ...]
     already_recorded: int
@@ -182,6 +190,7 @@ class IngestReport:
     verify_stale: int = 0
     stale_suspects: int = 0
     range_skipped: bool = False
+    touched_paths: frozenset[str] = frozenset()
 
 
 # ── parsing (D8: .get() + coerce everywhere; refuse the receipt, never crash) ──
@@ -537,13 +546,18 @@ def _anchor_match_level(
     (the most precise tier wins); ``file`` when an anchor names exactly the
     subject's path (file-scoped — the path alone matches); None otherwise.
     A symbol-scoped anchor naming a DIFFERENT symbol never matches
-    (precision-first under-claim, unchanged from the free-text era)."""
+    (precision-first under-claim, unchanged from the free-text era).
+
+    The tokenization is NOT re-spelled here: ``split_anchor`` is the one owner the
+    write gate validates against, so what the boundary accepts and what this joins
+    cannot fork (BUG-077). An empty symbol is file-scoped, so ``"a.py::"`` falls to
+    the file tier exactly as it did under the inline partition."""
     best: Optional[str] = None
     for anchor in anchors:
-        path, sep, symbol = anchor.partition("::")
+        path, symbol = split_anchor(anchor)
         if path != subject.path:
             continue
-        if sep and symbol:
+        if symbol:
             if symbol == subject.symbol:
                 return "symbol"
             continue  # names a different symbol: no match
@@ -790,6 +804,10 @@ class ChangeEvidenceService:
         else:
             raise ValueError(f"unknown phase {phase!r}")
         subjects, skipped_lines = touched_subjects(lines)
+        # What the range CONTAINED — computed BEFORE the range-ledger check so both
+        # return sites can carry it (a range the manual ingest door already absorbed
+        # still changed exactly these paths).
+        touched_paths = frozenset(subject.path for subject in subjects)
         # The measured line + repo identity: provenance.ref / provenance.repo. D8 at
         # the boundary — a non-string/absent value coerces to "" (no key rides).
         ref_raw = provenance.get("ref")
@@ -817,12 +835,16 @@ class ChangeEvidenceService:
         if self._ranges is not None and self._ranges.already_ingested_range(
             outcome.repo, outcome.base_sha, outcome.head_sha, phase
         ):
+            # marker: returning an EMPTY touched_paths here is a mutation — the
+            # daemon would learn nothing changed for a range the manual door
+            # absorbed, and baseline an anchor at the post-break tip anyway.
             return IngestReport(
                 inserted=(),
                 already_recorded=0,
                 matched=0,
                 skipped_lines=0,
                 range_skipped=True,
+                touched_paths=touched_paths,
             )
         anchored = self._reader.anchored_episodes()  # v3: (id, repo, anchor, polarity)
         polarity_by_id = {int(row[0]): row[3] for row in anchored}
@@ -942,4 +964,5 @@ class ChangeEvidenceService:
             verify_current=counts[EK_VERIFY_CURRENT],
             verify_stale=counts[EK_VERIFY_STALE],
             stale_suspects=stale_suspects,
+            touched_paths=touched_paths,
         )

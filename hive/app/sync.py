@@ -26,6 +26,12 @@ verdict, less wall-clock):
   fleet-wide, so server-backfilled keys stay byte-equal to edge-minted ones —
   and merged under the store's absent-only guard with ``hive-sync/minted``
   provenance. ``{}``/nonzero/unparseable ⇒ silent skip; capped, carried over.
+  An anchor the LEDGER leg just reported changed is DEFERRED rather than minted:
+  its baseline would record the post-change shape as the reference and freeze
+  `fresh` for a break that already landed. The two legs are therefore dependent
+  by correctness — the ledger leg RETURNS what its range touched, and a ledger
+  FAULT skips this leg for that repo this tick (an empty carrier reads
+  ``unverifiable``, the honest unknown, and the next tick retries).
 - DRIFT MATERIALIZER: per (repo, tip, anchor) wire verdicts into the
   ``anchor_drift`` cache — a worktree at the tip, ``hive-edge verify`` per
   anchor with the stored fingerprints, the output mapped through
@@ -119,6 +125,7 @@ from hive.app.sync_keys import (
     last_sync_ts_key,
     tracked_ref_key,
 )
+from hive.domain.anchor_grammar import split_anchor
 from hive.domain.change_evidence import ChangeEvidenceService
 from hive.domain.meta import token_version
 
@@ -398,16 +405,22 @@ class SyncService:
             self._note_repo_error(row.name, "mirror", exc, token)
             return False
         ok = True
+        # None = the ledger leg faulted, so the server does NOT know what this range
+        # changed. The legs are deliberately dependent: minting a baseline from a
+        # tree whose changes are unknown is exactly the false-fresh BUG-071 closes,
+        # so the backfill is skipped for this repo this tick (carriers stay empty ⇒
+        # `unverifiable` ⇒ retried next tick). The drift leg is unaffected.
+        changed_paths: Optional[frozenset[str]] = None
         try:
-            self._ledger_leg(row, mirror, branch, prev_local)
+            changed_paths = self._ledger_leg(row, mirror, branch, prev_local)
         except Exception as exc:  # noqa: BLE001 — the leg fails open too
             self._note_repo_error(row.name, "ledger", exc, token)
             ok = False
         tip = None
         try:
             tip = self._rev(mirror, f"refs/remotes/origin/{branch}")
-            if tip is not None:
-                self._backfill(row, mirror, tip, branch)
+            if tip is not None and changed_paths is not None:
+                self._backfill(row, mirror, tip, branch, changed_paths=changed_paths)
         except Exception as exc:  # noqa: BLE001 — the leg fails open too
             self._note_repo_error(row.name, "backfill", exc, token)
             ok = False
@@ -588,7 +601,13 @@ class SyncService:
     # ── the ledger leg: watermark..tip → ONE post_merge receipt ────────────────
     def _ledger_leg(
         self, row: _RegistryRow, mirror: Path, branch: str, prev_local: Optional[str]
-    ) -> None:
+    ) -> frozenset[str]:
+        """Returns the repo-relative paths THIS range changed — the mint-backfill
+        leg's precondition, not incidental output: an anchor whose file the server
+        has just watched change must not be baselined from the post-change tree
+        (BUG-071). Nothing changed (no new commits) ⇒ the empty set; a FAULT raises,
+        and the caller then skips the backfill leg entirely rather than minting
+        against a range it could not census."""
         tip = self._rev(mirror, f"refs/remotes/origin/{branch}")
         if tip is None:
             raise _SyncFault(f"tracked branch {branch!r} has no remote tip after fetch")
@@ -618,7 +637,7 @@ class SyncService:
             if watermark != tip:
                 with self._lock:
                     self._store.meta_set(tip_key, tip)
-            return
+            return frozenset()  # no new commits ⇒ nothing to defer
         envelope = self._build_receipt(row, mirror, branch, base, tip)
         with self._lock:
             report = self._evidence.ingest(
@@ -646,6 +665,7 @@ class SyncService:
             report.range_skipped,
             len(promoted),
         )
+        return report.touched_paths
 
     def _build_receipt(
         self, row: _RegistryRow, mirror: Path, branch: str, base: str, head: str
@@ -686,7 +706,13 @@ class SyncService:
 
     # ── the mint-backfill leg: absent fp keys minted server-side ───────────────
     def _backfill(
-        self, row: _RegistryRow, mirror: Path, tip_sha: str, ref: str
+        self,
+        row: _RegistryRow,
+        mirror: Path,
+        tip_sha: str,
+        ref: str,
+        *,
+        changed_paths: frozenset[str],
     ) -> None:
         """Fill ABSENT fingerprint carriers on approved anchor bindings of THIS
         repo: sweep ``anchors_lacking_fp`` (empty-carrier rows only — a pinned
@@ -698,7 +724,16 @@ class SyncService:
         unresolvable anchor / an engine fault) skips silently and the loop stays
         alive — the next tick retries; at most ``cfg.backfill_per_tick`` mints per
         tick, the rest carry over. The lock is held ONLY for store access — never
-        across a mint."""
+        across a mint.
+
+        ``changed_paths`` is what THIS tick's own receipt reported changed (the
+        ledger leg's return). An anchor under one of those paths is DEFERRED: its
+        baseline would otherwise record the post-change shape as the reference and
+        freeze `fresh` for a break that already landed (BUG-071). The deferral is
+        transient — the anchor mints on the first tick whose range leaves its file
+        alone — and until then the empty carrier reads `unverifiable`, the honest
+        unknown, while the SAME range's receipt has already written the ledger rows
+        retirement clause 1b reads."""
         with self._lock:
             todo = self._store.anchors_lacking_fp(row.name)
         if not todo:
@@ -709,6 +744,11 @@ class SyncService:
         # marker: lifting the cap (an un-sliced todo) reds test_cap_carries_over —
         # mint spawns per tick are bounded, the rest stay LACKING for the next sweep.
         for eid, anchor in todo[: self._cfg.backfill_per_tick]:
+            # marker: dropping this skip re-opens BUG-071 — the baseline would be
+            # minted from a tree in which the server has just watched this anchor
+            # change, and clause 1a would read `fresh` for that anchor forever.
+            if split_anchor(anchor)[0] in changed_paths:
+                continue
             minted = self._mint(mirror, anchor)
             if not minted:
                 continue  # unresolvable ⇒ silent skip, loop alive

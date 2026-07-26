@@ -584,6 +584,37 @@ def test_join_malformed_rows_under_claim_never_crash():
     assert match_anchors([SUB], rows, repo=JREPO) == {9: (SUB, "file")}
 
 
+# ── _anchor_match_level: one shared tokenizer, the same tiers ─────────────────
+
+
+def test_anchor_match_level_tiers_are_unchanged_by_the_shared_tokenizer():
+    # the join no longer spells the (path, symbol) split itself — it reads the same
+    # owner the write gate validates against, so acceptance and matching cannot
+    # fork. Every tier the inline partition produced must still be produced.
+    assert ce._anchor_match_level(["matrix/x.py::LanguageConfig"], SUB) == "symbol"
+    assert ce._anchor_match_level(["matrix/x.py"], SUB) == "file"
+    # a symbol-scoped anchor naming a DIFFERENT symbol keeps under-claiming
+    assert ce._anchor_match_level(["matrix/x.py::OtherSymbol"], SUB) is None
+    assert ce._anchor_match_level(["other/z.py::LanguageConfig"], SUB) is None
+
+
+def test_anchor_match_level_trailing_separator_still_falls_to_the_file_tier():
+    # an empty symbol reads file-scoped: "matrix/x.py::" names no symbol, so it
+    # binds the file exactly as it did under the inline partition. The write gate
+    # refuses that spelling for NEW anchors; rows already stored in it keep joining.
+    assert ce._anchor_match_level(["matrix/x.py::"], SUB) == "file"
+
+
+def test_anchor_match_level_nested_separator_belongs_to_the_symbol():
+    # the FIRST "::" is the split point, so a namespaced symbol — what C++/Rust
+    # receipt subjects spell — joins at the precise symbol tier instead of
+    # degrading to the file tier or missing outright.
+    nested = TouchedSubject(path="a.py", symbol="Ns::C.m")
+    assert ce._anchor_match_level(["a.py::Ns::C.m"], nested) == "symbol"
+    assert ce._anchor_match_level(["a.py::Ns"], nested) is None  # a different symbol
+    assert ce._anchor_match_level(["a.py"], nested) == "file"
+
+
 # ── render_payload: THE canonical-JSON single owner (the idempotency key) ─────
 
 
@@ -1646,6 +1677,68 @@ def test_refused_receipt_refuses_even_when_the_range_is_known():
     with pytest.raises(ReceiptRefused):
         svc.ingest(_receipt([_subj_line("existence", _ANCHOR)]))  # nothing decided
     assert appender.batches == [] and ranges.recorded == []
+
+
+# ── IngestReport.touched_paths: what the range CONTAINED, on both exits ───────
+
+
+def test_ingest_reports_the_paths_the_range_touched():
+    svc, _appender = _service(_repo_rows((7, _ANCHOR)))
+    report = svc.ingest(_repo_receipt(_LINES))
+    # PATHS, not anchors: the daemon compares against an anchor's path component,
+    # so a path::symbol member would never match and the deferral would never fire.
+    assert report.touched_paths == frozenset({"matrix/x.py"})
+    assert isinstance(report.touched_paths, frozenset)
+    assert _ANCHOR not in report.touched_paths
+
+
+def test_touched_paths_collect_every_joinable_subject_not_just_the_matched_ones():
+    # a statement about the RANGE, not about the join: "matrix/y.py" is anchored by
+    # no episode and still rides, and two symbols in one file collapse to one path.
+    lines = [
+        _subj_line("existence", "matrix/x.py::LanguageConfig"),
+        _subj_line("contract", "matrix/x.py::OtherSymbol"),
+        _subj_line("regression", "matrix/y.py::Thing"),
+        _exec_line("typecheck", "passed"),
+        _exec_line("tests", "passed"),
+    ]
+    svc, _appender = _service(_repo_rows((7, _ANCHOR)))
+    report = svc.ingest(_repo_receipt(lines))
+    assert report.matched == 1
+    assert report.touched_paths == frozenset({"matrix/x.py", "matrix/y.py"})
+
+
+def test_a_receipt_with_no_joinable_subjects_touches_no_paths():
+    # summary subjects carry no "::" and never join, so the range contained nothing
+    # an anchor could name — the empty frozenset, not a missing statement.
+    svc, _appender = _service(_repo_rows((7, _ANCHOR)))
+    report = svc.ingest(
+        _repo_receipt(
+            [_exec_line("typecheck", "passed"), _exec_line("tests", "passed")]
+        )
+    )
+    assert report.matched == 0
+    assert report.touched_paths == frozenset()
+
+
+def test_a_range_skipped_report_still_states_what_the_range_contained():
+    # THE load-bearing half: an already-ingested range did zero WORK but still
+    # changed exactly those paths. A skip reporting nothing touched would let the
+    # same tick baseline an anchor at the post-change tip and call it fresh.
+    key = (_REPO, BASE, HEAD, "pre_merge")
+    svc, appender, ranges = _ranged_service(_repo_rows((7, _ANCHOR)), known=[key])
+    report = svc.ingest(_repo_receipt(_LINES))
+    assert report.range_skipped is True
+    assert report.touched_paths == frozenset({"matrix/x.py"})
+    # every COUNT is still zero and the store is still untouched
+    assert report.inserted == () and report.already_recorded == 0
+    assert report.matched == 0 and report.skipped_lines == 0
+    assert appender.batches == [] and ranges.recorded == []
+
+
+def test_ingest_report_touched_paths_defaults_to_the_empty_frozenset():
+    rep = IngestReport(inserted=(), already_recorded=0, matched=0, skipped_lines=0)
+    assert rep.touched_paths == frozenset()
 
 
 # ── BUG-058: the advertised anchor grammar must be the grammar the join parses ──

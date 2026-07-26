@@ -33,9 +33,17 @@ def _run(argv, capsys):
 
 
 # ── _split_anchor: ONE tokenizer for mint AND verify ────────────────────────────
+#
+# The single-colon cases below pin the READER side of a mint-current/read-historical split.
+# The write boundary (hive.domain.anchor_grammar) refuses `a.py:sym`, so no NEW anchor is
+# stored in that spelling; every anchor ALREADY stored in it must keep resolving here, or a
+# whole population of live memories trades a genuinely computed drift verdict for
+# `unverifiable` and falls out of retirement coverage. These are the leniency half of that
+# pair — tightening them to match the boundary is the thing that must not happen.
 
 
 def test_split_anchor_single_colon():
+    # The historical spelling, read side: still tokenizes to (path, symbol).
     assert _split_anchor("a/b.py:sym") == ("a/b.py", "sym")
 
 
@@ -48,11 +56,14 @@ def test_split_anchor_no_colon_is_existence_only():
 
 
 def test_split_anchor_line_number_is_existence_only():
-    # A purely numeric "symbol" is a line number, not a callable -> existence-only.
+    # A purely numeric "symbol" is a line number, not a callable -> existence-only. The write
+    # boundary says the same thing as a refusal for new anchors; this is the read-side
+    # leniency for the ones already stored that way.
     assert _split_anchor("a/b.py:42") == ("a/b.py", None)
 
 
 def test_split_anchor_empty_symbol_is_existence_only():
+    # Historical spelling, read side: an empty symbol binds the file.
     assert _split_anchor("a/b.py:") == ("a/b.py", None)
 
 
@@ -277,6 +288,29 @@ def test_verify_live_is_current(py_repo, capsys):
     assert code == 0
     assert out["verdict"] == "current" and out["reason"] == "ok"
     assert "remediation" not in out and "delta" not in out
+
+
+def test_verify_without_fp_is_unverifiable_with_fp_is_current(py_repo, capsys):
+    # One anchor, one unchanged tree, two runs: what separates `current` from `unverifiable`
+    # is solely whether a recorded call shape was actually COMPARED. With no --fp the symbol
+    # resolves but nothing was measured, so the honest answer is an abstention — and an
+    # abstention carries NO remediation: that block rides a stale verdict only, and nothing
+    # here says the code moved past the memory. With the minted token the same anchor is
+    # current because the comparison ran and matched.
+    # // marker: reporting current/ok for the uncompared run is a mutation — it serves
+    # `fresh` for a comparison that never happened.
+    code_bare, uncompared, _ = _run(
+        ["verify", "--repo", str(py_repo), "--anchor", "pkg/f.py:foo"], capsys
+    )
+    fp = combdrift.fingerprint_anchor(str(py_repo), combdrift.Anchor("pkg/f.py", "foo"))
+    code_fp, compared, _ = _run(
+        ["verify", "--repo", str(py_repo), "--anchor", "pkg/f.py:foo", "--fp", fp],
+        capsys,
+    )
+    assert code_bare == 0 and code_fp == 0
+    # FULL dicts — no remediation key, no delta key, on either side.
+    assert uncompared == {"verdict": "unverifiable", "reason": "no_fingerprint"}
+    assert compared == {"verdict": "current", "reason": "ok"}
 
 
 def test_verify_removed_symbol_is_stale(py_repo, capsys):

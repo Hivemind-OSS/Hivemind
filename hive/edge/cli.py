@@ -87,7 +87,17 @@ RADIUS_NOTICE = (
 
 def _split_anchor(text: str) -> tuple[str, str | None]:
     """A free-text Hivemind anchor -> (path, symbol|None). `'::'` (Class::method) is split first,
-    then the first `':'`. A symbol that is empty or a bare line number is existence-only (None)."""
+    then the first `':'`. A symbol that is empty or a bare line number is existence-only (None).
+
+    The single-colon fallback is the READER side of a mint-current/read-historical split, NOT a
+    fork to be tidied away (the meta-envelope posture, THEORY §5). `hive.domain.anchor_grammar`
+    is the MINT side and refuses that spelling at the write boundary from now on; this branch
+    keeps the anchors already stored in it resolvable, so they keep a genuinely computed drift
+    verdict and stay inside retirement coverage. Making it strict would replace a real verdict
+    with `unverifiable` for that whole population — trading information for nothing — and would
+    move the frozen engine-parity goldens. Same for `_LINE_NUMBER`: the boundary states "a bare
+    number is not a symbol" as a refusal for NEW anchors, this states it as leniency for OLD
+    ones; the pair is pinned by the both-sides agreement test."""
     text = (text or "").strip()
     if "::" in text:
         path, _, symbol = text.partition("::")

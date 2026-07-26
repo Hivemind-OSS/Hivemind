@@ -10,6 +10,14 @@ Wire vocabulary (one enum, most-severe first)::
     anchor_missing > anchor_changed > blast_radius_changed > branch_scoped
                    > unverifiable > fresh;   n/a = general (nothing to verify)
 
+The verify→wire mapping's STALE arm is exhaustive by construction: ``_STALE_ARROWS``
+names every engine reason ``hive.combdrift.verdict`` can classify stale —
+``signature_changed → anchor_changed``, ``symbol_missing → anchor_missing``,
+``file_missing → anchor_missing`` — and a static ratchet derives that set from the
+engine at test time, so a stale reason added there without a decided wire arrow
+cannot pass. The final fall-through stays as the fail-safe for a reason this server
+genuinely does not know, never as a silent bucket for one nobody enumerated.
+
 Verdict source at recall: the materialized ``anchor_drift`` cache at the TIP of
 the queried ref (``name@branch``) else the repo's canonical ref. The canonical
 tip is the sync watermark meta key ``sync:<repo>:last_tip``; a queried
@@ -87,21 +95,45 @@ SEVERITY_ORDER = (
 _SEVERITY_INDEX = {v: i for i, v in enumerate(SEVERITY_ORDER)}
 _UNVERIFIABLE_IDX = _SEVERITY_INDEX[DRIFT_UNVERIFIABLE]
 
-# ── hive-edge verify → wire mapping (§3.4, verbatim; else → unverifiable) ─────
+# ── hive-edge verify → wire mapping (§3.4; the stale arm is EXHAUSTIVE) ───────
+
+#: Every engine reason ``hive.combdrift.verdict`` can classify ``stale``, placed
+#: EXPLICITLY. Prefix-matched in order (a reason may carry a ``": <detail>"``
+#: suffix). The table is not a convenience — it IS the anti-fork guarantee: the
+#: engine owns "which reasons are stale" and this module owns "what a stale reason
+#: means on the wire", and a two-arm if-chain over a silent catch-all let those two
+#: owners disagree with no test able to notice (BUG-078: a deleted FILE — the
+#: strongest evidence an anchor is dead — degraded to the one verdict that never
+#: qualifies retirement, while a deleted SYMBOL qualified). A static ratchet
+#: derives the engine's stale set at test time and requires a member here for each,
+#: so adding a stale reason to the engine without deciding its wire arrow cannot
+#: pass the suite. The tiers agree: a gone file and a gone symbol are the same
+#: claim — the thing this memory names is not there.
+_STALE_ARROWS: tuple[tuple[str, str], ...] = (
+    ("signature_changed", DRIFT_ANCHOR_CHANGED),
+    ("symbol_missing", DRIFT_ANCHOR_MISSING),
+    ("file_missing", DRIFT_ANCHOR_MISSING),
+)
 
 
 def wire_verdict(state: object, reason: object = "") -> str:
     """Map one ``hive-edge verify`` per-anchor result onto the wire enum.
 
-    The §3.4 table, exactly: ``current → fresh``; ``stale/signature_changed →
-    anchor_changed``; ``stale/symbol_missing → anchor_missing``; ``radius
-    changed → blast_radius_changed``; ``branch_scoped → branch_scoped``; else
-    ``unverifiable`` (the fail-safe arm — an unknown state, a bare or
-    unrecognized stale reason, an incomparable token version, a non-string:
-    silence, never false-stale). ``state`` may carry the reason embedded as
-    ``"stale/<reason>"`` (the table's own notation) or split across
-    ``(state, reason)``; reasons match by code prefix (``signature_changed...``),
-    the verify engine's own convention. Total over ``object``. // O(1)."""
+    ``current → fresh``; ``radius changed → blast_radius_changed``;
+    ``branch_scoped → branch_scoped``; a ``stale`` state resolves through
+    ``_STALE_ARROWS`` — ``signature_changed → anchor_changed``,
+    ``symbol_missing → anchor_missing``, ``file_missing → anchor_missing`` — and
+    everything else is ``unverifiable`` (the fail-safe arm: an unknown state, an
+    UNRECOGNIZED stale reason, an incomparable token version, a non-string —
+    silence, never false-stale). The stale set is ratchet-enforced against the
+    engine, so "unknown" here means genuinely unknown (a hostile cache row, an
+    older engine's output, a future reason a rolling upgrade has not taught this
+    server) rather than merely unenumerated.
+
+    ``state`` may carry the reason embedded as ``"stale/<reason>"`` (the table's
+    own notation) or split across ``(state, reason)``; reasons match by code
+    prefix (``signature_changed...``), the verify engine's own convention. Total
+    over ``object``. // O(1)."""
     if not isinstance(state, str):
         return DRIFT_UNVERIFIABLE
     if state == "current":
@@ -109,10 +141,12 @@ def wire_verdict(state: object, reason: object = "") -> str:
     head, _sep, embedded = state.partition("/")
     if head == "stale":
         code = embedded or (reason if isinstance(reason, str) else "")
-        if code.startswith("signature_changed"):
-            return DRIFT_ANCHOR_CHANGED
-        if code.startswith("symbol_missing"):
-            return DRIFT_ANCHOR_MISSING
+        for prefix, verdict in _STALE_ARROWS:
+            if code.startswith(prefix):
+                return verdict
+        # marker: this is the FAIL-SAFE for a reason this server does not know —
+        # deleting _STALE_ARROWS and returning unconditionally here generalizes
+        # BUG-078 to every stale tier at once.
         return DRIFT_UNVERIFIABLE
     if state in ("radius_changed", "radius changed"):
         return DRIFT_BLAST_RADIUS_CHANGED

@@ -62,8 +62,11 @@ _ANCHORS_PROPERTY: dict[str, Any] = {
         "additionalProperties": False,
     },
     "description": "Code bindings: [{repo, anchor}] — repo is a REGISTERED repo name, "
-    "anchor the WHERE (path/file.py::symbol, or a bare path). The server mints fingerprints "
-    "and judges drift per anchor; an unregistered repo refuses the call.",
+    "anchor the WHERE (path/file.py::symbol, or a bare path). The symbol separator is "
+    "'::', never a single ':' — a single-colon anchor is REFUSED (it matches no code "
+    "change, so the memory could never be outcome-verified), as is a '::' naming no "
+    "symbol or only a line number. The server mints fingerprints and judges drift per "
+    "anchor; an unregistered repo refuses the call.",
 }
 
 # Repo-scope membership without a code anchor (write/capture): registered names,

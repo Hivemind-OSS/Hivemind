@@ -1,9 +1,9 @@
 """Unit suite for ``hive.app.drift`` — the single owner of the §3.4 drift wire
-semantics: the verify→wire mapping (else → unverifiable), the most-severe-wins
-aggregation (CT-4's property vocabulary at unit level), the cache lookup at the
-tip of the queried ref else canonical, and the fail-open ``attach_drift``
-enrichment (a reader fault degrades that hit to unverifiable, never breaks the
-read)."""
+semantics: the verify→wire mapping (an EXHAUSTIVE stale table, else →
+unverifiable), the most-severe-wins aggregation (CT-4's property vocabulary at
+unit level), the cache lookup at the tip of the queried ref else canonical, and
+the fail-open ``attach_drift`` enrichment (a reader fault degrades that hit to
+unverifiable, never breaks the read)."""
 
 from __future__ import annotations
 
@@ -21,6 +21,7 @@ from hive.app.drift import (
     DRIFT_UNVERIFIABLE,
     SEVERITY_ORDER,
     WIRE_VERDICTS,
+    _STALE_ARROWS,
     aggregate_verdicts,
     attach_drift,
     branch_route_verdict,
@@ -55,18 +56,22 @@ def test_severity_order_is_the_normative_one():
         ("current", "", DRIFT_FRESH),
         ("stale", "signature_changed", DRIFT_ANCHOR_CHANGED),
         ("stale", "symbol_missing", DRIFT_ANCHOR_MISSING),
+        # a gone FILE is the same claim as a gone symbol — the thing this memory
+        # names is not there — so it lands in the same tier, not in the fail-safe
+        ("stale", "file_missing", DRIFT_ANCHOR_MISSING),
         ("radius_changed", "", DRIFT_BLAST_RADIUS_CHANGED),
         ("radius changed", "", DRIFT_BLAST_RADIUS_CHANGED),  # the table's spelling
         ("branch_scoped", "", DRIFT_BRANCH_SCOPED),
     ],
 )
-def test_the_five_named_arrows(state, reason, expected):
+def test_the_six_named_arrows(state, reason, expected):
     assert wire_verdict(state, reason) == expected
 
 
 def test_composite_stale_state_carries_its_reason():
     assert wire_verdict("stale/signature_changed") == DRIFT_ANCHOR_CHANGED
     assert wire_verdict("stale/symbol_missing") == DRIFT_ANCHOR_MISSING
+    assert wire_verdict("stale/file_missing") == DRIFT_ANCHOR_MISSING
 
 
 def test_reason_codes_match_by_prefix():
@@ -74,13 +79,36 @@ def test_reason_codes_match_by_prefix():
         wire_verdict("stale", "signature_changed:def f(a, b)") == DRIFT_ANCHOR_CHANGED
     )
     assert wire_verdict("stale", "symbol_missing: fn gone") == DRIFT_ANCHOR_MISSING
+    assert wire_verdict("stale", "file_missing: pkg/f.py") == DRIFT_ANCHOR_MISSING
+
+
+def test_every_stale_arrow_targets_the_wire_enum_without_shadowing():
+    """The stale table decides by PREFIX in order, so two facts have to hold or
+    the table quietly stops meaning what it reads as: every target must be a
+    verdict the wire actually advertises (and a per-anchor one — ``n/a`` is an
+    aggregate-only verdict), and no earlier prefix may swallow a later one that
+    was given a DIFFERENT target, which would let table ORDER, not the decision,
+    pick the tier."""
+    for prefix, target in _STALE_ARROWS:
+        assert target in WIRE_VERDICTS, f"{prefix} → {target} is off the wire enum"
+        assert target in SEVERITY_ORDER, f"{prefix} → {target} is not per-anchor"
+    for i, (earlier, earlier_target) in enumerate(_STALE_ARROWS):
+        for later, later_target in _STALE_ARROWS[i + 1 :]:
+            assert not (later.startswith(earlier) and later_target != earlier_target), (
+                f"{earlier!r} shadows {later!r} with a different target "
+                f"({earlier_target} vs {later_target}) — order decides silently"
+            )
 
 
 @pytest.mark.parametrize(
     "state, reason",
     [
         ("stale", ""),  # bare stale: incomparable, never false-stale
+        # a stale reason this server does not RECOGNIZE — an older or newer
+        # engine's output, a hostile cache row. Not "unenumerated": every reason
+        # the engine can classify stale has a decided arrow above.
         ("stale", "some_new_reason"),
+        ("stale", "module_relocated"),
         ("stale/xyzzy", ""),
         ("staleness", "signature_changed"),  # not the stale state
         ("CURRENT", ""),  # vocabulary is exact, no case folding
@@ -94,6 +122,20 @@ def test_reason_codes_match_by_prefix():
 )
 def test_everything_else_maps_unverifiable(state, reason):
     assert wire_verdict(state, reason) == DRIFT_UNVERIFIABLE
+
+
+def test_the_fail_safe_fall_through_stays_silent_never_stale():
+    """The stale arm's final fall-through is a FAIL-SAFE, not a bucket: a reason
+    this server cannot recognize reads unverifiable, and unverifiable is outside
+    the tier that qualifies a retirement — so an unrecognized reason can never
+    destroy a memory on evidence nobody decoded."""
+    for state, reason in (
+        ("stale", "module_relocated"),
+        ("stale/module_relocated", ""),
+    ):
+        verdict = wire_verdict(state, reason)
+        assert verdict == DRIFT_UNVERIFIABLE
+        assert verdict not in QUALIFYING_DRIFT
 
 
 # ── branch_route_verdict: routing a materialized verdict through the memory's

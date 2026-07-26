@@ -3,6 +3,41 @@
 All notable changes to this project are documented here.
 
 ## Fixed
+- **A wrongly-spelled anchor is now refused at the write boundary instead of dying silently.**
+  `anchors=[{"repo": "alpha", "anchor": "path/file.py:Symbol"}]` — one colon, not two — was
+  accepted, served, and reported healthy drift, because the engine's tokenizer resolves both
+  separators. But the census join partitions on `::` alone, so such a memory matched no code
+  change, never earned an outcome row, could never reach `established`, and expired at the
+  provisional TTL while still being correct. The grammar now has ONE owner
+  (`hive/domain/anchor_grammar.py`) read by the write gate, the census join and the mint
+  backfill, so what is accepted and what can match cannot disagree. The write returns a
+  `refused` envelope naming the violated clause and stores nothing; `path/file.py::`,
+  `path/file.py::42` and a colon-bearing path with no `::` are refused for the same reason.
+  Anchors already stored in the old spelling are deliberately untouched — they keep serving, keep
+  a genuinely computed drift verdict, and keep qualifying retirement; the engine's reader still
+  resolves them and the ordinary `hive_write(replaces=…)` path re-binds one canonically.
+- **A memory's anchor no longer reads `fresh` off a comparison that never happened.** When an
+  anchor's fingerprint carrier was still empty, the engine reported the symbol `current` — which
+  the server serves as drift `fresh` — even though nothing about its call shape had been
+  compared. Worse, the mint-backfill then wrote that anchor's first baseline from whatever the
+  tip happened to be, so a signature break that landed *before* the first mint was recorded AS
+  the baseline and the anchor read `fresh` forever. An uncompared call shape now reports
+  `unverifiable`, the honest unknown, and the backfill defers any anchor the same tick's own
+  receipt reported changed, minting it on the first tick that leaves its file alone. A faulted
+  census leg means the server does not know what changed, so it mints nothing for that repo that
+  tick. Two arms keep reading `fresh` without a fingerprint, because for them existence is the
+  whole claim: a file-scoped anchor, and a symbol that has no comparable call shape at all — a
+  declared-schema (SQL / JSON-schema) anchor or an overload set.
+- **A deleted FILE now retires a memory, exactly like a deleted symbol.** Deleting the symbol a
+  memory named produced `anchor_missing`, which qualifies the machine gate; deleting the whole
+  file produced `unverifiable`, which never does — so the strongest possible evidence that an
+  anchor is dead was the one form that could not act on it, and the memory kept serving
+  indefinitely. Both tiers now read `anchor_missing`. The mapping from an engine reason to a
+  served verdict is exhaustive by construction rather than a two-case chain over a silent
+  catch-all: a test derives the engine's own stale-reason set and requires an explicit arrow for
+  each, so a reason added to the engine without a decided verdict cannot pass. An unrecognized
+  reason still fails safe to `unverifiable`, and a prose anchor is still carved out before the
+  mapping runs.
 - **Two operator docs caught up to already-landed signal-honesty and mirror-identity fixes.**
   `HIVE-ADMIN.md` still claimed an unknown-config-key WARN means the key "is never a live
   switch" — false for `HIVE_SYNC__TOKEN`/`HIVE_STORE__DB_PATH`, which are read directly outside
