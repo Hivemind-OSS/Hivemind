@@ -25,12 +25,10 @@ def test_exact_values_pin_the_stored_vocabulary():
     assert ek.EK_CHANGE_OUTCOME == "change_outcome"
     assert ek.EK_OUTCOME_VERIFIED_HELPED == "outcome_verified_helped"
     assert ek.EK_OUTCOME_VERIFIED_HURT == "outcome_verified_hurt"
-    assert ek.EK_VERIFY_CURRENT == "verify_current"
-    assert ek.EK_VERIFY_STALE == "verify_stale"
     assert ek.EK_STALE_SUSPECT == "stale_suspect"
 
 
-def test_membership_set_is_exactly_the_twelve_constants():
+def test_membership_set_is_exactly_the_ten_constants():
     assert ek.EVIDENCE_KINDS == frozenset(
         {
             "promote",
@@ -42,8 +40,6 @@ def test_membership_set_is_exactly_the_twelve_constants():
             "change_outcome",
             "outcome_verified_helped",
             "outcome_verified_hurt",
-            "verify_current",
-            "verify_stale",
             "stale_suspect",
         }
     )

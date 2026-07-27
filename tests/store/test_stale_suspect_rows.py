@@ -86,7 +86,7 @@ def test_one_row_per_episode_across_episodes():
 def test_other_evidence_kinds_never_count():
     s = _store()
     eid = _seed(s, "only other kinds")
-    s.insert_audit(eid, "verify_stale", "census", 100, _suspect_payload())
+    s.insert_audit(eid, "outcome_hurt", "agent", 100, _suspect_payload())
     s.insert_audit(eid, "change_outcome", "census", 100, _suspect_payload())
     assert s.stale_suspect_rows() == []
 

@@ -58,10 +58,14 @@ def _remote_url(mirror: Path) -> str:
     return git(mirror, "config", "--get", "remote.origin.url").stdout.strip()
 
 
-def _mint_repo_args(calls) -> list[str]:
-    """The ``--repo`` argument of every ``hive-edge mint`` spawn — the checkout the
-    engine's path-keyed graph cache is derived from."""
-    return [c[c.index("--repo") + 1] for c in calls if "mint" in c and "--repo" in c]
+def _probe_repo_args(calls) -> list[str]:
+    """The ``-C`` argument of every drift-probe spawn — the ONE checkout whose object
+    database the verdict is read out of."""
+    return [
+        c[c.index("-C") + 1]
+        for c in calls
+        if "-C" in c and ("ls-tree" in c or ("diff" in c and "--name-status" in c))
+    ]
 
 
 # A credential is observable in a mirror's remote config only under an https
@@ -542,33 +546,33 @@ def test_the_previous_incarnations_mirror_is_reaped(store, tmp_path):
     ]
 
 
-def test_a_new_url_gives_the_mint_leg_a_fresh_checkout_path(store, tmp_path):
-    """The engine keys its graph cache on a digest of the checkout PATH and
-    refreshes it INCREMENTALLY against the working tree, so a new repository at an
-    old path would be minted through the previous repository's cache. The
-    identity-bound directory makes that unconstructable: a different remote is a
-    different ``--repo`` argument, hence a different cache."""
+def test_a_new_url_gives_the_drift_probe_a_fresh_checkout_path(store, tmp_path):
+    """Every drift probe reads the object database of ONE checkout (``git -C
+    <mirror>``), so a new repository reached through the old incarnation's directory
+    would be judged against the previous repository's objects. The identity-bound
+    directory makes that unconstructable: a different remote is a different ``-C``
+    argument, hence a different object store."""
     old = Origin(tmp_path / "remote-old")
     old.commit("app.py", "def only_on_the_old_remote():\n    return 1\n", "old only")
     old.push()
     new = Origin(tmp_path / "remote-new")
-    # an anchor no tree resolves: the mint yields nothing, so the carrier stays
-    # EMPTY and the backfill sweep really runs against BOTH incarnations
-    seed_episode(store, "greet stays single-arg", anchor="app.py::nosuchsymbol")
+    seed_episode(store, "greet stays single-arg")
     register_repo(store, "alpha", old.url)
     run = RecordingRun()
     svc = make_service(store, tmp_path, run=run)
     svc.tick()
-    before = _mint_repo_args(run.calls)
-    assert before, "precondition: the mint leg ran against the first incarnation"
+    svc.tick()  # the first tick baselines; the second one probes against it
+    before = _probe_repo_args(run.calls)
+    assert before, "precondition: the drift probe ran against the first incarnation"
 
     assert store.repo_remove("alpha")
     register_repo(store, "alpha", new.url)
     run.calls.clear()
     svc.tick()
+    svc.tick()
 
-    after = _mint_repo_args(run.calls)
-    assert after, "the mint leg must run against the new incarnation too"
+    after = _probe_repo_args(run.calls)
+    assert after, "the drift probe must run against the new incarnation too"
     assert set(after).isdisjoint(before)
 
 

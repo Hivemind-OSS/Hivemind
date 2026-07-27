@@ -1,7 +1,9 @@
 """Unit suite for the boundary grammar gate ``hive.app.anchors`` — the engine of
 the CT-1/CT-3 unknown-repo refusal scenarios (a write/capture/recall naming an
 unregistered repo refuses cleanly, nothing stored; the handler maps ``BadAnchors``
-to the ``status="refused"`` envelope)."""
+to the ``status="refused"`` envelope), and of the anchor-grammar refusal it
+delegates to ``hive.domain.anchor_grammar`` (a spelling the census subject feed
+could never join refuses at the boundary rather than being stored unjoinable)."""
 
 from __future__ import annotations
 
@@ -86,10 +88,34 @@ def test_injected_read_accepts_a_callable():
         )
 
 
-def test_anchor_is_free_text():
+def test_colon_free_anchor_is_free_text():
+    """The grammar constrains only colon-BEARING spellings; the rest is free text.
+
+    Renamed from the wider claim it used to make: an anchor is no longer free text
+    outright, but every non-empty string without a ``':'`` still admits verbatim —
+    an anchor need not be code, so unicode, spaces and no path shape at all remain
+    a legal binding."""
     weird = "some anchor // with spaces, ünïcode and no path shape"
     out = normalize_anchors([{"repo": "alpha", "anchor": weird}], known_repos=KNOWN)
     assert out[0].anchor == weird
+
+
+@pytest.mark.parametrize(
+    "anchor",
+    [
+        "a.py",  # file-scoped
+        "a.py::S",  # symbol-scoped
+        "a.py::Ns::C.m",  # nested '::' belongs to the SYMBOL, not the split
+        "a:b/c.py::S",  # a colon-bearing path an explicit '::' makes unambiguous
+        "a.py::f2",  # a digit INSIDE a symbol is not a line number
+        "some anchor with no path shape",  # colon-free prose
+    ],
+)
+def test_grammatical_anchors_are_stored_verbatim(anchor):
+    """An admitted anchor rides through untouched — the gate never rewrites a
+    spelling, so what the census join later matches is exactly what was sent."""
+    out = normalize_anchors([{"repo": "alpha", "anchor": anchor}], known_repos=KNOWN)
+    assert out == (AnchorRef(repo="alpha", anchor=anchor),)
 
 
 # ── normalize_anchors: refusals name the violated clause ──────────────────────
@@ -123,6 +149,51 @@ def test_malformed_anchors_refuse_with_the_clause(raw, clause):
         normalize_anchors(raw, known_repos=KNOWN)
 
 
+@pytest.mark.parametrize(
+    "anchor, clause",
+    [
+        ("a.py:S", "the symbol separator is '::', not ':'"),
+        ("a.py:42", "the symbol separator is '::', not ':'"),
+        # a colon-bearing path with no '::' is lexically indistinguishable from the
+        # dead spelling, so the boundary refuses it too rather than guess
+        ("a:b/c.py", "the symbol separator is '::', not ':'"),
+        ("a.py::", "names no symbol after '::'"),
+        ("a.py::42", "is a line number, not a symbol"),
+        ("::S", "has an empty path component"),
+    ],
+)
+def test_ungrammatical_anchors_refuse_with_the_clause(anchor, clause):
+    """A spelling the census subject feed can never join refuses at the boundary.
+
+    The single-colon rows are the load-bearing ones: that spelling used to be
+    stored, resolve healthily in the drift engine, and match no census subject —
+    so the memory could never be outcome-verified and died at the provisional TTL."""
+    with pytest.raises(BadAnchors, match=clause) as excinfo:
+        normalize_anchors([{"repo": "alpha", "anchor": anchor}], known_repos=KNOWN)
+    # the refusal is addressed: which entry of the array violated the grammar
+    assert "anchors[0].anchor" in str(excinfo.value)
+
+
+def test_single_colon_refusal_names_the_canonical_spelling():
+    """The refusal is actionable — it spells the '::' form that should have been sent."""
+    with pytest.raises(BadAnchors, match=r"write 'hive/app/x\.py::fn'"):
+        normalize_anchors(
+            [{"repo": "alpha", "anchor": "hive/app/x.py:fn"}], known_repos=KNOWN
+        )
+
+
+def test_ungrammatical_anchor_refuses_the_whole_array():
+    """A late bad spelling refuses every binding in the call, not just its own entry."""
+    with pytest.raises(BadAnchors, match=r"anchors\[1\].anchor"):
+        normalize_anchors(
+            [
+                {"repo": "alpha", "anchor": "ok.py::f"},
+                {"repo": "beta", "anchor": "bad.py:g"},
+            ],
+            known_repos=KNOWN,
+        )
+
+
 def test_hostile_shapes_refuse_never_crash():
     """Total over object — a hostile shape refuses, it cannot crash the boundary."""
     hostile = [
@@ -152,6 +223,8 @@ def test_duplicate_binding_refuses():
 
 
 def test_entry_cap_refuses():
+    # the generated anchors are colon-free, so they clear the grammar — the cap is
+    # what refuses, and it refuses before any entry is inspected
     raw = [
         {"repo": "alpha", "anchor": f"f{i}.py"} for i in range(SCOPE_MAX_ENTRIES + 1)
     ]

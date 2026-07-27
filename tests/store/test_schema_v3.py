@@ -1,7 +1,7 @@
 """Schema v3 — the repo-partitioned store shape and its refusal posture.
 
 Episodes DROP the anchor/provenance/approver/tags columns; ``episode_anchors`` is the one
-owner of scope + code bindings (+ per-anchor fp carriers); ``repos`` / ``anchor_drift`` /
+owner of scope + code bindings; ``repos`` / ``anchor_baselines`` / ``anchor_drift`` /
 ``ref_requests`` land; ``recall_misses`` gains the ``repos`` scope column.
 
 There is NO migration/backfill path: this build starts from a clean, empty store. Refusal
@@ -108,6 +108,7 @@ def test_v3_tables_present():
         "episode_anchors",
         "episode_refs",
         "repos",
+        "anchor_baselines",
         "anchor_drift",
         "ref_requests",
         "ref_tips",
@@ -188,19 +189,64 @@ def test_anchor_drift_and_ref_requests_shape():
     conn = connect(":memory:")
     SqliteEpisodeStore(conn)
     drift = _cols(conn, "anchor_drift")
-    assert set(drift) == {"repo", "tip_sha", "anchor", "verdict", "detail", "ts"}
+    assert set(drift) == {
+        "repo",
+        "tip_sha",
+        "base_tip",
+        "anchor",
+        "verdict",
+        "detail",
+        "ts",
+    }
     assert drift["detail"]["dflt_value"] == "'{}'"
     reqs = _cols(conn, "ref_requests")
     assert set(reqs) == {"repo", "ref", "last_requested_ts"}
-    # PK(repo, tip_sha, anchor) on the drift cache
+    # PK(repo, tip_sha, base_tip, anchor): the baseline is an INPUT to the verdict,
+    # so a key without it would let a row judged from one commit answer for another.
     conn.execute(
-        "INSERT INTO anchor_drift(repo, tip_sha, anchor, verdict, ts) "
-        "VALUES('a', 't', 'x', 'fresh', 0)"
+        "INSERT INTO anchor_drift(repo, tip_sha, base_tip, anchor, verdict, ts) "
+        "VALUES('a', 't', 'b', 'x', 'fresh', 0)"
+    )
+    conn.execute(
+        "INSERT INTO anchor_drift(repo, tip_sha, base_tip, anchor, verdict, ts) "
+        "VALUES('a', 't', 'b2', 'x', 'fresh', 0)"
     )
     with pytest.raises(Exception):
         conn.execute(
-            "INSERT INTO anchor_drift(repo, tip_sha, anchor, verdict, ts) "
-            "VALUES('a', 't', 'x', 'fresh', 1)"
+            "INSERT INTO anchor_drift(repo, tip_sha, base_tip, anchor, verdict, ts) "
+            "VALUES('a', 't', 'b', 'x', 'fresh', 1)"
+        )
+
+
+def test_anchor_baselines_shape():
+    conn = connect(":memory:")
+    SqliteEpisodeStore(conn)
+    cols = _cols(conn, "anchor_baselines")
+    assert set(cols) == {
+        "episode_id",
+        "repo",
+        "anchor",
+        "base_tip",
+        "ts",
+        # whether the binding's SYMBOL resolved at base_tip — a fact about an
+        # immutable commit, so it rides the row it describes rather than being
+        # re-measured every tick.
+        "symbol_ok",
+    }
+    # PK(episode_id, repo, anchor) — keyed exactly like episode_anchors, so each
+    # memory measures its own binding from the commit IT was written against.
+    conn.execute(
+        "INSERT INTO anchor_baselines(episode_id, repo, anchor, base_tip, ts) "
+        "VALUES(1, 'a', 'x', 'b', 0)"
+    )
+    conn.execute(
+        "INSERT INTO anchor_baselines(episode_id, repo, anchor, base_tip, ts) "
+        "VALUES(2, 'a', 'x', 'b2', 0)"
+    )
+    with pytest.raises(Exception):
+        conn.execute(
+            "INSERT INTO anchor_baselines(episode_id, repo, anchor, base_tip, ts) "
+            "VALUES(1, 'a', 'x', 'b3', 0)"
         )
 
 

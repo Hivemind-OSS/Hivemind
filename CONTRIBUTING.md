@@ -26,8 +26,8 @@ Open your pull requests against **`development`** — never straight into `maste
 ## Getting set up
 
 Hivemind uses [uv](https://docs.astral.sh/uv/). Everything lives in this one repository —
-including the anchor/census engines, which are first-party subpackages (`hive/matrix`,
-`hive/combdrift`, `hive/edge`) of the `hive` distribution — so `uv sync` resolves every
+including the census engines, which are first-party subpackages (`hive/matrix`,
+`hive/combdrift`) of the `hive` distribution — so `uv sync` resolves every
 dependency from the lockfile in one step:
 
 ```bash

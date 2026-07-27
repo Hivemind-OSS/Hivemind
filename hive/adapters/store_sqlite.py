@@ -2,15 +2,22 @@
 ``sqlite_db.tx()`` is the single BEGIN IMMEDIATE lane, used directly by each mutating method.
 
 Schema v3 (repo-partitioned memory): ``episode_anchors`` is the ONE owner of repo scope +
-code bindings (+ per-anchor fingerprint carriers); ``episode_refs`` carries the memory's
-own DECLARED line, one ref per (episode, repo); ``repos`` is the durable operational
-repo registry (the authctl-seat pattern); ``anchor_drift`` is the materialized drift-verdict
-cache (rebuildable, Law 5) keyed ``(repo, tip_sha, anchor)``; ``ref_requests`` records
-recall-touched refs wanting on-demand materialization, and ``ref_tips`` is the
-materializer's resolved-tip watermark per non-canonical ref (the branch twin of the
-canonical ``sync:<repo>:last_tip`` meta key). There is NO approver concept —
-``complete`` lands an explicit trust label and nothing on this surface accepts an
-approver identity or vouch timestamp.
+code bindings; ``episode_refs`` carries the memory's own DECLARED line, one ref per
+(episode, repo); ``repos`` is the durable operational repo registry (the authctl-seat
+pattern); ``anchor_baselines`` records the COMMIT each binding was observed from (plus
+whether its symbol resolved there — ``symbol_ok``, measured once per immutable tip) and
+``anchor_drift`` is the materialized drift-verdict cache keyed by every input to the
+verdict, ``(repo, tip_sha, base_tip, anchor)``; ``ref_requests`` records recall-touched
+refs wanting on-demand materialization, and ``ref_tips`` is the materializer's
+resolved-tip watermark per non-canonical ref (the branch twin of the canonical
+``sync:<repo>:last_tip`` meta key). Both anchor tables are rebuildable caches (Law 5) —
+dropping either re-baselines and re-materializes within one tick. There is NO approver
+concept — ``complete`` lands an explicit trust label and nothing on this surface accepts
+an approver identity or vouch timestamp.
+
+``episode_anchors.fp_meta`` is RETIRED: nothing writes it and nothing reads it. The
+column stays because dropping it is a table rebuild — i.e. a migration — and this build
+performs none.
 
 The ``exposure`` table is the recall side-channel (``record_exposure`` / ``record_miss``):
 WHO was served WHAT and which queries got no answer — the demand signal that drives
@@ -29,7 +36,6 @@ from typing import Any, Iterable, Mapping, Optional, Protocol, Sequence
 import numpy as np
 
 from hive.adapters.sqlite_db import tx
-from hive.domain.change_evidence import verify_payload_ref
 from hive.domain.evidence_kinds import (
     EK_OUTCOME_HELPED,
     EK_OUTCOME_VERIFIED_HELPED,
@@ -38,8 +44,6 @@ from hive.domain.evidence_kinds import (
     EK_STALE_SUSPECT,
     EK_SUPERSEDE,
     EK_TTL_EXPIRED,
-    EK_VERIFY_CURRENT,
-    EK_VERIFY_STALE,
 )
 from hive.domain.kinds import DEFAULT_KIND, KIND_NAMES
 from hive.domain.lifecycle import (
@@ -52,7 +56,7 @@ from hive.domain.lifecycle import (
     decayed,
     is_servable,
 )
-from hive.domain.meta import meta_version_histogram, normalize_meta
+from hive.domain.meta import meta_version_histogram
 from hive.domain.models import AnchorRef, Episode, content_hash
 
 _log = logging.getLogger("hive.store")
@@ -64,10 +68,11 @@ _log = logging.getLogger("hive.store")
 _RECALL_PREDICATE = "status='approved' AND value IS NOT NULL"
 
 # The NOT-RETIRED predicate every materializer work-list verb joins on, spelled ONCE
-# (BUG-065: a retired memory must stop consuming the capped per-tick budgets forever).
-# Interpolated by anchors_lacking_fp / anchor_carriers / declared_refs — the aliased
-# episodes row is `e` in all three, so the fix stays in one place by construction
-# rather than by three near-identical joins agreeing.
+# (BUG-065: a retired memory must stop consuming the materializer's work forever).
+# Interpolated by anchor_work_list / declared_refs — the aliased episodes row is `e` in
+# both, so the fix stays in one place by construction rather than by near-identical
+# joins agreeing. The two carrier-era sweeps that used to interpolate it collapsed into
+# the single anchor_work_list query, so they can no longer fork at all.
 _LIVE_EPISODE_PREDICATE = "e.status='approved' AND e.trust != 'deprecated'"
 
 # "no clock" sentinel for the fail-closed scan_approved() alias: with now pushed to
@@ -117,10 +122,19 @@ CREATE TABLE IF NOT EXISTS repos(
   url TEXT NOT NULL, canonical_ref TEXT NOT NULL DEFAULT '',
   token_env TEXT NOT NULL DEFAULT '',
   added_ts INTEGER NOT NULL);
+CREATE TABLE IF NOT EXISTS anchor_baselines(
+  episode_id INTEGER NOT NULL, repo TEXT NOT NULL, anchor TEXT NOT NULL,
+  base_tip TEXT NOT NULL, ts INTEGER NOT NULL,
+  -- did this binding's SYMBOL resolve at base_tip: -1 unprobed, 0 no, 1 yes. A fact
+  -- about an immutable commit, so it is measured once and never invalidated; a
+  -- file-scoped binding asks the question of nobody and stays -1 forever.
+  symbol_ok INTEGER NOT NULL DEFAULT -1,
+  PRIMARY KEY(episode_id, repo, anchor));
 CREATE TABLE IF NOT EXISTS anchor_drift(
-  repo TEXT NOT NULL, tip_sha TEXT NOT NULL, anchor TEXT NOT NULL,
+  repo TEXT NOT NULL, tip_sha TEXT NOT NULL, base_tip TEXT NOT NULL,
+  anchor TEXT NOT NULL,
   verdict TEXT NOT NULL, detail TEXT NOT NULL DEFAULT '{}', ts INTEGER NOT NULL,
-  PRIMARY KEY(repo, tip_sha, anchor));
+  PRIMARY KEY(repo, tip_sha, base_tip, anchor));
 CREATE TABLE IF NOT EXISTS ref_requests(
   repo TEXT NOT NULL, ref TEXT NOT NULL, last_requested_ts INTEGER NOT NULL,
   PRIMARY KEY(repo, ref));
@@ -176,6 +190,17 @@ _NO_MIGRATION_HINT = "this build has no migration — start from a clean store/v
 # (a mirror path joined from one escapes, or IS, the mirrors dir), so a name this
 # matches is genuinely path-safe — the charset alone would admit them.
 _REPO_NAME_RE = re.compile(r"^(?!\.+$)[a-z0-9._-]+$")
+
+# The columns ``anchor_drift`` must carry for its verdicts to be readable. A verdict is
+# a total function of (repo, tip, base_tip, anchor); a store written before ``base_tip``
+# joined that key holds rows whose key cannot be reconstructed, so the boot path drops
+# and recreates the table rather than reading them. That is legal without a migration
+# gate precisely because this is a DERIVED cache (Law 5): the loss degrades every read
+# to ``unverifiable`` — the honest unknown — until the next tick re-materializes it. No
+# episode row, no ``episode_anchors`` row and no memory text is read or rewritten.
+_DRIFT_CACHE_COLUMNS = frozenset(
+    {"repo", "tip_sha", "base_tip", "anchor", "verdict", "detail", "ts"}
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -249,7 +274,24 @@ class SqliteEpisodeStore:
                     "store carries an episodes table but no episode_anchors table; "
                     f"{_NO_MIGRATION_HINT}"
                 )
+        self._recreate_stale_drift_cache(conn)
         conn.executescript(_SCHEMA)
+
+    @staticmethod
+    def _recreate_stale_drift_cache(conn: sqlite3.Connection) -> None:
+        """Drop an ``anchor_drift`` table whose key predates ``base_tip``.
+
+        Unconditional and idempotent: a table already carrying the current columns is
+        left alone, and an absent one is a no-op (the schema script creates it). This
+        is the one destructive DDL in the store, and it is confined to a rebuildable
+        cache — sqlite cannot alter a PRIMARY KEY in place, and keeping rows whose key
+        omits an input to the verdict is exactly the defect the new key removes."""
+        cols = {r["name"] for r in conn.execute("PRAGMA table_info(anchor_drift)")}
+        if cols and cols != _DRIFT_CACHE_COLUMNS:
+            _log.info(
+                "store.drift_cache_recreated old_columns=%s", ",".join(sorted(cols))
+            )
+            conn.execute("DROP TABLE anchor_drift")
 
     # ── episodes / blob group (admission CAS state machine) ───────────────────
     def stage(
@@ -930,60 +972,6 @@ class SqliteEpisodeStore:
             )
         }
 
-    def last_verification(
-        self,
-        episode_ids: Sequence[int],
-        *,
-        own_refs: Optional[Mapping[int, frozenset[str]]] = None,
-    ) -> dict[int, tuple[int, str, str]]:
-        """LastVerificationReader: the newest ``verify_current``/``verify_stale``
-        ledger row per requested id → ``{eid: (ts, head_sha, state)}``, state derived
-        from the kind. Read-only, no DDL. DEFENSIVE payload parse (the
-        ``promotion_provenance`` idiom): a malformed payload or a missing
-        ``stamp.head_sha`` SKIPS that row — an older parseable row may still answer;
-        an id with nothing parseable is simply ABSENT (under-claim, never a raise).
-
-        ``own_refs`` maps an episode to the line(s) IT declared (absent/empty ⇒ an
-        unscoped read of that id, unchanged). A row whose payload ``ref`` names a
-        line the memory never declared is SKIPPED — the same first-parseable-wins
-        loop lets an on-line row answer instead — so the rider never reports a
-        memory stale on a line it never claimed. This only ever WITHHOLDS a stamp;
-        it can never upgrade one to "current". A legacy ref-LESS row always counts
-        (the absence rule: scoping filters foreign refs, never the pre-stamp
-        corpus). // O(rows)."""
-        ids = [int(e) for e in episode_ids]
-        if not ids:
-            return {}
-        out: dict[int, tuple[int, str, str]] = {}
-        placeholders = ",".join("?" for _ in ids)
-        # newest-first per episode: ORDER BY ts DESC, id DESC, first parseable wins.
-        for r in self.conn.execute(
-            f"SELECT episode_id, kind, ts, payload FROM evidence_events "
-            f"WHERE kind IN (?,?) AND episode_id IN ({placeholders}) "
-            f"ORDER BY episode_id, ts DESC, id DESC",
-            [EK_VERIFY_CURRENT, EK_VERIFY_STALE, *ids],
-        ):
-            eid = int(r["episode_id"])
-            if eid in out:
-                continue  # already have the newest for this id
-            # marker: skipping legacy ref-less rows under a set own-line filter is a
-            # mutation (the absence rule) — only a PRESENT, FOREIGN ref is skipped.
-            lines = (own_refs or {}).get(eid) or frozenset()
-            row_ref = verify_payload_ref(r["payload"])
-            if lines and row_ref and row_ref not in lines:
-                continue  # measured a line this memory never declared ⇒ skip
-            try:
-                payload = json.loads(r["payload"])
-                stamp = payload.get("stamp")
-                head_sha = stamp.get("head_sha") if isinstance(stamp, dict) else None
-                if not isinstance(head_sha, str) or not head_sha:
-                    continue  # stamp-less row ⇒ skip (under-claim)
-                state = "current" if r["kind"] == EK_VERIFY_CURRENT else "stale"
-                out[eid] = (int(r["ts"]), head_sha, state)
-            except (TypeError, ValueError, json.JSONDecodeError):
-                continue  # malformed ⇒ skip, never raise
-        return out
-
     def stale_suspect_rows(self) -> list[tuple[int, int, str]]:
         """The newest ``stale_suspect`` ledger row per episode →
         ``[(episode_id, ts, payload)]`` (no port — consumed by the hive_health
@@ -1025,27 +1013,25 @@ class SqliteEpisodeStore:
 
     def evidence_rows_for(
         self, episode_id: int, kinds: Sequence[str]
-    ) -> list[tuple[str, str, int, str]]:
-        """The retirement gate's ledger feed: the target's ``(kind, actor, ts,
-        ref)`` rows restricted to ``kinds``, in insertion order — exactly the
-        4-sequence shape ``retirement.retirement_evidence`` consumes. Empty
-        ``kinds`` → [] (the caller names what qualifies; an unfiltered read here
-        would hand the gate foreign kinds to ignore).
+    ) -> list[tuple[str, str, int]]:
+        """The retirement gate's ledger feed: the target's ``(kind, actor, ts)``
+        rows restricted to ``kinds``, in insertion order — exactly the 3-sequence
+        shape ``retirement.retirement_evidence`` consumes. Empty ``kinds`` → []
+        (the caller names what qualifies; an unfiltered read here would hand the
+        gate foreign kinds to ignore).
 
-        ``ref`` is the measured LINE, projected by
-        ``change_evidence.verify_payload_ref`` — the gate decides RELEVANCE (a
-        memory that declared its own line must not be retired on another line's
-        evidence), the payload grammar stays in the one module that writes it.
-        "" = unknown line; a kind that stamps no ref (the hurt kinds) always reads
-        "". Read-only, no DDL. // O(rows)."""
+        The payload is deliberately NOT projected: the surviving gate clauses are
+        decided by kind, actor and recency alone, so reading a payload grammar here
+        would put a second parser between the ledger and the gate for a field no
+        clause consumes. Read-only, no DDL. // O(rows)."""
         ks = [str(k) for k in kinds]
         if not ks:
             return []
         placeholders = ",".join("?" for _ in ks)
         return [
-            (r["kind"], r["actor"], int(r["ts"]), verify_payload_ref(r["payload"]))
+            (r["kind"], r["actor"], int(r["ts"]))
             for r in self.conn.execute(
-                f"SELECT kind, actor, ts, payload FROM evidence_events "
+                f"SELECT kind, actor, ts FROM evidence_events "
                 f"WHERE episode_id=? AND kind IN ({placeholders}) ORDER BY id",
                 [int(episode_id), *ks],
             )
@@ -1128,46 +1114,25 @@ class SqliteEpisodeStore:
             )
         return True
 
-    # ── the backfill-mint seam (duck-typed app reads/writes — no port) ─────────
-    def anchors_lacking_fp(self, repo: str) -> list[tuple[int, str]]:
-        """The mint sweep's candidate read: ``(episode_id, anchor)`` for every
-        approved row's non-empty anchor binding in ``repo`` whose ``fp_meta`` carrier
-        is EMPTY (never minted, never pinned). Presence-only — the store never parses
-        a non-empty carrier's body (meta-envelope law); a row with ANY carrier is
-        out of the sweep, so a human/edge pin structurally cannot be revisited.
-        Quarantined/provisional/established rows all stay IN (a quarantined memory
-        can still be promoted and needs its fingerprints); ONLY ``trust='deprecated'``
-        (retired: superseded or pruned) is excluded — BUG-065: a retired memory must
-        stop consuming the mint-backfill sweep forever. Read-only, no DDL.
-        // O(rows)."""
-        return [
-            (int(r["episode_id"]), r["anchor"])
-            for r in self.conn.execute(
-                "SELECT ea.episode_id, ea.anchor FROM episode_anchors ea "
-                "JOIN episodes e ON e.id = ea.episode_id "
-                f"WHERE ea.repo=? AND ea.anchor != '' AND ea.fp_meta='' "
-                f"AND {_LIVE_EPISODE_PREDICATE} "
-                f"ORDER BY ea.episode_id, ea.anchor",
-                (repo,),
-            )
-        ]
+    # ── the staleness baseline (a server observation, not a writer declaration) ─
+    def anchor_work_list(self, repo: str) -> list[tuple[int, str, str]]:
+        """``(episode_id, anchor, base_tip)`` for every NON-RETIRED approved anchor
+        binding of ``repo``, in (episode_id, anchor) order — the ONE work list both
+        the baseline sweep and the drift materializer read. ``base_tip`` is ``''``
+        when no baseline has been recorded yet (the sweep's own candidate predicate),
+        so the two questions "what needs baselining" and "what needs judging" can no
+        longer be asked by two queries that might disagree.
 
-    def anchor_carriers(self, repo: str) -> list[tuple[str, str]]:
-        """(anchor, fp_meta) for every NON-RETIRED approved anchor binding of
-        ``repo``, in (episode_id, anchor) order — the drift materializer's work
-        list (replaces the daemon's own raw SQL). All three work-list verbs
-        interpolate the ONE ``_LIVE_EPISODE_PREDICATE`` constant, so BUG-065 is
-        fixed in one place by construction, not by three joins agreeing. The carrier body is returned RAW (the store
-        never parses it — meta-envelope law); the caller owns first-wins-per-anchor
-        (iterating in this order and keeping the first carrier seen per anchor
-        reproduces that rule) and any further parsing of the carrier JSON.
-        Quarantined/provisional/established rows stay in; only
-        ``trust='deprecated'`` is excluded. Read-only, no DDL. // O(rows)."""
+        Quarantined/provisional/established rows all stay in; only
+        ``trust='deprecated'`` is excluded — a retired memory must stop consuming the
+        materializer's work forever (BUG-065). Read-only, no DDL. // O(rows)."""
         return [
-            (r["anchor"], r["fp_meta"])
+            (int(r["episode_id"]), r["anchor"], r["base_tip"] or "")
             for r in self.conn.execute(
-                "SELECT ea.anchor, ea.fp_meta FROM episode_anchors ea "
+                "SELECT ea.episode_id, ea.anchor, ab.base_tip FROM episode_anchors ea "
                 "JOIN episodes e ON e.id = ea.episode_id "
+                "LEFT JOIN anchor_baselines ab ON ab.episode_id = ea.episode_id "
+                "  AND ab.repo = ea.repo AND ab.anchor = ea.anchor "
                 f"WHERE ea.repo=? AND ea.anchor != '' "
                 f"AND {_LIVE_EPISODE_PREDICATE} "
                 f"ORDER BY ea.episode_id, ea.anchor",
@@ -1175,46 +1140,126 @@ class SqliteEpisodeStore:
             )
         ]
 
-    def fill_anchor_fp(
-        self, episode_id: int, repo: str, anchor: str, additions: Mapping[str, str]
+    def anchor_baseline_put(
+        self, rows: Sequence[tuple[int, str, str, str, int]]
     ) -> int:
-        """Absent-only fingerprint merge into ONE ``episode_anchors.fp_meta`` carrier,
-        in ONE tx: parse the current carrier ('' ⇒ {}), fold ``additions`` in UNDER
-        it, write back canonical (``normalize_meta`` stays the one grammar gate — a
-        non-conforming result refuses loudly and the tx rolls back). Returns the count
-        of keys added; 0 = no-op, nothing written (unknown row, empty or all-present
-        additions). The write touches ONLY the fp_meta column of ONLY this
-        ``(episode_id, repo, anchor)`` row — the episode row stays byte-identical.
+        """Record ``(episode_id, repo, anchor, base_tip, ts)`` baselines, ONE tx.
+        Returns how many rows were actually inserted.
 
-        STRUCTURALLY absent-only: the merge spreads the CURRENT map last, so a
-        present key cannot be displaced — an overwrite is unconstructable, not
-        merely refused. // marker: swapping the spread order (additions last) is
-        the mutation — test_fill_anchor_fp_never_overwrites and CT-5
-        test_absent_only_present_keys_never_displaced red."""
+        INSERT-IF-ABSENT ONLY: a recorded baseline is NEVER moved. Re-baselining an
+        anchor at a later tip would erase a break that already landed between the two
+        — the memory would read ``fresh`` forever about code that changed under it.
+        Empty ``base_tip`` rows are skipped: a repo whose watermark the server has not
+        observed yet has no baseline to record, and storing ``''`` would occupy the key
+        the real observation must later fill.
+
+        // marker: making this an upsert (ON CONFLICT DO UPDATE) reds
+        test_a_recorded_baseline_is_never_moved."""
+        insertable = [r for r in rows if r[3]]
+        if not insertable:
+            return 0
         with tx(self.conn):
-            row = self.conn.execute(
-                "SELECT fp_meta FROM episode_anchors "
-                "WHERE episode_id=? AND repo=? AND anchor=?",
-                (int(episode_id), repo, anchor),
-            ).fetchone()
-            if row is None:
-                return 0
-            current = json.loads(row["fp_meta"]) if row["fp_meta"] else {}
-            if not isinstance(current, dict):
-                raise ValueError(
-                    f"anchor ({episode_id}, {repo!r}, {anchor!r}) fp_meta carrier "
-                    "is not a map — refusing to merge"
-                )
-            merged = {**dict(additions), **current}
-            added = len(merged) - len(current)
-            if added == 0:
-                return 0
-            self.conn.execute(
-                "UPDATE episode_anchors SET fp_meta=? "
-                "WHERE episode_id=? AND repo=? AND anchor=?",
-                (normalize_meta(merged), int(episode_id), repo, anchor),
+            return self._insert_baselines_locked(insertable)
+
+    def _insert_baselines_locked(
+        self, rows: Sequence[tuple[int, str, str, str, int]]
+    ) -> int:
+        """The one INSERT the absent-only rule lives in. Caller owns the tx."""
+        added = 0
+        for episode_id, repo, anchor, base_tip, ts in rows:
+            cur = self.conn.execute(
+                "INSERT INTO anchor_baselines(episode_id, repo, anchor, base_tip, ts) "
+                "VALUES(?,?,?,?,?) ON CONFLICT(episode_id, repo, anchor) DO NOTHING",
+                (int(episode_id), repo, anchor, base_tip, int(ts)),
             )
-            return added
+            added += int(cur.rowcount or 0)
+        return added
+
+    def anchor_symbol_probes(self, repo: str) -> dict[tuple[str, str], int]:
+        """``(base_tip, anchor) -> symbol_ok`` for every recorded baseline of ``repo``.
+
+        The verdict cache is keyed by ``(base_tip, anchor)``, not by episode, so this
+        collapses the per-episode rows onto the same key. It folds with MIN because the
+        column is ordered by how much it claims — ``-1`` unprobed < ``0`` did not
+        resolve < ``1`` resolved — so two rows that somehow disagree resolve to the
+        weaker claim rather than the stronger one. Read-only, no DDL. // O(rows)."""
+        return {
+            (r["base_tip"], r["anchor"]): int(r["ok"])
+            for r in self.conn.execute(
+                "SELECT base_tip, anchor, MIN(symbol_ok) AS ok FROM anchor_baselines "
+                "WHERE repo=? AND base_tip != '' GROUP BY base_tip, anchor",
+                (repo,),
+            )
+        }
+
+    def anchor_symbol_ok_put(
+        self, repo: str, rows: Sequence[tuple[str, str, int]]
+    ) -> int:
+        """Record ``(base_tip, anchor, symbol_ok)`` resolutions, ONE tx. Returns the
+        rows actually written.
+
+        WRITE-ONCE: only a still-unprobed row is filled. Whether a symbol resolved at a
+        given commit is a fact about a tree that can never change, so re-asking is waste
+        and re-WRITING would let a transient inability to resolve (a missing funcname
+        driver, an unreadable mirror) overwrite a real observation and turn a live
+        binding into a false ``anchor_missing``.
+
+        // marker: dropping the ``symbol_ok=-1`` clause reds
+        test_a_recorded_symbol_resolution_is_never_moved."""
+        written = 0
+        if not rows:
+            return 0
+        with tx(self.conn):
+            for base_tip, anchor, ok in rows:
+                cur = self.conn.execute(
+                    "UPDATE anchor_baselines SET symbol_ok=? "
+                    "WHERE repo=? AND anchor=? AND base_tip=? AND symbol_ok=-1",
+                    (int(ok), repo, anchor, base_tip),
+                )
+                written += int(cur.rowcount or 0)
+        return written
+
+    def anchor_baselines_get(
+        self, episode_id: int, repo: str, anchors: Sequence[str]
+    ) -> dict[str, str]:
+        """The recall-side read: ``anchor -> base_tip`` for ONE episode's bindings in
+        ``repo``. An anchor with no recorded baseline is simply ABSENT, and the caller
+        reads absence as the honest unknown. Read-only, no DDL. // O(k)."""
+        names = [str(a) for a in anchors]
+        if not names:
+            return {}
+        placeholders = ",".join("?" for _ in names)
+        return {
+            r["anchor"]: r["base_tip"]
+            for r in self.conn.execute(
+                f"SELECT anchor, base_tip FROM anchor_baselines "
+                f"WHERE episode_id=? AND repo=? AND anchor IN ({placeholders})",
+                [int(episode_id), repo, *names],
+            )
+        }
+
+    def anchor_baselines_prune(self, repo: str, keep: Sequence[tuple[int, str]]) -> int:
+        """Drop a repo's baselines for every ``(episode_id, anchor)`` NOT in ``keep``
+        (empty ⇒ drop the repo's whole baseline set) — the ``drift_prune`` twin, so a
+        retired memory's baseline leaves with its anchor instead of outliving it.
+        Other repos untouched. Returns the rows deleted. ONE tx. // O(rows)."""
+        live = {(int(e), str(a)) for e, a in keep}
+        with tx(self.conn):
+            doomed = [
+                (int(r["episode_id"]), r["anchor"])
+                for r in self.conn.execute(
+                    "SELECT episode_id, anchor FROM anchor_baselines WHERE repo=?",
+                    (repo,),
+                )
+                if (int(r["episode_id"]), r["anchor"]) not in live
+            ]
+            for episode_id, anchor in doomed:
+                self.conn.execute(
+                    "DELETE FROM anchor_baselines "
+                    "WHERE repo=? AND episode_id=? AND anchor=?",
+                    (repo, episode_id, anchor),
+                )
+        return len(doomed)
 
     # ── the repo registry (operational data — the authctl-seat pattern) ────────
     def repo_registry(self) -> list[RepoRow]:
@@ -1276,8 +1321,11 @@ class SqliteEpisodeStore:
 
         Deregistration forgets the feed AND EVERYTHING DERIVED FROM IT, all in the
         same tx: the ``sync:<name>:*`` daemon state (BUG-060), the per-ref
-        watermarks (``ref_tips``), the materialized verdicts keyed on them
-        (``anchor_drift``), and the materializer's work list (``ref_requests``).
+        watermarks (``ref_tips``), the per-binding staleness baselines
+        (``anchor_baselines`` — a server OBSERVATION of a commit this incarnation
+        actually watched, never a writer declaration), the materialized verdicts
+        keyed on both (``anchor_drift``), and the materializer's work list
+        (``ref_requests``).
         Leaving any of them made re-registering the same name — a documented
         operator flow — answer from the PREVIOUS incarnation: a fully-populated
         health block before the daemon had ticked once, a ledger resumed from a
@@ -1296,6 +1344,7 @@ class SqliteEpisodeStore:
             cur = self.conn.execute("DELETE FROM repos WHERE name=?", (name,))
             self.conn.execute("DELETE FROM meta WHERE key LIKE ?", (f"sync:{name}:%",))
             self.conn.execute("DELETE FROM ref_tips WHERE repo=?", (name,))
+            self.conn.execute("DELETE FROM anchor_baselines WHERE repo=?", (name,))
             self.conn.execute("DELETE FROM anchor_drift WHERE repo=?", (name,))
             self.conn.execute("DELETE FROM ref_requests WHERE repo=?", (name,))
         if cur.rowcount:
@@ -1304,42 +1353,56 @@ class SqliteEpisodeStore:
 
     # ── the materialized drift cache (rebuildable, Law 5) ──────────────────────
     def drift_get(
-        self, repo: str, tip_sha: str, anchors: Sequence[str]
+        self,
+        repo: str,
+        tip_sha: str,
+        base_tips: Mapping[str, str],
+        anchors: Sequence[str],
     ) -> dict[str, tuple[str, str]]:
         """The recall-side drift read: the materialized ``(verdict, detail)`` per
-        requested anchor at EXACTLY ``(repo, tip_sha)``. An un-materialized anchor is
-        simply ABSENT — the caller reads absence as ``unverifiable`` (fail-safe: never
-        false-fresh, never false-stale). Verdict strings ride verbatim (the §3.4 wire
+        requested anchor at EXACTLY ``(repo, tip_sha, base_tip, anchor)`` — every
+        input to the verdict, so a row cached against a DIFFERENT baseline can never
+        answer this question (BUG-081 unconstructable, not invalidated). ``base_tips``
+        maps anchor → the baseline that anchor is judged from; an anchor absent from
+        it is looked up at the empty baseline. An un-materialized anchor is simply
+        ABSENT — the caller reads absence as ``unverifiable`` (fail-safe: never
+        false-fresh, never false-stale). Verdict strings ride verbatim (the wire
         vocabulary is stamped upstream — this cache never interprets). Read-only,
         no DDL. // O(k)."""
         names = [str(a) for a in anchors]
         if not names:
             return {}
-        placeholders = ",".join("?" for _ in names)
+        pairs = ",".join("(?,?)" for _ in names)
+        args: list[object] = [repo, tip_sha]
+        for anchor in names:
+            args += [anchor, base_tips.get(anchor, "")]
         return {
             r["anchor"]: (r["verdict"], r["detail"])
             for r in self.conn.execute(
                 f"SELECT anchor, verdict, detail FROM anchor_drift "
-                f"WHERE repo=? AND tip_sha=? AND anchor IN ({placeholders})",
-                [repo, tip_sha, *names],
+                f"WHERE repo=? AND tip_sha=? AND (anchor, base_tip) IN (VALUES {pairs})",
+                args,
             )
         }
 
-    def drift_put(self, rows: Sequence[tuple[str, str, str, str, str, int]]) -> None:
-        """Materialize drift verdicts — ``(repo, tip_sha, anchor, verdict,
-        detail_json, ts)`` rows in §3.5 DDL column order, ONE tx, last-write-wins on
-        the ``(repo, tip_sha, anchor)`` key (a re-materialization refreshes the cache
-        row; the cache is rebuildable state, not a ledger). // O(batch)."""
+    def drift_put(
+        self, rows: Sequence[tuple[str, str, str, str, str, str, int]]
+    ) -> None:
+        """Materialize drift verdicts — ``(repo, tip_sha, base_tip, anchor, verdict,
+        detail_json, ts)`` rows in DDL column order, ONE tx, last-write-wins on the
+        ``(repo, tip_sha, base_tip, anchor)`` key (a re-materialization refreshes the
+        cache row; the cache is rebuildable state, not a ledger). // O(batch)."""
         if not rows:
             return
         with tx(self.conn):
-            for repo, tip_sha, anchor, verdict, detail, ts in rows:
+            for repo, tip_sha, base_tip, anchor, verdict, detail, ts in rows:
                 self.conn.execute(
-                    "INSERT INTO anchor_drift(repo, tip_sha, anchor, verdict, detail, ts) "
-                    "VALUES(?,?,?,?,?,?) "
-                    "ON CONFLICT(repo, tip_sha, anchor) DO UPDATE SET "
+                    "INSERT INTO anchor_drift"
+                    "(repo, tip_sha, base_tip, anchor, verdict, detail, ts) "
+                    "VALUES(?,?,?,?,?,?,?) "
+                    "ON CONFLICT(repo, tip_sha, base_tip, anchor) DO UPDATE SET "
                     "verdict=excluded.verdict, detail=excluded.detail, ts=excluded.ts",
-                    (repo, tip_sha, anchor, verdict, detail, int(ts)),
+                    (repo, tip_sha, base_tip, anchor, verdict, detail, int(ts)),
                 )
 
     def drift_prune(
@@ -1347,48 +1410,39 @@ class SqliteEpisodeStore:
         repo: str,
         keep_tips: Sequence[str],
         keep_anchors: Sequence[str] | None = None,
+        keep_base_tips: Sequence[str] | None = None,
     ) -> int:
         """Drop a repo's materialized verdicts for every row whose tip is NOT in
-        ``keep_tips`` OR — when ``keep_anchors`` is given — whose anchor is NOT in
-        ``keep_anchors``: bounded growth for a rebuildable cache (a pruned row
-        re-materializes on demand), AND the false-fresh close — once an anchor
-        leaves the live work list, its cached rows at LIVE tips must not survive to
-        answer a later episode that binds the same anchor. ``keep_anchors=None``
-        preserves the tip-only prune EXACTLY (pre-existing behavior, byte-for-byte);
-        an empty-but-given ``keep_anchors`` means no anchor is live, so the whole
-        repo cache drops. Other repos untouched. Returns the rows deleted. ONE tx.
-        // O(rows)."""
+        ``keep_tips`` OR — when given — whose anchor is NOT in ``keep_anchors`` OR
+        whose baseline is NOT in ``keep_base_tips``: bounded growth for a rebuildable
+        cache (a pruned row re-materializes on demand), AND the false-fresh close —
+        once an anchor or a baseline leaves the live work list, its cached rows at
+        LIVE tips must not survive to answer a later episode that reuses the same
+        anchor. A ``None`` bound is simply not applied; an empty-but-given one means
+        nothing of that kind is live, so the whole repo cache drops. Other repos
+        untouched. Returns the rows deleted. ONE tx. // O(rows)."""
         keep = [str(t) for t in keep_tips]
+        clauses: list[str] = []
+        args: list[object] = [repo]
+        clauses.append(
+            "tip_sha NOT IN ({})".format(",".join("?" for _ in keep)) if keep else "1=1"
+        )
+        args += keep
+        for column, bound in (("anchor", keep_anchors), ("base_tip", keep_base_tips)):
+            if bound is None:
+                continue
+            members = [str(b) for b in bound]
+            clauses.append(
+                "{} NOT IN ({})".format(column, ",".join("?" for _ in members))
+                if members
+                else "1=1"
+            )
+            args += members
         with tx(self.conn):
-            if keep_anchors is None:
-                if keep:
-                    placeholders = ",".join("?" for _ in keep)
-                    cur = self.conn.execute(
-                        f"DELETE FROM anchor_drift "
-                        f"WHERE repo=? AND tip_sha NOT IN ({placeholders})",
-                        [repo, *keep],
-                    )
-                else:
-                    cur = self.conn.execute(
-                        "DELETE FROM anchor_drift WHERE repo=?", (repo,)
-                    )
-            else:
-                anchors = [str(a) for a in keep_anchors]
-                tip_clause = (
-                    "tip_sha NOT IN ({})".format(",".join("?" for _ in keep))
-                    if keep
-                    else "1=1"
-                )
-                anchor_clause = (
-                    "anchor NOT IN ({})".format(",".join("?" for _ in anchors))
-                    if anchors
-                    else "1=1"
-                )
-                cur = self.conn.execute(
-                    f"DELETE FROM anchor_drift WHERE repo=? AND ({tip_clause} OR "
-                    f"{anchor_clause})",
-                    [repo, *keep, *anchors],
-                )
+            cur = self.conn.execute(
+                f"DELETE FROM anchor_drift WHERE repo=? AND ({' OR '.join(clauses)})",
+                args,
+            )
         return int(cur.rowcount)
 
     # ── the per-ref tip watermark (ref_tips: the branch twin of last_tip) ──────

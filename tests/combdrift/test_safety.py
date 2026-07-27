@@ -10,17 +10,21 @@ import json
 from pathlib import Path
 
 from hive.combdrift.cli import main
-from hive.combdrift.resolution import resolve_anchor
-from hive.combdrift.types import Anchor
+from hive.combdrift.resolution import fingerprint_anchor, resolve_anchor
+from hive.combdrift.types import REASON_NO_FINGERPRINT, Anchor
 from hive.combdrift.verdict import verify_records
 
 from tests.combdrift.conftest import snapshot_tree
 
 
 def test_module_top_level_sys_exit_is_safe(tmp_repo: Path, make_record):
-    # pkg/explode.py calls sys.exit(1) at module top level. If the resolver
-    # imported it, this process would terminate. AST parse must be unaffected.
-    rec = make_record("boom", ("pkg/explode.py", "handler"))
+    # pkg/explode.py calls sys.exit(1) at module top level. If either the mint
+    # or the verify pass imported it, this process would terminate. Both must
+    # AST-parse only. The baseline is minted for real so `current` is earned by
+    # an actual shape comparison rather than by the absence of one.
+    fp = fingerprint_anchor(str(tmp_repo), Anchor("pkg/explode.py", "handler"))
+    assert fp is not None
+    rec = make_record("boom", ("pkg/explode.py", "handler", fp))
     verdicts, _summary = verify_records(str(tmp_repo), [rec])
     assert verdicts[0].verdict == "current"
     assert verdicts[0].anchors[0].found is True
@@ -28,10 +32,12 @@ def test_module_top_level_sys_exit_is_safe(tmp_repo: Path, make_record):
 
 def test_resolver_uses_ast_not_import(tmp_repo: Path):
     # pkg/nameerror.py raises NameError at import time. Resolving its symbol via
-    # AST must still succeed, proving no import path is taken.
+    # AST must still succeed, proving no import path is taken. No baseline is
+    # recorded here, so the shape is uncompared — the symbol is still located.
     res = resolve_anchor(str(tmp_repo), Anchor("pkg/nameerror.py", "safe"))
     assert res.found is True
-    assert res.reason == "ok"
+    assert res.reason == REASON_NO_FINGERPRINT
+    assert res.location == "pkg/nameerror.py:4"
 
 
 def test_repo_mtimes_unchanged_after_run(tmp_repo: Path, tmp_path: Path):

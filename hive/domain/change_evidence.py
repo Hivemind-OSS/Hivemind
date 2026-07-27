@@ -14,10 +14,8 @@ episode — ANY phase, gated ONLY on a full ``ModelVersion ⊕ VerifierVersion �
 version stamp (v3: the canonical ``post_merge`` ingest is the rider's normal carrier) —
 a mechanical ``outcome_verified_helped``/``_hurt`` row when the polarity-aware
 three-way regression clause decides (drift at the anchor ∧ a DECIDED failing test run
-∧ blast-radius reach; abstention is the default), plus a
-``verify_current``/``verify_stale`` row recording what the verifier proved about the
-anchor itself at head SHA — and, when the receipt carries the optional census
-``propagation`` block, an advisory ``stale_suspect`` row per episode whose anchor sits
+∧ blast-radius reach; abstention is the default) — and, when the receipt carries the
+optional census ``propagation`` block, an advisory ``stale_suspect`` row per episode whose anchor sits
 in a breaking/removed seed's blast radius (neighbourhood suspicion; a directly-matched
 episode's point row dominates and suppresses it).
 
@@ -43,13 +41,12 @@ import json
 from dataclasses import dataclass
 from typing import Any, Callable, Optional, Sequence
 
+from hive.domain.anchor_grammar import split_anchor
 from hive.domain.evidence_kinds import (
     EK_CHANGE_OUTCOME,
     EK_OUTCOME_VERIFIED_HELPED,
     EK_OUTCOME_VERIFIED_HURT,
     EK_STALE_SUSPECT,
-    EK_VERIFY_CURRENT,
-    EK_VERIFY_STALE,
 )
 from hive.domain.ports import AnchoredEpisodeReader, ChangeEvidenceAppender, RangeLedger
 
@@ -60,7 +57,6 @@ _STATEMENT_TYPE = "https://in-toto.io/Statement/v1"
 
 PAYLOAD_SCHEMA = "change_outcome/v1"  # versions the rendered evidence payload
 VERIFIED_PAYLOAD_SCHEMA = "outcome_verified/v1"  # versions the verified-outcome payload
-VERIFY_PAYLOAD_SCHEMA = "verify/v1"  # versions the anchor-verification payload
 SUSPECT_PAYLOAD_SCHEMA = (
     "stale_suspect/v1"  # versions the neighbourhood-staleness payload
 )
@@ -75,11 +71,10 @@ _JOIN_CLASSES = frozenset({"existence", "contract", "regression"})
 _EXECUTION_CLASSES = frozenset({"typecheck", "tests"})
 _DECIDED_STATES = frozenset({"passed", "failed"})
 
-# the verified/verify drift vocabularies (VISION_LIFT §5.2, pinned exactly):
-# breaking/removed prove the anchor moved; unchanged/additive/"" prove it held.
-# Anything else (indeterminate, unknown) is an under-claim — no row.
+# the verified-outcome drift vocabulary (VISION_LIFT §5.2, pinned exactly):
+# breaking/removed prove the anchor moved. Anything else (unchanged, additive,
+# indeterminate, unknown) is an under-claim — no row.
 _BREAKING_DRIFTS = frozenset({"breaking", "removed"})
-_CURRENT_DRIFTS = frozenset({"unchanged", "additive", ""})
 
 # the machine reason enum riding the verified payload (never receipt prose)
 _VERIFIED_REASONS = {
@@ -166,11 +161,18 @@ class SubjectEvidence:
 @dataclass(frozen=True, slots=True)
 class IngestReport:
     """The machine-readable result of one ingest (ids + counts, never prose).
-    The four verified/verify counters and ``stale_suspects`` count rows RENDERED into
+    The two verified counters and ``stale_suspects`` count rows RENDERED into
     the batch (mirroring ``matched``'s join-level semantics) — a re-ingest keeps the
     counts while ``already_recorded`` absorbs the skips. ``range_skipped`` True means
     the range ledger absorbed the whole receipt BEFORE any join/render — every other
-    field is then zero (nothing was done)."""
+    COUNT is then zero (nothing was done).
+
+    ``touched_paths`` is the exception, and deliberately so: it is not a count of
+    work DONE, it is a statement of what the range CONTAINED — the repo-relative
+    paths of the receipt's joinable subjects. The sync daemon reads it to defer
+    baselining an anchor whose file the same tick just watched change (BUG-071), so
+    a range-skipped report that reported nothing touched would silently reopen the
+    exact window the deferral exists to close. Both return sites populate it."""
 
     inserted: tuple[int, ...]
     already_recorded: int
@@ -178,10 +180,9 @@ class IngestReport:
     skipped_lines: int
     verified_helped: int = 0
     verified_hurt: int = 0
-    verify_current: int = 0
-    verify_stale: int = 0
     stale_suspects: int = 0
     range_skipped: bool = False
+    touched_paths: frozenset[str] = frozenset()
 
 
 # ── parsing (D8: .get() + coerce everywhere; refuse the receipt, never crash) ──
@@ -388,7 +389,7 @@ def derive_post_merge(
     return ("fail" if "failed" in decided else "pass"), "bounded-estimate"
 
 
-# ── Flow A: the verified/verify distillation + classifiers (mechanical, D8) ────
+# ── Flow A: the verified-outcome distillation + classifier (mechanical, D8) ────
 
 
 def subject_evidence(lines: list[Any]) -> dict[tuple[str, str], SubjectEvidence]:
@@ -468,25 +469,12 @@ def classify_verified(
     return None
 
 
-def classify_verify(ev: SubjectEvidence) -> Optional[str]:
-    """The anchor-verification classifier: STALE iff the symbol is gone
-    (``exists_after is False``) or its contract drifted breaking/removed (gone trumps
-    a benign drift reading); CURRENT iff it verifiably exists AND the drift is
-    benign (unchanged/additive/absent). Indeterminate/unknown ⇒ ``None``
-    (under-claim)."""
-    if ev.exists_after is False or ev.drift in _BREAKING_DRIFTS:
-        return EK_VERIFY_STALE
-    if ev.exists_after is True and ev.drift in _CURRENT_DRIFTS:
-        return EK_VERIFY_CURRENT
-    return None
-
-
 def version_stamp(provenance: object) -> Optional[dict[str, Any]]:
     """The full ``ModelVersion ⊕ VerifierVersion ⊕ SHA`` binding (L7): base/head SHAs
     + the combdrift block (flat string entries only — the VerifierVersion) + the
     matrix HEAD graph identity (graph_sha256/commit_sha/engine_version — the
     ModelVersion). ``None`` unless EVERY part parses (D8 ``.get()`` walks): a
-    verified/verify row is never written without its full stamp — the plain
+    verified-outcome or suspect row is never written without its full stamp — the plain
     change_outcome row still lands."""
     if not isinstance(provenance, dict):
         return None
@@ -537,13 +525,18 @@ def _anchor_match_level(
     (the most precise tier wins); ``file`` when an anchor names exactly the
     subject's path (file-scoped — the path alone matches); None otherwise.
     A symbol-scoped anchor naming a DIFFERENT symbol never matches
-    (precision-first under-claim, unchanged from the free-text era)."""
+    (precision-first under-claim, unchanged from the free-text era).
+
+    The tokenization is NOT re-spelled here: ``split_anchor`` is the one owner the
+    write gate validates against, so what the boundary accepts and what this joins
+    cannot fork (BUG-077). An empty symbol is file-scoped, so ``"a.py::"`` falls to
+    the file tier exactly as it did under the inline partition."""
     best: Optional[str] = None
     for anchor in anchors:
-        path, sep, symbol = anchor.partition("::")
+        path, symbol = split_anchor(anchor)
         if path != subject.path:
             continue
-        if sep and symbol:
+        if symbol:
             if symbol == subject.symbol:
                 return "symbol"
             continue  # names a different symbol: no match
@@ -667,59 +660,13 @@ def render_verified_payload(
     )
 
 
-def render_verify_payload(
-    subject: TouchedSubject, ev: SubjectEvidence, stamp: dict[str, Any], ref: str = ""
-) -> str:
-    """The anchor-verification payload: the observed existence/drift facts + the full
-    version stamp. Deliberately receipt-digest-free — the verification state of an
-    anchor at a head SHA is a fact about the CHANGE, so a re-issued receipt for the
-    same change dedups to the same row (content-keyed idempotency). ``ref`` (the
-    measured line) rides only when present — legacy bytes stay identical."""
-    return json.dumps(
-        {
-            "schema": VERIFY_PAYLOAD_SCHEMA,
-            "matched": {"path": subject.path, "symbol": subject.symbol},
-            "exists_after": ev.exists_after,
-            "drift": ev.drift,
-            # marker: unconditional emission ("ref" on a legacy payload) is a mutation —
-            # it breaks legacy content-keyed dedup.
-            **({"ref": ref} if ref else {}),
-            "stamp": stamp,
-        },
-        sort_keys=True,
-        separators=(",", ":"),
-    )
-
-
-def verify_payload_ref(payload: str) -> str:
-    """The LINE a ``verify_*`` row was measured on — the ``ref`` this module's own
-    ``render_verify_payload`` stamps into the body.
-
-    "" for anything undecidable: an empty, unparseable or non-object body, or a
-    legacy pre-stamp row that carries no ref (render emits the key only when
-    non-empty — its Law-7 marker). The SINGLE owner of READING what
-    ``render_verify_payload`` WRITES; every consumer (the retirement gate's ledger
-    feed, the recall rider's line scoping) goes through here rather than spelling
-    the grammar again. Total, never raises. PURE: stdlib json only. // O(len)."""
-    if not payload:
-        return ""
-    try:
-        body = json.loads(payload)
-    except Exception:  # noqa: BLE001 — unparseable body ⇒ line unknown
-        return ""
-    if not isinstance(body, dict):
-        return ""
-    ref = body.get("ref")
-    return ref if isinstance(ref, str) else ""
-
-
 def render_suspect_payload(
     subject: TouchedSubject, seed: str, drift: str, stamp: dict[str, Any]
 ) -> str:
     """The neighbourhood-staleness payload: the suspected neighbour + the
     breaking/removed seed whose blast radius reached it + the full version stamp
     (the SHAs ride the stamp). Ids/enums/hashes only — never receipt prose (Law 4);
-    receipt-digest-free like the verify payload, so a re-issued receipt for the same
+    receipt-digest-free like the verified payload, so a re-issued receipt for the same
     change dedups to the same row (content-keyed idempotency)."""
     return json.dumps(
         {
@@ -790,6 +737,10 @@ class ChangeEvidenceService:
         else:
             raise ValueError(f"unknown phase {phase!r}")
         subjects, skipped_lines = touched_subjects(lines)
+        # What the range CONTAINED — computed BEFORE the range-ledger check so both
+        # return sites can carry it (a range the manual ingest door already absorbed
+        # still changed exactly these paths).
+        touched_paths = frozenset(subject.path for subject in subjects)
         # The measured line + repo identity: provenance.ref / provenance.repo. D8 at
         # the boundary — a non-string/absent value coerces to "" (no key rides).
         ref_raw = provenance.get("ref")
@@ -817,12 +768,16 @@ class ChangeEvidenceService:
         if self._ranges is not None and self._ranges.already_ingested_range(
             outcome.repo, outcome.base_sha, outcome.head_sha, phase
         ):
+            # marker: returning an EMPTY touched_paths here is a mutation — the
+            # daemon would learn nothing changed for a range the manual door
+            # absorbed, and baseline an anchor at the post-break tip anyway.
             return IngestReport(
                 inserted=(),
                 already_recorded=0,
                 matched=0,
                 skipped_lines=0,
                 range_skipped=True,
+                touched_paths=touched_paths,
             )
         anchored = self._reader.anchored_episodes()  # v3: (id, repo, anchor, polarity)
         polarity_by_id = {int(row[0]): row[3] for row in anchored}
@@ -831,19 +786,16 @@ class ChangeEvidenceService:
         # Flow A rider: gated ONLY on the full version stamp (L7) — ANY phase; the
         # canonical post_merge ingest is the rider's normal carrier in v3, and a
         # stamp-less receipt still lands its plain change_outcome rows unchanged.
-        # marker: restoring the old `phase == "pre_merge"` condition here is the
-        # named rider mutation: CT-9's rider test (tests/contract/
-        # test_multirepo_sync.py — riders land from the canonical post_merge
-        # ingest) and its unit twin (tests/domain/test_change_evidence.py::
-        # test_post_merge_stamped_ingest_writes_rider_rows) red.
+        # marker: restoring the old `phase == "pre_merge"` condition here reds
+        # tests/domain/test_change_evidence.py::
+        # test_post_merge_stamped_ingest_writes_rider_rows — the gate is the STAMP,
+        # and a canonical post_merge ingest is where the rider normally lands.
         stamp = version_stamp(provenance)
         ev_by_subject = subject_evidence(lines) if stamp is not None else {}
         tests_state = decided_tests_state(lines) if stamp is not None else None
         counts = {
             EK_OUTCOME_VERIFIED_HELPED: 0,
             EK_OUTCOME_VERIFIED_HURT: 0,
-            EK_VERIFY_CURRENT: 0,
-            EK_VERIFY_STALE: 0,
         }
         rows: list[tuple[int, str, str, int, str]] = []
         for episode_id, (subject, level) in matches.items():
@@ -880,21 +832,9 @@ class ChangeEvidenceService:
                     )
                 )
                 counts[verified_kind] += 1
-            verify_kind = classify_verify(ev)
-            if verify_kind is not None:
-                rows.append(
-                    (
-                        episode_id,
-                        verify_kind,
-                        CHANGE_ACTOR,
-                        ts,
-                        render_verify_payload(subject, ev, stamp, outcome.ref),
-                    )
-                )
-                counts[verify_kind] += 1
         # T2 rider: graph-propagated staleness — join the receipt's OPTIONAL propagation
         # neighbours with the SAME anchor rule, in the same atomic batch. Stamp-gated like
-        # the verified/verify rows (the payload carries the version stamp — any phase);
+        # the verified-outcome rows (the payload carries the version stamp — any phase);
         # an episode already carrying a POINT row this ingest gets no suspect row
         # (point evidence dominates neighbourhood suspicion). Detection fuel only — the
         # worklist proposes re-verification, nothing here retires anything.
@@ -939,7 +879,6 @@ class ChangeEvidenceService:
             skipped_lines=skipped_lines,
             verified_helped=counts[EK_OUTCOME_VERIFIED_HELPED],
             verified_hurt=counts[EK_OUTCOME_VERIFIED_HURT],
-            verify_current=counts[EK_VERIFY_CURRENT],
-            verify_stale=counts[EK_VERIFY_STALE],
             stale_suspects=stale_suspects,
+            touched_paths=touched_paths,
         )

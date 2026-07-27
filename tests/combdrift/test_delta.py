@@ -17,6 +17,7 @@ from hive.combdrift.resolution import fingerprint_anchor, resolve_anchor
 from hive.combdrift.serialization import verdict_to_dict
 from hive.combdrift.types import (
     REASON_FINGERPRINT_VERSION_MISMATCH,
+    REASON_NO_FINGERPRINT,
     REASON_OK,
     REASON_SIGNATURE_CHANGED,
     Anchor,
@@ -102,8 +103,10 @@ def test_ambiguous_overload_has_no_delta(tmp_repo: Path):
 
 
 def test_no_fingerprint_has_no_delta(tmp_repo: Path):
+    # With no baseline there is nothing to compare against, so the reason
+    # abstains and there is no old/new pair to report either.
     res = resolve_anchor(str(tmp_repo), Anchor("pkg/parser.py", "parse"))
-    assert res.reason == REASON_OK
+    assert res.reason == REASON_NO_FINGERPRINT
     assert res.delta is None
 
 

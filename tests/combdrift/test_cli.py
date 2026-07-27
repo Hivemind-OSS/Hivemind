@@ -7,12 +7,28 @@ from pathlib import Path
 
 
 from hive.combdrift.cli import main
+from hive.combdrift.resolution import fingerprint_anchor
+from hive.combdrift.types import Anchor
 
 
 def _write_records(tmp_path: Path, records: list[dict]) -> Path:
     p = tmp_path / "records.json"
     p.write_text(json.dumps(records), encoding="utf-8")
     return p
+
+
+def _minted_anchor(repo: Path, path: str, symbol: str) -> dict:
+    """An anchor dict carrying the symbol's real, freshly minted call shape.
+
+    `current` is reserved for a claim that was actually compared, so a record
+    that must classify as current records a live baseline here; an anchor
+    without one has no shape claim to measure and is unverifiable.
+    """
+    return {
+        "path": path,
+        "symbol": symbol,
+        "fingerprint": fingerprint_anchor(str(repo), Anchor(path, symbol)),
+    }
 
 
 def test_public_api_importable():
@@ -38,7 +54,8 @@ def test_cli_all_current_exit_zero(tmp_repo: Path, tmp_path: Path, capsys):
             {
                 "id": "a",
                 "claim_text": "x",
-                "anchors": [{"path": "pkg/auth.py", "symbol": "refresh"}],
+                # Minted, so the record is current because its shape was compared.
+                "anchors": [_minted_anchor(tmp_repo, "pkg/auth.py", "refresh")],
             },
         ],
     )
@@ -55,7 +72,9 @@ def test_cli_stale_exit_code_and_output(tmp_repo: Path, tmp_path: Path, capsys):
             {
                 "id": "ok",
                 "claim_text": "x",
-                "anchors": [{"path": "pkg/auth.py", "symbol": "refresh"}],
+                # Minted, so "ok" is current on a compared shape and the stale
+                # exit code below is driven only by the renamed-away anchor.
+                "anchors": [_minted_anchor(tmp_repo, "pkg/auth.py", "refresh")],
             },
             {
                 "id": "bad",

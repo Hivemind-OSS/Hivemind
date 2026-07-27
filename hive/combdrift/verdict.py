@@ -2,8 +2,10 @@
 
 Precedence (one source of truth): unverifiable dominates stale dominates
 current. A record with no anchors is unverifiable. An anchor whose file/symbol
-is missing makes the record stale; an anchor whose path escapes the repo or
-whose file will not parse makes the record unverifiable.
+is missing makes the record stale; an anchor whose path escapes the repo, whose
+file will not parse, or whose call shape was never compared (no recorded
+fingerprint) makes the record unverifiable — `current` is reserved for a claim
+actually measured.
 """
 
 from __future__ import annotations
@@ -11,6 +13,7 @@ from __future__ import annotations
 from hive.combdrift.resolution import resolve_anchor
 from hive.combdrift.types import (
     REASON_FINGERPRINT_VERSION_MISMATCH,
+    REASON_NO_FINGERPRINT,
     REASON_PARSE_ERROR,
     REASON_PATH_OUTSIDE_REPO,
     REASON_SIGNATURE_CHANGED,
@@ -23,13 +26,18 @@ from hive.combdrift.types import (
     Verdict,
 )
 
-# Anchor reason-code prefixes that make the whole record unverifiable.
+# Anchor reason-code prefixes that make the whole record unverifiable. Membership
+# here is also what keeps a reason OUT of the stale tier, so it is the set the
+# server-side wire-mapping ratchet reads the stale-classifiable reasons against.
 _UNVERIFIABLE_PREFIXES = (
     REASON_PATH_OUTSIDE_REPO,
     REASON_PARSE_ERROR,
     REASON_UNSUPPORTED_LANGUAGE,
     REASON_SYMBOL_INDIRECT,
     REASON_FINGERPRINT_VERSION_MISMATCH,
+    # // marker: removing this member is a mutation — an uncompared call shape
+    # would fall back to `current` and serve as `fresh` (BUG-071).
+    REASON_NO_FINGERPRINT,
 )
 
 

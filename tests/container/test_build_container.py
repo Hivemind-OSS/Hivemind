@@ -130,8 +130,8 @@ def test_agi_wiring_is_gone():
 
 
 def test_no_global_canonical_ref_exists_to_thread():
-    # per-repo canonical refs live in the repo registry rows, and the last_verified
-    # rider scopes each hit to the line THAT MEMORY declared — so there is no
+    # per-repo canonical refs live in the repo registry rows, and each hit's drift
+    # verdict is routed through the line THAT MEMORY declared — so there is no
     # server-level ref label to construct, pass, or leave unreachable (BUG-070).
     c = _build()
     assert not hasattr(c.cfg, "census")

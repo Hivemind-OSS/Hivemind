@@ -53,9 +53,9 @@ Three principles follow, and every design decision serves them:
 - **Repo registry + sync daemon.** Which repos the server tracks is operational data — rows
   in the store's `repos` table (`hive repo add`), re-read every tick, no restart. Per
   registered repo the daemon mirrors the remote server-side, feeds change outcomes into the
-  evidence ledger, mints anchor fingerprints, and materializes the staleness (drift)
-  verdicts that ride recall hits. Every leg is fail-open per repo; the serve path never
-  depends on it.
+  evidence ledger, and materializes the staleness (drift) verdicts that ride recall hits by
+  asking git what changed between the commit a binding was written against and the tip being
+  judged. Every leg is fail-open per repo; the serve path never depends on it.
 - **Embedder:** [Qwen3-Embedding-0.6B](https://huggingface.co/Qwen/Qwen3-Embedding-0.6B),
   CPU-only, baked into the image at build time and run fully offline (`HF_HUB_OFFLINE=1` — a
   runtime download is impossible). It emits the model's native 1024-dim vector, L2-normalized;
@@ -115,9 +115,11 @@ Every trust transition writes an audit row (machine-readable decision + actor).
   `ts`, `polarity` (`do`|`dont`|`neutral`), `kind`, `repos`, `anchors` (`[{repo, anchor}]`), and
   `drift` — the server-materialized staleness verdict, most severe across its anchors:
   `fresh | anchor_changed | anchor_missing | blast_radius_changed | branch_scoped |
-  unverifiable | n/a` (`unverifiable` means not judged — never proof of freshness). Treat a
-  drifted hit as **reference only**; a hit the server already knows is stale arrives with a
-  remediation rider naming its options. Prefer higher-trust, newer hits; honor polarity.
+  unverifiable | n/a` (`unverifiable` means not judged — never proof of freshness). A stale-tier
+  entry also carries its evidence: `since` (the commit the memory was baselined at), `commits`
+  (up to 10 SHAs, newest first) and `n_commits`, so you can read the change in your own checkout.
+  Treat a drifted hit as **reference only**; a hit the server already knows is stale arrives with
+  a remediation rider naming its options. Prefer higher-trust, newer hits; honor polarity.
 - A recall may also carry a `conflicts` channel: ids-only notes about near-duplicate or opposing
   memories, to resolve via the retirement verbs. Recalled text is never returned as
   `instructions`.
@@ -142,10 +144,14 @@ carry no special field — retirement is adjudicated server-side by the machine 
 `polarity` ∈ `{do, dont, neutral}`. Both are carried-not-interpreted labels that ride every hit
 but are **not** recall filters — recall matches the body text, so put the discriminating terms
 there. Code binding is structured: `anchors=[{repo, anchor}]` — `repo` a **registered** repo
-name (an unregistered name refuses the call), `anchor` the WHERE as `path/file.py::symbol`;
+name (an unregistered name refuses the call), `anchor` the WHERE as `path/file.py::symbol` — the
+separator is `::`, and a single-colon anchor refuses the call too, because it matches no code
+change and the memory could never be outcome-verified; a bare `path/file.py` binds file-scoped.
 `repos=[...]` gives repo scope without a code anchor; neither = a general, fleet-wide memory.
-The server mints fingerprints and judges drift per anchor — callers never supply fingerprint
-material. `meta` is an optional opaque string map, served back verbatim, never interpreted.
+The server records each binding's baseline commit and judges drift per anchor against git —
+callers never supply staleness material. A symbol anchor drifts only when its OWN lines move
+(a rewritten body counts; a sibling edit in the same file does not); a file anchor drifts on any
+change to its file. Both `file.py::method` and `file.py::Class.method` resolve. `meta` is an optional opaque string map, served back verbatim, never interpreted.
 
 ## 6. Identity and the two doors
 
@@ -231,8 +237,8 @@ moves:
 
 - **Run agents as distinct sessions.** That diversity is what promotes good captures; with a
   single demand identity, nothing unvetted is ever served.
-- **Register every repo the fleet works on.** Partitioning, census evidence, anchor
-  fingerprints, and the drift verdicts on recall hits all key off the registry (`hive repo
+- **Register every repo the fleet works on.** Partitioning, census evidence, anchor baselines,
+  and the drift verdicts on recall hits all key off the registry (`hive repo
   add`); an unregistered repo cannot be anchored to.
 - **Keep it small; let unused memory expire.** Do not lengthen TTLs to hoard — expiry of
   unused, un-established memory is doing real work.
@@ -255,7 +261,7 @@ Watch these read-only signals over MCP on a fixed cadence (weekly suffices for a
 | `hive_health(include_conflicts=true)` | near-duplicate / contradicting memories + agent advisories, bucketed by repo and anchor | `hive_supersede` |
 | `hive_health(include_suspect_consensus=true)` | provisionals promoted on thin *effective* independence | re-examine / retire |
 | `hive_health(include_stale_suspects=true)` | servable memories in the blast radius of a breaking change | re-verify, then retire |
-| `hive_health(include_census_health=true)` | `repos`: per-repo census/sync state (days since the last change outcome, `tracked_ref`, `last_tip`, `last_sync_ts`, `last_error`, `backfilled_total`). `fleet`: the daemon's own `last_sync_ts` + `last_error` | a `fleet` `last_error` = the daemon itself is down, every repo block below it stale; else check the registry row / remote reachability |
+| `hive_health(include_census_health=true)` | `repos`: per-repo census state (days since the last change outcome) plus a `sync` sub-block (`tracked_ref`, `last_tip`, `last_sync_ts`, `last_error`, `backfilled_total` = bindings the daemon had to baseline itself). `fleet`: the daemon's own `last_sync_ts` + `last_error` | a `fleet` `last_error` = the daemon itself is down, every repo block below it stale; else check the registry row / remote reachability |
 
 ## 10. Configuration knobs
 

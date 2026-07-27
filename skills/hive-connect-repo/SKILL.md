@@ -77,10 +77,11 @@ What the daemon then does, per registered repo, each tick:
 - **feeds the ledger** — ONE unsigned receipt per new `watermark..tip` range on the tracked
   branch, verdict derived server-side, ingested through the same door as `hive ingest`; the
   server's mechanical promotion sweep runs after each ingest;
-- **backfills fingerprints** — anchor fingerprints absent on stored memories are minted
-  server-side against the mirror;
+- **baselines anchors** — a stored binding with no baseline commit yet gets one, at the tip
+  the server can actually observe (the ordinary baseline is recorded at write time from the
+  repo's watermark);
 - **materializes drift** — per-anchor fresh/stale verdicts at the canonical tip (and
-  recall-demanded branch tips): what stamps a recall hit `fresh` vs drifted.
+  recall-demanded branch tips), asked of git: what stamps a recall hit `fresh` vs drifted.
 
 ## 4. Test the connection
 
@@ -129,11 +130,13 @@ information, never an unwired field:
 - **`last_sync_ts`** — when **this repo** last completed a tick with every leg fault-free. It
   does not advance on a faulted tick, so `last_sync_ts` far behind now, next to a fresh
   `last_error`, is the signature of a repo stuck failing.
-- **`backfilled_total`** — fingerprints minted server-side for this repo. Any value > 0 proves
-  the whole mint path works end to end: mirror cloned, anchor resolved against the real tree,
-  `hive-edge mint` spawned and parsed. It stays `0` until the repo has at least one **anchored**
-  memory — a fresh registry with no anchored memories yet reads `0`, and that is correct, not a
-  fault. `null` means the counter has never been bumped at all.
+- **`backfilled_total`** — anchor bindings the daemon has BASELINED for this repo, ever. (The
+  field name predates the git-native ladder and is kept because it is a served wire field.) Any
+  value > 0 proves the staleness path works end to end: mirror cloned, watermark advanced, and a
+  binding that reached the server without a baseline given the commit it is measured from. It
+  counts only bindings the DAEMON had to fill — a memory written while the repo already had a
+  watermark is baselined at write time and never passes through this counter, so a healthy repo
+  can sit at `0` forever. `null` means the counter has never been bumped at all.
 
 A `change_outcome` row then lands on the **next landing** on the tracked branch (first sync
 baselines the current tip silently — no historical receipt). To confirm the loop end to end,
@@ -142,7 +145,7 @@ watch the repo's `days_since_last_change_outcome` drop after the next landing.
 ### The one test that proves it is set up for work
 
 Health shows the daemon is running; this shows the repo is actually *usable* — it exercises
-registry → mint → drift → recall in one pass. Run it from an agent connected over MCP
+registry → baseline → drift → recall in one pass. Run it from an agent connected over MCP
 (**hive-connect-team**), naming a real symbol that exists on the tracked branch:
 
 ```
@@ -152,11 +155,18 @@ hive_write(
 )
 ```
 
-> **The separator is `::`, not `:`.** `path/file.py::Symbol` binds at the precise symbol tier;
-> a bare `path/file.py` binds file-scoped. Both are correct. A **single** colon
-> (`path/file.py:Symbol`) is not: drift still reports on it, so it looks fine, but it never
-> joins the census subject feed — that memory can never be outcome-verified, never reaches
-> `established`, and expires at the provisional TTL while still being true.
+> **The separator is `::`, not `:`, and the server now REFUSES the wrong form.**
+> `path/file.py::Symbol` binds at the precise symbol tier; a bare `path/file.py` binds
+> file-scoped. Both are correct. A **single** colon (`path/file.py:Symbol`) is not, and the write
+> returns a `status="refused"` envelope naming the clause — nothing is stored, so fix the anchor
+> and write again. The refusal exists because such an anchor never joins the census subject feed:
+> drift would still report on it, so it would look fine, while the memory could never be
+> outcome-verified, never reach `established`, and would expire at the provisional TTL while still
+> being true. Also refused, for the same reason: `path/file.py::` (a separator naming no symbol —
+> drop the `::` to bind the file) and `path/file.py::42` (a line number is not a symbol).
+> Memories written in the old form BEFORE this gate landed keep serving and keep a real drift
+> verdict; re-bind one with `hive_write(replaces=<id>, anchors=[{...canonical...}])` when you
+> next touch it.
 
 Wait one poll interval, then:
 
@@ -168,17 +178,17 @@ Read the returned hit:
 
 | What the hit's `drift.type` reads | Meaning |
 |---|---|
-| `fresh` | **Fully wired.** The server minted a fingerprint for your anchor, verified it against the tracked branch at the canonical tip, and found the code unchanged. Registry, mint, and drift legs are all live. |
-| `unverifiable` | The anchor is not materialized **yet** — normal within the first tick or two, and normal for a repo with more anchors than `HIVE_SYNC__DRIFT_PER_TICK`. Wait another interval. Persisting ⇒ check `last_error`, and confirm the anchor's file really exists on the tracked branch. |
-| `anchor_missing` / `anchor_changed` | The connection works — this is a real verdict. The path or symbol you named does not exist (or has moved) on the tracked branch: check for a typo, or that you pinned the right `--branch`. |
+| `fresh` | **Fully wired.** The server baselined your anchor at a commit, asked git what the range up to the canonical tip did to it, and found it untouched. Registry and drift legs are both live. |
+| `unverifiable` | Not judged. Normal within the first tick or two (nothing is materialized yet); after that it means the server has no measurement to report — most often the path or symbol you named did not exist at the commit your memory was baselined at (a typo, or prose that was never code). Check `last_error`, and confirm the anchor really resolves on the tracked branch. Note a mis-typed PATH reads `unverifiable`, not `anchor_missing`: the server never saw it, so it cannot call it deleted. |
+| `anchor_missing` / `anchor_changed` | The connection works — this is a real verdict measured against your baseline. `anchor_missing` = the path or symbol was there and is gone; `anchor_changed` = it moved, and the entry carries `since` plus the commit SHAs that did it. |
 | no `drift` key / `n/a` | The memory landed with **no anchor** — re-check the `anchors=` argument shape (`{"repo": "<registry slug>", "anchor": "<path>::<Symbol>"}`); a scope-only memory is never drift-checked. |
 
 If the recall returns nothing at all, that is a **recall-gate** result, not a sync result:
 `hive_write` serves immediately as `provisional`, so the memory is live — the query simply did
 not clear the relevance gate. Re-query closer to the memory's own wording, and check the scope
 with the exact slug from `hive repos` (that slug is the only name that scopes). Note this is the
-one step that needs an anchored memory to exist: on a repo with none, `backfilled_total` never
-leaves `0`/`null` and no drift verdict can be produced — that is correct, not a fault.
+one step that needs an anchored memory to exist: on a repo with none, no drift verdict can be
+produced at all — that is correct, not a fault.
 
 ## 5. One-time cleanup — leftovers of the old per-repo contract
 
@@ -217,8 +227,9 @@ requirement.
 - **An empty registry is inert; registration needs no restart.** No registered repo ⇒ no git, no
   clone, nothing runs. Only the loop's own knobs are boot config — cadence
   (`HIVE_SYNC__INTERVAL_S`), the webhook (`HIVE_SYNC__WEBHOOK_SECRET`), the mirror base
-  (`HIVE_SYNC__MIRROR_DIR`), and the three capacity knobs (`HIVE_SYNC__DRIFT_PER_TICK` /
-  `…__BACKFILL_PER_TICK` / `…__WORKERS`; see **hive-operate**). *Which* repos are fed never is.
+  (`HIVE_SYNC__MIRROR_DIR`), and the one capacity knob (`HIVE_SYNC__WORKERS`; see
+  **hive-operate**). There is no per-tick drift or backfill cap — the git ladder's cost is bounded
+  by real churn. *Which* repos are fed never is boot config.
 - **Secrets ride env-var indirection: names in rows, values in env.** The token value lives only
   in the server's environment and the mirror's git remote config on the `hive-data` volume —
   never in a registry row, never logged (redacted), never in a receipt. Rotate or revoke it

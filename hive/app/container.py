@@ -195,8 +195,9 @@ class Container:
         # The v3 store IS the server's retirement-gate evidence feed (evidence_rows_for +
         # insert_audit), scope reader (repo_registry + scan_servable_labeled), and drift
         # source (drift_get for attach_drift) — one handle wires all three. No AGI sentinel
-        # exists. The last_verified rider needs no construction-time ref: it scopes each
-        # hit to the line THAT MEMORY declared, read off the anchors recall already built.
+        # exists. The stale remediation rider needs no construction-time ref either: it
+        # keys off the drift verdict attach_drift has already routed through the line
+        # THAT MEMORY declared.
         db_path = "" if self.cfg.db_path == _MEMORY_DB else self.cfg.db_path
         return HiveMCPServer(
             admission=self.admission,

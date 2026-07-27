@@ -34,6 +34,10 @@ REASON_SIGNATURE_CHANGED = "signature_changed"
 # The recorded fingerprint's version is unreadable (a future format), or the
 # symbol's shape is ambiguous (overloaded). Routes to unverifiable, never stale.
 REASON_FINGERPRINT_VERSION_MISMATCH = "fingerprint_version_mismatch"
+# The symbol resolves but NO fingerprint was recorded for it, so its call shape was
+# never compared. Existence is proven; the shape is unknown. Routes to unverifiable:
+# reporting `ok` here would be a positive claim about a comparison that never ran.
+REASON_NO_FINGERPRINT = "no_fingerprint"
 
 
 @dataclass(frozen=True, slots=True)

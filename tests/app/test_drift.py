@@ -1,13 +1,14 @@
-"""Unit suite for ``hive.app.drift`` — the single owner of the §3.4 drift wire
-semantics: the verify→wire mapping (else → unverifiable), the most-severe-wins
-aggregation (CT-4's property vocabulary at unit level), the cache lookup at the
-tip of the queried ref else canonical, and the fail-open ``attach_drift``
-enrichment (a reader fault degrades that hit to unverifiable, never breaks the
-read)."""
+"""Unit suite for ``hive.app.drift`` — the single owner of the drift wire semantics:
+the most-severe-wins aggregation (CT-4's property vocabulary at unit level), the
+declared-line routing, the cache lookup at the tip of the queried ref else canonical
+AND at the memory's OWN baseline, the ids-only evidence rider, and the fail-open
+``attach_drift`` enrichment (a reader fault degrades that hit to unverifiable, never
+breaks the read)."""
 
 from __future__ import annotations
 
 import itertools
+import json
 
 import pytest
 
@@ -24,11 +25,12 @@ from hive.app.drift import (
     aggregate_verdicts,
     attach_drift,
     branch_route_verdict,
-    wire_verdict,
 )
+from hive.domain import staleness
 from hive.domain.retirement import QUALIFYING_DRIFT
 
 TIP = "a" * 40
+BASE = "9" * 40
 
 
 # ── the wire vocabulary itself ────────────────────────────────────────────────
@@ -46,54 +48,46 @@ def test_severity_order_is_the_normative_one():
     assert set(WIRE_VERDICTS) == set(SEVERITY_ORDER) | {DRIFT_NA}
 
 
-# ── verify → wire mapping (§3.4 verbatim, else → unverifiable) ────────────────
+# ── the producer emits this vocabulary directly (no mapping to fork) ──────────
 
 
-@pytest.mark.parametrize(
-    "state, reason, expected",
-    [
-        ("current", "", DRIFT_FRESH),
-        ("stale", "signature_changed", DRIFT_ANCHOR_CHANGED),
-        ("stale", "symbol_missing", DRIFT_ANCHOR_MISSING),
-        ("radius_changed", "", DRIFT_BLAST_RADIUS_CHANGED),
-        ("radius changed", "", DRIFT_BLAST_RADIUS_CHANGED),  # the table's spelling
-        ("branch_scoped", "", DRIFT_BRANCH_SCOPED),
-    ],
-)
-def test_the_five_named_arrows(state, reason, expected):
-    assert wire_verdict(state, reason) == expected
+def test_the_ladder_and_the_wire_spell_the_same_verdicts():
+    """``hive.domain.staleness`` cannot import this module (the dependency rule runs
+    app → domain), so it spells the vocabulary itself. That is only safe while the two
+    copies are pinned equal — this is the pin."""
+    assert staleness.FRESH == DRIFT_FRESH
+    assert staleness.ANCHOR_CHANGED == DRIFT_ANCHOR_CHANGED
+    assert staleness.ANCHOR_MISSING == DRIFT_ANCHOR_MISSING
+    assert staleness.UNVERIFIABLE == DRIFT_UNVERIFIABLE
 
 
-def test_composite_stale_state_carries_its_reason():
-    assert wire_verdict("stale/signature_changed") == DRIFT_ANCHOR_CHANGED
-    assert wire_verdict("stale/symbol_missing") == DRIFT_ANCHOR_MISSING
+def test_the_producer_only_emits_per_anchor_members():
+    """Every verdict the ladder can return must be a member the wire advertises AND a
+    per-anchor one — ``n/a`` is an aggregate verdict and could never be materialized."""
+    for verdict in (
+        staleness.FRESH,
+        staleness.ANCHOR_CHANGED,
+        staleness.ANCHOR_MISSING,
+        staleness.UNVERIFIABLE,
+    ):
+        assert verdict in WIRE_VERDICTS
+        assert verdict in SEVERITY_ORDER
 
 
-def test_reason_codes_match_by_prefix():
-    assert (
-        wire_verdict("stale", "signature_changed:def f(a, b)") == DRIFT_ANCHOR_CHANGED
+def test_a_gone_file_and_a_gone_symbol_are_the_same_claim():
+    """BUG-078, absorbed STRUCTURALLY: there is no reason table to forget an arrow in.
+    A departed path reaches ``anchor_missing`` whether the binding named a symbol or
+    only the path, and that verdict qualifies retirement."""
+    facts = staleness.AnchorFacts(
+        base_tip="b" * 40,
+        in_base_tree=True,
+        status="D",
+        symbol_resolved_at_base=True,
     )
-    assert wire_verdict("stale", "symbol_missing: fn gone") == DRIFT_ANCHOR_MISSING
-
-
-@pytest.mark.parametrize(
-    "state, reason",
-    [
-        ("stale", ""),  # bare stale: incomparable, never false-stale
-        ("stale", "some_new_reason"),
-        ("stale/xyzzy", ""),
-        ("staleness", "signature_changed"),  # not the stale state
-        ("CURRENT", ""),  # vocabulary is exact, no case folding
-        ("unknown_state", ""),
-        ("", ""),
-        (None, ""),
-        (42, "signature_changed"),
-        ("stale", 42),
-        (["current"], ""),
-    ],
-)
-def test_everything_else_maps_unverifiable(state, reason):
-    assert wire_verdict(state, reason) == DRIFT_UNVERIFIABLE
+    for symbol in ("", "handler"):
+        verdict, _detail = staleness.decide(facts, symbol=symbol)
+        assert verdict == DRIFT_ANCHOR_MISSING
+        assert verdict in QUALIFYING_DRIFT
 
 
 # ── branch_route_verdict: routing a materialized verdict through the memory's
@@ -233,23 +227,42 @@ class FakeStore:
     """The duck-typed SqliteEpisodeStore surface attach_drift consumes."""
 
     def __init__(
-        self, *, registry=(("alpha", "main"),), tips=None, drift=None, ref_tips=None
+        self,
+        *,
+        registry=(("alpha", "main"),),
+        tips=None,
+        drift=None,
+        ref_tips=None,
+        baselines=None,
     ):
         self._registry = [_Repo(n, c) for n, c in registry]
         self.conn = _FakeConn(tips or {})
-        self._drift = drift or {}  # (repo, tip) -> {anchor: (verdict, detail)}
+        # (repo, tip) -> {anchor: (verdict, detail)} — every row in a fake store is
+        # cached against the SAME baseline the fake reports, so a test that does not
+        # care about baselining reads exactly as before.
+        self._drift = drift or {}
         self._ref_tips = ref_tips or {}  # (repo, ref) -> tip_sha
+        self._baselines = baselines  # (episode_id, repo) -> {anchor: base_tip}
         self.touches: list[tuple[str, str, int]] = []
         self.drift_get_calls = 0
         self.ref_tip_calls = 0
+        self.seen_base_tips: list[dict] = []
 
     def repo_registry(self):
         return list(self._registry)
 
-    def drift_get(self, repo, tip_sha, anchors):
+    def anchor_baselines_get(self, episode_id, repo, anchors):
+        if self._baselines is None:
+            return dict.fromkeys(anchors, BASE)
+        return dict(self._baselines.get((episode_id, repo), {}))
+
+    def drift_get(self, repo, tip_sha, base_tips, anchors):
         self.drift_get_calls += 1
+        self.seen_base_tips.append(dict(base_tips))
         rows = self._drift.get((repo, tip_sha), {})
-        return {a: rows[a] for a in anchors if a in rows}
+        return {
+            a: rows[a] for a in anchors if a in rows and base_tips.get(a, "") == BASE
+        }
 
     def ref_tip(self, repo, ref):
         self.ref_tip_calls += 1
@@ -497,7 +510,7 @@ def test_branch_scope_only_touches_its_own_repo():
 
 
 class _BoomStore(FakeStore):
-    def drift_get(self, repo, tip_sha, anchors):
+    def drift_get(self, repo, tip_sha, base_tips, anchors):
         raise RuntimeError("drift cache exploded")
 
 
@@ -602,3 +615,120 @@ def test_the_anchor_moved_tier_has_one_owner():
         "branch_route_verdict must soften EXACTLY the tier the retirement gate "
         f"qualifies on: {routed} != {set(QUALIFYING_DRIFT)}"
     )
+
+
+# ── the evidence rider (M6): ids only, stale-tier only ───────────────────────
+
+EVIDENCE = json.dumps({"since": BASE, "commits": ["b" * 40, "c" * 40], "n_commits": 2})
+
+
+def test_a_stale_hit_carries_the_baseline_and_the_commits():
+    store = _store(
+        drift={("alpha", TIP): {"a.py::f": (DRIFT_ANCHOR_CHANGED, EVIDENCE)}}
+    )
+    (hit,) = attach_drift([_hit([{"repo": "alpha", "anchor": "a.py::f"}])], store=store)
+    (entry,) = hit["drift"]["detail"]["per_anchor"]
+    assert entry["since"] == BASE
+    assert entry["commits"] == ["b" * 40, "c" * 40]
+    assert entry["n_commits"] == 2
+
+
+def test_drift_evidence_is_ids_only():
+    """marker 6's test: Law 4 keeps every non-answer channel to ids and enums. A commit
+    SUBJECT is unscanned repo text; whatever the cache holds, only the declared
+    evidence keys may reach the wire."""
+    leaky = json.dumps(
+        {
+            "since": BASE,
+            "commits": ["b" * 40],
+            "n_commits": 1,
+            "subject": "fix: leak the customer key sk-XXXX",
+            "message": "a whole commit body",
+        }
+    )
+    store = _store(drift={("alpha", TIP): {"a.py::f": (DRIFT_ANCHOR_CHANGED, leaky)}})
+    (hit,) = attach_drift([_hit([{"repo": "alpha", "anchor": "a.py::f"}])], store=store)
+    (entry,) = hit["drift"]["detail"]["per_anchor"]
+    assert set(entry) == {
+        "repo",
+        "anchor",
+        "tip_sha",
+        "verdict",
+        "since",
+        "commits",
+        "n_commits",
+    }
+    envelope = json.dumps(hit["drift"])
+    assert "subject" not in envelope and "leak the customer key" not in envelope
+
+
+def test_a_fresh_hit_carries_no_evidence():
+    store = _store(drift={("alpha", TIP): {"a.py::f": (DRIFT_FRESH, EVIDENCE)}})
+    (hit,) = attach_drift([_hit([{"repo": "alpha", "anchor": "a.py::f"}])], store=store)
+    (entry,) = hit["drift"]["detail"]["per_anchor"]
+    assert "since" not in entry and "commits" not in entry
+
+
+def test_an_off_line_branch_scoped_hit_carries_no_evidence():
+    """A memory read off its own declared line is not stale HERE — it is scoped
+    elsewhere — so it owes the consumer no drift evidence."""
+    store = _store(
+        drift={("alpha", TIP): {"a.py::f": (DRIFT_ANCHOR_CHANGED, EVIDENCE)}}
+    )
+    (hit,) = attach_drift(
+        [_hit([{"repo": "alpha", "anchor": "a.py::f", "ref": "feature"}])], store=store
+    )
+    (entry,) = hit["drift"]["detail"]["per_anchor"]
+    assert entry["verdict"] == DRIFT_BRANCH_SCOPED
+    assert "since" not in entry
+
+
+def test_unparseable_evidence_contributes_nothing_rather_than_raising():
+    for detail in ("", "not json", "[1,2]", "null"):
+        store = _store(
+            drift={("alpha", TIP): {"a.py::f": (DRIFT_ANCHOR_MISSING, detail)}}
+        )
+        (hit,) = attach_drift(
+            [_hit([{"repo": "alpha", "anchor": "a.py::f"}])], store=store
+        )
+        (entry,) = hit["drift"]["detail"]["per_anchor"]
+        assert entry["verdict"] == DRIFT_ANCHOR_MISSING
+        assert "since" not in entry
+
+
+# ── the baseline is part of the key (BUG-081, at unit level) ─────────────────
+
+
+def test_a_row_cached_against_another_baseline_never_answers():
+    """Two memories on ONE anchor at ONE tip, written at different commits: the row
+    materialized for one must not be served to the other."""
+    store = _store(
+        drift={("alpha", TIP): {"a.py::f": (DRIFT_ANCHOR_CHANGED, EVIDENCE)}},
+        baselines={
+            (1, "alpha"): {"a.py::f": BASE},
+            (2, "alpha"): {"a.py::f": "7" * 40},
+        },
+    )
+    (mine,) = attach_drift(
+        [_hit([{"repo": "alpha", "anchor": "a.py::f"}])], store=store
+    )
+    assert mine["drift"]["type"] == DRIFT_ANCHOR_CHANGED
+
+    other = {
+        "episode_id": 2,
+        "text": "t",
+        "anchors": [{"repo": "alpha", "anchor": "a.py::f"}],
+    }
+    (theirs,) = attach_drift([other], store=store)
+    assert theirs["drift"]["type"] == DRIFT_UNVERIFIABLE, (
+        "the cached row belongs to another baseline; absence is the honest answer"
+    )
+
+
+def test_an_unbaselined_hit_reads_unverifiable():
+    store = _store(
+        drift={("alpha", TIP): {"a.py::f": (DRIFT_FRESH, "{}")}}, baselines={}
+    )
+    (hit,) = attach_drift([_hit([{"repo": "alpha", "anchor": "a.py::f"}])], store=store)
+    assert hit["drift"]["type"] == DRIFT_UNVERIFIABLE
+    assert store.seen_base_tips == [{}]

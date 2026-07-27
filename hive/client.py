@@ -40,8 +40,10 @@ def _scope_args(
     repos: Optional[Sequence[str]],
 ) -> None:
     """Attach the v3 store scope: ``anchors`` = [{repo, anchor}] rows (repo a REGISTERED
-    name, anchor the WHERE as path/file.py::symbol), ``repos`` = scope-only registered
-    names. Sent verbatim (list-normalized) — the server owns validation and minting."""
+    name, anchor the WHERE as path/file.py::symbol — the separator is ``::``, and a
+    single-colon anchor is REFUSED server-side because it matches no code change),
+    ``repos`` = scope-only registered names. Sent verbatim (list-normalized) — the
+    server owns validation and minting, so this client never restates the grammar."""
     _put_if_set(args, "anchors", list(anchors) if anchors is not None else None)
     _put_if_set(args, "repos", list(repos) if repos is not None else None)
 

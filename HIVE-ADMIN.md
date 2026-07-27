@@ -184,33 +184,35 @@ Per registered repo (each under its own fail-open guard) the daemon mirrors the 
 `<mirror_dir>/<name>-<url-digest>/` — the directory is bound to the repository it is a mirror OF,
 so re-using a name against a different URL can never be fed from the previous remote, and the
 mirror's credential is reconciled against the registry each tick so a rotated token takes effect
-without a re-clone — and runs three legs: it feeds every landing on the canonical branch into
+without a re-clone — and runs two legs: it feeds every landing on the canonical branch into
 the change-outcome evidence ledger (one unsigned receipt per new watermark..tip range, ingested
-post-merge, then the verified-outcome `established` sweep runs), backfills missing anchor
-fingerprints against the canonical tip, and materializes per-anchor staleness (drift) verdicts —
-at the canonical tip, every line a live memory DECLARES (`repos=["name@branch"]`), and any branch
-tip recall demanded. Every leg is fail-open: an unreachable
-remote or a broken leg skips that repo's tick and the next tick retries; the other repos are
-untouched. The loop's own knobs:
+post-merge, then the verified-outcome `established` sweep runs), and materializes per-anchor
+staleness (drift) verdicts by asking git — at the canonical tip, every line a live memory DECLARES
+(`repos=["name@branch"]`), and any branch tip recall demanded. The drift leg is cheap by
+construction: two read-only plumbing reads per distinct baseline commit (`ls-tree` at the
+baseline, `diff --name-status` over the range), plus one `git log -L` only for a symbol anchor
+whose file actually moved. No worktree, no checkout, no parser, no engine subprocess. Every leg is
+fail-open: an unreachable remote or a broken leg skips that repo's tick and the next tick retries;
+the other repos are untouched. The loop's own knobs:
 
 | Env var | Default | Controls |
 |---|---|---|
 | `HIVE_SYNC__INTERVAL_S` | `60` | poll cadence in seconds (floor 5) |
 | `HIVE_SYNC__WEBHOOK_SECRET` | *(unset)* | arms `POST /census-webhook` on the tunnel door (constant-time HMAC-SHA256 vs `X-Hub-Signature-256`) — a push wakes the poll early for ALL registered repos; the interval stays the correctness floor |
 | `HIVE_SYNC__MIRROR_DIR` | `/data/sync/mirror` | base dir for the per-repo mirrors (`<dir>/<name>-<url-digest>` — rebuildable caches inside the `hive-data` volume) |
-| `HIVE_SYNC__DRIFT_PER_TICK` | `200` | max `hive-edge verify` spawns per repo per tick (floor 1); the remainder carries over to the next tick |
-| `HIVE_SYNC__BACKFILL_PER_TICK` | `200` | max `hive-edge mint` spawns per repo per tick (floor 1); the remainder carries over |
 | `HIVE_SYNC__WORKERS` | `1` | how many registered repos tick concurrently (floor 1); `1` is the serial loop |
 
-The last three are **capacity** knobs — they bound throughput and can never change a verdict, so
-raising them costs CPU and buys coverage latency, never correctness. A tick that runs out of
-budget leaves the rest un-materialized, and an un-materialized anchor reads `unverifiable` (never
-a guess) until a later tick reaches it. Rough sizing: after every landing on a repo's tracked
-branch the drift cache must be rebuilt for that repo's whole anchor set at the new tip, so a repo
-with N anchored memories needs `ceil(N / DRIFT_PER_TICK)` ticks to reconverge. Raise
-`DRIFT_PER_TICK` toward N to reconverge in one tick; raise `WORKERS` toward the registered-repo
+`WORKERS` is a **capacity** knob — it bounds throughput and can never change a verdict, so raising
+it costs CPU and buys coverage latency, never correctness. Raise it toward the registered-repo
 count when many repos make one serial pass longer than the interval (each repo already has its own
 mirror, credential, and error key, so they are isolated by construction).
+
+**There is no per-tick drift or backfill cap.** `HIVE_SYNC__DRIFT_PER_TICK` and
+`HIVE_SYNC__BACKFILL_PER_TICK` existed to bound engine subprocesses; the git ladder spawns none,
+and its call count is bounded by how much the repo actually changed — the correct bound, and not
+one an operator can pick better. A repo's whole anchor set reconverges in ONE tick after a
+landing, whatever N is. If either name is left in an `.env`, boot logs
+`config.env_unknown_field` and starts normally — never a crash, never a silent switch.
 
 **The daemon's git children inherit the server's git configuration environment** (only the
 repo-discovery vars — the `GIT_DIR` family — are stripped, so a hook-planted checkout can never
@@ -275,7 +277,7 @@ fail-open rot:
 | `hive_health(include_conflicts=true)` | near-duplicate / contradicting memories + agent advisories, bucketed by repo and anchor | `hive_supersede` |
 | `hive_health(include_suspect_consensus=true)` | provisionals promoted on thin effective independence | re-examine / retire |
 | `hive_health(include_stale_suspects=true)` | servable memories whose anchor sat in the blast radius of a breaking change | re-verify against the code, then `hive_supersede` / `hive_prune` |
-| `hive_health(include_census_health=true)` | `repos`: per registered repo — days since the last `change_outcome`, sync state (`tracked_ref`, `last_tip`, `last_sync_ts`, `last_error`, `backfilled_total`; a dark feed reads null). `fleet`: the sync daemon's OWN `last_sync_ts` + `last_error` | a `fleet` `last_error` (or a frozen `fleet` `last_sync_ts`) = the daemon itself is down and every repo block is a stale snapshot — read `hive logs`. Otherwise check the registry row / remote reachability (§4) |
+| `hive_health(include_census_health=true)` | `repos`: per registered repo — days since the last `change_outcome`, plus a `sync` sub-block (`tracked_ref`, `last_tip`, `last_sync_ts`, `last_error`, `backfilled_total` = bindings the daemon had to baseline itself, ever — a memory written while the repo already had a watermark is baselined at write time and never counted here, so a healthy repo may sit at 0; a dark feed reads null). `fleet`: the sync daemon's OWN `last_sync_ts` + `last_error` | a `fleet` `last_error` (or a frozen `fleet` `last_sync_ts`) = the daemon itself is down and every repo block is a stale snapshot — read `hive logs`. Otherwise check the registry row / remote reachability (§4) |
 
 Highest-leverage operator moves: run agents as **distinct sessions** (that diversity is what
 promotes good captures); **keep the store small** — let unused memory expire rather than lengthening
@@ -299,10 +301,11 @@ qualifies) — that is what fights the dominant long-run decay.
 ## 8. Staying current — server upgrades
 
 There is exactly one install target: the **server**. Agents and workstations install nothing —
-they are thin MCP clients (§2), and the anchor/census engines the sync daemon runs are
-**first-party subpackages of the one `hive` distribution** (`hive/matrix`, `hive/combdrift`,
-`hive/edge`), built into the server image straight from this repository: there is no wheelhouse
-to refresh and no separate engine repository, and PyPI is not an install or publish channel for
+they are thin MCP clients (§2), and the census engines the sync daemon runs are
+**first-party subpackages of the one `hive` distribution** (`hive/matrix`, `hive/combdrift`),
+built into the server image straight from this repository: there is no wheelhouse
+to refresh, no separate engine repository, no `hive-edge` console script (staleness asks git
+directly now, so the engines serve only the census), and PyPI is not an install or publish channel for
 our distribution. The engines' own third-party dependencies (tree-sitter grammars, networkx,
 sqlglot) resolve through `uv lock` / `uv sync` like any other dependency. A contract change needs
 no fleet action either: each session receives the served usage contract fresh at its next connect.

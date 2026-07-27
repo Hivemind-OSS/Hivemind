@@ -62,8 +62,11 @@ _ANCHORS_PROPERTY: dict[str, Any] = {
         "additionalProperties": False,
     },
     "description": "Code bindings: [{repo, anchor}] — repo is a REGISTERED repo name, "
-    "anchor the WHERE (path/file.py::symbol, or a bare path). The server mints fingerprints "
-    "and judges drift per anchor; an unregistered repo refuses the call.",
+    "anchor the WHERE (path/file.py::symbol, or a bare path). The symbol separator is "
+    "'::', never a single ':' — a single-colon anchor is REFUSED (it matches no code "
+    "change, so the memory could never be outcome-verified), as is a '::' naming no "
+    "symbol or only a line number. The server mints fingerprints and judges drift per "
+    "anchor; an unregistered repo refuses the call.",
 }
 
 # Repo-scope membership without a code anchor (write/capture): registered names,
@@ -170,8 +173,8 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
         "description": "Retire one existing memory in favor of another — MACHINE-GATED: the "
         "server retires the loser only when it verifies a qualifying machine "
         "signal (anchor drift at the canonical tip, hurt evidence from another "
-        "identity or a verified outcome, a mechanical contradiction, or the "
-        "winner is a near-dup successor); otherwise the call is a benign noop "
+        "identity or a verified outcome, or the winner is a near-dup successor); "
+        "otherwise the call is a benign noop "
         "envelope and nothing is retired — never an error. Nothing new is "
         "written. For a NEW corrected memory that retires an old one, use "
         "hive_write(replaces=) instead. Candidates surface in "
@@ -188,7 +191,7 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
         "deprecated (never recalled again) with no replacement and stays in "
         "the audit ledger. MACHINE-GATED: the server retires only when it "
         "verifies a qualifying machine signal for the target (drift, hurt "
-        "evidence from another identity or a verified outcome, contradiction); "
+        "evidence from another identity or a verified outcome); "
         "an unqualified call is a benign noop — nothing retired, never an "
         "error. NOT for neutral or merely off-topic memories (omit those; "
         "leave them as-is). To CORRECT a memory (retire-and-replace), prefer "

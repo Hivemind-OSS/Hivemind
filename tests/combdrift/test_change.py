@@ -108,6 +108,123 @@ def test_overload_at_head_is_indeterminate(make_repo):
     assert cv.verdict == "unverifiable"
 
 
+# --- blast radius: an absent BASE token must not leak the head's uncompared reason -
+#
+# verify_change resolves head against the base token, so whenever the base mints no token
+# the head resolution runs with no fingerprint — and resolution now calls that
+# `no_fingerprint` (unverifiable) instead of `ok`. The change path decides those cases from
+# existence and the token pair, never from that reason, so every SymbolChange below must
+# read exactly as it did before resolution changed.
+
+
+def test_added_symbol_keeps_ok_reason_despite_absent_base_token(make_repo):
+    # The census path's hottest case: a symbol ADDED in the range. It is resolvable at head
+    # and absent at base, so head resolves against a None base token — yet an add breaks no
+    # previously-valid call, so it stays additive/ok, and a range of only adds still rolls
+    # up current. Adopting the head resolution's reason here would report `no_fingerprint`
+    # and flip every add-only commit's receipt from current to unverifiable.
+    base = make_repo({"mod.py": "def g(a):\n    return a\n"}, name="base")
+    head = make_repo({"mod.py": "def f(a):\n    return a\n"}, name="head")
+    cv = verify_change(base, head, (("mod.py", "f"),), base_sha="b", head_sha="h")
+    sc = _sc(cv, "f")
+    assert sc.old_fingerprint is None  # nothing for the head shape to compare against
+    assert sc.new_fingerprint is not None
+    assert sc.drift == "additive"
+    assert sc.reason == "ok"
+    assert cv.verdict == "current"
+
+
+def test_overloaded_base_stays_indeterminate(make_repo):
+    # Overloaded at base: present both sides, but the base has no single call shape to mint,
+    # so the pair is uncomparable -> indeterminate / fingerprint_version_mismatch, rolling up
+    # unverifiable. The head resolution ran without a token here too; its reason stays out.
+    base = make_repo(
+        {"mod.py": "def f(a):\n    return a\n\n\ndef f(a, b):\n    return b\n"},
+        name="base",
+    )
+    head = make_repo({"mod.py": "def f(a):\n    return a\n"}, name="head")
+    cv = verify_change(base, head, (("mod.py", "f"),), base_sha="b", head_sha="h")
+    sc = _sc(cv, "f")
+    assert sc.existed_before is True and sc.exists_after is True
+    assert sc.old_fingerprint is None  # overload -> no single token to compare
+    assert sc.drift == "indeterminate"
+    assert sc.reason == "fingerprint_version_mismatch"
+    assert cv.verdict == "unverifiable"
+
+
+def test_indirect_base_binding_stays_indeterminate(make_repo):
+    # An indirect binding (a data alias, not a top-level callable) at base and still indirect
+    # at head: absence is unprovable at either end, so the underlying implementation drifting
+    # decides nothing -> indeterminate / symbol_indirect, rolling up unverifiable.
+    base = make_repo(
+        {"mod.py": "def _impl(a):\n    return a\n\n\nf = _impl\n"}, name="base"
+    )
+    head = make_repo(
+        {"mod.py": "def _impl(a, b):\n    return (a, b)\n\n\nf = _impl\n"}, name="head"
+    )
+    cv = verify_change(base, head, (("mod.py", "f"),), base_sha="b", head_sha="h")
+    sc = _sc(cv, "f")
+    assert sc.existed_before is False and sc.exists_after is False
+    assert sc.drift == "indeterminate"
+    assert sc.reason == "symbol_indirect"
+    assert cv.verdict == "unverifiable"
+
+
+def test_no_change_reason_reports_no_fingerprint(make_repo):
+    # The sweep: one range carrying every shape whose base token is absent (an add, an
+    # indirect base promoted to a real callable, an overloaded base, a still-indirect base)
+    # alongside the shapes that do compare (unchanged, breaking, deleted). No SymbolChange
+    # may surface `no_fingerprint` — that reason belongs to the memory-verification path,
+    # where an uncompared shape is a withheld claim; on a change receipt the base token's
+    # absence is already spoken for by the drift.
+    base = make_repo(
+        {
+            "mod.py": (
+                "def kept(a, b):\n    return (a, b)\n\n\n"
+                "def broke(a, b):\n    return (a, b)\n\n\n"
+                "def gone(a):\n    return a\n\n\n"
+                "def over(a):\n    return a\n\n\n"
+                "def over(a, b):\n    return b\n\n\n"
+                "def _impl(a):\n    return a\n\n\n"
+                "promoted = _impl\n\n\n"
+                "aliased = _impl\n"
+            )
+        },
+        name="base",
+    )
+    head = make_repo(
+        {
+            "mod.py": (
+                "def kept(a, b):\n    return (a, b)\n\n\n"
+                "def broke(a, b, c):\n    return (a, b, c)\n\n\n"
+                "def added(a):\n    return a\n\n\n"
+                "def over(a):\n    return a\n\n\n"
+                "def _impl(a, b):\n    return (a, b)\n\n\n"
+                "def promoted(a):\n    return a\n\n\n"
+                "aliased = _impl\n"
+            )
+        },
+        name="head",
+    )
+    touched = tuple(
+        ("mod.py", sym)
+        for sym in ("kept", "broke", "gone", "added", "over", "promoted", "aliased")
+    )
+    cv = verify_change(base, head, touched, base_sha="b", head_sha="h")
+    assert {s.symbol: s.drift for s in cv.symbols} == {
+        "kept": "unchanged",
+        "broke": "breaking",
+        "gone": "removed",
+        "added": "additive",
+        "over": "indeterminate",
+        "promoted": "additive",  # indirect at base -> a real callable at head
+        "aliased": "indeterminate",
+    }
+    for sc in cv.symbols:
+        assert "no_fingerprint" not in sc.reason, (sc.symbol, sc.reason)
+    assert cv.verdict == "unverifiable"  # the indeterminate pair dominates
+
+
 # --- roll-up precedence reuses verdict._classify -------------------------------
 
 

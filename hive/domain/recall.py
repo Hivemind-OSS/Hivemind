@@ -302,6 +302,9 @@ class RecallPipeline:
     carry hits. The v3 repo partition (D6) is applied BETWEEN search and gate:
     one shared index, a non-global scope filters the candidate list through the
     reader's ``servable_scopes`` map, and the gate sees only the scoped sims.
+    ``recall_top_n`` is a CAP, not a target: the served set is the ``>= tau_serve``
+    prefix, capped at ``recall_top_n`` — the floor decides WHETHER to answer and
+    also WHICH rows may ride, so one relevant candidate cannot carry padding.
     // recall(): O(N·d) search + O(N log N) sort, N = approved count.
     """
 
@@ -457,7 +460,18 @@ class RecallPipeline:
             # are unservable can still backfill real servable hits from deeper in the field before
             # select_served decorrelates and caps at recall_top_n.
             pool = self.recall_top_n * self.overscan
-            shortlist = dense_ids[:pool]
+            # marker: dropping this filter (or moving it below select_served /
+            # _note_exposure) reds tests/contract/test_minimal_hardening_e2e.py::
+            # test_every_served_hit_clears_tau_serve and ::test_a_sub_tau_row_is_never_
+            # exposed — the gate's floor is a per-hit filter as well as a call-level
+            # decision, and a row the floor rejects must never have its liveness
+            # refreshed by the read that rejected it. The floor is read BY IDENTITY off
+            # the gate the pipeline already holds, so there is no second copy to drift.
+            shortlist = [
+                eid
+                for eid in dense_ids[:pool]
+                if sim_by_eid[eid] >= self.gate.tau_serve
+            ]
             # resolve the shortlist to full episodes (weight + text + trust labels). A hit
             # that cannot resolve OR is no longer servable is dropped HERE — before it can
             # be surfaced or exposed (a TTL-lapsed row in the stale warm index must never

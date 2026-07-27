@@ -1,10 +1,11 @@
 """One-hop re-export following: resolve_anchor across a single named edge.
 
 These exercise the §5 follow-outcome table — the 0-false-stale enumeration. A
-clean landing on a found symbol upgrades indirect -> current; a clean landing
-on provable absence upgrades indirect -> stale (symbol_missing); every
-uncertainty (no target, second hop, parse error, submodule, escape) stays
-indirect (unverifiable). Targets are read as data only, never imported.
+clean landing on a found symbol upgrades indirect -> found (current once the
+landed shape compares equal to a recorded baseline); a clean landing on
+provable absence upgrades indirect -> stale (symbol_missing); every uncertainty
+(no target, second hop, parse error, submodule, escape) stays indirect
+(unverifiable). Targets are read as data only, never imported.
 """
 
 from __future__ import annotations
@@ -22,6 +23,9 @@ from hive.combdrift.types import (
 )
 
 # --- Python: follow to a clean landing ---------------------------------------
+# `current` claims a shape was COMPARED, so each landing test mints its baseline
+# directly at the source declaration and then verifies through the IMPORTER's
+# anchor: the token can only match if the edge was followed to that declaration.
 
 
 def test_follow_reexport_to_found_is_current(make_repo):
@@ -32,7 +36,10 @@ def test_follow_reexport_to_found_is_current(make_repo):
             "pkg/core.py": "def parse(token):\n    return token\n",
         }
     )
-    res = resolve_anchor(repo, Anchor("pkg/api.py", "parse"))
+    # Baseline captured at the source, never at the importer.
+    fp = fingerprint_anchor(repo, Anchor("pkg/core.py", "parse"))
+    assert fp is not None
+    res = resolve_anchor(repo, Anchor("pkg/api.py", "parse", fp))
     assert res.found is True
     assert res.reason == REASON_OK
     # location points at the SOURCE declaration, not the importer.
@@ -64,7 +71,11 @@ def test_follow_aliased_reexport_to_found_is_current(make_repo):
             "pkg/core.py": "def parse(token):\n    return token\n",
         }
     )
-    res = resolve_anchor(repo, Anchor("pkg/api.py", "p"))
+    # Minting under the ORIGINAL name and matching through the alias is what
+    # proves the edge was followed by that name and not by the local one.
+    fp = fingerprint_anchor(repo, Anchor("pkg/core.py", "parse"))
+    assert fp is not None
+    res = resolve_anchor(repo, Anchor("pkg/api.py", "p", fp))
     assert res.found is True
     assert res.reason == REASON_OK
     assert res.location == "pkg/core.py:1"
@@ -79,8 +90,12 @@ def test_follow_to_package_init_is_current(make_repo):
             "pkg/core/__init__.py": "def parse(x):\n    return x\n",
         }
     )
-    res = resolve_anchor(repo, Anchor("pkg/api.py", "parse"))
+    # Baseline captured at the __init__ declaration the candidate resolves to.
+    fp = fingerprint_anchor(repo, Anchor("pkg/core/__init__.py", "parse"))
+    assert fp is not None
+    res = resolve_anchor(repo, Anchor("pkg/api.py", "parse", fp))
     assert res.found is True
+    assert res.reason == REASON_OK
     assert res.location == "pkg/core/__init__.py:1"
 
 
@@ -173,7 +188,10 @@ def test_follow_ts_barrel_to_found_is_current(make_repo):
             "src/Button.tsx": "export function Button() {\n  return null;\n}\n",
         }
     )
-    res = resolve_anchor(repo, Anchor("src/index.ts", "Button"))
+    # Baseline captured at the .tsx declaration the barrel points to.
+    fp = fingerprint_anchor(repo, Anchor("src/Button.tsx", "Button"))
+    assert fp is not None
+    res = resolve_anchor(repo, Anchor("src/index.ts", "Button", fp))
     assert res.found is True
     assert res.reason == REASON_OK
     assert res.location == "src/Button.tsx:1"
@@ -199,7 +217,10 @@ def test_follow_ts_named_import_to_found_is_current(make_repo):
             "src/core.ts": "export function parse(a: string) {\n  return a;\n}\n",
         }
     )
-    res = resolve_anchor(repo, Anchor("src/index.ts", "parse"))
+    # Baseline captured at the imported module's declaration.
+    fp = fingerprint_anchor(repo, Anchor("src/core.ts", "parse"))
+    assert fp is not None
+    res = resolve_anchor(repo, Anchor("src/index.ts", "parse", fp))
     assert res.found is True
     assert res.reason == REASON_OK
     assert res.location == "src/core.ts:1"

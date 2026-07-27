@@ -31,12 +31,6 @@ EK_OUTCOME_VERIFIED_HELPED: str = (
 EK_OUTCOME_VERIFIED_HURT: str = (
     "outcome_verified_hurt"  # SHA-bound contradiction (census ingest)
 )
-EK_VERIFY_CURRENT: str = (
-    "verify_current"  # anchor verified intact at head SHA (census ingest)
-)
-EK_VERIFY_STALE: str = (
-    "verify_stale"  # anchor verified broken/removed at head SHA (census ingest)
-)
 EK_STALE_SUSPECT: str = (
     "stale_suspect"  # anchor in a breaking change's blast radius (census ingest)
 )
@@ -54,8 +48,6 @@ EVIDENCE_KINDS: frozenset[str] = frozenset(
         EK_CHANGE_OUTCOME,
         EK_OUTCOME_VERIFIED_HELPED,
         EK_OUTCOME_VERIFIED_HURT,
-        EK_VERIFY_CURRENT,
-        EK_VERIFY_STALE,
         EK_STALE_SUSPECT,
     }
 )

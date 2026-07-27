@@ -2,7 +2,170 @@
 
 All notable changes to this project are documented here.
 
+## Removed
+- **A near-duplicate no longer authorizes destroying a memory.** The retirement gate's
+  conflict-pair feed is gone — `_gate_conflict_pairs` at the boundary, the `conflict_pairs`
+  parameter on `retirement_evidence`, its `_involves` helper and the `contradiction` signal.
+  Filtering the feed by relation would not have closed the hole: `polarity` is supplied by the
+  caller at write time, so an attacker earned a mechanically-detected "contradiction" by writing
+  an opposing paraphrase. Near-duplication is the expected steady state of a fleet store, so the
+  feed opened `hive_prune` on most of the corpus to any caller, including one with no prior
+  relationship to the target. The retire-and-replace flow is untouched: `hive_supersede` /
+  `hive_write(replaces=)` still qualify on a near-dup WINNER, which is measured between the loser
+  and the successor the caller names. Conflict DETECTION is untouched too — the recall `conflicts`
+  carrier and `hive_health(include_conflicts=true)` still surface pairs as guidance to call
+  `hive_supersede`. The qualifying set is now four signals: anchor drift, server-verified hurt,
+  other-identity hurt, and the supersede winner. An UNANCHORED memory therefore now needs a second
+  identity's hurt evidence to be retired at all.
+- **The census anchor-verification channel is retired; git is the one staleness oracle.** A
+  served hit used to carry `drift` (git) and `last_verified` (a combdrift-derived census rider)
+  simultaneously, and after staleness moved to git the two measured different things and could
+  disagree in either direction. Rather than reconcile them — two channels that always agree are
+  one fact spelled twice, with two producers and two grammars to keep in sync forever — the second
+  one is deleted end to end: `classify_verify`, `render_verify_payload`, `verify_payload_ref` and
+  the `verify/v1` payload schema; the `verify_current` / `verify_stale` evidence kinds and their
+  `censusctl` counters; the `LastVerificationReader` port and the store's `last_verification`
+  read; the `last_verified` wire key; and retirement clause 1b with its `own_lines` feed and
+  `EvidenceRow.ref` field. The retirement gate's ledger feed is a 3-tuple that parses no payload.
+  **Historical `verify_*` rows stay in `evidence_events`** — honest, append-only history, read by
+  nothing and migrated by nothing. A memory anchored into a deregistered repo now reads
+  `unverifiable` and exits via the provisional TTL rather than being retirable by a hand-ingested
+  receipt for a repo the fleet no longer observes.
+
+## Changed
+- **The served set is the `tau_serve` prefix, so `recall_top_n` is a cap and not a target.**
+  The relevance floor was only ever a call-level decision: one candidate clearing it un-suppressed
+  the whole call and up to `recall_top_n` hits then rode along unfiltered — measured against the
+  real embedder, 8 of 60 served hits cleared the floor and hits rode as low as cos 0.35. The
+  shortlist is now filtered at `gate.tau_serve` (read by identity off the gate the pipeline
+  already holds — no new knob, no second copy), BEFORE resolve and therefore before selection and
+  before the exposure write, so a row the floor rejects is never surfaced and never has its
+  liveness refreshed by the read that rejected it. A recall that returned ten hits will typically
+  return one to three. The abstain decision is unchanged, and an empty post-filter set routes
+  through the existing empty-envelope path rather than becoming a confident-with-zero-hits state.
+- **A control character in an anchor is refused at the write boundary.** `anchor_grammar_error`
+  gains a fifth clause, positioned first so the offending character is named as itself rather than
+  mis-described by whichever later clause it trips. A NUL in a stored anchor reached git's argv
+  and raised before any probe could answer, which failed the repo's whole drift leg on every tick
+  thereafter and froze every other anchor's cached verdict at its last value — a false `fresh`
+  that outlived the code it described. The refusal is mint-side only; already-stored anchors still
+  tokenize exactly as before.
+- **One unprobeable binding can no longer fault a repo's drift leg.** The symbol prober guards
+  each binding individually, so a stored anchor git cannot even be HANDED is treated as the same
+  case as one git cannot answer: the row stays unprobed, materializes no verdict (reading
+  `unverifiable`, the honest unknown), and every other binding in that repo still earns its
+  verdict while the tick's prunes still run. This is what the prober's own docstring already
+  promised and the code did not implement for a fault raised before the subprocess started.
+- **The stale-remediation rider is keyed to the one oracle.** `REMEDIATION_NOTICE` now rides a hit
+  whose routed `drift.type` is in `QUALIFYING_DRIFT` instead of a census `state == "stale"` stamp,
+  so it reaches every git-detected stale hit rather than a minority of them and can never
+  contradict the `drift` key on the same hit. The rule that a memory is never reported stale on a
+  line it never claimed is now structural rather than hand-maintained: an off-line stale-tier
+  verdict is routed to the advisory `branch_scoped`, which `QUALIFYING_DRIFT` deliberately
+  excludes.
+- The served contract, both retirement tool descriptions and the remediation notice no longer
+  advertise a mechanical contradiction as a qualifying signal — advertised and enforced move in
+  the same change.
+
+## Changed
+- **Staleness is now answered by git, not by a fingerprint.** A memory's code binding is stamped
+  with the commit it was written against (the repo's sync watermark — a dict read, so the write
+  path grows no I/O), and each tick the daemon asks git what the range from that commit to the
+  judged tip did to the anchored path: two read-only plumbing reads per distinct baseline
+  (`ls-tree` at the baseline, `diff --name-status` over the range) and, only for a symbol anchor
+  whose file actually moved, one `git log -L ':sym:path'`. No parser, no dependency graph, no
+  worktree, no `hive-edge` subprocess, no per-anchor work queue. This measures what the old signal
+  could not: a **rewritten function body** with an unchanged signature and unchanged callees
+  served `fresh` before and now reads `anchor_changed`, while churn elsewhere in the same file
+  correctly leaves a symbol anchor `fresh`. Both `file.py::method` and `file.py::Class.method`
+  resolve, because the lookup falls back to the last dotted segment. Coverage widens from the
+  five languages the fingerprint engine parsed to the ~25 git ships funcname drivers for; a
+  language with no driver falls back to the file tier, which is the more sensitive verdict.
+- **A stale hit now carries the evidence for its verdict.** `drift.detail.per_anchor[i]` gains
+  `since` (the baseline commit it drifted from), `commits` (up to 10 SHAs, newest first) and
+  `n_commits`. SHAs and ints only — never a commit subject or message, which is unscanned repo
+  text; the agent resolves them in its own checkout.
+- **The drift cache is keyed by every input to its verdict.** `anchor_drift`'s primary key is now
+  `(repo, tip_sha, base_tip, anchor)`. Because sqlite cannot alter a primary key in place, **the
+  table is dropped and recreated at boot** — legal without a migration because it is a rebuildable
+  cache whose loss degrades reads to `unverifiable` (the honest unknown) for one tick. No episode
+  row, no anchor row and no memory text is read or rewritten. A baseline written or changed while
+  a tip stands still can no longer be answered from a row that predates it.
+- **A repo's baselines join deregistration's forget-list.** The new `anchor_baselines` table is a
+  server OBSERVATION, so `hive repo remove` drops it alongside `ref_tips` / `anchor_drift` /
+  `ref_requests` / `sync:<name>:*`, and a re-registered repo re-baselines at the tip it can
+  actually see. The writer's own declarations (`episode_anchors`, `episode_refs`) still survive.
+- `blast_radius_changed` keeps its place in the wire vocabulary and its producer moved: it is now
+  emitted when the census's own `stale_suspect` evidence puts an otherwise-`fresh` anchor in a
+  breaking change's blast radius. `episode_anchors.fp_meta` is retired — nothing writes or reads
+  it — and the column stays because dropping it would be a table rebuild, i.e. a migration.
+
+## Removed
+- **`HIVE_SYNC__DRIFT_PER_TICK` and `HIVE_SYNC__BACKFILL_PER_TICK` are gone.** They bounded engine
+  subprocess spawns; the git ladder spawns none, and its call count is bounded by how much the
+  repo actually changed — a bound no operator can pick better, and a cap on a check this cheap
+  could only add latency to coverage. A repo's whole anchor set reconverges in one tick now,
+  whatever its size. A leftover value in an `.env` logs `config.env_unknown_field` at boot and is
+  ignored; `HIVE_SYNC__WORKERS` is unchanged and is the only capacity knob left.
+- **The `hive-edge` console script and the `hive/edge/` package.** They existed to keep engine
+  machinery out of the server process for mint/verify; git plumbing is already a subprocess that
+  reads only the object database, so the extra hop bought nothing. `hive/matrix` and
+  `hive/combdrift` STAY — the census still uses them for symbol attribution and blast radius —
+  but nothing on the drift path imports an engine at all. `hive-sync/minted`, `combdrift/fp`,
+  `matrix/subgraph_fp` and `git/branches` keep their registry rows (the meta namespace is
+  add-only) and now record that their minter is retired.
+
 ## Fixed
+- **A symbol that never existed no longer reads `fresh` on a quiet file.** "The file is not in the
+  diff" says nothing about a name inside it, so an anchor naming a symbol that was never there
+  (a typo, a renamed helper) inherited `fresh` — a positive claim about something the server had
+  never observed. Each symbol binding is now resolved once against its own baseline commit and
+  the answer stored beside it; a symbol that did not resolve there reads `unverifiable` whatever
+  the diff says, and can therefore never qualify a retirement the evidence does not support. The
+  baseline is an immutable commit, so this is measured once per binding and never re-asked — a
+  repo with no new bindings spawns nothing for it.
+- **Historical single-colon anchors keep a computed drift verdict (BUG-083).** Deleting the
+  fingerprint CLI took with it the reader that deliberately resolved the pre-gate
+  `path/file.py:Symbol` spelling, dropping that whole population to `unverifiable` and out of
+  machine-gated retirement. The reader is back as `probe_target`, now living beside the strict
+  tokenizer it must agree with, so the two cannot fork across a package boundary again. The write
+  gate still refuses the spelling and the census join still cannot match it — that is BUG-077 and
+  it stays closed.
+- **A wrongly-spelled anchor is now refused at the write boundary instead of dying silently.**
+  `anchors=[{"repo": "alpha", "anchor": "path/file.py:Symbol"}]` — one colon, not two — was
+  accepted, served, and reported healthy drift, because the engine's tokenizer resolves both
+  separators. But the census join partitions on `::` alone, so such a memory matched no code
+  change, never earned an outcome row, could never reach `established`, and expired at the
+  provisional TTL while still being correct. The grammar now has ONE owner
+  (`hive/domain/anchor_grammar.py`) read by the write gate, the census join and the mint
+  backfill, so what is accepted and what can match cannot disagree. The write returns a
+  `refused` envelope naming the violated clause and stores nothing; `path/file.py::`,
+  `path/file.py::42` and a colon-bearing path with no `::` are refused for the same reason.
+  Anchors already stored in the old spelling are deliberately untouched — they keep serving, keep
+  a genuinely computed drift verdict, and keep qualifying retirement; the engine's reader still
+  resolves them and the ordinary `hive_write(replaces=…)` path re-binds one canonically.
+- **A memory's anchor no longer reads `fresh` off a comparison that never happened.** When an
+  anchor's fingerprint carrier was still empty, the engine reported the symbol `current` — which
+  the server serves as drift `fresh` — even though nothing about its call shape had been
+  compared. Worse, the mint-backfill then wrote that anchor's first baseline from whatever the
+  tip happened to be, so a signature break that landed *before* the first mint was recorded AS
+  the baseline and the anchor read `fresh` forever. An uncompared call shape now reports
+  `unverifiable`, the honest unknown, and the backfill defers any anchor the same tick's own
+  receipt reported changed, minting it on the first tick that leaves its file alone. A faulted
+  census leg means the server does not know what changed, so it mints nothing for that repo that
+  tick. Two arms keep reading `fresh` without a fingerprint, because for them existence is the
+  whole claim: a file-scoped anchor, and a symbol that has no comparable call shape at all — a
+  declared-schema (SQL / JSON-schema) anchor or an overload set.
+- **A deleted FILE now retires a memory, exactly like a deleted symbol.** Deleting the symbol a
+  memory named produced `anchor_missing`, which qualifies the machine gate; deleting the whole
+  file produced `unverifiable`, which never does — so the strongest possible evidence that an
+  anchor is dead was the one form that could not act on it, and the memory kept serving
+  indefinitely. Both tiers now read `anchor_missing`. The mapping from an engine reason to a
+  served verdict is exhaustive by construction rather than a two-case chain over a silent
+  catch-all: a test derives the engine's own stale-reason set and requires an explicit arrow for
+  each, so a reason added to the engine without a decided verdict cannot pass. An unrecognized
+  reason still fails safe to `unverifiable`, and a prose anchor is still carved out before the
+  mapping runs.
 - **Two operator docs caught up to already-landed signal-honesty and mirror-identity fixes.**
   `HIVE-ADMIN.md` still claimed an unknown-config-key WARN means the key "is never a live
   switch" — false for `HIVE_SYNC__TOKEN`/`HIVE_STORE__DB_PATH`, which are read directly outside

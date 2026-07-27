@@ -5,7 +5,12 @@ Two vocabularies arrive at the write/recall boundary:
 
 - ``anchors`` — an array of ``{"repo": name, "anchor": location}`` objects (the
   ``AnchorRef`` carrier shape): a code binding of a memory. ``repo`` must be a
-  REGISTERED repo name; ``anchor`` is free text (``path`` or ``path::Symbol``).
+  REGISTERED repo name; ``anchor`` must satisfy the server-side anchor grammar
+  (``hive.domain.anchor_grammar`` — ``path``, ``path::Symbol``, or colon-free
+  prose), so an accepted binding is one the census subject feed can actually
+  join. A single-colon spelling is REFUSED, not silently normalized: it used to
+  be accepted, resolve fine in the drift engine, and match no subject, so the
+  memory could never be outcome-verified (BUG-077).
 - ``repos`` — an array of ``"name"`` / ``"name@branch"`` strings: repo-scope
   membership (write side) or the recall partition filter (read side). ``name``
   must be a REGISTERED repo name; ``branch`` is free text.
@@ -28,6 +33,7 @@ from __future__ import annotations
 
 from collections.abc import Callable, Container
 
+from hive.domain.anchor_grammar import anchor_grammar_error
 from hive.domain.models import AnchorRef
 
 
@@ -105,6 +111,13 @@ def normalize_anchors(
                 f"anchors[{i}].anchor must be a non-empty code location "
                 "(path or path::Symbol)"
             )
+        # marker: dropping this clause restores BUG-077 — an anchor spelling the
+        # gate accepts but the census join can never match, so the memory serves a
+        # healthy drift verdict and still dies at the provisional TTL. The grammar
+        # itself is NOT spelled here: one owner, three consumers.
+        grammar_error = anchor_grammar_error(anchor)
+        if grammar_error is not None:
+            raise BadAnchors(f"anchors[{i}].anchor {grammar_error}")
         if not known(repo):
             raise BadAnchors(
                 f"unknown repo {repo!r} in anchors[{i}] — not in the registry"

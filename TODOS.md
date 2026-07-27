@@ -194,6 +194,13 @@ deferred — net-new combdrift work, Law-1-orthogonal (existence already covers 
 
 ## TODO 17 — Staleness-direct meta expansion (U4): validator tags beyond code symbols
 
+> **SUPERSEDED — do not implement as written.** Code-symbol staleness is no longer answered by
+> minted meta tokens at all: `hive/edge/` and the whole mint/verify path are deleted, and drift is
+> a git question (a per-binding baseline commit + `hive/domain/staleness.py:decide`, fed by the
+> prober in `hive/app/sync.py`). Every file and mechanism named below is gone or repurposed. The
+> underlying WANT — mechanical staleness for claims that are not code symbols — is still open, but
+> needs re-planning against the git-native ladder before any of this is actionable.
+
 **File:** `hive/edge/` (mint/verify, the anchor grammar), `hive/domain/meta_registry.py`,
 `hive/app/sync.py` (backfill + change-time recompute), `hive/domain/change_evidence.py` (census
 ingest seam), `hive/app/onboard_ref.py` (directive wording + contract bump), `CONTEXT/INTERACTIONS.md`,

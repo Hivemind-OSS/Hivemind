@@ -23,50 +23,50 @@ from tests.contract.conftest import (
     served_ids,
     write_ok,
 )
-from tests.fakes._fakes import FakeClusterProvider
+from tests.fakes._fakes import FakeAngleProvider
 
-Q = "cid=50 how does the shared retry helper behave"
+Q = "dir=50 how does the shared retry helper behave"
 
 
 @pytest.fixture
 def bare(tmp_path):
-    """An unseeded clustered rig (seeding happens IN-test so an unbuilt v3
+    """An unseeded controlled-angle rig (seeding happens IN-test so an unbuilt v3
     surface fails as an assertion, never as a fixture error)."""
-    return make_rig(tmp_path, embedder=FakeClusterProvider(d=32))
+    return make_rig(tmp_path, embedder=FakeAngleProvider(d=32))
 
 
 def seed_partitions(rig):
     """One memory per partition class: alpha-anchored (x2), beta-scoped, general,
-    and alpha+beta shared — each in its OWN embedding cluster (genuinely
-    distinct content, pairwise cos ≈ 0, safely under the default near-dup
-    ``dup_tau`` floor), so the served set is decided by PARTITION MEMBERSHIP,
-    never by dedup collapse. The general memory alone shares the query's
-    cluster (cid=50): it belongs to every partition, so it clears ``tau_serve``
-    and opens the gate under every scope, and the in-partition rest serve
-    full-K alongside it (default ``recall_top_n`` exceeds any partition here).
+    and alpha+beta shared. EVERY one sits at the same controlled angle to the
+    query direction — each clears ``tau_serve`` on its own merits, and their
+    mutual cosine stays under the near-dup ``dup_tau`` floor — so the served set
+    is decided by PARTITION MEMBERSHIP alone: never by dedup collapse, and never
+    by one relevant memory carrying irrelevant ones into the envelope alongside
+    it (the served set is the >= tau_serve prefix). Default ``recall_top_n``
+    exceeds any partition here, so the cap never binds.
     """
     for name in ("alpha", "beta", "gamma"):
         register_repo(rig.store, name, f"https://example.invalid/{name}.git")
     ids = {
         "a": write_ok(
             rig.server,
-            "cid=51 alpha: the retry helper doubles its backoff",
+            "near=50:1 alpha: the retry helper doubles its backoff",
             anchors=[{"repo": "alpha", "anchor": "hive/app/retry.py::backoff"}],
         ),
         "a2": write_ok(
             rig.server,
-            "cid=52 alpha: the retry helper caps at five attempts",
+            "near=50:2 alpha: the retry helper caps at five attempts",
             anchors=[{"repo": "alpha", "anchor": "hive/domain/policy.py::cap"}],
         ),
         "b": write_ok(
             rig.server,
-            "cid=53 beta: the retry helper jitters its delay",
+            "near=50:3 beta: the retry helper jitters its delay",
             repos=["beta"],
         ),
-        "g": write_ok(rig.server, "cid=50 general: retries must be idempotent"),
+        "g": write_ok(rig.server, "near=50:4 general: retries must be idempotent"),
         "ab": write_ok(
             rig.server,
-            "cid=54 shared: the retry helper is vendored in both",
+            "near=50:5 shared: the retry helper is vendored in both",
             repos=["alpha", "beta"],
         ),
     }
@@ -113,12 +113,15 @@ def test_multi_repo_memory_serves_from_either_scope(bare):
 def test_scoped_weak_field_abstains_tau_preserved(bare):
     rig = bare
     seed_partitions(rig)
-    # cid=6 exists ONLY as an alpha memory; a beta-scoped recall must gate on the
-    # FILTERED sims and abstain (gating on unfiltered sims is the named mutation).
+    # the dir=6 direction is matched ONLY by an alpha memory; a beta-scoped recall
+    # must gate on the FILTERED sims and abstain (gating on unfiltered sims is the
+    # named mutation).
     only_alpha = write_ok(
-        rig.server, "cid=6 alpha-only: the migration lock is advisory", repos=["alpha"]
+        rig.server,
+        "near=6:1 alpha-only: the migration lock is advisory",
+        repos=["alpha"],
     )
-    env = recall(rig.server, "cid=6 what is the migration lock posture", repos=["beta"])
+    env = recall(rig.server, "dir=6 what is the migration lock posture", repos=["beta"])
     assert env.get("abstained") is True, (
         f"a strong OUT-OF-SCOPE match must not rescue a weak scoped field: {env}"
     )
@@ -130,7 +133,7 @@ def test_off_distribution_query_abstains_in_scope(bare):
     rig = bare
     seed_partitions(rig)
     env = recall(
-        rig.server, "cid=9 completely unrelated cooking question", repos=["alpha"]
+        rig.server, "dir=9 completely unrelated cooking question", repos=["alpha"]
     )
     assert env.get("abstained") is True
     assert served_ids(env) == []
@@ -166,8 +169,11 @@ def test_anchor_prefix_narrows_anchored_hits_only(bare):
 def test_empty_partition_abstains(bare):
     rig = bare
     seed_partitions(rig)
-    # cid=8 exists only in alpha; gamma has nothing, and no cid=8 general exists
-    write_ok(rig.server, "cid=8 alpha-only fact about the scheduler", repos=["alpha"])
-    env = recall(rig.server, "cid=8 what about the scheduler", repos=["gamma"])
+    # the dir=8 direction is matched only in alpha; gamma has nothing, and no
+    # general memory answers it either
+    write_ok(
+        rig.server, "near=8:1 alpha-only fact about the scheduler", repos=["alpha"]
+    )
+    env = recall(rig.server, "dir=8 what about the scheduler", repos=["gamma"])
     assert env.get("abstained") is True
     assert served_ids(env) == []

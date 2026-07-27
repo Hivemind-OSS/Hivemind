@@ -62,21 +62,21 @@ def test_drift_fresh_then_anchor_changed_reaches_the_agent(rig):
     assert env["status"] == "approved", env
     eid = env["id"]
 
-    # tick 1: clone, baseline the watermark, mint the missing fp, materialize drift
+    # tick 1: clone, advance the watermark, fill the missing baseline, judge drift
     syncer.tick()
     tip1 = meta(server.store, "sync:alpha:last_tip")
     assert tip1 == origin.origin_sha("refs/heads/main"), (
         f"watermark not baselined at the real tip: {tip1}"
     )
-    fp_rows = [
+    baselines = [
         dict(r)
         for r in server.store.conn.execute(
-            "SELECT fp_meta FROM episode_anchors WHERE episode_id=?", (eid,)
+            "SELECT base_tip FROM anchor_baselines WHERE episode_id=?", (eid,)
         )
     ]
-    assert fp_rows and fp_rows[0]["fp_meta"], (
-        "the mint-backfill leg left the fingerprint carrier empty — "
-        f"drift can never be judged: {fp_rows}"
+    assert baselines and baselines[0]["base_tip"], (
+        "the binding was never given the commit it is measured from — "
+        f"drift can never be judged: {baselines}"
     )
     drift_rows = [
         dict(r)

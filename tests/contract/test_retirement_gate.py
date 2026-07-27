@@ -4,11 +4,12 @@ no-op (plan §4 intent 7, §3.2 — the D4 gate, single owner
 
 ``hive_prune`` / ``hive_supersede`` / ``hive_write(replaces=)`` retire ONLY when
 the server itself finds a qualifying signal for the target: drift at the
-canonical tip, a ``verify_stale`` ledger row not outdated by a newer
-``verify_current``, a server-written ``outcome_verified_hurt``, an
-``outcome_hurt`` from an identity OTHER than the retiring caller (two-call
-self-destruction blocked), or a mechanical contradiction / near-dup-winner.
-Advisory ``hive_flag`` rows never qualify. Unqualified ⇒ the §3.2 noop envelope
+canonical tip, a server-written ``outcome_verified_hurt``, an ``outcome_hurt``
+from an identity OTHER than the retiring caller (two-call self-destruction
+blocked), or — supersede only — a near-dup WINNER. Advisory ``hive_flag`` rows
+never qualify, and neither does a merely-DETECTED near-dup pair: near-duplication
+is the expected steady state of a fleet store, so a caller could otherwise
+manufacture its own license to destroy any memory. Unqualified ⇒ the §3.2 noop envelope
 (never ``isError``); a gate-feed reader fault fails CLOSED (noop, never a
 retire). No approver argument exists anywhere.
 """
@@ -22,6 +23,7 @@ from tests.contract.conftest import (
     DRIFT_ANCHOR_MISSING,
     NOOP_REASON,
     call,
+    BASE_TIP,
     drift_put,
     evidence_rows,
     ident,
@@ -42,6 +44,9 @@ from tests.fakes._fakes import FakeClusterProvider
 TIP = "b" * 40
 A = ident("agent-a")
 B = ident("agent-b")
+
+
+BASE = BASE_TIP  # the baseline the seeded verdicts were judged from
 
 
 def _rig(tmp_path, *, cluster: bool = False):
@@ -148,7 +153,8 @@ def test_replaces_drift_qualified_target_still_retires(tmp_path):
         anchors=[{"repo": "alpha", "anchor": "app.py::greet"}],
     )
     drift_put(
-        rig.store, [("alpha", TIP, "app.py::greet", DRIFT_ANCHOR_MISSING, "{}", 5)]
+        rig.store,
+        [("alpha", TIP, BASE, "app.py::greet", DRIFT_ANCHOR_MISSING, "{}", 5)],
     )
     env = write(rig.server, "greet was removed; use salute instead", replaces=target)
     assert env.get("status") == "approved"
@@ -159,9 +165,10 @@ def test_replaces_drift_qualified_target_still_retires(tmp_path):
     _assert_retired(rig, target, expect_signal_substr="drift")
 
 
-def test_replaces_contradiction_correction_stamps_both_signals(tmp_path):
+def test_replaces_opposing_polarity_correction_stamps_only_the_winner_signal(tmp_path):
     # a correction that both answers the same need AND opposes its target's polarity
-    # is the strongest correction shape there is — both between-row signals fire.
+    # retires on the WINNER alone: the opposing polarity makes the detector call the
+    # pair a contradiction, and that classification is deliberately not a signal.
     rig = _rig(tmp_path, cluster=True)
     target = write_ok(
         rig.server, "cid=33 do retry idempotent posts automatically", polarity="do"
@@ -173,17 +180,17 @@ def test_replaces_contradiction_correction_stamps_both_signals(tmp_path):
         polarity="dont",
     )
     assert env.get("superseded") == target, (
-        f"a contradicting near-dup correction retires in one call: {env}"
+        f"an opposing near-dup correction retires in one call: {env}"
     )
-    _assert_retired(rig, target, expect_signal_substr="contradiction")
+    _assert_retired(rig, target, expect_signal_substr="winner_near_dup")
     audits = [
         json.loads(r["payload"])
         for r in evidence_rows(rig.store, target)
         if r["payload"].startswith("{")
     ]
     signals = [s for body in audits for s in (body.get("signals") or [])]
-    assert "winner_near_dup" in signals and "contradiction" in signals, (
-        f"both between-row signals are stamped: {signals}"
+    assert signals == ["winner_near_dup"], (
+        f"the winner is the ONE between-row signal: {signals}"
     )
 
 
@@ -248,27 +255,23 @@ def test_drift_stale_qualifies(tmp_path):
         anchors=[{"repo": "alpha", "anchor": "app.py::greet"}],
     )
     drift_put(
-        rig.store, [("alpha", TIP, "app.py::greet", DRIFT_ANCHOR_MISSING, "{}", 5)]
+        rig.store,
+        [("alpha", TIP, BASE, "app.py::greet", DRIFT_ANCHOR_MISSING, "{}", 5)],
     )
     env = _prune(rig, eid)
     assert env.get("status") == "pruned", f"drift at the canonical tip qualifies: {env}"
     _assert_retired(rig, eid, expect_signal_substr="drift")
 
 
-def test_verify_stale_ledger_row_qualifies(tmp_path):
+def test_an_orphaned_verify_row_no_longer_qualifies_anything(tmp_path):
+    """The retired census verification channel left rows in existing ledgers. They
+    are honest history and are read by NOTHING — including this gate, which would
+    otherwise be a second staleness oracle disagreeing with git."""
     rig = _rig(tmp_path)
     eid = write_ok(rig.server, "the old export path still works")
     insert_verify_audit(rig.store, eid, "verify_stale", ts=100)
-    env = _prune(rig, eid)
-    assert env.get("status") == "pruned", f"a verify_stale ledger row qualifies: {env}"
-    _assert_retired(rig, eid, expect_signal_substr="stale")
-
-
-def test_newer_verify_current_disqualifies_the_stale_row(tmp_path):
-    rig = _rig(tmp_path)
-    eid = write_ok(rig.server, "the export path was re-verified current")
-    insert_verify_audit(rig.store, eid, "verify_stale", ts=100)
-    insert_verify_audit(rig.store, eid, "verify_current", ts=200)
+    rows = evidence_rows(rig.store, eid, "verify_stale")
+    assert rows, "precondition: the orphaned row really is in the ledger"
     env = _prune(rig, eid)
     _assert_gate_noop(env, rig, eid)
 
@@ -304,7 +307,10 @@ def test_outcome_hurt_same_identity_blocks_self_destruction(tmp_path):
     _assert_gate_noop(env, rig, eid)  # hive_outcome + hive_prune two-call blocked
 
 
-def test_mechanical_contradiction_qualifies(tmp_path):
+def test_a_mechanical_near_dup_pair_never_qualifies_a_bare_prune(tmp_path):
+    """Near-duplication — with or without opposing polarity — is not a license to
+    destroy. The caller must name the survivor instead (hive_supersede), which the
+    next test shows still works."""
     rig = _rig(tmp_path, cluster=True)
     do = write_ok(
         rig.server, "cid=11 do retry idempotent posts automatically", polarity="do"
@@ -312,12 +318,8 @@ def test_mechanical_contradiction_qualifies(tmp_path):
     dont = write_ok(
         rig.server, "cid=11 dont retry posts automatically ever", polarity="dont"
     )
-    env = _prune(rig, dont, identity=A)
-    assert env.get("status") == "pruned", (
-        f"a mechanical near-dup CONTRADICTION with a co-servable row qualifies: {env}"
-    )
-    _assert_retired(rig, dont, expect_signal_substr="contradiction")
-    assert trust_of(rig.store, do) != DEPRECATED, "only the named target retires"
+    _assert_gate_noop(_prune(rig, dont, identity=A), rig, dont)
+    _assert_gate_noop(_prune(rig, do, identity=A), rig, do)
 
 
 def test_supersede_near_dup_winner_qualifies(tmp_path):

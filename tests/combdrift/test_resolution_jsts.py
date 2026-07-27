@@ -6,6 +6,7 @@ from pathlib import Path
 
 from hive.combdrift.resolution import fingerprint_anchor, resolve_anchor
 from hive.combdrift.types import (
+    REASON_NO_FINGERPRINT,
     REASON_NO_SYMBOL_REQUESTED,
     REASON_OK,
     REASON_PARSE_ERROR,
@@ -17,9 +18,12 @@ from hive.combdrift.types import (
 
 
 def test_ts_function_found_with_location(tmp_ts_repo: Path):
+    # No baseline fingerprint, so no shape comparison ever ran: the symbol
+    # resolves with its location, but `ok` would claim a comparison that
+    # never happened, so an uncompared callable reports no_fingerprint.
     res = resolve_anchor(str(tmp_ts_repo), Anchor("src/auth.ts", "refresh"))
     assert res.found is True
-    assert res.reason == REASON_OK
+    assert res.reason == REASON_NO_FINGERPRINT
     assert res.location == "src/auth.ts:1"
 
 

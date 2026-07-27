@@ -73,15 +73,17 @@ from hive.domain.evidence_kinds import (
     EK_OUTCOME_VERIFIED_HURT,
     EK_PRUNE,
     EK_SUPERSEDE,
-    EK_VERIFY_CURRENT,
-    EK_VERIFY_STALE,
 )
 from hive.domain.kinds import DEFAULT_KIND
 from hive.domain.lifecycle import DEPRECATED, is_servable
 from hive.domain.meta import BadMeta, normalize_meta
 from hive.domain.models import CONFIDENT, AnchorRef, Episode
 from hive.domain.recall import RecallScope
-from hive.domain.retirement import Eligibility, retirement_evidence
+from hive.domain.retirement import (
+    QUALIFYING_DRIFT,
+    Eligibility,
+    retirement_evidence,
+)
 from hive.domain.secret_scan import REFUSE, ScanVerdict, SecretFinding
 
 _log = logging.getLogger("hive.app.mcp_server")
@@ -107,8 +109,6 @@ GATE_NOOP_REASON = GATE_NOOP_SIGNAL + " — nothing retired"
 # The ledger kinds the retirement gate reads (§3.2 clauses 1b/2). The boundary names
 # what qualifies; an unfiltered read would hand the gate foreign kinds to ignore.
 _GATE_LEDGER_KINDS = (
-    EK_VERIFY_CURRENT,
-    EK_VERIFY_STALE,
     EK_OUTCOME_HURT,
     EK_OUTCOME_VERIFIED_HURT,
 )
@@ -546,50 +546,46 @@ class HiveMCPServer:
             )
             return self._tool_error(req.id, f"error: {type(e).__name__}: {e}")
 
+    def _record_anchor_baselines(
+        self, episode_id: Optional[int], anchors: Sequence[AnchorRef]
+    ) -> None:
+        """Stamp each new code binding with the commit the server last OBSERVED for
+        its repo — the baseline every later staleness verdict is measured from.
+
+        The value comes from ``tip_for`` — the single owner of "which tip do I judge
+        repo R at" — asked for the canonical line, so this is a meta read and the write
+        path grows no git I/O. A repo the daemon has not watermarked yet records nothing
+        and the daemon's own sweep fills it on the first tick that can; until then the
+        anchor reads ``unverifiable``. Insert-if-absent lives in the store, so a dedup
+        onto an existing memory can never move a baseline it already earned.
+
+        Direction (Law 6): fail-OPEN. A baseline is an enrichment of a write that has
+        already landed — losing one costs a tick of coverage, never the memory."""
+        if episode_id is None or not anchors:
+            return
+        try:
+            ts = int(self.now())
+            rows = [
+                (
+                    int(episode_id),
+                    a.repo,
+                    a.anchor,
+                    tip_for(self.store, a.repo, "") or "",
+                    ts,
+                )
+                for a in anchors
+                if a.anchor
+            ]
+            self.store.anchor_baseline_put(rows)
+        except Exception:
+            _log.debug("mcp.anchor_baseline_write_failed", exc_info=True)
+
     # ── the §3.2 retirement-evidence gate feeds (assembled HERE, judged in-domain) ──
     def _known_repos(self) -> Callable[[str], bool]:
         """The injected registry-membership predicate ``normalize_anchors``/
         ``normalize_repos`` consume — lazy, so a call with no scope args never reads
         the registry."""
         return lambda name: any(row.name == name for row in self.store.repo_registry())
-
-    def _gate_conflict_pairs(self, ep: Episode) -> tuple[ConflictNote, ...]:
-        """§3.2 clause 3 feed: mechanical near-dup pairs detected AT GATE TIME between
-        the target and the co-servable field (contradiction or redundancy — both are
-        machine evidence). The target is appended when not itself servable (e.g. a
-        quarantined row being pruned) so 'target vs a co-servable row' stays reachable.
-        Near-dup floor = ``conflict.tau`` (the ONE owner). Raises freely — the caller
-        owns the fail-closed."""
-        now = int(self.now())
-        ttl_s = int(self.autonomy.provisional_ttl_days) * _DAY_S
-        labeled = self.store.scan_servable_labeled(now=now, provisional_ttl_s=ttl_s)
-        items = [
-            ConflictItem(
-                episode_id=int(eid),
-                vector=value,
-                polarity=polarity,
-                anchor=anchor,
-                ts=int(ts),
-                trust=trust,
-            )
-            for eid, value, polarity, anchor, ts, trust in labeled
-        ]
-        if int(ep.id) not in {it.episode_id for it in items} and ep.value is not None:
-            items.append(
-                ConflictItem(
-                    episode_id=int(ep.id),
-                    vector=ep.value,
-                    polarity=ep.polarity,
-                    anchor=(ep.anchors[0].anchor if ep.anchors else ""),
-                    ts=int(ep.ts),
-                    trust=ep.trust,
-                )
-            )
-        if len(items) < 2:
-            return ()
-        cap = max(1, len(items) * (len(items) - 1) // 2)  # never top_n-starved
-        notes = detect_conflicts(items, tau=float(self.conflict.tau), top_n=cap)
-        return tuple(n for n in notes if n.a_id == int(ep.id) or n.b_id == int(ep.id))
 
     def _gate_drift_verdicts(self, ep: Episode) -> list[str]:
         """§3.2 clause 1a feed: the materialized drift verdicts for the target's
@@ -614,41 +610,12 @@ class HiveMCPServer:
             tip = tip_for(self.store, repo, declared.get(repo, ""))
             if not tip:
                 continue
-            cached = self.store.drift_get(repo, tip, anchors)
+            base_tips = self.store.anchor_baselines_get(int(ep.id), repo, anchors)
+            cached = self.store.drift_get(repo, tip, base_tips, anchors)
             for entry in cached.values():
                 if isinstance(entry, (tuple, list)) and entry:
                     verdicts.append(str(entry[0]))
         return verdicts
-
-    def _gate_own_lines(self, ep: Episode) -> Optional[frozenset[str]]:
-        """§3.2 clause 1b's line filter: the line whose ledger evidence is THIS
-        memory's own. A verify payload stamps the LINE it was measured on but NOT
-        the repo, so a row is attributable only when the memory has exactly ONE
-        anchored repo:
-
-          - no anchors           -> None  (clause 1b is unreachable for an
-                                           anchor-less memory: change_evidence.
-                                           ingest joins only anchored_episodes(),
-                                           which filters anchor != '')
-          - != 1 anchored repo   -> frozenset()  (nothing attributable — under-claim)
-          - 1 repo, declared ref -> frozenset({ref})
-          - 1 repo, no declared  -> None  (it named no line, so canonical rows ARE
-                                           its own; byte-identical to
-                                           pre-declared-line behaviour)
-
-        Under-claim, never over-claim. Raises freely — the caller owns the
-        fail-closed. // marker: returning a non-empty set for a memory with MORE
-        THAN ONE anchored repo is the named mutation — the payload carries no
-        repo, so another repo's staleness on a same-named line would retire it
-        (reds tests/mcp/test_retirement_gate_boundary.py::
-        test_multi_repo_memory_is_never_attributable and its unknown-line twin)."""
-        repos = {a.repo for a in ep.anchors}
-        if not repos:
-            return None  # clause 1b is unreachable for an anchor-less memory
-        if len(repos) != 1:
-            return frozenset()  # whose line is it? undecidable ⇒ nothing qualifies
-        ref = self.store.episode_refs(int(ep.id)).get(next(iter(repos)), "")
-        return frozenset({ref}) if ref else None
 
     def _retirement_eligibility(
         self, ep: Episode, caller_identity: str, winner: Optional[Episode] = None
@@ -662,11 +629,14 @@ class HiveMCPServer:
         this in a retirement handler is the named mutation — a healthy, evidence-less
         target gets retired, which reds CT-7's noop-on-healthy tests
         (tests/contract/test_retirement_gate.py) and their boundary twins
-        (tests/mcp/test_retirement_gate_boundary.py)."""
+        (tests/mcp/test_retirement_gate_boundary.py). // marker: adding a
+        detected-conflict-PAIR feed back to this assembly reds tests/contract/
+        test_minimal_hardening_e2e.py::
+        test_a_cold_stranger_cannot_prune_a_near_duplicated_memory — a near-dup is
+        evidence any caller can manufacture by writing a paraphrase."""
         try:
             drift_verdicts = self._gate_drift_verdicts(ep)
             rows = self.store.evidence_rows_for(int(ep.id), _GATE_LEDGER_KINDS)
-            pairs = self._gate_conflict_pairs(ep)
             winner_cosine = None
             if winner is not None:
                 c = _cosine(ep.value, winner.value)
@@ -677,9 +647,7 @@ class HiveMCPServer:
                 caller_identity=caller_identity,
                 drift_verdicts=drift_verdicts,
                 evidence_rows=rows,
-                conflict_pairs=pairs,
                 winner_cosine=winner_cosine,
-                own_lines=self._gate_own_lines(ep),
             )
         except Exception:  # noqa: BLE001 — undecidable ⇒ noop
             _log.warning(
@@ -736,10 +704,9 @@ class HiveMCPServer:
 
         # ── the replaces= rider. EXISTENCE is checked before anything is staged (an
         # unknown target is a caller bug: nothing stored, nothing retired), but the
-        # RETIREMENT runs after the winner is in the corpus — the two signals a
-        # correction actually produces (contradiction, winner_near_dup) are measured
-        # BETWEEN the loser and the winner and are unconstructable while the winner
-        # does not exist. // marker: moving this retirement back ahead of
+        # RETIREMENT runs after the winner is in the corpus — the signal a correction
+        # actually produces (winner_near_dup) is measured BETWEEN the loser and the
+        # winner and is unconstructable while the winner does not exist. // marker: moving this retirement back ahead of
         # admission.write is the named mutation — it reds
         # tests/contract/test_write_provisional.py::
         # test_replaces_near_dup_correction_retires_in_one_call.
@@ -782,6 +749,7 @@ class HiveMCPServer:
             if res.episode_id is not None
             else None
         )
+        self._record_anchor_baselines(res.episode_id, anchors)
         out: dict[str, Any] = {
             "status": res.status,
             "id": res.episode_id,
@@ -843,6 +811,7 @@ class HiveMCPServer:
             return _refused_envelope(e)
         if res.status == "disabled":  # autonomy off — nothing written
             return {"status": "disabled"}
+        self._record_anchor_baselines(res.episode_id, anchors)
         return {
             "status": res.status,
             "id": res.episode_id,
@@ -922,52 +891,22 @@ class HiveMCPServer:
         # FAIL-OPEN by contract: a reader fault degrades a hit to unverifiable and
         # never breaks the read.
         attach_drift(hits, store=self.store, queried_repos=scope_pairs, now=now)
-        # verification-recency stamp: derived ledger evidence enriched at the boundary,
-        # its own FAIL-OPEN side-channel — a reader fault serves the envelope without
-        # stamps, never breaks recall. A never-verified hit emits NO key (byte-inert);
-        # the kernel never judges churn — the stamp is carried, the edge decides.
-        if hits:
-            try:
-                # scoped to each memory's OWN declared line(s), read straight off
-                # the anchors already built above (no second store read): the
-                # rider must never report a memory stale on a line it never
-                # claimed — the advisory twin of the retirement gate's own-line
-                # rule. A memory that declared nothing filters nothing.
-                lv = self.store.last_verification(
-                    [h["episode_id"] for h in hits],
-                    own_refs={
-                        h["episode_id"]: frozenset(
-                            ref
-                            for a in h["anchors"]
-                            if isinstance(a, dict) and (ref := a.get("ref"))
-                        )
-                        for h in hits
-                    },
-                )
-                for hit in hits:
-                    stamp = lv.get(hit["episode_id"])
-                    if stamp is not None:  # absent ⇒ no key, never null
-                        verified_ts, sha, state = stamp
-                        hit["last_verified"] = {
-                            "ts": verified_ts,
-                            "sha": sha,
-                            "state": state,
-                        }
-                        # server-side rider: a hit the ledger already knows is stale carries its
-                        # remediation options on EVERY harness (advisory text, O7-safe — detection +
-                        # guidance, never an autonomous retirement). STALE-ONLY: a current hit stays
-                        # byte-inert. The edge's own point-verify verdict, when present, wins over it.
-                        if state == "stale":
-                            hit["remediation"] = REMEDIATION_NOTICE
-            except Exception:  # noqa: BLE001 — side-channel only
-                _log.warning(
-                    "mcp.recall_last_verified_failed",
-                    extra={
-                        "event": "mcp.recall_last_verified_failed",
-                        "trace_id": result.trace_id,
-                    },
-                    exc_info=True,
-                )
+        # server-side rider: a hit the ONE staleness oracle says has moved carries its
+        # remediation options on EVERY harness (advisory text, O7-safe — detection +
+        # guidance, never an autonomous retirement). STALE-TIER ONLY: a fresh, n/a or
+        # unverifiable hit stays byte-inert. The tier is read off
+        # ``retirement.QUALIFYING_DRIFT``, the single owner of "this anchor moved", so
+        # the rider and the retirement gate can never disagree about which hits are
+        # actionable; and because ``attach_drift`` routes every verdict through
+        # ``branch_route_verdict`` first, a memory read off its declared line reads
+        # ``branch_scoped`` — deliberately NOT in that tier — so the rider structurally
+        # cannot report a memory stale on a line it never claimed.
+        # marker: keying this rider off anything but that ONE oracle reds tests/contract/
+        # test_minimal_hardening_e2e.py::
+        # test_a_stale_hit_carries_remediation_and_a_fresh_one_does_not.
+        for hit in hits:
+            if (hit.get("drift") or {}).get("type") in QUALIFYING_DRIFT:
+                hit["remediation"] = REMEDIATION_NOTICE
         # an empty post-belt set is an ABSTAIN, never a confident-empty (never-hallucinate)
         abstained = (result.state != CONFIDENT) or (not hits)
         env: dict[str, Any] = {

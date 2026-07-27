@@ -8,6 +8,7 @@ from hive.combdrift.resolution import fingerprint_anchor, resolve_anchor
 from hive.combdrift.types import (
     REASON_FILE_MISSING,
     REASON_FINGERPRINT_VERSION_MISMATCH,
+    REASON_NO_FINGERPRINT,
     REASON_NO_SYMBOL_REQUESTED,
     REASON_OK,
     REASON_PARSE_ERROR,
@@ -22,7 +23,9 @@ from hive.combdrift.types import (
 def test_resolve_file_and_symbol_found(tmp_repo: Path):
     res = resolve_anchor(str(tmp_repo), Anchor("pkg/auth.py", "refresh"))
     assert res.found is True
-    assert res.reason == REASON_OK
+    # No baseline was recorded, so the call shape was never compared; existence
+    # is the only thing proven here.
+    assert res.reason == REASON_NO_FINGERPRINT
     # location is "<repo-relative-path>:<lineno>"; refresh is on line 4.
     assert res.location == "pkg/auth.py:4"
     assert res.path == "pkg/auth.py"
@@ -40,7 +43,8 @@ def test_resolve_symbol_none_is_file_presence(tmp_repo: Path):
 def test_resolve_class_and_method_found(tmp_repo: Path):
     res = resolve_anchor(str(tmp_repo), Anchor("pkg/auth.py", "Session.login"))
     assert res.found is True
-    assert res.reason == REASON_OK
+    # A method has a comparable call shape, and none was recorded here.
+    assert res.reason == REASON_NO_FINGERPRINT
     # login is defined on line 13 of pkg/auth.py.
     assert res.location == "pkg/auth.py:13"
 
@@ -48,13 +52,17 @@ def test_resolve_class_and_method_found(tmp_repo: Path):
 def test_resolve_async_method_found(tmp_repo: Path):
     res = resolve_anchor(str(tmp_repo), Anchor("pkg/auth.py", "Session.logout"))
     assert res.found is True
-    assert res.reason == REASON_OK
+    # Async-ness is part of the shape, so an uncompared async method is no more
+    # verified than a sync one.
+    assert res.reason == REASON_NO_FINGERPRINT
 
 
 def test_resolve_classdef_as_symbol_found(tmp_repo: Path):
     res = resolve_anchor(str(tmp_repo), Anchor("pkg/auth.py", "Session"))
     assert res.found is True
-    assert res.reason == REASON_OK
+    # A class carries a constructible shape of its own (category + base count),
+    # so an un-fingerprinted class is uncompared, not exempt from comparison.
+    assert res.reason == REASON_NO_FINGERPRINT
     # class Session is defined on line 12.
     assert res.location == "pkg/auth.py:12"
 
@@ -62,7 +70,7 @@ def test_resolve_classdef_as_symbol_found(tmp_repo: Path):
 def test_resolve_async_function_found(tmp_repo: Path):
     res = resolve_anchor(str(tmp_repo), Anchor("pkg/auth.py", "revoke"))
     assert res.found is True
-    assert res.reason == REASON_OK
+    assert res.reason == REASON_NO_FINGERPRINT
 
 
 def test_resolve_missing_symbol_reason_names_symbol(tmp_repo: Path):
@@ -197,6 +205,50 @@ def test_resolve_fingerprint_without_symbol_is_inert(tmp_repo: Path):
     )
     assert res.found is True
     assert res.reason == REASON_NO_SYMBOL_REQUESTED
+
+
+# --- Layer B: a call shape that was never compared ----------------------------
+
+
+def test_found_callable_without_fingerprint_is_no_fingerprint(tmp_repo: Path):
+    # A real single callable whose shape COULD have been compared, but for which
+    # no baseline was ever recorded. Existence is proven and nothing about the
+    # shape is: found and location stay populated, only the reason abstains.
+    res = resolve_anchor(str(tmp_repo), Anchor("pkg/auth.py", "refresh"))
+    assert res.found is True
+    assert res.reason == REASON_NO_FINGERPRINT
+    assert res.location == "pkg/auth.py:4"
+    assert res.symbol == "refresh"
+
+
+def test_minted_fingerprint_turns_the_same_anchor_ok(tmp_repo: Path):
+    # The contrast pair for the anchor above: the identical anchor reports `ok`
+    # only once a real baseline exists, so `ok` always means a comparison ran.
+    fp = fingerprint_anchor(str(tmp_repo), Anchor("pkg/auth.py", "refresh"))
+    assert fp is not None
+    res = resolve_anchor(str(tmp_repo), Anchor("pkg/auth.py", "refresh", fp))
+    assert res.found is True
+    assert res.reason == REASON_OK
+    assert res.location == "pkg/auth.py:4"
+
+
+def test_file_scoped_anchor_is_not_shadowed_by_no_fingerprint(tmp_repo: Path):
+    # A file-scoped anchor never claimed a call shape, so nothing was withheld:
+    # it keeps its own reason instead of falling into the uncompared branch.
+    res = resolve_anchor(str(tmp_repo), Anchor("pkg/auth.py", None))
+    assert res.found is True
+    assert res.reason == REASON_NO_SYMBOL_REQUESTED
+
+
+def test_absence_is_not_shadowed_by_no_fingerprint(tmp_repo: Path):
+    # A provable absence short-circuits before any shape question can arise; the
+    # uncompared branch must never mask a missing symbol or a missing file.
+    missing_symbol = resolve_anchor(str(tmp_repo), Anchor("pkg/auth.py", "gone"))
+    assert missing_symbol.found is False
+    assert missing_symbol.reason.startswith(REASON_SYMBOL_MISSING)
+    missing_file = resolve_anchor(str(tmp_repo), Anchor("pkg/absent.py", "gone"))
+    assert missing_file.found is False
+    assert missing_file.reason.startswith(REASON_FILE_MISSING)
 
 
 def test_resolve_is_total_does_not_raise(tmp_repo: Path):

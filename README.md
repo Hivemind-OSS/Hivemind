@@ -19,8 +19,8 @@ line wherever a memory is about real code (`repos=["name@branch"]` + `anchors=[{
 — that declared line is what a branch-scoped recall and the retirement gate judge it against.
 Retirement is **machine-gated**: the server
 retires a memory only when it verifies a qualifying machine signal (anchor drift on the
-memory's own declared line, hurt evidence, a mechanical contradiction) — never on an agent's
-say-so, and an
+memory's own declared line, hurt evidence, or a near-dup successor named in a supersede) —
+never on an agent's say-so, and an
 unqualified call is a benign no-op, not an error. Unused memories decay on a TTL. Nothing is
 auto-trusted, and the store never silently migrates across schema generations.
 
@@ -106,12 +106,12 @@ hive repo remove priv                                  # stop syncing; memories 
 
 A registered row lands in the store's `repos` table and the sync daemon picks it up on its next
 tick — no restart. Per repo, the daemon mirrors the remote, feeds every landing on the canonical
-branch into the change-outcome evidence ledger, mints missing anchor fingerprints, and
-materializes the staleness (drift) verdicts that ride recall hits. `--token-env` is the **name**
+branch into the change-outcome evidence ledger, and materializes the staleness (drift) verdicts
+that ride recall hits. `--token-env` is the **name**
 of an env var holding that repo's git token — the registry never stores a secret byte; unset,
 the fleet-default `HIVE_SYNC__TOKEN` is used. Removing a repo stops the feed, prunes its mirror,
-and drops every cache derived from that feed (watermarks, branch tips, drift verdicts), so
-re-registering the name re-baselines from scratch instead of answering from the previous
+and drops every cache derived from that feed (watermarks, branch tips, anchor baselines, drift
+verdicts), so re-registering the name re-baselines from scratch instead of answering from the previous
 incarnation; its memories keep their scope, so re-registering picks them straight back up.
 
 ## Agents
@@ -180,13 +180,17 @@ KPIs).
 
 ## Code anchors & staleness (server-side)
 
-Anchor fingerprints and staleness verdicts are computed **in the server**: the anchor/census
-engines are first-party subpackages of the `hive` distribution (`hive/matrix`, `hive/combdrift`,
-`hive/edge`), built into the image from this repository, and the sync daemon runs
-them per registered repo — minting fingerprints for stored anchors and materializing per-anchor
-drift verdicts at the canonical tip (and at branch tips recall asked about). Every recall hit
-carries the result as its `drift` field, and a hit the server already knows is stale arrives
-with a remediation rider. There is nothing to install on a workstation or in an agent.
+Staleness verdicts are computed **in the server**, and they are asked of **git**. Every code
+binding is stamped with the commit it was written against; each tick the daemon asks git what the
+range from that commit to the judged tip did to the anchored path — and, for a symbol anchor whose
+file actually moved, to that symbol's own lines. So a rewritten function body counts as drift even
+when its signature never changed, while churn elsewhere in the same file does not. There is no
+fingerprint, no dependency-graph hash, no worktree and no engine on that path; the census engines
+(`hive/matrix`, `hive/combdrift`, first-party subpackages of the `hive` distribution) serve change
+attribution only. Every recall hit carries the result as its `drift` field — with the baseline it
+drifted from and the commit SHAs that carried the change when it is stale — and a hit the server
+already knows is stale arrives with a remediation rider. There is nothing to install on a
+workstation or in an agent.
 
 ## Embedding model & attribution
 
@@ -201,12 +205,12 @@ full text and attribution travel with this repository in
 ## Repository layout
 
 ```
-hive/                 the server: domain core, adapters (SQLite store, embedder), MCP app, CLI, sync daemon, and the first-party engine subpackages (matrix/combdrift/edge)
+hive/                 the server: domain core, adapters (SQLite store, embedder), MCP app, CLI, sync daemon, and the first-party census-engine subpackages (matrix/combdrift)
 tests/                the test suite
 compose.yaml          the single-service stack (+ opt-in ngrok tunnel profile)
 Dockerfile            the hermetically-offline server image (embedder baked at build)
 Makefile              the canonical mechanical gate — `make check` (format, lint, strict typecheck, tests)
-docs/engines/         reference docs for the first-party anchor/census engines (matrix, comb-drift)
+docs/engines/         reference docs for the first-party census engines (matrix, comb-drift)
 llms.txt              link index to the project docs (llmstxt.org convention)
 llms-full.txt         the complete, self-contained operating guide for agents & integrators
 HIVE-ADMIN.md         admin & operator guide

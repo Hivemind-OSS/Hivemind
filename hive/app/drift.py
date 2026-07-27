@@ -1,26 +1,40 @@
-"""The single owner of the drift wire semantics (served-hit ``drift`` object,
-§3.4): the ``hive-edge verify`` → wire verdict mapping, the most-severe-wins
-aggregation, and the recall-side ``anchor_drift`` cache lookup — consumed by the
-MCP recall/write handlers (``attach_drift``) and by the sync materializer
-(``wire_verdict`` — whatever lands in the cache is ALREADY wire vocabulary;
-nothing downstream re-maps it).
+"""The single owner of the drift wire semantics (the served-hit ``drift`` object):
+the most-severe-wins aggregation, the declared-line routing, and the recall-side
+``anchor_drift`` cache lookup — consumed by the MCP recall/write handlers through
+``attach_drift``.
 
 Wire vocabulary (one enum, most-severe first)::
 
     anchor_missing > anchor_changed > blast_radius_changed > branch_scoped
                    > unverifiable > fresh;   n/a = general (nothing to verify)
 
-Verdict source at recall: the materialized ``anchor_drift`` cache at the TIP of
-the queried ref (``name@branch``) else the repo's canonical ref. The canonical
-tip is the sync watermark meta key ``sync:<repo>:last_tip``; a queried
-non-canonical branch resolves its tip from ``ref_tips`` — the materializer's
-per-ref watermark, written as soon as recall's demand pulls that ref onto the
-work list, before the tip's verdicts are even computed. An unresolved branch
-(never yet materialized, or since deleted) degrades to ``unverifiable`` and
-records demand in ``ref_requests`` (the materializer's work list), so coverage
-follows use. Every miss is fail-safe: unknown tip, un-materialized anchor,
-out-of-vocabulary cache row, unparseable hit shape — all read ``unverifiable``,
-never false-fresh, never false-stale.
+There is no verify→wire MAPPING any more: the producer is
+``hive.domain.staleness.decide``, which emits this vocabulary directly, so the cache
+stores wire verdicts verbatim and nothing downstream re-maps them. BUG-078 (a deleted
+FILE degrading to the one verdict that never qualifies retirement) is absorbed
+STRUCTURALLY rather than by an enumeration table: a gone file and a gone symbol are
+the same claim in the ladder itself, so there is no arrow to forget.
+
+Verdict source at recall: the materialized ``anchor_drift`` cache at ``(repo, tip,
+base_tip, anchor)`` — every input to the verdict. The tip is the queried ref
+(``name@branch``) else the repo's canonical ref; the canonical tip is the sync
+watermark meta key ``sync:<repo>:last_tip``, and a queried non-canonical branch
+resolves its tip from ``ref_tips`` — the materializer's per-ref watermark, written as
+soon as recall's demand pulls that ref onto the work list, before the tip's verdicts
+are even computed. The BASELINE is the memory's own (``anchor_baselines``, keyed by
+episode), so two memories on one anchor written at different commits read different
+verdicts at the same tip. An unresolved branch (never yet materialized, or since
+deleted) degrades to ``unverifiable`` and records demand in ``ref_requests`` (the
+materializer's work list), so coverage follows use. Every miss is fail-safe: unknown
+tip, unknown baseline, un-materialized anchor, out-of-vocabulary cache row,
+unparseable hit shape — all read ``unverifiable``, never false-fresh, never
+false-stale.
+
+A stale-tier hit also carries the EVIDENCE the materializer recorded: ``since`` (the
+baseline it drifted from), ``commits`` (the SHAs that carried the change, newest
+first, capped) and ``n_commits``. IDS ONLY — a commit subject is unscanned repo text
+and never rides a served envelope (Law 4); the agent resolves the SHAs in its own
+checkout.
 
 ``branch_scoped`` is the one member computed at SERVE time rather than written
 to the cache. Every served anchor also carries the memory's own DECLARED ref
@@ -38,6 +52,7 @@ degrades that hit to ``unverifiable``; the read itself never breaks.
 
 from __future__ import annotations
 
+import json
 import logging
 from collections.abc import Iterable, Sequence
 from typing import Any
@@ -87,39 +102,11 @@ SEVERITY_ORDER = (
 _SEVERITY_INDEX = {v: i for i, v in enumerate(SEVERITY_ORDER)}
 _UNVERIFIABLE_IDX = _SEVERITY_INDEX[DRIFT_UNVERIFIABLE]
 
-# ── hive-edge verify → wire mapping (§3.4, verbatim; else → unverifiable) ─────
-
-
-def wire_verdict(state: object, reason: object = "") -> str:
-    """Map one ``hive-edge verify`` per-anchor result onto the wire enum.
-
-    The §3.4 table, exactly: ``current → fresh``; ``stale/signature_changed →
-    anchor_changed``; ``stale/symbol_missing → anchor_missing``; ``radius
-    changed → blast_radius_changed``; ``branch_scoped → branch_scoped``; else
-    ``unverifiable`` (the fail-safe arm — an unknown state, a bare or
-    unrecognized stale reason, an incomparable token version, a non-string:
-    silence, never false-stale). ``state`` may carry the reason embedded as
-    ``"stale/<reason>"`` (the table's own notation) or split across
-    ``(state, reason)``; reasons match by code prefix (``signature_changed...``),
-    the verify engine's own convention. Total over ``object``. // O(1)."""
-    if not isinstance(state, str):
-        return DRIFT_UNVERIFIABLE
-    if state == "current":
-        return DRIFT_FRESH
-    head, _sep, embedded = state.partition("/")
-    if head == "stale":
-        code = embedded or (reason if isinstance(reason, str) else "")
-        if code.startswith("signature_changed"):
-            return DRIFT_ANCHOR_CHANGED
-        if code.startswith("symbol_missing"):
-            return DRIFT_ANCHOR_MISSING
-        return DRIFT_UNVERIFIABLE
-    if state in ("radius_changed", "radius changed"):
-        return DRIFT_BLAST_RADIUS_CHANGED
-    if state == "branch_scoped":
-        return DRIFT_BRANCH_SCOPED
-    return DRIFT_UNVERIFIABLE
-
+#: The evidence keys a STALE-TIER per-anchor entry copies out of the cached detail.
+#: Deliberately an allowlist rather than a merge: the cache's detail is producer-owned
+#: and may grow reasons the wire has no contract for, and a served envelope states only
+#: what it promised to state.
+_EVIDENCE_KEYS = ("since", "commits", "n_commits")
 
 # ── declared-line routing (§3.4; branch_scoped computed at READ time) ────────
 
@@ -228,6 +215,27 @@ def _queried_refs(queried_repos: Iterable[object]) -> dict[str, str]:
     return out
 
 
+def _evidence(detail: object) -> dict[str, Any]:
+    """The stale-tier evidence out of ONE cached detail blob: the baseline drifted
+    from and the commit IDS that carried it.
+
+    // marker: emitting anything but ``_EVIDENCE_KEYS`` here — a commit subject, a
+    message, a diff line — reds test_drift_evidence_is_ids_only. Law 4 keeps every
+    non-answer channel to ids and enums, and a commit subject is unscanned repo text.
+
+    Total: an unparseable or non-map detail contributes nothing rather than raising —
+    the evidence is an enrichment of a verdict that has already been decided."""
+    if not isinstance(detail, str) or not detail:
+        return {}
+    try:
+        parsed = json.loads(detail)
+    except ValueError:
+        return {}
+    if not isinstance(parsed, dict):
+        return {}
+    return {k: parsed[k] for k in _EVIDENCE_KEYS if k in parsed}
+
+
 def _drift_for_hit(
     hit: dict[str, Any],
     store: object,
@@ -260,6 +268,7 @@ def _drift_for_hit(
             parsed.append((item["repo"], item["anchor"], declared_ref))
         else:
             parsed.append(("", "", ""))  # contributes unverifiable below
+    episode_id = hit.get("episode_id")
     tips: dict[str, str | None] = {}
     branch_of: dict[str, str] = {}
     rows: dict[str, dict[str, tuple[str, str]]] = {}
@@ -271,7 +280,11 @@ def _drift_for_hit(
         tips[repo] = tip_for(store, repo, branch if routed else "")
         if tips[repo] is not None:
             anchors = [a for r, a, _d in parsed if r == repo]
-            rows[repo] = store.drift_get(repo, tips[repo], anchors)  # type: ignore[attr-defined]
+            # THIS memory's own baselines: the verdict is a function of the commit the
+            # binding was observed from, so a row cached against another baseline (or
+            # against no baseline at all) must not answer for it.
+            base_tips = store.anchor_baselines_get(episode_id, repo, anchors)  # type: ignore[attr-defined]
+            rows[repo] = store.drift_get(repo, tips[repo], base_tips, anchors)  # type: ignore[attr-defined]
 
     per_anchor: list[dict[str, Any]] = []
     routed_ref = ""
@@ -289,9 +302,12 @@ def _drift_for_hit(
                 else DRIFT_UNVERIFIABLE
             )
             consumer_ref = branch_of.get(repo) or canonical.get(repo, "")
-            entry["verdict"] = branch_route_verdict(
+            verdict = branch_route_verdict(
                 base, declared_ref=declared_ref, consumer_ref=consumer_ref
             )
+            entry["verdict"] = verdict
+            if verdict in QUALIFYING_DRIFT and isinstance(cached, (tuple, list)):
+                entry.update(_evidence(cached[1] if len(cached) > 1 else ""))
         else:
             entry["verdict"] = DRIFT_UNVERIFIABLE
         per_anchor.append(entry)
@@ -319,7 +335,8 @@ def attach_drift(
     keeps its intrinsic ``n/a``.
 
     ``store`` is duck-typed (the SqliteEpisodeStore surface): ``repo_registry()``,
-    ``drift_get(repo, tip_sha, anchors)``, ``ref_tip(repo, ref)``,
+    ``anchor_baselines_get(episode_id, repo, anchors)``,
+    ``drift_get(repo, tip_sha, base_tips, anchors)``, ``ref_tip(repo, ref)``,
     ``touch_ref_request(repo, ref, ts)``, and ``conn`` for the watermark meta
     read. ``queried_repos`` is the recall call's validated ``repos`` argument
     (raw strings or parsed pairs); ``now`` stamps the demand touch.

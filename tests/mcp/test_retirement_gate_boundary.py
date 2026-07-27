@@ -23,7 +23,7 @@ from hive.app.mcp_server import (
     MCPRequest,
     ServerIdentity,
 )
-from hive.domain.evidence_kinds import EK_VERIFY_STALE
+from tests.contract.conftest import BASE_TIP, drift_put as seed_drift
 from tests.fakes._fakes import FakeClusterProvider
 from tests.mcp._helpers import (
     build_real_server,
@@ -35,6 +35,9 @@ from tests.mcp._helpers import (
 )
 
 TIP = "b" * 40
+
+
+BASE = BASE_TIP  # the baseline the seeded verdicts were judged from
 
 
 def call_as(server, agent_id, name, args, req_id=1):
@@ -124,8 +127,8 @@ def test_write_replaces_healthy_target_rider_noops_but_write_lands():
 def test_write_replaces_retirement_runs_after_the_write():
     """The A ordering itself, asserted as an ORDER not a result: the winner must be
     in the corpus before the retirement is attempted, because the two signals a
-    correction actually produces (contradiction, winner_near_dup) are measured
-    BETWEEN the loser and the winner. Anything else makes them unconstructable."""
+    correction actually produces (winner_near_dup) is measured BETWEEN the loser and
+    the winner. Anything else makes it unconstructable."""
     server, _ = build_real_server(embedder=FakeClusterProvider(d=64))
     target = write_text(server, "cid=51 the report is generated nightly")["id"]
 
@@ -187,23 +190,19 @@ def test_write_replaces_unknown_target_fails_whole_call_nothing_stored():
 
 
 # ── the qualifying signals ─────────────────────────────────────────────────────
-def test_verify_stale_ledger_row_qualifies_and_stamps_audit():
+def test_an_orphaned_verify_row_qualifies_nothing_at_the_boundary():
+    """The retired census verification channel left rows in existing ledgers; the
+    gate's feed no longer names those kinds at all, so they cannot reach it."""
     server, _ = build_real_server()
     eid = write_text(server, "the old export path still works")["id"]
     _verify_row(server, eid, "verify_stale", ts=100)
-    env = _prune(server, eid)
-    assert env["status"] == "pruned"
-    assert "verify_stale" in env["signals"]
-    assert server.store.get_episode(eid).trust == "deprecated"
-    stamped = _signals_stamped(server, eid)
-    assert stamped and "verify_stale" in " ".join(str(s) for s in stamped[-1])
-
-
-def test_newer_verify_current_disqualifies_the_stale_row():
-    server, _ = build_real_server()
-    eid = write_text(server, "the export path was re-verified current")["id"]
-    _verify_row(server, eid, "verify_stale", ts=100)
-    _verify_row(server, eid, "verify_current", ts=200)
+    rows = list(
+        server.store.conn.execute(
+            "SELECT 1 FROM evidence_events WHERE episode_id=? AND kind='verify_stale'",
+            (eid,),
+        )
+    )
+    assert rows, "precondition: the orphaned row really is in the ledger"
     _assert_gate_noop(server, _prune(server, eid), eid)
 
 
@@ -242,7 +241,9 @@ def test_drift_at_canonical_tip_qualifies():
         "the greet helper trims its input",
         anchors=[{"repo": "alpha", "anchor": "app.py::greet"}],
     )["id"]
-    server.store.drift_put([("alpha", TIP, "app.py::greet", "anchor_missing", "{}", 5)])
+    seed_drift(
+        server.store, [("alpha", TIP, BASE, "app.py::greet", "anchor_missing", "{}", 5)]
+    )
     env = _prune(server, eid)
     assert env["status"] == "pruned"
     assert any(s.startswith("drift:") for s in env["signals"])
@@ -257,7 +258,7 @@ def test_fresh_drift_does_not_qualify():
         "a fresh anchored memory",
         anchors=[{"repo": "alpha", "anchor": "app.py::fresh"}],
     )["id"]
-    server.store.drift_put([("alpha", TIP, "app.py::fresh", "fresh", "{}", 5)])
+    seed_drift(server.store, [("alpha", TIP, BASE, "app.py::fresh", "fresh", "{}", 5)])
     _assert_gate_noop(server, _prune(server, eid), eid)
 
 
@@ -276,9 +277,10 @@ def test_declared_line_tip_qualifies_even_when_canonical_is_fresh():
         anchors=[{"repo": "alpha", "anchor": "app.py::greet"}],
         repos=["alpha@feature"],
     )["id"]
-    server.store.drift_put([("alpha", TIP, "app.py::greet", "fresh", "{}", 5)])
-    server.store.drift_put(
-        [("alpha", feature_tip, "app.py::greet", "anchor_missing", "{}", 5)]
+    seed_drift(server.store, [("alpha", TIP, BASE, "app.py::greet", "fresh", "{}", 5)])
+    seed_drift(
+        server.store,
+        [("alpha", feature_tip, BASE, "app.py::greet", "anchor_missing", "{}", 5)],
     )
     env = _prune(server, eid)
     assert env["status"] == "pruned", env
@@ -301,8 +303,12 @@ def test_declared_line_fresh_blocks_even_when_canonical_is_stale():
         anchors=[{"repo": "alpha", "anchor": "app.py::greet"}],
         repos=["alpha@feature"],
     )["id"]
-    server.store.drift_put([("alpha", TIP, "app.py::greet", "anchor_missing", "{}", 5)])
-    server.store.drift_put([("alpha", feature_tip, "app.py::greet", "fresh", "{}", 5)])
+    seed_drift(
+        server.store, [("alpha", TIP, BASE, "app.py::greet", "anchor_missing", "{}", 5)]
+    )
+    seed_drift(
+        server.store, [("alpha", feature_tip, BASE, "app.py::greet", "fresh", "{}", 5)]
+    )
     _assert_gate_noop(server, _prune(server, eid), eid)
 
 
@@ -319,7 +325,9 @@ def test_declared_ref_read_fault_fails_closed(monkeypatch):
         anchors=[{"repo": "alpha", "anchor": "app.py::greet"}],
         repos=["alpha@feature"],
     )["id"]
-    server.store.drift_put([("alpha", TIP, "app.py::greet", "anchor_missing", "{}", 5)])
+    seed_drift(
+        server.store, [("alpha", TIP, BASE, "app.py::greet", "anchor_missing", "{}", 5)]
+    )
 
     def boom(*a, **kw):
         raise RuntimeError("episode_refs read exploded")
@@ -334,7 +342,10 @@ def test_declared_ref_read_fault_fails_closed(monkeypatch):
     assert server.store.get_episode(eid).trust != "deprecated"
 
 
-def test_mechanical_contradiction_qualifies():
+def test_a_detected_near_dup_pair_never_qualifies_a_prune():
+    """The boundary assembles no conflict-pair feed at all: a near-dup — even an
+    opposing-polarity one the detector calls a contradiction — is evidence any
+    caller can manufacture by writing a paraphrase, so it authorizes nothing."""
     server, _ = build_real_server(embedder=FakeClusterProvider(d=64))
     do = write_text(
         server, "cid=11 do retry idempotent posts automatically", polarity="do"
@@ -342,10 +353,9 @@ def test_mechanical_contradiction_qualifies():
     dont = write_text(
         server, "cid=11 dont retry posts automatically ever", polarity="dont"
     )["id"]
-    env = _prune(server, dont)
-    assert env["status"] == "pruned"
-    assert "contradiction" in env["signals"]
-    assert server.store.get_episode(do).trust != "deprecated"  # only the named target
+    _assert_gate_noop(server, _prune(server, dont), dont)
+    _assert_gate_noop(server, _prune(server, do), do)
+    assert not hasattr(server, "_gate_conflict_pairs")
 
 
 def test_supersede_near_dup_winner_qualifies():
@@ -375,7 +385,7 @@ def test_hive_flag_never_qualifies():
     _assert_gate_noop(server, _prune(server, a), a)  # advisory rows never qualify
 
 
-# ── general memories: outcome/contradiction clauses only ───────────────────────
+# ── general memories: the outcome clauses only ────────────────────────────────
 def test_general_memory_outcome_clause_still_works():
     server, _ = build_real_server()
     eid = write_text(server, "a general memory that hurt agent B")["id"]
@@ -457,94 +467,3 @@ def test_approved_by_arg_is_ignored_extra_never_a_refusal():
     assert out["status"] == "noop"  # the GATE noop, no AGI refusal
     assert "agi_mode" not in out
     assert "AGI" not in json.dumps(out)
-
-
-def test_multi_repo_memory_is_never_attributable():
-    """A verify payload stamps the LINE it was measured on but NOT the repo, so a
-    memory anchored in MORE THAN ONE repo can attribute no ledger row at all —
-    even when every repo declares the same line, since another repo's staleness
-    on a same-named line would otherwise retire it. Under-claim: clause 1a, which
-    IS repo-keyed, still judges each repo correctly."""
-    server, _ = build_real_server()
-    register_repo(server, "alpha", canonical_ref="main")
-    register_repo(server, "beta", canonical_ref="main")
-    eid = write_text(
-        server,
-        "the greet helper trims its input on both feature lines",
-        anchors=[
-            {"repo": "alpha", "anchor": "app.py::greet"},
-            {"repo": "beta", "anchor": "app.py::greet"},
-        ],
-        repos=["alpha@feature", "beta@feature"],
-    )["id"]
-    _verify_row(server, eid, EK_VERIFY_STALE, ts=100)  # stamped ref="main"
-    _assert_gate_noop(server, _prune(server, eid), eid)
-
-    # and the same holds on the line BOTH repos declared — the recorded coverage
-    # loss of "one anchored repo or nothing" (A-1), pinned so it stays a decision
-    server.store.insert_audit(
-        eid,
-        EK_VERIFY_STALE,
-        "census",
-        200,
-        json.dumps(
-            {
-                "schema": "verify/v1",
-                "stamp": {"head_sha": "cafe" * 10},
-                "ref": "feature",
-            }
-        ),
-    )
-    _assert_gate_noop(server, _prune(server, eid), eid)
-
-
-def test_a_second_repo_with_an_unknown_line_cannot_be_collapsed_away():
-    """The over-claim window the collapse rule left open: N repos where all but
-    one resolve to the same line and the rest are unknown. The second repo's
-    rows are indistinguishable from the first's, so nothing is attributable."""
-    server, _ = build_real_server()
-    register_repo(server, "alpha", canonical_ref="main")
-    register_repo(server, "beta", canonical_ref="main")
-    eid = write_text(
-        server,
-        "greet trims its input; beta declares no line at all",
-        anchors=[
-            {"repo": "alpha", "anchor": "app.py::greet"},
-            {"repo": "beta", "anchor": "app.py::greet"},
-        ],
-        repos=["alpha@feature", "beta"],  # beta names no branch, tracked_ref unset
-    )["id"]
-    server.store.insert_audit(
-        eid,
-        EK_VERIFY_STALE,
-        "census",
-        100,
-        json.dumps(
-            {
-                "schema": "verify/v1",
-                "stamp": {"head_sha": "cafe" * 10},
-                "ref": "feature",
-            }
-        ),
-    )
-    _assert_gate_noop(server, _prune(server, eid), eid)
-
-
-def test_a_single_anchored_repo_with_no_declared_line_stays_unfiltered():
-    """The boundary must return None — not an empty set — for a memory that
-    declared no line for its one anchored repo: it named no line, so canonical
-    rows ARE its own and the ledger clause keeps working exactly as it did
-    before declared lines existed."""
-    server, _ = build_real_server()
-    register_repo(server, "alpha", canonical_ref="main")
-    register_repo(server, "beta", canonical_ref="main")
-    eid = write_text(
-        server,
-        "greet trims its input, judged on whatever line the census measured",
-        anchors=[{"repo": "alpha", "anchor": "app.py::greet"}],
-        repos=["beta@feature"],  # a declared line for a repo it is NOT anchored in
-    )["id"]
-    _verify_row(server, eid, EK_VERIFY_STALE, ts=100)  # stamped ref="main"
-    env = _prune(server, eid)
-    assert env["status"] == "pruned", env
-    assert "verify_stale" in env["signals"], env

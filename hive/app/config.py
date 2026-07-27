@@ -245,32 +245,30 @@ class SyncConfig:
     ``mirror_dir`` "" ⇒ /data/sync/mirror (resolved by the sync service, the volume-local
     default).
 
-    The three CAPACITY knobs below are operator-env by §9 #14's own test: their right value is
-    a property of the DEPLOYMENT (host cores, registered-repo count, anchored-episode count),
-    not a measured constant with one right answer — a two-repo laptop and a twenty-repo fleet
-    want different numbers, and no benchmark can pick for both. They bound throughput only;
-    none of them can change a verdict. ``drift_per_tick`` / ``backfill_per_tick`` (floor 1)
-    cap the ``hive-edge`` verify/mint spawns per repo per tick — the excess carries over to the
-    next tick, so a low cap costs LATENCY to coverage and never coverage itself (an
-    un-materialized anchor reads ``unverifiable``, never a guess). ``workers`` (floor 1) is how
-    many registered repos tick CONCURRENTLY; the default 1 is the serial loop byte-for-byte
-    (§9 #9), so concurrency is an explicit operator opt-in."""
+    ``workers`` (floor 1) is the one CAPACITY knob left, and it is operator-env by §9 #14's
+    own test: its right value is a property of the DEPLOYMENT (host cores, registered-repo
+    count), not a measured constant with one right answer. It bounds wall-clock only and
+    cannot change a verdict; the default 1 is the serial loop byte-for-byte (§9 #9), so
+    concurrency is an explicit operator opt-in.
+
+    The two per-tick spawn caps are GONE. They existed to bound engine subprocesses, and
+    the staleness path spawns none: git answers a whole baseline group in two plumbing
+    reads and charges a third call only for a symbol anchor whose file actually moved. The
+    real bound is repo churn, which no operator can pick better than the churn itself —
+    and a cap on a check this cheap could only add latency to coverage (§9 #14). A leftover
+    ``HIVE_SYNC__DRIFT_PER_TICK`` / ``HIVE_SYNC__BACKFILL_PER_TICK`` in an operator env
+    degrades to the existing unknown-FIELD WARN: never a live switch, never a crash."""
 
     interval_s: int = 60
     webhook_secret: str = ""
     mirror_dir: str = ""
-    drift_per_tick: int = 200
-    backfill_per_tick: int = 200
     workers: int = 1
 
     def __post_init__(self) -> None:
         if int(self.interval_s) < 5:
             raise ValueError(f"sync.interval_s must be >= 5 (got {self.interval_s})")
-        for knob in ("drift_per_tick", "backfill_per_tick", "workers"):
-            if int(getattr(self, knob)) < 1:
-                raise ValueError(
-                    f"sync.{knob} must be >= 1 (got {getattr(self, knob)})"
-                )
+        if int(self.workers) < 1:
+            raise ValueError(f"sync.workers must be >= 1 (got {self.workers})")
 
 
 # ── the root ──────────────────────────────────────────────────────────────────
@@ -278,9 +276,11 @@ class SyncConfig:
 # loopback door + a token-required tunnel door, bound by the entrypoint), so there is no
 # HIVE_AUTH__MODE switch to resolve here.
 # The v3 deletions are structural: the ``agi`` and ``census`` groups no longer exist, and
-# ``sync`` lost repo_url/token/verify_candidates (the repo registry replaced them) — a
-# leftover HIVE_AGI__* / HIVE_CENSUS__* env var degrades to the unknown-GROUP WARN and a
-# leftover HIVE_SYNC__REPO_URL/TOKEN/VERIFY_CANDIDATES to the unknown-FIELD WARN: never a
+# ``sync`` lost repo_url/token/verify_candidates (the repo registry replaced them) and then
+# drift_per_tick/backfill_per_tick (nothing left to cap) — a leftover HIVE_AGI__* /
+# HIVE_CENSUS__* env var degrades to the unknown-GROUP WARN and a leftover
+# HIVE_SYNC__REPO_URL/TOKEN/VERIFY_CANDIDATES/DRIFT_PER_TICK/BACKFILL_PER_TICK to the
+# unknown-FIELD WARN: never a
 # live switch HERE, never a crash. "Not a config key" is the whole verdict this layer can
 # give — HIVE_SYNC__TOKEN (hive/app/sync.py's fleet-default credential) and
 # HIVE_STORE__DB_PATH (the hive/tools/* entry points) are read straight from the
