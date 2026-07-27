@@ -13,7 +13,14 @@
 services:
   hive-server:
     image: hive:dev                 # own tag — a dev `--build` never re-tags prod's hive:vmin
-    ports:
+    # `!override` (Compose-spec merge tag) forces REPLACEMENT of compose.yaml's `ports:` entry
+    # instead of Compose's default list-merge behavior, which APPENDS (BUG-088): short-syntax
+    # `ports:` strings have no unique key for Compose to merge-by-key on, so plain `-f compose.yaml
+    # -f compose.dev.yaml` tried to publish BOTH 8765 (prod's) and 8775, colliding with a running
+    # prod stack — even the equivalent long mapping syntax still appended (verified; `target`
+    # alone isn't treated as the merge key here). `!override` is unconditional, so it wins
+    # regardless of syntax on either side.
+    ports: !override
       - "127.0.0.1:8775:8765"       # dev loopback on host 8775 (prod stays on 8765)
 volumes:
   hive-data:

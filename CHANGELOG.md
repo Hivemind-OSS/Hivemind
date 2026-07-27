@@ -2,6 +2,17 @@
 
 All notable changes to this project are documented here.
 
+## Fixed
+- **The isolated dev-testing sidecar (`compose.dev.yaml`) can now run alongside a live prod stack
+  (BUG-088).** Docker Compose merges short-syntax `ports:` lists by concatenation, not override,
+  so the documented `docker compose -p hive-dev -f compose.yaml -f compose.dev.yaml up` collided
+  with prod's published port instead of replacing it — even rewriting the entry in the equivalent
+  long mapping syntax still appended, since `target` alone is not the merge key Compose uses for
+  `ports`. The `ports:` sequence now carries the Compose-spec `!override` tag, which forces
+  unconditional replacement regardless of syntax on either side. Verified: the merged config
+  renders exactly one port entry, and the dev sidecar starts and tears down cleanly next to a
+  running prod container without touching its volume.
+
 ## Removed
 - **A near-duplicate no longer authorizes destroying a memory.** The retirement gate's
   conflict-pair feed is gone — `_gate_conflict_pairs` at the boundary, the `conflict_pairs`
