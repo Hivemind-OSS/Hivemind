@@ -65,9 +65,11 @@ def last_sync_ts_key(repo: str) -> str:
 
 
 def backfilled_total_key(repo: str) -> str:
-    """``repo``'s anchor carriers fingerprint-backfilled, ever — the positive proof
-    the mint path works end to end (mirror cloned, anchor resolved against the real
-    tree, ``hive-edge mint`` spawned and parsed)."""
+    """``repo``'s anchor bindings the daemon has BASELINED, ever — the positive proof
+    the staleness path works end to end (mirror cloned, watermark advanced, a binding
+    that reached the server without one given the commit it is measured from). The
+    field name predates the git-native ladder and is kept because it is a SERVED wire
+    field: renaming it would break an operator runbook to gain nothing."""
     return _repo_key(repo, "backfilled_total")
 
 

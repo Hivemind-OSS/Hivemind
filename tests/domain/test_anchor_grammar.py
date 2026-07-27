@@ -1,19 +1,21 @@
 """`hive/domain/anchor_grammar.py` is the ONE owner of what an anchor IS; these pin
-both halves of it so the three consumers (the write gate, the census join, the sync
-backfill) cannot fork again.
+all three of its functions so its consumers (the write gate, the census join, the
+staleness prober) cannot fork again.
 
-The tokenizer half is pinned as a total function — the whole table of spellings, plus
+The STRICT tokenizer is pinned as a total function — the whole table of spellings, plus
 the invariant that an accepted anchor rides VERBATIM (never stripped, never
 re-spelled), because the stored string is what the census join later matches on. The
-refusal half is pinned message-for-message: the sentence is the only thing a refused
-writer gets, so a clause that stops naming its violated spelling is a regression even
-though the refusal itself still fires.
+LENIENT read-side twin (`probe_target`) is pinned against it row for row: it must agree
+on every spelling the boundary admits and differ on exactly one shape, the historical
+single-colon anchor the gate now refuses but the store still holds. The refusal half is
+pinned message-for-message: the sentence is the only thing a refused writer gets, so a
+clause that stops naming its violated spelling is a regression even though the refusal
+itself still fires.
 
-Two cross-copy tripwires ride along: the reader-side tokenizer
-(`hive.edge.cli._split_anchor`, deliberately lenient about the historical single-colon
-spelling) must still agree with this one on every spelling the boundary ADMITS, and
-the module must stay import-free — it is loaded by the pure domain and runs on the
-hostile write path, so it can depend on nothing and crash on nothing.
+Two cross-copy tripwires ride along: the pattern the prober hands git may never carry a
+`-L` field separator, and the module must stay import-free — it is loaded by the pure
+domain and runs on the hostile write path, so it can depend on nothing and crash on
+nothing.
 """
 
 from __future__ import annotations
@@ -26,7 +28,12 @@ from hypothesis import given, settings
 from hypothesis import strategies as st
 
 from hive.domain import anchor_grammar
-from hive.domain.anchor_grammar import SYMBOL_SEP, anchor_grammar_error, split_anchor
+from hive.domain.anchor_grammar import (
+    SYMBOL_SEP,
+    anchor_grammar_error,
+    probe_target,
+    split_anchor,
+)
 
 # Every spelling the boundary admits — the canonical grammar from the module
 # docstring plus the colon-free prose tail (an anchor need not be code).
@@ -92,6 +99,48 @@ def test_split_anchor_rejoins_losslessly(anchor):
 
 def test_the_symbol_separator_is_the_double_colon():
     assert SYMBOL_SEP == "::"
+
+
+# ── the read-side twin: same table, plus the one historical shape ─────────────
+
+
+@pytest.mark.parametrize(
+    "anchor, expected",
+    [
+        ("a.py::S", ("a.py", "S")),  # canonical symbol-scoped
+        ("a.py", ("a.py", "")),  # file-scoped
+        ("a.py:greet", ("a.py", "greet")),  # THE historical shape: split, not dropped
+        ("a.py:42", ("a.py:42", "")),  # a line number is a span, not a name
+        ("a:b/c.py::S", ("a:b/c.py", "S")),  # an explicit '::' owns the split
+        ("a:b/c.py", ("a", "b/c.py")),  # no '::' at all ⇒ the first colon splits
+        ("the auth refresh flow", ("the auth refresh flow", "")),  # prose
+        ("", ("", "")),  # total over the empty string
+        ("a.py::Ns::C.m", ("a.py", "Ns::C.m")),  # nested '::' stays in the symbol
+        (":greet", (":greet", "")),  # empty path half ⇒ no split
+        ("a.py:", ("a.py:", "")),  # empty symbol half ⇒ no split
+    ],
+)
+def test_probe_target_tokenizes_the_whole_table(anchor, expected):
+    assert probe_target(anchor) == expected
+
+
+@pytest.mark.parametrize("anchor", LIVE_SPELLINGS)
+def test_probe_target_agrees_with_the_gate_on_every_admitted_spelling(anchor):
+    """The two tokenizers may differ ONLY on shapes the write boundary refuses. If
+    they diverged on an admitted one, the prober would ask git about a different
+    target than the census join matches on — the BUG-077 shape, re-opened from the
+    other side."""
+    assert probe_target(anchor) == split_anchor(anchor)
+
+
+def test_probe_target_differs_from_the_gate_exactly_on_the_refused_shape():
+    """The read-historical leniency, stated as the difference it IS: the single-colon
+    spelling the gate refuses is the one shape the prober still resolves, so that
+    population keeps a computed verdict and stays inside retirement coverage."""
+    anchor = "app.py:greet"
+    assert anchor_grammar_error(anchor) is not None, "the gate still refuses it"
+    assert split_anchor(anchor) == ("app.py:greet", ""), "the strict half is unmoved"
+    assert probe_target(anchor) == ("app.py", "greet")
 
 
 # ── the refusals: each clause names its own violated spelling ─────────────────
@@ -189,6 +238,10 @@ def test_both_functions_are_total_and_the_admitted_set_is_joinable(anchor: str) 
     rejoined = path + SYMBOL_SEP + symbol if SYMBOL_SEP in anchor else path
     assert rejoined == anchor, "the tokenizer rewrote its input"
 
+    probe_path, probe_symbol = probe_target(anchor)  # never raises either
+    assert anchor.startswith(probe_path), "the read side rewrote its input"
+    assert anchor.endswith(probe_symbol)
+
     error = anchor_grammar_error(anchor)  # never raises
     if error is None:
         assert ":" not in anchor or SYMBOL_SEP in anchor
@@ -202,19 +255,23 @@ def test_both_functions_are_total_and_the_admitted_set_is_joinable(anchor: str) 
 # ── the cross-copy tripwires ──────────────────────────────────────────────────
 
 
-@pytest.mark.parametrize("anchor", LIVE_SPELLINGS)
-def test_both_owners_tokenize_every_admitted_spelling_identically(anchor):
-    """The mint side (this module) and the reader side (`hive.edge.cli._split_anchor`)
-    are allowed to disagree only about spellings the boundary REFUSES — that
-    asymmetry is the read-historical leniency, kept on purpose. Over the admitted set
-    they must agree exactly, or an anchor would be stored under one reading and
-    resolved under another (`""` and `None` are the same file-scoped meaning)."""
-    from hive.edge.cli import _split_anchor
+@pytest.mark.parametrize("anchor", LIVE_SPELLINGS + ["app.py:greet", "a.py:42"])
+def test_the_prober_never_hands_git_a_pattern_carrying_a_field_separator(anchor):
+    """Both tokenizers live in this module now, so the mint-vs-reader pair cannot
+    fork across a package boundary the way it did before. What still has to hold at
+    the seam: whatever symbol the prober derives must be expressible as a ``-L``
+    lookup, including for the historical spelling the read side revived."""
+    from hive.app.sync import _funcname_patterns
+    from hive.domain.staleness import symbol_lookups
 
-    path, symbol = split_anchor(anchor)
-    edge_path, edge_symbol = _split_anchor(anchor)
-    assert path == edge_path
-    assert (symbol or None) == edge_symbol
+    path, symbol = probe_target(anchor)
+    assert path, "the prober always has a path to ask git about"
+    for lookup in symbol_lookups(symbol):
+        for pattern in _funcname_patterns(lookup):
+            assert ":" not in pattern, (
+                "':' is git -L's own field separator — a pattern carrying one is "
+                "parsed as a PATH and comes back as a false 'no path' (a false stale)"
+            )
 
 
 def test_the_module_imports_nothing():

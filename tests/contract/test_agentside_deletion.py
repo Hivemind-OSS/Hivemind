@@ -47,46 +47,13 @@ def _run_verb(verb: str) -> subprocess.CompletedProcess:
     )
 
 
-def test_hook_verb_rejected() -> None:
-    """``hive-edge hook`` is gone (D4): argparse rejects it with exit 2. RED
-    pre-move via the guard (the in-repo CLI does not exist); green after the
-    engine move drops the hook dispatch (plan Step 1)."""
-    assert _module_exists(EDGE_CLI_MODULE), (
-        f"in-repo {EDGE_CLI_MODULE!r} does not exist yet — the hook-verb deletion "
-        "cannot be checked until the engine move (plan Step 1) lands"
-    )
-    proc = _run_verb("hook")
-    assert proc.returncode == ARGPARSE_REJECT, (
-        f"`hive-edge hook` must be argparse-rejected (exit {ARGPARSE_REJECT}); got "
-        f"exit {proc.returncode} (stdout={proc.stdout!r} stderr={proc.stderr[:200]!r})"
-    )
-
-
-def test_worktree_delta_verb_rejected() -> None:
-    """``hive-edge worktree-delta`` is gone (D4): argparse rejects it with exit 2.
-    RED pre-move via the guard; green after the engine move (plan Step 1)."""
-    assert _module_exists(EDGE_CLI_MODULE), (
-        f"in-repo {EDGE_CLI_MODULE!r} does not exist yet — the worktree-delta "
-        "deletion cannot be checked until the engine move (plan Step 1) lands"
-    )
-    proc = _run_verb("worktree-delta")
-    assert proc.returncode == ARGPARSE_REJECT, (
-        f"`hive-edge worktree-delta` must be argparse-rejected (exit "
-        f"{ARGPARSE_REJECT}); got exit {proc.returncode} "
-        f"(stdout={proc.stdout!r} stderr={proc.stderr[:200]!r})"
-    )
-
-
-def test_hooks_module_not_ported() -> None:
-    """``hive.edge.hooks`` is not importable — the Claude-Code hook adapters are
-    not ported (D4). Guarded on the ``hive.edge`` package existing so the check is
-    RED pre-move (package absent) and meaningfully green post-move (package
-    present, ``hooks`` deliberately absent)."""
-    assert _module_exists("hive.edge"), (
-        "the hive.edge package does not exist yet — the engine move (plan Step 1) "
-        "has not landed"
-    )
-    assert not _module_exists("hive.edge.hooks"), (
-        "hive/edge/hooks.py must NOT be ported (D4) — the agent-side hook adapters "
-        "are dead post-U4 and join the removed set"
-    )
+def test_the_edge_cli_is_gone_whole() -> None:
+    """The agent-side deletion completed: the CLI those two verbs were deleted FROM
+    no longer exists either. A verb cannot be re-added to a module that is not there,
+    so the guard that pinned their individual absence is now redundant — this pins the
+    stronger fact instead."""
+    for dotted in (EDGE_CLI_MODULE, "hive.edge", "hive.edge.hooks"):
+        assert not _module_exists(dotted), (
+            f"{dotted!r} is importable again — the in-image engine CLI was the last "
+            "reader of the fingerprint carriers and was deleted with them"
+        )

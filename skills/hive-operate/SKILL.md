@@ -54,9 +54,12 @@ worklists only surface it; resolving it is this pass.
 | `HIVE_AUTONOMY__QUARANTINE_TTL_DAYS` / `…__PROVISIONAL_TTL_DAYS` | 14 / 45 | **do not lengthen to hoard** — expiry of unused memory is doing real work |
 | `HIVE_SYNC__INTERVAL_S` | 60 | the sync poll cadence (floor 5 s) — the webhook only wakes it early, never replaces it |
 | `HIVE_SYNC__WEBHOOK_SECRET` | unset | arm the push-triggered early wake (`POST /census-webhook`, HMAC-gated, tunnel door only) |
-| `HIVE_SYNC__DRIFT_PER_TICK` | 200 | drift lags your push rate — a repo needs `ceil(anchors / this)` ticks to rebuild its cache at a new tip |
-| `HIVE_SYNC__BACKFILL_PER_TICK` | 200 | new memories sit without fingerprints for several ticks after a burst of writes |
 | `HIVE_SYNC__WORKERS` | 1 | many registered repos make one serial pass outlast the interval — raise toward the repo count |
+
+There is **no per-tick drift or backfill cap** to tune: the git ladder spawns no engine, costs two
+plumbing reads per distinct baseline commit, and reconverges a repo's whole anchor set in one tick
+however many anchors it has. A leftover `HIVE_SYNC__DRIFT_PER_TICK` / `…__BACKFILL_PER_TICK` in an
+`.env` logs `config.env_unknown_field` at boot and is ignored.
 
 **Which repos the sync feeds is not a knob** — it is the durable repo registry, changed live with
 `hive repo add/remove` (next section), no restart.
@@ -122,10 +125,12 @@ default 60 s) it re-reads the registry and, per repo against a local mirror:
   branch (the row's `--branch`, else the origin default), verdict derived server-side, ingested
   through the same door as `hive ingest`; the server's mechanical promotion sweep runs after each
   ingest (outcome-verified on the canonical line ⇒ established);
-- **backfills fingerprints** — anchor fingerprints absent on stored memories are minted
-  server-side against the mirror;
+- **baselines anchors** — a stored binding with no baseline commit yet gets one at the tip the
+  server can observe (the ordinary baseline is recorded at write time from the repo's watermark,
+  and a recorded one is never moved);
 - **materializes drift** — per-anchor fresh/stale verdicts at the canonical tip (and
-  recall-demanded branch tips): what stamps a recall hit `fresh` vs drifted.
+  recall-demanded branch tips), asked of git against each binding's own baseline: what stamps a
+  recall hit `fresh` vs drifted, and what commit SHAs ride a stale one as evidence.
 
 A push webhook (`HIVE_SYNC__WEBHOOK_SECRET`, HMAC-gated on the tunnel door) only wakes the poll
 early — one nudge wakes the loop for ALL registered repos; the interval stays the correctness

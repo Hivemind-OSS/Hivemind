@@ -29,7 +29,11 @@ class MetaKeySpec:
     token_prefix: str  # the value's "<engine>-<kind>/" prefix
     current_version: str  # what mint emits today (mirror of the code constant)
     known_versions: tuple[str, ...]  # grows, never shrinks — every version ever minted
-    owner: str  # minting owner, "path/file.py:symbol"
+    # The minting owner, "path/file.py:symbol" — or "retired: <what it was>" for a key
+    # whose minter is gone. A row outlives its minter by design (the namespace is
+    # add-only, §5 clause 1/6), so this field must be able to say so rather than keep
+    # naming a symbol that no longer exists.
+    owner: str
     compare: str  # "directional" | "equality" | "advisory"
     tier: (
         str  # "structural" (full historical verify) | "opaque-hash" (recognize+silence)
@@ -67,7 +71,7 @@ REGISTRY: tuple[MetaKeySpec, ...] = (
         token_prefix="matrix-subgraph-fp/",
         current_version="1",
         known_versions=("1",),
-        owner="hive/edge/cli.py:_subgraph_fp_core",
+        owner="retired: hive/edge/cli.py:_subgraph_fp_core",
         compare="equality",
         tier="opaque-hash",
         on_unreadable="incomparable -> omit radius (silence)",
@@ -77,20 +81,21 @@ REGISTRY: tuple[MetaKeySpec, ...] = (
         token_prefix="git-branches/",
         current_version="1",
         known_versions=("1",),
-        owner="hive/edge/cli.py:_branches_token",
+        owner="retired: hive/edge/cli.py:_branches_token",
         compare="advisory",
         tier="structural",
         on_unreadable="incomparable -> tag ignored (today's semantics), never a false off-branch",
     ),
-    # Server-owned row: hive-sync's backfill mints this provenance stamp when it fills
-    # absent fingerprint keys from the mirror; the catalog still lives HERE (one registry
-    # fleet-wide), the minting code lives at hive/app/sync.py.
+    # Server-owned row, now RETIRED with the mint backfill that wrote it: the stamp
+    # marked fingerprint keys the sync leg filled from the mirror, and the git-native
+    # staleness ladder has no fingerprints to fill. The row stays because the namespace
+    # is add-only and stored stamps must keep reading the same way forever.
     MetaKeySpec(
         key="hive-sync/minted",
         token_prefix="hive-sync-minted/",
         current_version="1",
         known_versions=("1",),
-        owner="hive/app/sync.py:_backfill",
+        owner="retired: hive/app/sync.py:_backfill",
         compare="advisory",
         tier="structural",
         on_unreadable="provenance only — never affects any verdict",

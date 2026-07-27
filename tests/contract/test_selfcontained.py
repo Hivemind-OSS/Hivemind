@@ -1,7 +1,7 @@
 """CT-15 — the repo self-contains every engine (plan §4 Intent 1, §7).
 
 Post-move, the hivemind repo alone builds, checks, and ships: ``hive.matrix`` /
-``hive.combdrift`` / ``hive.edge`` are first-party subpackages of the one ``hive``
+``hive.combdrift`` are first-party subpackages of the one ``hive``
 dist, and every trace of the two-repo world — the vendored wheelhouse, the
 ``[tool.uv.sources]`` engine pins, the bare ``import matrix`` / ``combdrift`` /
 ``hive_edge`` names, the ``combdrift.*``/``matrix.*`` mypy overrides, and the
@@ -25,9 +25,9 @@ from pathlib import Path
 HERE = Path(__file__).resolve().parent
 REPO_ROOT = HERE.parent.parent
 
-ENGINE_SUBPACKAGES = ("hive.matrix", "hive.combdrift", "hive.edge")
+ENGINE_SUBPACKAGES = ("hive.matrix", "hive.combdrift")
 # The bare engine dist names that must never resolve from the repo again (they
-# become `hive.matrix` / `hive.combdrift` / `hive.edge` — D2).
+# become `hive.matrix` / `hive.combdrift` — D2).
 BARE_ENGINE_NAMES = ("matrix", "combdrift", "hive_edge")
 BARE_ENGINE_IMPORT = re.compile(
     r"^\s*(?:import|from)\s+(?:matrix|combdrift|hive_edge)(?:\.|\s|,|$)"
@@ -77,12 +77,11 @@ def test_engine_subpackages_importable() -> None:
 def test_engine_subpackages_packaged() -> None:
     """The engine sources live under ``hive/`` with package markers AND setuptools
     discovers them via the ``hive*`` glob — so the built wheel carries
-    ``hive/matrix`` / ``hive/combdrift`` / ``hive/edge`` (the BUG-040 no-explicit-
+    ``hive/matrix`` / ``hive/combdrift`` (the BUG-040 no-explicit-
     list pin). RED pre-move (dirs absent); green after the move."""
     for rel in (
         "hive/matrix/__init__.py",
         "hive/combdrift/__init__.py",
-        "hive/edge/__init__.py",
     ):
         assert (REPO_ROOT / rel).is_file(), (
             f"{rel} is missing — the engine sources have not moved in-repo"

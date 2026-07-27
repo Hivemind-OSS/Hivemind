@@ -30,17 +30,14 @@ Issues = "https://github.com/Hivemind-OSS/Hivemind/issues"
 [project.scripts]
 # the operator CLI (stdlib-only); uninstalled: `python -m hive.tools.cli`
 hive = "hive.tools.cli:main"
-# the in-image census/sync engine CLI (mint/verify/graph), shelled by hive/app/sync.py.
-# Name kept as `hive-edge` so the sync discovery + frozen CT argv checks stay byte-untouched.
-hive-edge = "hive.edge.cli:main"
 
 [project.optional-dependencies]
 # Real embedder adapter (Phase 1); the pure domain + slice need none of these.
 # Qwen3-Embedding needs sentence-transformers 5.x.
 embed = ["sentence-transformers>=5.0"]
-# Server-side census/verifier engines (hive.census + hive.verifier) and the sync
-# subsystem's mint shell-out. The engines are now first-party subpackages of THIS dist
-# (hive.matrix, hive.combdrift, hive.edge) — there is no separate distribution and no
+# Server-side census/verifier engines (hive.census + hive.verifier). The engines are
+# first-party subpackages of THIS dist (hive.matrix, hive.combdrift) — the census is
+# their only consumer; drift asks git directly. There is no separate distribution and no
 # vendored wheelhouse, so this extra declares only their third-party dependencies:
 # networkx (matrix's symbol graph), tree-sitter + the per-language grammars (the matrix +
 # combdrift AST extractors), sqlglot (combdrift's SQL dialect), and jsonschema/defusedxml

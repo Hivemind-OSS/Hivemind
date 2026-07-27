@@ -25,6 +25,7 @@ from tests.contract.conftest import (
     DRIFT_FRESH,
     DRIFT_NA,
     DRIFT_UNVERIFIABLE,
+    BASE_TIP,
     drift_put,
     hit_for,
     make_rig,
@@ -37,6 +38,9 @@ from tests.contract.conftest import (
 
 TIP = "a" * 40
 NOW = 1_000_000
+
+
+BASE = BASE_TIP  # the baseline the seeded verdicts were judged from
 
 
 def _rig(tmp_path):
@@ -78,7 +82,7 @@ def test_materialized_verdict_rides_the_hit(tmp_path, verdict):
     text = f"fact about the {verdict} anchor"
     anchor = f"pkg/mod_{verdict}.py::fn"
     eid = _anchored(rig, text, anchor)
-    drift_put(rig.store, [("alpha", TIP, anchor, verdict, "{}", NOW)])
+    drift_put(rig.store, [("alpha", TIP, BASE, anchor, verdict, "{}", NOW)])
 
     drift = _drift_of(rig, text, eid)
     assert drift.get("type") == verdict, f"cache verdict must ride the hit: {drift}"
@@ -109,7 +113,7 @@ def test_branch_scoped_reached_only_through_the_memorys_declared_line(tmp_path):
     )
     # materialized STALE at the canonical tip; the memory's declared line
     # (feature) is a different line than the one this cache row was judged at.
-    drift_put(rig.store, [("alpha", TIP, anchor, DRIFT_BLAST_RADIUS, "{}", NOW)])
+    drift_put(rig.store, [("alpha", TIP, BASE, anchor, DRIFT_BLAST_RADIUS, "{}", NOW)])
 
     drift = _drift_of(rig, text, eid, repos=["alpha"])  # consumer on canonical
     assert drift.get("type") == DRIFT_BRANCH_SCOPED, (
@@ -152,8 +156,8 @@ def test_multi_anchor_most_severe_wins(tmp_path):
     drift_put(
         rig.store,
         [
-            ("alpha", TIP, "pkg/ok.py::fn", DRIFT_FRESH, "{}", NOW),
-            ("alpha", TIP, "pkg/gone.py::fn", DRIFT_ANCHOR_MISSING, "{}", NOW),
+            ("alpha", TIP, BASE, "pkg/ok.py::fn", DRIFT_FRESH, "{}", NOW),
+            ("alpha", TIP, BASE, "pkg/gone.py::fn", DRIFT_ANCHOR_MISSING, "{}", NOW),
         ],
     )
     drift = _drift_of(rig, text, eid)
@@ -179,7 +183,9 @@ def test_partially_unverifiable_never_reads_fresh(tmp_path):
             {"repo": "alpha", "anchor": "pkg/never.py::fn"},
         ],
     )
-    drift_put(rig.store, [("alpha", TIP, "pkg/warm.py::fn", DRIFT_FRESH, "{}", NOW)])
+    drift_put(
+        rig.store, [("alpha", TIP, BASE, "pkg/warm.py::fn", DRIFT_FRESH, "{}", NOW)]
+    )
     drift = _drift_of(rig, text, eid)
     assert drift.get("type") != DRIFT_FRESH, (
         f"a partially-unverifiable memory can never read fresh (fail-safe): {drift}"
@@ -192,7 +198,9 @@ def test_name_at_branch_routes_ref_and_records_request(tmp_path):
     text = "fact judged against a feature branch"
     eid = _anchored(rig, text, "pkg/feat.py::fn")
     # canonical tip IS materialized — but the queried ref is the branch
-    drift_put(rig.store, [("alpha", TIP, "pkg/feat.py::fn", DRIFT_FRESH, "{}", NOW)])
+    drift_put(
+        rig.store, [("alpha", TIP, BASE, "pkg/feat.py::fn", DRIFT_FRESH, "{}", NOW)]
+    )
 
     env = recall(rig.server, text, repos=["alpha@feature"])
     hit = hit_for(env, eid)
@@ -216,7 +224,9 @@ def test_drift_reader_fault_degrades_not_breaks(tmp_path, monkeypatch):
     rig = _rig(tmp_path)
     text = "fact that must survive a drift-cache fault"
     eid = _anchored(rig, text, "pkg/faulty.py::fn")
-    drift_put(rig.store, [("alpha", TIP, "pkg/faulty.py::fn", DRIFT_FRESH, "{}", NOW)])
+    drift_put(
+        rig.store, [("alpha", TIP, BASE, "pkg/faulty.py::fn", DRIFT_FRESH, "{}", NOW)]
+    )
 
     def boom(*a, **kw):
         raise RuntimeError("drift cache exploded")

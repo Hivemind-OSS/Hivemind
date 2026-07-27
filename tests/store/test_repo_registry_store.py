@@ -171,7 +171,7 @@ def _cache_counts(s, repo: str) -> dict[str, int]:
         table: s.conn.execute(
             f"SELECT COUNT(*) c FROM {table} WHERE repo=?", (repo,)
         ).fetchone()["c"]
-        for table in ("ref_tips", "anchor_drift", "ref_requests")
+        for table in ("ref_tips", "anchor_baselines", "anchor_drift", "ref_requests")
     }
 
 
@@ -182,7 +182,10 @@ def test_repo_remove_forgets_the_feed_state():
     # BUG-068 widened it to EVERYTHING DERIVED FROM the feed: ref_tips is the branch
     # twin of sync:<name>:last_tip but lives in a table the meta sweep cannot reach,
     # so a re-registered name resolved a dead incarnation's tip and read its
-    # surviving anchor_drift rows as `fresh`. All three are rebuildable caches
+    # surviving anchor_drift rows as `fresh`. `anchor_baselines` joins them for the
+    # same reason: a baseline is the commit THIS incarnation observed, so a
+    # re-registration must re-baseline rather than measure from a dead feed's tip.
+    # All of them are rebuildable caches
     # (Law 5) and re-materialize on the re-registered repo's first tick.
     s = _store()
     s.repo_add(name="alpha", url="https://example.invalid/alpha.git", added_ts=1)
@@ -191,19 +194,22 @@ def test_repo_remove_forgets_the_feed_state():
         for field in ("tracked_ref", "last_tip", "last_sync_ts", "backfilled_total"):
             s.meta_set(f"sync:{repo}:{field}", "x")
         s.ref_tips_put([(repo, "feature", "a" * 40, 5)])
-        s.drift_put([(repo, "a" * 40, "app.py::greet", "fresh", "{}", 5)])
+        s.drift_put([(repo, "a" * 40, "b" * 40, "app.py::greet", "fresh", "{}", 5)])
+        s.anchor_baseline_put([(1, repo, "app.py::greet", "b" * 40, 5)])
         s.touch_ref_request(repo, "feature", 5)
 
     s.repo_remove("alpha")
     assert _sync_keys(s, "alpha") == set()
     assert _cache_counts(s, "alpha") == {
         "ref_tips": 0,
+        "anchor_baselines": 0,
         "anchor_drift": 0,
         "ref_requests": 0,
     }, "deregistration forgets the feed AND everything derived from it"
     assert len(_sync_keys(s, "beta")) == 4  # a sibling repo's feed is untouched
     assert _cache_counts(s, "beta") == {
         "ref_tips": 1,
+        "anchor_baselines": 1,
         "anchor_drift": 1,
         "ref_requests": 1,
     }

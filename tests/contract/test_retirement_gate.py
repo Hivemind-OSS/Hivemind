@@ -22,6 +22,7 @@ from tests.contract.conftest import (
     DRIFT_ANCHOR_MISSING,
     NOOP_REASON,
     call,
+    BASE_TIP,
     drift_put,
     evidence_rows,
     ident,
@@ -42,6 +43,9 @@ from tests.fakes._fakes import FakeClusterProvider
 TIP = "b" * 40
 A = ident("agent-a")
 B = ident("agent-b")
+
+
+BASE = BASE_TIP  # the baseline the seeded verdicts were judged from
 
 
 def _rig(tmp_path, *, cluster: bool = False):
@@ -148,7 +152,8 @@ def test_replaces_drift_qualified_target_still_retires(tmp_path):
         anchors=[{"repo": "alpha", "anchor": "app.py::greet"}],
     )
     drift_put(
-        rig.store, [("alpha", TIP, "app.py::greet", DRIFT_ANCHOR_MISSING, "{}", 5)]
+        rig.store,
+        [("alpha", TIP, BASE, "app.py::greet", DRIFT_ANCHOR_MISSING, "{}", 5)],
     )
     env = write(rig.server, "greet was removed; use salute instead", replaces=target)
     assert env.get("status") == "approved"
@@ -248,7 +253,8 @@ def test_drift_stale_qualifies(tmp_path):
         anchors=[{"repo": "alpha", "anchor": "app.py::greet"}],
     )
     drift_put(
-        rig.store, [("alpha", TIP, "app.py::greet", DRIFT_ANCHOR_MISSING, "{}", 5)]
+        rig.store,
+        [("alpha", TIP, BASE, "app.py::greet", DRIFT_ANCHOR_MISSING, "{}", 5)],
     )
     env = _prune(rig, eid)
     assert env.get("status") == "pruned", f"drift at the canonical tip qualifies: {env}"

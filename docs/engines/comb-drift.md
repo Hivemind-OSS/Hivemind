@@ -442,8 +442,8 @@ RunSummary(current: int, stale: int, unverifiable: int)
 ### CLI
 
 The `comb-drift` console script is **not** registered post-absorption (nothing
-shells it — the server drives the engine through `hive-edge`); the module stays
-runnable in-repo:
+shells it — the server imports the engine in-process for the census); the module
+stays runnable in-repo:
 
 ```
 python -m hive.combdrift.cli --records records.json --repo /path/to/repo [--out verdicts.json] \

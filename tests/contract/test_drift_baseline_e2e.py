@@ -1,20 +1,18 @@
-"""BUG-071 — ``fresh`` at the symbol tier is unconstructable without a real
-fingerprint comparison, and the mint-backfill never baselines from a tree in which
-the server has just watched that anchor change.
+"""BUG-071 — a baseline is NEVER moved once recorded, and ``fresh`` is never a claim
+about a comparison that did not happen.
+
+The mechanism changed (a recorded BASELINE COMMIT replaced a minted fingerprint
+carrier) but the invariant did not, and it is the same invariant for the same reason:
+re-baselining an anchor at a later tip would record the post-change state as the
+reference and freeze ``fresh`` for a break that already landed. Under the old design
+that was enforced by DEFERRING a mint the ledger leg had just seen change; under this
+one it is enforced structurally — the baseline is written once, insert-if-absent, and
+nothing can move it.
 
 Drives the REAL surfaces: a real git origin, a REAL sync tick (real
-``python -m hive.census.cli build`` / ``hive-edge mint`` / ``hive-edge verify``
-subprocesses), and the REAL MCP recall + retirement handlers. The ONLY seam used
-is the documented scripted ``Run`` door, and only to make a spawn FAIL — the
-failure directions the daemon already declares.
-
-Intents covered:
-  I3 — an anchor whose call shape was never compared reads ``unverifiable``, never
-       ``fresh``; unknown never qualifies a retirement; the new engine reason never
-       leaks into the census change path.
-  I4 — an anchor the tick's OWN receipt reported changed is not baselined that tick;
-       it mints on the first quiet tick; a faulted ledger leg mints nothing; a
-       range-skipped ingest still knows what the range contained.
+``python -m hive.census.cli build`` subprocess, real git plumbing), and the REAL MCP
+recall + retirement handlers. The ONLY seam used is the documented scripted ``Run``
+door, and only to make a spawn FAIL — the failure directions the daemon declares.
 """
 
 from __future__ import annotations
@@ -29,14 +27,12 @@ from hive.app.config import SyncConfig
 from hive.app.mcp_server import MCPRequest, ServerIdentity
 from hive.app.sync import SyncService
 from hive.domain.change_evidence import ChangeEvidenceService
-from tests.contract.conftest import RecordingRun, completed, is_mint_argv
+from tests.contract.conftest import RecordingRun, completed
 from tests.mcp._helpers import build_real_server
 from tests.sync.conftest import Origin, build_receipt, meta
 
 ANCHOR = "app.py::greet"
 TEXT = "greet() must stay single-arg; callers pass positionally"
-
-FP_KEY = "combdrift/fp"
 
 
 # ── rig ───────────────────────────────────────────────────────────────────────
@@ -81,16 +77,12 @@ def write(server, text, anchor):
     return env["id"]
 
 
-def carrier(server, eid, anchor) -> dict:
+def baseline(server, eid, anchor=ANCHOR) -> str:
     row = server.store.conn.execute(
-        "SELECT fp_meta FROM episode_anchors WHERE episode_id=? AND anchor=?",
+        "SELECT base_tip FROM anchor_baselines WHERE episode_id=? AND anchor=?",
         (eid, anchor),
     ).fetchone()
-    assert row is not None, f"no anchor row for ({eid}, {anchor!r})"
-    if not row["fp_meta"]:
-        return {}
-    parsed = json.loads(row["fp_meta"])
-    return parsed if isinstance(parsed, dict) else {}
+    return "" if row is None else str(row["base_tip"])
 
 
 def served_drift(server, eid, query=TEXT) -> str:
@@ -105,75 +97,46 @@ def is_census_build(argv) -> bool:
     return "hive.census.cli" in argv and "build" in argv
 
 
-# ── I3: an uncompared symbol never reads fresh ────────────────────────────────
+# ── an unmeasured anchor never reads fresh ────────────────────────────────────
 
 
-def test_an_uncompared_symbol_never_reads_fresh(rig):
-    """An EMPTY fingerprint carrier means the call shape was never compared. The
-    served verdict must be the honest unknown, not the positive claim ``fresh`` —
-    while the two tiers whose whole claim IS existence stay exactly as they were."""
+def test_an_unbaselined_anchor_never_reads_fresh(rig):
+    """No baseline means no comparison happened. The served verdict must be the
+    honest unknown, not the positive claim ``fresh``."""
     origin, server, _clock, tmp_path = rig
 
-    sym = write(server, TEXT, ANCHOR)
-    gone = write(server, TEXT + " (ghost)", "app.py::ghost")
-    filed = write(server, TEXT + " (file scope)", "app.py")
-
-    # the declared mint failure direction: nonzero exit ⇒ {} ⇒ silent skip,
-    # carrier stays EMPTY (the pre-mint window, verbatim)
-    broken_mint = make_syncer(
-        server.store,
-        tmp_path,
-        run=RecordingRun(
-            script=[(is_mint_argv, completed(rc=1, stderr="engine broke"))]
-        ),
+    eid = write(server, TEXT, ANCHOR)
+    assert baseline(server, eid) == "", (
+        "precondition: the repo has no watermark yet, so nothing was observed"
     )
-    broken_mint.tick()
-
-    assert carrier(server, sym, ANCHOR) == {}, "precondition: no baseline was minted"
-    assert served_drift(server, sym) == "unverifiable", (
-        "a symbol whose call shape was NEVER compared must not read fresh — that is "
+    assert served_drift(server, eid) == "unverifiable", (
+        "an anchor whose baseline was NEVER recorded must not read fresh — that is "
         "a positive claim about a comparison that did not happen"
     )
-    assert served_drift(server, gone, TEXT + " (ghost)") == "anchor_missing", (
-        "a MISSING symbol is still provable absence, baseline or not"
-    )
-    assert served_drift(server, filed, TEXT + " (file scope)") == "fresh", (
-        "existence IS the whole claim of a file-scoped anchor — unchanged"
-    )
-    assert meta(server.store, "sync:alpha:last_error") is None
 
-    # now let the mint through on a fresh tip: a real comparison ⇒ a real fresh
-    origin.commit("notes.py", "def note():\n    return 1\n", "add notes")
-    origin.push()
-    healthy = make_syncer(server.store, tmp_path)
-    healthy.tick()
+    # the daemon's own sweep fills it, and a real comparison then yields a real fresh
+    syncer = make_syncer(server.store, tmp_path)
+    syncer.tick()
+    tip0 = origin.origin_sha("refs/heads/main")
+    assert baseline(server, eid) == tip0
+    assert served_drift(server, eid) == "fresh", "a MEASURED, intact anchor is fresh"
 
-    assert carrier(server, sym, ANCHOR).get(FP_KEY, "").startswith("combdrift-fp/")
-    assert served_drift(server, sym) == "fresh", "a COMPARED, intact shape is fresh"
-
-    # ... and a real break still reads anchor_changed off that baseline
     origin.commit(
         "app.py",
         'def greet(name, punct):\n    return "hi " + name + punct\n',
         "widen greet",
     )
     origin.push()
-    healthy.tick()
-    assert served_drift(server, sym) == "anchor_changed"
+    syncer.tick()
+    assert served_drift(server, eid) == "anchor_changed"
 
 
 def test_an_unbaselined_anchor_never_qualifies_retirement(rig):
-    """``unverifiable`` ∉ QUALIFYING_DRIFT: an un-baselined anchor is a benign
-    no-op for BOTH retirement verbs — unknown never retires."""
-    _origin, server, _clock, tmp_path = rig
+    """``unverifiable`` ∉ QUALIFYING_DRIFT: an un-baselined anchor is a benign no-op
+    for BOTH retirement verbs — unknown never retires."""
+    _origin, server, _clock, _tmp_path = rig
     eid = write(server, TEXT, ANCHOR)
     winner = write(server, TEXT + " (successor)", ANCHOR + "2")
-
-    make_syncer(
-        server.store,
-        tmp_path,
-        run=RecordingRun(script=[(is_mint_argv, completed(rc=1))]),
-    ).tick()
     assert served_drift(server, eid) == "unverifiable"
 
     env, err = call(server, "hive_prune", {"episode_id": eid})
@@ -187,82 +150,10 @@ def test_an_unbaselined_anchor_never_qualifies_retirement(rig):
     assert server.store.get_episode(eid).trust == "provisional"
 
 
-def test_the_no_fingerprint_reason_never_reaches_the_census_change_path(tmp_path):
-    """``resolve_anchor``'s SECOND consumer is ``combdrift.change.verify_change`` —
-    the census path that feeds ``change_outcome`` / ``verify_*`` and therefore
-    retirement clause 1b, this plan's own compensating control. It calls
-    ``resolve_anchor`` with a fingerprint-less Anchor, so the new reason must be
-    unreachable in every branch that READS a reason there."""
-    from hive.combdrift.change import verify_change
-    from hive.combdrift.types import (
-        REASON_FINGERPRINT_VERSION_MISMATCH,
-        REASON_OK,
-        REASON_SYMBOL_MISSING,
-    )
-
-    base = tmp_path / "base"
-    head = tmp_path / "head"
-    for root in (base, head):
-        root.mkdir(parents=True, exist_ok=True)
-
-    # base: an overloaded symbol (no single interface ⇒ fingerprint_anchor None),
-    # an indirect (non-callable) binding, and a symbol that is deleted at head.
-    (base / "m.py").write_text(
-        "def over(a):\n    return a\n\n\ndef over(a, b):\n    return a\n\n\n"
-        "DATA = 1\n\n\ndef doomed(x):\n    return x\n",
-        encoding="utf-8",
-    )
-    # head: the overload persists, DATA persists, doomed is gone, added is NEW.
-    (head / "m.py").write_text(
-        "def over(a):\n    return a\n\n\ndef over(a, b):\n    return a\n\n\n"
-        "DATA = 1\n\n\ndef added(x, y):\n    return x\n",
-        encoding="utf-8",
-    )
-
-    verdict = verify_change(
-        str(base),
-        str(head),
-        (("m.py", "over"), ("m.py", "DATA"), ("m.py", "doomed"), ("m.py", "added")),
-        base_sha="b" * 40,
-        head_sha="h" * 40,
-    )
-    by_symbol = {c.symbol: c for c in verdict.symbols}
-
-    assert by_symbol["over"].drift == "indeterminate"
-    assert by_symbol["over"].reason == REASON_FINGERPRINT_VERSION_MISMATCH
-    assert by_symbol["DATA"].drift == "indeterminate"
-    assert by_symbol["doomed"].drift == "removed"
-    assert by_symbol["doomed"].reason.startswith(REASON_SYMBOL_MISSING)
-    # the M14 surface: a symbol ADDED in the range resolves at head against a None
-    # base token — the branch that must NOT read head_res.reason.
-    assert by_symbol["added"].drift == "additive"
-    assert by_symbol["added"].reason == REASON_OK, (
-        "the no-fingerprint reason leaked into the census change path"
-    )
-    assert not any("no_fingerprint" in c.reason for c in verdict.symbols), (
-        f"no change-path reason may carry the new code: {verdict.symbols}"
-    )
-
-    # the roll-up reuses verdict._classify, so a leaked reason would move it too:
-    # an ADDED symbol alone stays `current` (nothing was broken), a DELETED symbol
-    # alone is `stale`, and the abstaining pair dominates the whole batch.
-    def roll_up(*touched):
-        return verify_change(
-            str(base), str(head), touched, base_sha="b" * 40, head_sha="h" * 40
-        ).verdict
-
-    assert roll_up(("m.py", "added")) == "current", (
-        "an un-fingerprinted ADD must not turn the change verdict unverifiable"
-    )
-    assert roll_up(("m.py", "doomed")) == "stale"
-    assert verdict.verdict == "unverifiable", (
-        "unverifiable still dominates: the overloaded/indirect pair abstains"
-    )
-
-
 def test_a_real_receipt_still_lands_its_verify_rows(rig):
-    """Clause 1b's feed, end to end: a real census receipt over a real range still
-    writes the ledger rows the gate reads — the change path is untouched."""
+    """Retirement clause 1b's feed, end to end: a real census receipt over a real
+    range still writes the ledger rows the gate reads — the change path is untouched
+    by the staleness rewrite."""
     origin, server, _clock, tmp_path = rig
     eid = write(server, TEXT, ANCHOR)
     syncer = make_syncer(server.store, tmp_path)
@@ -288,54 +179,46 @@ def test_a_real_receipt_still_lands_its_verify_rows(rig):
     )
 
 
-# ── I4: never baseline from a tree in which the anchor just changed ───────────
+# ── the invariant: a recorded baseline is never moved ─────────────────────────
 
 
-def test_a_just_changed_anchor_is_not_baselined_this_tick(rig):
-    """The tick's OWN receipt names ``app.py::greet`` as touched, so minting the
-    carrier here would record the POST-break shape as the baseline and freeze
-    ``fresh`` forever. The anchor stays un-baselined; an UNTOUCHED anchor in the
-    same tick still mints."""
-    origin, server, _clock, tmp_path = rig
-    origin.commit("util.py", "def helper(x):\n    return x\n", "add util")
-    origin.push()
-
-    syncer = make_syncer(server.store, tmp_path)
-    syncer.tick()  # baseline at tip0; nothing anchored yet
-
-    origin.commit(
-        "app.py",
-        'def greet(name, punct):\n    return "hi " + name + punct\n',
-        "widen greet",
-    )
-    origin.push()
-    changed = write(server, TEXT, ANCHOR)
-    untouched = write(server, TEXT + " (helper)", "util.py::helper")
-
-    syncer.tick()  # censuses the break AND sweeps the empty carriers
-
-    assert carrier(server, changed, ANCHOR) == {}, (
-        "the backfill baselined an anchor the SAME tick's receipt reported changed"
-    )
-    assert (
-        carrier(server, untouched, "util.py::helper")
-        .get(FP_KEY, "")
-        .startswith("combdrift-fp/")
-    ), "an untouched anchor must still mint in that tick — the skip is per anchor"
-    assert served_drift(server, changed) == "unverifiable"
-    assert served_drift(server, untouched, TEXT + " (helper)") == "fresh"
-    assert meta(server.store, "sync:alpha:last_error") is None, (
-        "a deferral is normal operation, not a fault"
-    )
-
-
-def test_a_deferred_anchor_baselines_on_the_next_quiet_tick(rig):
-    """The deferral is transient by construction: defer → mint on the first quiet
-    tick → a later break reads anchor_changed off that honest baseline."""
+def test_a_recorded_baseline_is_never_moved(rig):
+    """BUG-071's invariant, verbatim, at the level it now lives: whatever else moves,
+    the commit a binding is measured FROM does not. Moving it forward to a tip after
+    a break would erase that break — the memory would read ``fresh`` forever about
+    code that changed under it."""
     origin, server, _clock, tmp_path = rig
     syncer = make_syncer(server.store, tmp_path)
-    syncer.tick()  # baseline at tip0
+    syncer.tick()
+    tip0 = origin.origin_sha("refs/heads/main")
 
+    eid = write(server, TEXT, ANCHOR)
+    assert baseline(server, eid) == tip0, "written at the watermark it was written at"
+
+    for message in ("widen greet", "widen greet again", "and again"):
+        origin.commit(
+            "app.py", f"def greet(a, b, c):\n    return {message!r}\n", message
+        )
+        origin.push()
+        syncer.tick()
+        assert baseline(server, eid) == tip0, (
+            f"the baseline moved after {message!r} — every later break would be "
+            "measured from a tree that already contained the earlier ones"
+        )
+        assert served_drift(server, eid) == "anchor_changed"
+
+
+def test_a_break_that_lands_before_the_first_tick_is_still_seen(rig):
+    """The window BUG-071's deferral existed to close: a memory written while a break
+    is already in flight. The baseline is the watermark the server had ALREADY
+    observed, not the tip it is about to advance to — so the range that lands next is
+    inside the comparison, not before it."""
+    origin, server, _clock, tmp_path = rig
+    syncer = make_syncer(server.store, tmp_path)
+    syncer.tick()  # watermark at tip0
+    tip0 = origin.origin_sha("refs/heads/main")
+
+    # the break is pushed, then the memory is written, then the tick censuses it
     origin.commit(
         "app.py",
         'def greet(name, punct):\n    return "hi " + name + punct\n',
@@ -343,45 +226,49 @@ def test_a_deferred_anchor_baselines_on_the_next_quiet_tick(rig):
     )
     origin.push()
     eid = write(server, TEXT, ANCHOR)
-
-    syncer.tick()  # the changed anchor is deferred
-    assert carrier(server, eid, ANCHOR) == {}
-    assert served_drift(server, eid) == "unverifiable"
-
-    syncer.tick()  # quiet tick: no new commits, nothing touched ⇒ mint
-    minted = carrier(server, eid, ANCHOR)
-    assert minted.get(FP_KEY, "").startswith("combdrift-fp/"), (
-        "a deferred anchor must baseline on the first quiet tick — never permanently"
+    assert baseline(server, eid) == tip0, (
+        "the baseline is what the server had OBSERVED, never the unfetched remote tip"
     )
-    tip = origin.origin_sha("refs/heads/main")
-    assert minted["hive-sync/minted"] == f"hive-sync-minted/1:server@{tip} main", (
-        "the baseline is stamped at the tree it was actually measured against"
-    )
-    # (the verdict cached for THIS tip predates the carrier and is not recomputed
-    # until the tip moves — the anchor_drift cache is keyed by (repo, tip, anchor)
-    # alone: BUG-081, out of scope here. Its direction is `unverifiable`, the
-    # fail-safe unknown, never a false fresh.)
 
-    origin.commit(
-        "app.py",
-        "def greet(name, punct, sep):\n    return name\n",
-        "widen greet again",
-    )
-    origin.push()
     syncer.tick()
     assert served_drift(server, eid) == "anchor_changed", (
-        "the honest baseline must detect the NEXT break — which the frozen "
-        "post-break baseline BUG-071 wrote could never do"
+        "a break inside the very first judged range must be visible — this is the "
+        "false-fresh BUG-071 was about, reached structurally instead of by deferral"
     )
 
 
-def test_a_faulted_ledger_leg_mints_no_baseline(rig):
-    """A faulted ledger leg means the server does not know what changed, so it
-    must not baseline anything that tick. The drift leg still runs, the fault is
-    surfaced, and the next clean tick mints."""
+def test_a_second_memory_on_the_same_anchor_gets_its_own_baseline(rig):
+    """Baselines are keyed per (episode, repo, anchor), so a memory written AFTER a
+    break measures from after it while the older memory keeps measuring from before —
+    two honest answers about the same anchor at the same tip."""
     origin, server, _clock, tmp_path = rig
     syncer = make_syncer(server.store, tmp_path)
-    syncer.tick()  # baseline at tip0
+    syncer.tick()
+    tip0 = origin.origin_sha("refs/heads/main")
+    early = write(server, TEXT, ANCHOR)
+
+    origin.commit("app.py", 'def greet(name, punct):\n    return "x"\n', "widen greet")
+    origin.push()
+    syncer.tick()
+    tip1 = origin.origin_sha("refs/heads/main")
+    late = write(server, "greet takes a punct argument now", ANCHOR)
+    syncer.tick()
+
+    assert baseline(server, early) == tip0
+    assert baseline(server, late) == tip1
+    assert served_drift(server, early) == "anchor_changed"
+    assert served_drift(server, late, "greet takes a punct argument now") == "fresh"
+
+
+def test_a_faulted_ledger_leg_still_baselines_and_judges(rig):
+    """The two legs are INDEPENDENT now. The ledger leg used to be a precondition of
+    baselining, because a mint from a tree whose changes the server could not census
+    was the false-fresh risk. A git baseline carries no such risk — it records a
+    COMMIT, not a shape — so a census fault costs evidence rows, never coverage."""
+    origin, server, _clock, tmp_path = rig
+    syncer = make_syncer(server.store, tmp_path)
+    syncer.tick()
+    tip0 = origin.origin_sha("refs/heads/main")
 
     eid = write(server, TEXT, ANCHOR)
     origin.commit("util.py", "def helper(x):\n    return x\n", "add util")
@@ -396,79 +283,32 @@ def test_a_faulted_ledger_leg_mints_no_baseline(rig):
     )
     faulting.tick()
 
-    assert carrier(server, eid, ANCHOR) == {}, (
-        "a tick that could not census the range must not baseline any anchor"
+    assert baseline(server, eid) == tip0, (
+        "the baseline is the watermark the server already had — a census fault "
+        "cannot corrupt it, and cannot withhold it either"
     )
     error = meta(server.store, "sync:alpha:last_error")
     assert error is not None and "ledger" in error, error
-    tip = origin.origin_sha("refs/heads/main")
-    drift = [
-        dict(r)
-        for r in server.store.conn.execute(
-            "SELECT * FROM anchor_drift WHERE repo='alpha' AND tip_sha=?", (tip,)
-        )
-    ]
-    assert drift, "the drift leg is independent — it must still run"
-    assert served_drift(server, eid) == "unverifiable"
-
-    syncer.tick()  # recovery: the range censuses cleanly and the anchor mints
-    assert carrier(server, eid, ANCHOR).get(FP_KEY, "").startswith("combdrift-fp/"), (
-        "the next clean tick must mint what the faulted one withheld"
+    assert served_drift(server, eid) == "unverifiable", (
+        "the WATERMARK is what recall judges at, and a faulted ledger leg does not "
+        "advance it — so the verdicts the drift leg materialized at the fetched tip "
+        "are not yet readable. Unverifiable, the honest unknown, never a stale tip's "
+        "verdict served as if it were current"
     )
 
-
-def test_a_range_skipped_ingest_still_defers_the_changed_anchor(rig):
-    """The manual ``hive ingest`` door can absorb a range before the daemon reaches
-    it, so the daemon's own ingest returns ``range_skipped``. The report must still
-    state what the range CONTAINED — otherwise the deferral silently reopens the
-    exact window it exists to close."""
-    origin, server, _clock, tmp_path = rig
-    origin.commit("util.py", "def helper(x):\n    return x\n", "add util")
-    origin.push()
-    syncer = make_syncer(server.store, tmp_path)
-    syncer.tick()  # baseline at tip0
-    base = origin.origin_sha("refs/heads/main")
-
-    origin.commit(
-        "app.py",
-        'def greet(name, punct):\n    return "hi " + name + punct\n',
-        "widen greet",
+    syncer.tick()  # recovery: the range censuses cleanly and the watermark catches up
+    assert meta(server.store, "sync:alpha:last_tip") == origin.origin_sha(
+        "refs/heads/main"
     )
-    origin.push()
-    head = origin.origin_sha("refs/heads/main")
-
-    changed = write(server, TEXT, ANCHOR)
-    untouched = write(server, TEXT + " (helper)", "util.py::helper")
-
-    # the manual door absorbs the range FIRST (what `hive ingest` does)
-    manual = ChangeEvidenceService(
-        reader=server.store,
-        appender=server.store,
-        now=lambda: 424_242,
-        ranges=server.store,
+    assert served_drift(server, eid) == "fresh", (
+        "app.py never moved, so the recovered read is the real verdict"
     )
-    envelope = build_receipt(
-        origin.work, base, head, tmp_path, repo_id="alpha", ref="main"
-    )
-    report = manual.ingest(envelope, phase="post_merge", verdict="pass", signal="none")
-    assert report.matched, "precondition: the manual ingest joined the anchor"
-
-    syncer.tick()  # the daemon's own ingest now comes back range_skipped
-
-    assert carrier(server, changed, ANCHOR) == {}, (
-        "a range-skipped ingest still knows what the range touched — the changed "
-        "anchor must stay deferred"
-    )
-    assert (
-        carrier(server, untouched, "util.py::helper")
-        .get(FP_KEY, "")
-        .startswith("combdrift-fp/")
-    ), "the untouched anchor still mints under a range-skipped ingest"
 
 
 def test_the_ingest_report_carries_the_touched_paths_on_both_return_sites(rig):
-    """The unit twin of the test above: BOTH return sites of ``ingest`` populate
-    ``touched_paths`` — the normal one and the range-skipped early return."""
+    """``touched_paths`` no longer feeds a second leg, but it is still the honest
+    answer to "what did this range contain" on BOTH return sites of ``ingest`` — the
+    normal one and the range-skipped early return."""
     origin, server, _clock, tmp_path = rig
     write(server, TEXT, ANCHOR)
     base = origin.origin_sha("refs/heads/main")
@@ -492,7 +332,7 @@ def test_the_ingest_report_carries_the_touched_paths_on_both_return_sites(rig):
 
     first = service.ingest(envelope, phase="post_merge", verdict="pass", signal="none")
     assert getattr(first, "touched_paths", None) is not None, (
-        "IngestReport gained no touched_paths field"
+        "IngestReport lost its touched_paths field"
     )
     assert "app.py" in first.touched_paths, first
 

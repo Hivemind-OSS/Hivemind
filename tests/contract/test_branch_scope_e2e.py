@@ -22,7 +22,7 @@ from hive.app.config import SyncConfig
 from hive.app.mcp_server import MCPRequest, ServerIdentity
 from hive.app.sync import SyncService
 from hive.domain.change_evidence import ChangeEvidenceService
-from tests.contract.conftest import require_method
+from tests.contract.conftest import RecordingRun, completed, require_method
 from tests.mcp._helpers import build_real_server
 from tests.sync.conftest import Origin
 
@@ -104,12 +104,14 @@ def test_branch_tip_verdict_reaches_the_agent_that_demanded_it(rig):
 
 
 def test_unmaterialized_branch_tip_is_unverifiable_not_fresh(tmp_path):
-    """A resolved (ref, sha) must be recorded before its verdicts are computed,
-    so a budget-starved tick — tip known, no cache row yet for it — reads
-    unverifiable, never a fresh inherited from an unrelated tip. Guarded on the
-    per-ref tip surface: without it, today's blanket 'any branch route reads
+    """A resolved (ref, sha) must be recorded BEFORE its verdicts are computed, so a
+    tick whose judging faults — tip known, no cache row for it — reads unverifiable,
+    never a fresh inherited from an unrelated tip. There is no per-tick budget any
+    more, so the starvation that used to produce this state is gone; a probe fault
+    produces the same one, and it is the state the ordering exists to make safe.
+    Guarded on the per-ref tip surface: without it, a blanket 'any branch route reads
     unverifiable' rule would pass this assertion for the wrong reason (it never
-    distinguishes a starved-but-known tip from an unknown one)."""
+    distinguishes a known-but-unjudged tip from an unknown one)."""
     origin = Origin(tmp_path / "remote")
     server, _c = build_real_server(t0=1_000_000)
     server.store.repo_add(
@@ -134,14 +136,23 @@ def test_unmaterialized_branch_tip_is_unverifiable_not_fresh(tmp_path):
     )
     origin.push()
 
-    starved = make_syncer(server.store, tmp_path, drift_per_tick=1)
-    starved.tick()  # the sole spawn is spent re-materializing canonical
+    def is_ls_tree(argv):
+        return "ls-tree" in argv
 
+    blind = make_syncer(server.store, tmp_path)
+    blind._run = RecordingRun(
+        script=[(is_ls_tree, completed(rc=1, stderr="unreadable"))]
+    )
+    blind.tick()  # the refs resolve; the judging cannot
+
+    assert server.store.ref_tip("alpha", "feature") == origin.origin_sha(
+        "refs/heads/feature"
+    ), "the tip is recorded before any judging, so it stays KNOWN through a fault"
     env = call(server, "hive_recall", {"query": TEXT, "repos": ["alpha@feature"]})
     hit = next(h for h in env["reference_context"] if h["episode_id"] == eid)
     assert hit["drift"]["type"] == "unverifiable", (
-        "a branch tip resolved but not yet verified this tick must read "
-        f"unverifiable, never fresh: {hit['drift']}"
+        "a branch tip resolved but not yet judged must read unverifiable, never a "
+        f"fresh inherited from another tip: {hit['drift']}"
     )
 
 
@@ -222,10 +233,10 @@ def test_a_pruned_anchor_leaves_the_verify_work_list(rig):
     assert call(server, "hive_prune", {"episode_id": eid})["status"] == "pruned"
     assert server.store.get_episode(eid).trust == "deprecated"
 
-    fps = syncer._repo_fps("alpha")
-    assert ANCHOR not in fps, (
+    work = {a for _e, a, _b in server.store.anchor_work_list("alpha")}
+    assert ANCHOR not in work, (
         f"a retired memory's anchor must leave the materializer work list: "
-        f"{sorted(fps)}"
+        f"{sorted(work)}"
     )
 
     origin.commit("app.py", "def other():\n    return 2\n", "more churn")
@@ -268,16 +279,16 @@ def test_a_shared_anchor_survives_one_memorys_retirement(rig):
     assert server.store.get_episode(a).trust == "deprecated"
     assert server.store.get_episode(b).trust == "provisional"
 
-    fps = syncer._repo_fps("alpha")
-    assert ANCHOR in fps, (
+    work = {a for _e, a, _b in server.store.anchor_work_list("alpha")}
+    assert ANCHOR in work, (
         "an anchor shared with a LIVE memory must stay in the work list even "
-        f"after one of its memories retires: {sorted(fps)}"
+        f"after one of its memories retires: {sorted(work)}"
     )
 
 
 def test_retired_anchors_leave_the_mint_backfill_sweep(rig):
     """The mint-backfill twin of the work-list contract above:
-    ``anchors_lacking_fp`` must not keep offering a retired memory's anchor to
+    ``anchor_work_list`` must not keep offering a retired memory's anchor to
     the backfill sweep forever either — the same retirement predicate belongs
     on both legs, or it recurs on the one left behind."""
     origin, server, syncer = rig
@@ -288,13 +299,13 @@ def test_retired_anchors_leave_the_mint_backfill_sweep(rig):
     )["id"]
     # no tick yet: the fp carrier is still empty, so this anchor is a live
     # backfill candidate right now — the precondition the sweep is FOR
-    assert ANCHOR in [a for _e, a in server.store.anchors_lacking_fp("alpha")]
+    assert ANCHOR in [a for _e, a, _b in server.store.anchor_work_list("alpha")]
 
     call(server, "hive_outcome", {"hurt": [eid]}, agent="agent-b")
     env = call(server, "hive_prune", {"episode_id": eid})
     assert env["status"] == "pruned", env
 
-    remaining = [a for _e, a in server.store.anchors_lacking_fp("alpha")]
+    remaining = [a for _e, a, _b in server.store.anchor_work_list("alpha")]
     assert ANCHOR not in remaining, (
         f"a retired memory's anchor must leave the mint-backfill sweep too: {remaining}"
     )

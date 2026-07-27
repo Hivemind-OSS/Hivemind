@@ -33,7 +33,7 @@ RUN python -m hive.tools.bake_model --model Qwen/Qwen3-Embedding-0.6B --dest /op
 # Volatile source — copied AFTER the model layer so editing it never re-bakes the weights.
 # `.[embed,sync]` was already resolved in the pyproject-only layer above, so this final
 # install only links the freshly-copied hive/ source (the engines are first-party
-# subpackages now — hive.matrix, hive.combdrift, hive.edge) into the venv; jsonschema/
+# subpackages now — hive.matrix, hive.combdrift) into the venv; jsonschema/
 # defusedxml ride the extra, pytest rides along for the candidate-eval verifier tier.
 # Byte-inert at runtime until HIVE_SYNC__* is configured.
 COPY hive/ ./hive/

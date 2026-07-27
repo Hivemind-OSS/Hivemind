@@ -1,8 +1,8 @@
 """Which advertised drift verdicts does a PRODUCTION writer actually emit?
 
-``hive/app/tool_defs.py`` advertises the full wire enum to every agent. This
-drives real ticks and records the real ``hive-edge verify`` argv to establish,
-per verdict, whether the daemon can ever produce it — nothing is seeded.
+``hive/app/tool_defs.py`` advertises the full wire enum to every agent. This drives
+real ticks and records the real git argv to establish, per verdict, whether the daemon
+can ever produce it — nothing is seeded.
 """
 
 from __future__ import annotations
@@ -93,24 +93,33 @@ def _write(server, text, anchor=ANCHOR):
     return json.loads(resp.result["content"][0]["text"])["id"]
 
 
-def test_the_daemon_mints_both_fp_carriers_so_the_radius_tier_is_armed(rig):
+def test_the_daemon_baselines_every_binding_it_will_judge(rig):
+    """The radius tier used to need a SECOND minted carrier; it now needs the census
+    propagation feed instead. What every tier still needs is the baseline — the commit
+    a binding is measured from — so this pins that the daemon records one, from the
+    watermark it just advanced, with no per-anchor subprocess."""
     origin, server, syncer, rec = rig
     eid = _write(server, "greet lesson")
     syncer.tick()
-    meta = anchor_meta(server.store, eid)
-    assert "combdrift/fp" in meta, meta
-    assert "matrix/subgraph_fp" in meta, (
-        "no subgraph fp minted -> the daemon never passes --subgraph-fp -> "
-        f"blast_radius_changed is unreachable: {sorted(meta)}"
+    rows = [
+        dict(r)
+        for r in server.store.conn.execute(
+            "SELECT * FROM anchor_baselines WHERE episode_id=?", (eid,)
+        )
+    ]
+    assert rows and rows[0]["base_tip"] == origin.origin_sha("refs/heads/main"), rows
+    assert not any("hive-edge" in a for c in rec.calls for a in c), (
+        f"the staleness path spawns no engine at all: {rec.calls}"
     )
-    verify_argv = [c for c in rec.calls if "verify" in c and "hive-edge" in c[0]]
-    assert verify_argv, rec.calls
-    assert any("--subgraph-fp" in c for c in verify_argv), verify_argv
 
 
 def test_blast_radius_changed_is_actually_reachable(rig):
-    """A dependency-neighborhood change with the anchor's own signature intact."""
-    origin, server, syncer, rec = rig
+    """A dependency-neighborhood change with the anchor's own lines intact. The
+    producer is the census propagation feed: ``census build --propagate`` renders the
+    breaking seed's callers, the ingest writes an advisory ``stale_suspect`` row for
+    the memory bound to one, and the materializer promotes that anchor's ``fresh``
+    to the advisory radius tier."""
+    origin, server, syncer, _rec = rig
     origin.commit(
         "app.py",
         'def helper(x):\n    return x\n\n\ndef greet(name):\n    return "hi " + helper(name)\n',
@@ -121,14 +130,24 @@ def test_blast_radius_changed_is_actually_reachable(rig):
     syncer.tick()
     assert "fresh" in verdicts(server.store), verdicts(server.store)
 
-    # change ONLY the helper's signature: greet's own contract is untouched
+    # change ONLY the helper's signature: greet's own lines are untouched
     origin.commit(
         "app.py",
-        'def helper(x, y=1):\n    return x\n\n\ndef greet(name):\n    return "hi " + helper(name)\n',
+        'def helper(x, y):\n    return x\n\n\ndef greet(name):\n    return "hi " + helper(name)\n',
         "neighborhood change",
     )
     origin.push()
     syncer.tick()
+    suspects = [
+        dict(r)
+        for r in server.store.conn.execute(
+            "SELECT * FROM evidence_events WHERE kind='stale_suspect'"
+        )
+    ]
+    assert suspects, (
+        "precondition: the census must propagate the break onto greet — without the "
+        "advisory signal the radius tier has no producer at all"
+    )
     tip = origin.origin_sha("refs/heads/main")
     rows = {
         r["anchor"]: r["verdict"]
@@ -218,7 +237,7 @@ def test_every_advertised_drift_verdict_has_a_production_writer(tmp_path):
     syncer.tick()
     origin.commit(
         "app.py",
-        'def helper(x, y=1):\n    return x\n\n\ndef greet(name):\n    return "hi " + helper(name)\n',
+        'def helper(x, y):\n    return x\n\n\ndef greet(name):\n    return "hi " + helper(name)\n',
         "neighborhood change",
     )
     origin.push()

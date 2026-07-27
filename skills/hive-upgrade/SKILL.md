@@ -178,6 +178,14 @@ inconvenience.
   a bounded health-wait *and* an app status probe before it calls the upgrade good.
 - **Rollback restores code AND store**, in that order, releasing WAL locks with a `compose down`
   before copying the snapshot back.
+- **A rebuildable cache may be dropped at boot; that is not a schema break.** When a derived
+  table's KEY changes shape, the new build drops and recreates it (the current instance:
+  `anchor_drift`, whose key gained the per-binding baseline commit). sqlite cannot alter a primary
+  key in place, and the table is a Law-5 cache, so this needs no migration and the pre-flight does
+  not flag it — it only checks that the table EXISTS. The visible effect is one tick of
+  `drift.type: "unverifiable"` on anchored recall hits — the honest unknown, never a false
+  verdict — until the daemon re-materializes. Episode rows, anchors and memory text are never
+  read or rewritten.
 - **Config knobs are boot config; the repo registry is not.** The rebuild re-reads `.env`, and an
   env var the new version no longer knows is **ignored with a WARN, never a switch** — so a knob
   that was renamed or removed silently stops doing anything while your `.env` still lists it.

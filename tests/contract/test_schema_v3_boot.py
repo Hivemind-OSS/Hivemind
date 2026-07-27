@@ -55,7 +55,18 @@ V3_REQUIRED_TABLES = (
     "conflict_flags",
     "episode_refs",
     "ref_tips",
+    "anchor_baselines",
 )
+
+# The pre-git-native ``anchor_drift`` shape: keyed (repo, tip_sha, anchor), with no
+# ``base_tip``. Frozen here VERBATIM so the boot path's drop/recreate is tested against
+# the real old table rather than a paraphrase of it.
+OLD_DRIFT_DDL = """
+CREATE TABLE anchor_drift(
+  repo TEXT NOT NULL, tip_sha TEXT NOT NULL, anchor TEXT NOT NULL,
+  verdict TEXT NOT NULL, detail TEXT NOT NULL DEFAULT '{}', ts INTEGER NOT NULL,
+  PRIMARY KEY(repo, tip_sha, anchor));
+"""
 
 NO_MIGRATION_PATTERN = "migration"
 
@@ -146,3 +157,39 @@ def test_fresh_store_boots_with_the_full_v3_table_set(tmp_path):
         assert table_exists(container.conn, name), (
             f"a fresh v3 boot creates {name!r} (plan §3.5)"
         )
+
+
+def test_an_old_shaped_drift_cache_is_recreated_at_boot(tmp_path):
+    """``anchor_drift`` gained ``base_tip`` in its PRIMARY KEY, which sqlite cannot
+    alter in place. A store carrying the old shape must boot CLEAN — the cache is
+    derived (Law 5), so dropping it degrades every read to ``unverifiable`` (the
+    honest unknown) until the next tick re-materializes, and no episode row, anchor
+    binding or memory text is read or rewritten to get there."""
+    db = tmp_path / "old-drift.db"
+    conn = sqlite3.connect(str(db))
+    conn.executescript(OLD_DRIFT_DDL)
+    conn.execute(
+        "INSERT INTO anchor_drift(repo, tip_sha, anchor, verdict, detail, ts) "
+        "VALUES('alpha','deadbeef','a.py','fresh','{}',1)"
+    )
+    conn.commit()
+    conn.close()
+
+    container = _boot(str(db))
+    cols = {
+        r["name"] for r in container.conn.execute("PRAGMA table_info(anchor_drift)")
+    }
+    assert "base_tip" in cols, f"the boot path must recreate the table: {sorted(cols)}"
+    rows = list(container.conn.execute("SELECT * FROM anchor_drift"))
+    assert rows == [], (
+        "rows whose key omits an input to the verdict cannot be reconstructed; the "
+        "next tick re-materializes them"
+    )
+    env = payload(call(container.make_server(), "hive_health"))
+    assert env.get("ok") is True, env
+
+    # idempotent: a second boot over the NEW shape leaves it alone
+    reopened = _boot(str(db))
+    assert {
+        r["name"] for r in reopened.conn.execute("PRAGMA table_info(anchor_drift)")
+    } == cols

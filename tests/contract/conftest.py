@@ -347,11 +347,54 @@ def meta_value(store: SqliteEpisodeStore, key: str) -> Optional[str]:
     return None if row is None else str(row[0])
 
 
+#: The baseline every seeded drift row is judged from. A test that seeds a verdict is
+#: standing in for a tick that already ran, and a tick writes BOTH the verdict and the
+#: baseline it measured against — so this helper writes both, or it would be seeding a
+#: state the daemon cannot produce.
+BASE_TIP = "b" * 40
+
+
 def drift_put(store: SqliteEpisodeStore, rows: Iterable[tuple]) -> None:
-    """Materialize drift verdicts through the v3 store surface. Row shape mirrors
-    the §3.5 DDL column order: (repo, tip_sha, anchor, verdict, detail_json, ts)."""
+    """Materialize drift verdicts through the v3 store surface, keyed at the baseline
+    the bound episodes are actually measured from. Row shape mirrors the DDL column
+    order: (repo, tip_sha, base_tip, anchor, verdict, detail_json, ts).
+
+    A verdict is a function of the baseline, so seeding one without it would seed a
+    row no tick could produce and no read could find. The write path already records a
+    baseline for every binding whose repo has a watermark; this fills in the rest and
+    then keys the rows at whatever the store really holds."""
     put = require_method(store, "drift_put")
-    put(list(rows))
+    put_baselines = require_method(store, "anchor_baseline_put")
+    read_baselines = require_method(store, "anchor_baselines_get")
+    materialized = [tuple(r) for r in rows]
+    bound: dict[tuple[str, str], list[int]] = {}
+    for repo, _tip, _base, anchor, *_rest in materialized:
+        bound.setdefault((repo, anchor), []).extend(
+            int(r["episode_id"])
+            for r in store.conn.execute(
+                "SELECT episode_id FROM episode_anchors WHERE repo=? AND anchor=?",
+                (repo, anchor),
+            )
+        )
+    declared = {(repo, anchor): base for repo, _t, base, anchor, *_r in materialized}
+    put_baselines(
+        [
+            (eid, repo, anchor, declared[(repo, anchor)], 0)
+            for (repo, anchor), eids in bound.items()
+            for eid in eids
+        ]
+    )
+    effective = {
+        key: read_baselines(eids[0], key[0], [key[1]]).get(key[1], declared[key])
+        for key, eids in bound.items()
+        if eids
+    }
+    put(
+        [
+            (repo, tip, effective.get((repo, anchor), base), anchor, *rest)
+            for repo, tip, base, anchor, *rest in materialized
+        ]
+    )
 
 
 def anchor_rows(store: SqliteEpisodeStore, episode_id: int) -> list[dict]:

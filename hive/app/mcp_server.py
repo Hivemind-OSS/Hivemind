@@ -546,6 +546,40 @@ class HiveMCPServer:
             )
             return self._tool_error(req.id, f"error: {type(e).__name__}: {e}")
 
+    def _record_anchor_baselines(
+        self, episode_id: Optional[int], anchors: Sequence[AnchorRef]
+    ) -> None:
+        """Stamp each new code binding with the commit the server last OBSERVED for
+        its repo — the baseline every later staleness verdict is measured from.
+
+        The value comes from ``tip_for`` — the single owner of "which tip do I judge
+        repo R at" — asked for the canonical line, so this is a meta read and the write
+        path grows no git I/O. A repo the daemon has not watermarked yet records nothing
+        and the daemon's own sweep fills it on the first tick that can; until then the
+        anchor reads ``unverifiable``. Insert-if-absent lives in the store, so a dedup
+        onto an existing memory can never move a baseline it already earned.
+
+        Direction (Law 6): fail-OPEN. A baseline is an enrichment of a write that has
+        already landed — losing one costs a tick of coverage, never the memory."""
+        if episode_id is None or not anchors:
+            return
+        try:
+            ts = int(self.now())
+            rows = [
+                (
+                    int(episode_id),
+                    a.repo,
+                    a.anchor,
+                    tip_for(self.store, a.repo, "") or "",
+                    ts,
+                )
+                for a in anchors
+                if a.anchor
+            ]
+            self.store.anchor_baseline_put(rows)
+        except Exception:
+            _log.debug("mcp.anchor_baseline_write_failed", exc_info=True)
+
     # ── the §3.2 retirement-evidence gate feeds (assembled HERE, judged in-domain) ──
     def _known_repos(self) -> Callable[[str], bool]:
         """The injected registry-membership predicate ``normalize_anchors``/
@@ -614,7 +648,8 @@ class HiveMCPServer:
             tip = tip_for(self.store, repo, declared.get(repo, ""))
             if not tip:
                 continue
-            cached = self.store.drift_get(repo, tip, anchors)
+            base_tips = self.store.anchor_baselines_get(int(ep.id), repo, anchors)
+            cached = self.store.drift_get(repo, tip, base_tips, anchors)
             for entry in cached.values():
                 if isinstance(entry, (tuple, list)) and entry:
                     verdicts.append(str(entry[0]))
@@ -782,6 +817,7 @@ class HiveMCPServer:
             if res.episode_id is not None
             else None
         )
+        self._record_anchor_baselines(res.episode_id, anchors)
         out: dict[str, Any] = {
             "status": res.status,
             "id": res.episode_id,
@@ -843,6 +879,7 @@ class HiveMCPServer:
             return _refused_envelope(e)
         if res.status == "disabled":  # autonomy off — nothing written
             return {"status": "disabled"}
+        self._record_anchor_baselines(res.episode_id, anchors)
         return {
             "status": res.status,
             "id": res.episode_id,

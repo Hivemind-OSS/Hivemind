@@ -1,8 +1,10 @@
-"""The materialized drift cache (D5 — rebuildable, Law 5): ``drift_put`` (last-write-wins
-on the (repo, tip_sha, anchor) key, §3.5-DDL-ordered row tuples), ``drift_get`` (exact
-(repo, tip) read; an un-materialized anchor is ABSENT — the caller reads absence as
-``unverifiable``, never false-fresh/false-stale), ``drift_prune`` (bounded growth, plus
-the BUG-065 ``keep_anchors`` false-fresh close), the ``ref_requests`` demand seam
+"""The materialized drift cache (rebuildable, Law 5): ``drift_put`` (last-write-wins on
+the (repo, tip_sha, base_tip, anchor) key — EVERY input to the verdict, DDL-ordered row
+tuples), ``drift_get`` (an exact (repo, tip, base_tip) read per anchor; an
+un-materialized anchor, or one asked at a baseline it was not judged from, is ABSENT —
+the caller reads absence as ``unverifiable``, never false-fresh/false-stale),
+``drift_prune`` (bounded growth, plus the BUG-065 ``keep_anchors`` false-fresh close and
+its ``keep_base_tips`` twin), the ``ref_requests`` demand seam
 (``touch_ref_request`` / ``requested_refs``), the ``ref_tips`` per-ref tip watermark
 (``ref_tip`` / ``ref_tips_put`` / ``ref_tips_prune`` — the branch twin of the canonical
 ``sync:<repo>:last_tip`` meta key), and ``declared_refs`` — the materializer's
@@ -17,6 +19,7 @@ from hive.adapters.sqlite_db import connect
 from hive.adapters.store_sqlite import SqliteEpisodeStore
 
 TIP0, TIP1 = "a" * 40, "b" * 40
+BASE, BASE2 = "9" * 40, "8" * 40
 
 
 def _store() -> SqliteEpisodeStore:
@@ -45,9 +48,21 @@ def _declared(
 
 
 def _row(
-    repo="alpha", tip=TIP0, anchor="a.py::f", verdict="fresh", detail="{}", ts=100
+    repo="alpha",
+    tip=TIP0,
+    anchor="a.py::f",
+    verdict="fresh",
+    detail="{}",
+    ts=100,
+    base=BASE,
 ) -> tuple:
-    return (repo, tip, anchor, verdict, detail, ts)
+    return (repo, tip, base, anchor, verdict, detail, ts)
+
+
+def _get(s, repo, tip, anchors, base=BASE):
+    """``drift_get`` with a uniform baseline — the shape every caller but the
+    two-baselines case uses."""
+    return s.drift_get(repo, tip, dict.fromkeys(anchors, base), anchors)
 
 
 # ── drift_put / drift_get ──────────────────────────────────────────────────────
@@ -59,7 +74,7 @@ def test_put_then_get_roundtrips_verdict_and_detail():
             _row(anchor="b.py::g", verdict="fresh"),
         ]
     )
-    got = s.drift_get("alpha", TIP0, ["a.py::f", "b.py::g"])
+    got = _get(s, "alpha", TIP0, ["a.py::f", "b.py::g"])
     assert got == {
         "a.py::f": ("anchor_missing", '{"reason":"gone"}'),
         "b.py::g": ("fresh", "{}"),
@@ -71,21 +86,50 @@ def test_get_omits_unmaterialized_anchors():
     # unverifiable — the cache never fabricates a verdict for an unmeasured anchor.
     s = _store()
     s.drift_put([_row()])
-    got = s.drift_get("alpha", TIP0, ["a.py::f", "never.py::seen"])
+    got = _get(s, "alpha", TIP0, ["a.py::f", "never.py::seen"])
     assert set(got) == {"a.py::f"}
 
 
-def test_get_is_keyed_by_repo_and_tip_exactly():
+def test_get_is_keyed_by_repo_tip_and_baseline_exactly():
     s = _store()
     s.drift_put([_row(tip=TIP0, verdict="fresh")])
-    assert s.drift_get("alpha", TIP1, ["a.py::f"]) == {}  # a moved tip reads empty
-    assert s.drift_get("beta", TIP0, ["a.py::f"]) == {}  # another repo reads empty
+    assert _get(s, "alpha", TIP1, ["a.py::f"]) == {}  # a moved tip reads empty
+    assert _get(s, "beta", TIP0, ["a.py::f"]) == {}  # another repo reads empty
+    assert _get(s, "alpha", TIP0, ["a.py::f"], base=BASE2) == {}, (
+        "the verdict is a function of the BASELINE too — a row judged from another "
+        "one must never answer this question (BUG-081, unconstructable)"
+    )
+
+
+def test_two_baselines_on_one_anchor_at_one_tip_are_separate_rows():
+    s = _store()
+    s.drift_put(
+        [
+            _row(base=BASE, verdict="anchor_changed"),
+            _row(base=BASE2, verdict="fresh"),
+        ]
+    )
+    assert _get(s, "alpha", TIP0, ["a.py::f"])["a.py::f"][0] == "anchor_changed"
+    assert _get(s, "alpha", TIP0, ["a.py::f"], base=BASE2)["a.py::f"][0] == "fresh"
+    n = s.conn.execute("SELECT COUNT(*) AS c FROM anchor_drift").fetchone()["c"]
+    assert n == 2, "one row per (tip, baseline, anchor) — neither displaces the other"
+
+
+def test_prune_drops_rows_whose_baseline_left_the_work_list():
+    s = _store()
+    s.drift_put([_row(base=BASE), _row(base=BASE2)])
+    dropped = s.drift_prune(
+        "alpha", keep_tips=[TIP0], keep_anchors=["a.py::f"], keep_base_tips=[BASE]
+    )
+    assert dropped == 1
+    assert _get(s, "alpha", TIP0, ["a.py::f"]) != {}
+    assert _get(s, "alpha", TIP0, ["a.py::f"], base=BASE2) == {}
 
 
 def test_get_empty_anchor_list_reads_empty():
     s = _store()
     s.drift_put([_row()])
-    assert s.drift_get("alpha", TIP0, []) == {}
+    assert _get(s, "alpha", TIP0, []) == {}
 
 
 def test_put_same_key_is_last_write_wins():
@@ -93,7 +137,7 @@ def test_put_same_key_is_last_write_wins():
     s = _store()
     s.drift_put([_row(verdict="fresh", ts=100)])
     s.drift_put([_row(verdict="anchor_changed", detail='{"v":2}', ts=200)])
-    assert s.drift_get("alpha", TIP0, ["a.py::f"]) == {
+    assert _get(s, "alpha", TIP0, ["a.py::f"]) == {
         "a.py::f": ("anchor_changed", '{"v":2}')
     }
     n = s.conn.execute("SELECT COUNT(*) AS c FROM anchor_drift").fetchone()["c"]
@@ -113,7 +157,7 @@ def test_verdict_strings_ride_verbatim():
     s.drift_put(
         [_row(verdict="branch_scoped"), _row(anchor="x", verdict="unverifiable")]
     )
-    got = s.drift_get("alpha", TIP0, ["a.py::f", "x"])
+    got = _get(s, "alpha", TIP0, ["a.py::f", "x"])
     assert got["a.py::f"][0] == "branch_scoped" and got["x"][0] == "unverifiable"
 
 
@@ -123,16 +167,16 @@ def test_prune_keeps_listed_tips_only():
     s.drift_put([_row(tip=TIP0), _row(tip=TIP1), _row(repo="beta", tip=TIP0)])
     dropped = s.drift_prune("alpha", keep_tips=[TIP1])
     assert dropped == 1
-    assert s.drift_get("alpha", TIP0, ["a.py::f"]) == {}
-    assert s.drift_get("alpha", TIP1, ["a.py::f"]) != {}
-    assert s.drift_get("beta", TIP0, ["a.py::f"]) != {}  # other repos untouched
+    assert _get(s, "alpha", TIP0, ["a.py::f"]) == {}
+    assert _get(s, "alpha", TIP1, ["a.py::f"]) != {}
+    assert _get(s, "beta", TIP0, ["a.py::f"]) != {}  # other repos untouched
 
 
 def test_prune_empty_keep_wipes_the_repo():
     s = _store()
     s.drift_put([_row(tip=TIP0), _row(tip=TIP1)])
     assert s.drift_prune("alpha", keep_tips=[]) == 2
-    assert s.drift_get("alpha", TIP0, ["a.py::f"]) == {}
+    assert _get(s, "alpha", TIP0, ["a.py::f"]) == {}
 
 
 # ── drift_prune(keep_anchors=...): the BUG-065 false-fresh close ──────────────
@@ -143,9 +187,9 @@ def test_prune_keep_anchors_none_is_identical_to_omitting_it():
     s.drift_put([_row(tip=TIP0), _row(tip=TIP1), _row(repo="beta", tip=TIP0)])
     dropped = s.drift_prune("alpha", keep_tips=[TIP1], keep_anchors=None)
     assert dropped == 1
-    assert s.drift_get("alpha", TIP0, ["a.py::f"]) == {}
-    assert s.drift_get("alpha", TIP1, ["a.py::f"]) != {}
-    assert s.drift_get("beta", TIP0, ["a.py::f"]) != {}  # other repos untouched
+    assert _get(s, "alpha", TIP0, ["a.py::f"]) == {}
+    assert _get(s, "alpha", TIP1, ["a.py::f"]) != {}
+    assert _get(s, "beta", TIP0, ["a.py::f"]) != {}  # other repos untouched
 
 
 def test_prune_with_keep_anchors_drops_rows_for_anchors_outside_the_set():
@@ -162,10 +206,10 @@ def test_prune_with_keep_anchors_drops_rows_for_anchors_outside_the_set():
     )
     dropped = s.drift_prune("alpha", keep_tips=[TIP0, TIP1], keep_anchors=["a.py::f"])
     assert dropped == 1  # b.py::g at TIP0: its tip is live, its anchor is not
-    assert s.drift_get("alpha", TIP0, ["a.py::f", "b.py::g"]) == {
+    assert _get(s, "alpha", TIP0, ["a.py::f", "b.py::g"]) == {
         "a.py::f": ("fresh", "{}")
     }
-    assert s.drift_get("alpha", TIP1, ["a.py::f"]) != {}
+    assert _get(s, "alpha", TIP1, ["a.py::f"]) != {}
 
 
 def test_prune_empty_keep_anchors_wipes_the_repo_all_retired():
@@ -175,8 +219,8 @@ def test_prune_empty_keep_anchors_wipes_the_repo_all_retired():
     s.drift_put([_row(tip=TIP0), _row(repo="beta", tip=TIP0)])
     dropped = s.drift_prune("alpha", keep_tips=[TIP0], keep_anchors=[])
     assert dropped == 1
-    assert s.drift_get("alpha", TIP0, ["a.py::f"]) == {}
-    assert s.drift_get("beta", TIP0, ["a.py::f"]) != {}  # other repos untouched
+    assert _get(s, "alpha", TIP0, ["a.py::f"]) == {}
+    assert _get(s, "beta", TIP0, ["a.py::f"]) != {}  # other repos untouched
 
 
 def test_cache_is_rebuildable_wipe_then_repopulate():
@@ -185,7 +229,7 @@ def test_cache_is_rebuildable_wipe_then_repopulate():
     s.drift_put([_row()])
     s.conn.execute("DELETE FROM anchor_drift")
     s.drift_put([_row()])
-    assert s.drift_get("alpha", TIP0, ["a.py::f"]) == {"a.py::f": ("fresh", "{}")}
+    assert _get(s, "alpha", TIP0, ["a.py::f"]) == {"a.py::f": ("fresh", "{}")}
 
 
 # ── ref_requests: the recall-touched materialization demand ────────────────────

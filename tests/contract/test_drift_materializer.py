@@ -1,17 +1,14 @@
-"""CT-6 — drift is materialized per (repo, tip) and version-gated (plan §4
-intent 6, D5, §6 step 5).
+"""CT-6 — drift is materialized per (repo, tip, base_tip, anchor).
 
-Given stored fps and a moved tip, the materializer writes ``anchor_drift`` rows
-for the canonical tip and any requested refs (worktree at tip + the real
-``hive-edge verify`` per anchor); an incomparable token version yields
-silence/``unverifiable``, NEVER false-stale (BUG-037); a moved tip invalidates
-naturally (the cache key is the tip); the cache is a rebuildable Law-5 cache
-(wipe → repopulated). Real tmp git origins, the real store, the real edge CLI.
+Given a baselined binding and a moved tip, the materializer writes ``anchor_drift``
+rows for the canonical tip and any requested refs by asking git; an anchor with no
+baseline has nothing to compare against and materializes NOTHING (the honest unknown,
+never false-stale); a moved tip invalidates naturally (the tip is in the key); the
+cache is a rebuildable Law-5 cache (wipe → repopulated), and so are the baselines
+beside it. Real tmp git origins, the real store, real git plumbing.
 """
 
 from __future__ import annotations
-
-import json
 
 from tests.contract.conftest import (
     ANCHOR,
@@ -21,7 +18,6 @@ from tests.contract.conftest import (
     DRIFT_FRESH,
     DRIFT_UNVERIFIABLE,
     Origin,
-    bump_token_version,
     drift_rows,
     git,
     make_syncer,
@@ -98,32 +94,21 @@ def test_signature_change_materializes_anchor_changed(sync_store, tmp_path):
     )
 
 
-def test_version_gate_never_false_stale(sync_store, tmp_path):
-    origin, syncer = _armed(sync_store, tmp_path)
-    eid = seed_scoped_episode(sync_store, "greet lesson", anchors=[("alpha", ANCHOR)])
-    syncer.service.tick()  # real fp minted
-    row = sync_store.conn.execute(
-        "SELECT fp_meta FROM episode_anchors WHERE episode_id=?", (eid,)
-    ).fetchone()
-    fp = json.loads(row["fp_meta"])
-    assert fp.get("combdrift/fp"), "precondition: a real minted token"
-    # corrupt the token's VERSION ENVELOPE → incomparable, not different
-    fp["combdrift/fp"] = bump_token_version(fp["combdrift/fp"])
-    sync_store.conn.execute(
-        "UPDATE episode_anchors SET fp_meta=? WHERE episode_id=?",
-        (json.dumps(fp, separators=(",", ":")), eid),
+def test_an_anchor_with_no_baseline_never_reads_fresh_or_stale(sync_store, tmp_path):
+    """The version gate this replaced kept an INCOMPARABLE stored token silent. The
+    same law with a new subject: an anchor the server has no baseline for has nothing
+    to compare against, so it materializes NOTHING and reads the honest unknown —
+    never a verdict, in either direction."""
+    _origin, syncer = _armed(sync_store, tmp_path)
+    seed_scoped_episode(sync_store, "greet lesson", anchors=[("alpha", ANCHOR)])
+    work = sync_store.anchor_work_list("alpha")
+    assert work and all(base == "" for _e, _a, base in work), (
+        "precondition: written before the repo had a watermark, so no baseline"
     )
-    # move the line so a naive comparator WOULD scream stale
-    origin.commit("app.py", "def farewell(name):\n    return 'bye'\n", "rm greet")
-    origin.push()
-    syncer.service.tick()
-    tip1 = origin.origin_sha("refs/heads/main")
-    v = _verdict_for(sync_store, tip1, ANCHOR)
-    assert v not in STALE_VERDICTS, (
-        f"an incomparable token version must yield silence/unverifiable, NEVER "
-        f"false-stale (BUG-037) — got {v!r}"
-    )
-    assert v in (None, DRIFT_UNVERIFIABLE)
+    assert syncer.service._verdicts_at(tmp_path, "tip", "", [ANCHOR], 0, {}) == (
+        [],
+        None,
+    ), "nothing to measure from means nothing measured — not a verdict"
 
 
 def test_requested_ref_materializes_via_ref_requests(sync_store, tmp_path):

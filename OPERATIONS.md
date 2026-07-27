@@ -167,16 +167,20 @@ daemon — re-reading the registry every tick, so registration needs no restart 
 registered repo and feeds every landing on its canonical branch into the ledger: one unsigned
 receipt per new watermark..tip range, ingested post-merge in-process, after which the
 verified-outcome `established` sweep runs (the only trust movement the feed drives). The same
-tick backfills absent anchor fingerprints against the canonical tip and materializes per-anchor
-drift verdicts (the canonical tip, every line a live memory declares, plus branch tips recall
-demanded). The SHA-bound verified rows
+tick also materializes per-anchor drift verdicts by asking git — at the canonical tip, every line
+a live memory declares, plus branch tips recall demanded — measuring each binding against the
+commit it was BASELINED at (the repo watermark when it was written, recorded once and never
+moved). The cost is two read-only plumbing reads per distinct baseline plus one `git log -L` for a
+symbol anchor whose file actually moved: no worktree, no checkout, no engine subprocess. The
+SHA-bound verified rows
 it writes are also what the verified-promotion rung (`HIVE_AUTONOMY__VERIFIED_PROMOTION`,
 default on) uses to promote a quarantined memory. Every leg is fail-open per repo; a push
 webhook (`HIVE_SYNC__WEBHOOK_SECRET`, HMAC-gated on the tunnel door) only wakes the poll early —
 one nudge wakes all registered repos; the poll interval stays the correctness floor. Watch the
 feed via `hive_health(include_census_health=true)`, which answers in two slots: `repos` — per
 registered repo, days since the last `change_outcome` plus that repo's sync state
-(`tracked_ref`, `last_tip`, `last_sync_ts`, `last_error`, `backfilled_total`, and
+under a `sync` sub-block (`tracked_ref`, `last_tip`, `last_sync_ts`, `last_error`,
+`backfilled_total` = bindings the daemon had to baseline itself (write-time baselines are not counted), and
 `status: "no change_outcome evidence yet"` only when the feed is configured yet dark) — and `fleet`, the daemon's own
 `last_sync_ts` + `last_error`. Read `fleet` first: a fault in the tick shell (the registry read,
 anything escaping a whole tick) is recorded before any repo is reached, so every repo block stays
@@ -231,8 +235,6 @@ leverage on the outcome, but part of the full surface.
 | `HIVE_SYNC__INTERVAL_S` | `60` | census-sync daemon poll cadence in seconds (floor 5; an empty repo registry is an inert tick) |
 | `HIVE_SYNC__WEBHOOK_SECRET` | *(unset)* | arms the `POST /census-webhook` nudge on the tunnel door — one nudge wakes the poll for all registered repos |
 | `HIVE_SYNC__MIRROR_DIR` | `""` ⇒ `/data/sync/mirror` | where the sync daemon keeps its per-repo mirrors (`<dir>/<name>-<sha256(url)[:16]>` — rebuildable caches in the hive-data volume) |
-| `HIVE_SYNC__DRIFT_PER_TICK` | `200` | verify spawns per repo per tick (floor 1); the rest carries over — raise it when a repo's anchor count makes drift lag a push |
-| `HIVE_SYNC__BACKFILL_PER_TICK` | `200` | fingerprint-mint spawns per repo per tick (floor 1); the rest carries over |
 | `HIVE_SYNC__WORKERS` | `1` | registered repos ticking concurrently (floor 1); raise toward the repo count when one serial pass outlasts the interval |
 | `HIVE_HTTP_MAX_BODY_BYTES` | `1048576` | request-body cap in bytes on both HTTP doors (1 MiB) |
 | `HIVE_RETENTION__BACKUP_KEEP` | `30` | most-recent `hive backup` snapshots kept |
@@ -252,8 +254,8 @@ with nothing installed, so no step in any release directs the fleet at anything;
 simply receives the served usage contract fresh at its next connect. Two concerns, each safe
 to stop after:
 
-1. **Land hivemind** — the server change. The anchor/census engines are first-party subpackages
-   (`hive/matrix`, `hive/combdrift`, `hive/edge`), so an engine change is an ordinary in-repo edit
+1. **Land hivemind** — the server change. The census engines are first-party subpackages
+   (`hive/matrix`, `hive/combdrift`), so an engine change is an ordinary in-repo edit
    carried in the same commit — there is no wheelhouse to rebuild and no separate engine
    repository to cut a release over; `uv lock` picks up any engine dependency shift alongside
    `pyproject.toml`. The gate is `make check` (format check, lint, strict typecheck, the default

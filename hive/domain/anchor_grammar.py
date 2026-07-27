@@ -24,14 +24,23 @@ colon-bearing path is indistinguishable from it), a ``"::"`` naming no symbol, a
 a ``"::"`` whose symbol is a bare line number. Colon-free prose still admits: an
 anchor need not be code.
 
-MINT-CURRENT / READ-HISTORICAL (the meta-envelope posture, THEORY §5). This module
-is the MINT side — canonical spelling only, from now on. ``hive.edge.cli._split_anchor``
-is the READER side and deliberately keeps resolving the historical single-colon
-spelling, so anchors already stored in it keep a real drift verdict and stay inside
-retirement coverage. Old formats age out by refresh, never by rewrite.
+MINT-CURRENT, READ-HISTORICAL (the meta-envelope posture, THEORY §5). The two halves
+live HERE, adjacent, because they forked once before when they lived in different
+packages and nothing caught it:
 
-PURE: stdlib only, no imports at all. Both functions are TOTAL over any ``str`` and
-never raise — a hostile anchor refuses, it cannot crash the write boundary. The
+- the MINT side (``anchor_grammar_error``) is the write boundary — canonical spelling
+  only, from now on, and it never rewrites what is already stored;
+- the READ side (``probe_target``) keeps the historical ``path/file.py:Symbol``
+  population RESOLVABLE against a tree, so a memory stored before the write gate
+  landed still earns a computed drift verdict instead of dropping out of machine-gated
+  retirement coverage (BUG-083).
+
+``split_anchor`` stays the STRICT tokenizer and is what the census join reads: a
+single-colon anchor matches no census subject, and loosening that side would re-open
+BUG-077. Old formats age out by refresh, never by rewrite.
+
+PURE: stdlib only, no imports at all. All three functions are TOTAL over any ``str``
+and never raise — a hostile anchor refuses, it cannot crash the write boundary. The
 purity gate (tests/test_purity.py) forbids sqlite3 | torch | subprocess | os | git |
 time anywhere in hive/domain/.
 """
@@ -52,6 +61,35 @@ def split_anchor(anchor: str) -> tuple[str, str]:
     raises, never strips, never rewrites — the stored anchor rides verbatim
     everywhere. // O(len)."""
     path, _sep, symbol = anchor.partition(SYMBOL_SEP)
+    return path, symbol
+
+
+def probe_target(anchor: str) -> tuple[str, str]:
+    """``(path, symbol)`` for asking a TREE about a stored anchor — the read-historical
+    twin of ``split_anchor``.
+
+    Identical to ``split_anchor`` for every spelling the write gate accepts. It differs
+    only for the dead single-colon spelling the gate now refuses but the store still
+    holds: ``"app.py:greet"`` resolves to ``("app.py", "greet")`` rather than to a path
+    no tree contains. Without that fallback the whole historical population reads
+    ``unverifiable`` and leaves machine-gated retirement coverage — a real loss in the
+    safe direction, which is why the leniency is a deliberate read-side decision rather
+    than an accident of tokenizing (THEORY §5).
+
+    A colon-bearing anchor is read as a path (not split) when the tail is a bare line
+    number — a span is not a name, so no funcname resolver can match it — or when
+    either half is empty. Colon-free prose is unaffected: it is its own path, which no
+    tree contains, and the ladder calls that ``unverifiable``.
+
+    NOT the census join's tokenizer: that side stays ``split_anchor``, because a
+    single-colon anchor matches no census subject and pretending otherwise re-opens
+    BUG-077. TOTAL over any ``str``; never raises, never rewrites. // O(len)."""
+    path, symbol = split_anchor(anchor)
+    if symbol or SYMBOL_SEP in anchor:
+        return path, symbol
+    head, sep, tail = anchor.partition(":")
+    if sep and head and tail and not tail.isdecimal():
+        return head, tail
     return path, symbol
 
 
@@ -78,10 +116,8 @@ def anchor_grammar_error(anchor: str) -> str | None:
     3. a ``"::"`` naming no symbol — a redundant spelling of the bare path, whose
        likeliest origin is a truncated symbol (a canonical-form decision, not an
        evidence-driven one);
-    4. a ``"::"`` whose symbol is a bare line number. The same fact
-       ``hive.edge.cli._LINE_NUMBER`` states on the reader side, re-homed rather
-       than forked: the engine keeps its copy for reading legacy anchors, the
-       boundary states it as a refusal for new ones.
+    4. a ``"::"`` whose symbol is a bare line number — a span, not a name, so no
+       funcname resolver and no census subject can ever match it.
 
     Symbol shape is deliberately NOT constrained beyond the bare-number case: an
     identifier regex would false-refuse exotic-language spellings the census

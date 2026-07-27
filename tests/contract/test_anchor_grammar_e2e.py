@@ -10,7 +10,7 @@ Intents covered:
   I1 — a dead anchor spelling is a loud refusal naming the clause, nothing stored;
        the canonical spellings (and colon-free prose) still admit unchanged.
   I2 — the accepted grammar tokenizes IDENTICALLY on both sides (the server-side
-       splitter and the engine's ``_split_anchor``) and an accepted anchor reaches
+       splitter, now the only one) and an accepted anchor reaches
        the outcome feed the memory needs to ever promote.
 """
 
@@ -295,14 +295,15 @@ def test_pre_existing_schema_belt_refusals_are_unchanged(rig, anchors):
 # ── I2: ONE grammar, both sides ──────────────────────────────────────────────
 
 
-def test_the_canonical_grammar_tokenizes_identically_on_both_sides(rig):
-    """CT-A5. Every spelling the boundary ADMITS must tokenize the same way in the
-    server-side splitter and in the engine's reader-side ``_split_anchor`` (`""`
-    and ``None`` are the same file-scoped meaning). The single-colon negative pin
-    rides here too: it still joins nothing, and the engine still resolves it —
-    that asymmetry is the reader-side leniency §3.1(c) deliberately KEEPS."""
+def test_the_canonical_grammar_is_the_only_tokenizer_left(rig):
+    """CT-A5, re-pointed. There used to be TWO tokenizers — this one at the write
+    boundary and the drift engine's reader-side ``_split_anchor`` — and the pin was
+    that they agreed over every ADMITTED spelling. The engine is gone: the staleness
+    prober splits every anchor through THIS module, so agreement is unconstructable
+    rather than pinned, and the negative pins move to the two consumers that remain
+    (the census join, and the git funcname lookup)."""
+    from hive.app.sync import _funcname_patterns
     from hive.domain.change_evidence import TouchedSubject, _anchor_match_level
-    from hive.edge.cli import _split_anchor
 
     split_anchor = grammar().split_anchor
     anchor_grammar_error = grammar().anchor_grammar_error
@@ -316,11 +317,12 @@ def test_the_canonical_grammar_tokenizes_identically_on_both_sides(rig):
     ):
         assert anchor_grammar_error(spelling) is None, spelling
         path, symbol = split_anchor(spelling)
-        edge_path, edge_symbol = _split_anchor(spelling)
-        assert path == edge_path, f"{spelling}: {path!r} != {edge_path!r}"
-        assert (symbol or None) == edge_symbol, (
-            f"{spelling}: {symbol!r} != {edge_symbol!r}"
-        )
+        assert path and spelling.startswith(path), spelling
+        for pattern in _funcname_patterns(symbol):
+            assert ":" not in pattern, (
+                f"{spelling}: ':' is git -L's own field separator, so a pattern "
+                "carrying one is read as a PATH and comes back a false stale"
+            )
 
     # the accepted symbol grammar joins at the SYMBOL tier
     assert (
@@ -341,23 +343,23 @@ def test_the_canonical_grammar_tokenizes_identically_on_both_sides(rig):
         )
         is None
     )
-    # ... while the engine still resolves it — reader-side leniency, kept on purpose
-    assert _split_anchor("app.py:greet") == ("app.py", "greet")
-    # ... and the boundary is what stops a NEW one being written
+    # ... and now it resolves nothing either: the reader-side leniency died with the
+    # engine, so the stored population reads `unverifiable` (BUG-083). Direction is
+    # safe — an under-claim — and the boundary is what stops a NEW one being written.
+    assert split_anchor("app.py:greet") == ("app.py:greet", "")
     assert anchor_grammar_error("app.py:greet") is not None
 
 
-def test_the_bare_line_number_fact_agrees_across_both_owners(rig):
-    """``_LINE_NUMBER`` (engine, reader side) and the boundary clause (mint side)
-    state the SAME fact — a bare number is not a symbol. Re-homed, not forked."""
-    from hive.edge.cli import _split_anchor
-
+def test_the_bare_line_number_is_refused_at_the_one_boundary(rig):
+    """``_LINE_NUMBER`` used to state this fact on the engine's reader side and the
+    boundary clause on the mint side — re-homed, never forked. The reader is gone, so
+    the boundary is the sole owner: a bare number is not a symbol."""
     anchor_grammar_error = grammar().anchor_grammar_error
+    split_anchor = grammar().split_anchor
     for digits in ("42", "0", "007", "١٢"):
-        assert _split_anchor(f"a.py::{digits}") == ("a.py", None), digits
         assert anchor_grammar_error(f"a.py::{digits}") is not None, digits
     for symbol in ("f2", "v2beta", "_1"):
-        assert _split_anchor(f"a.py::{symbol}") == ("a.py", symbol), symbol
+        assert split_anchor(f"a.py::{symbol}") == ("a.py", symbol), symbol
         assert anchor_grammar_error(f"a.py::{symbol}") is None, symbol
 
 

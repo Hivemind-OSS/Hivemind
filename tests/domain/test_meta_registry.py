@@ -14,9 +14,19 @@ drift between the two copies (the cross-copy-tripwire idiom):
     grows, never shrinks);
   - validity: an illegal row is unconstructable (`__post_init__` raises).
 
-The coverage/agreement/retention ratchets drive the real engine cores, so they bind to the
-first-party engines (`hive.combdrift`, `hive.edge.cli`) and skip until those are importable;
-the validity / keys-projection / server-row ratchets are pure-row checks that always run.
+EVERY ROW HAS LOST ITS MINTER: `combdrift/fp`, `matrix/subgraph_fp` and `git/branches`
+lost theirs when the git-native staleness change deleted the drift engine's CLI, and
+`hive-sync/minted` lost its with the mint backfill that stamped it. Each says so in its
+own `owner` field rather than naming a symbol that no longer exists. The rows STAY —
+the key namespace is add-only and readers must keep
+ignoring unknown keys, so removing a row would be exactly the rewrite the envelope law
+forbids (THEORY §5 clause 1/6). What changes is what can be ENFORCED about them: a key
+nothing mints cannot be driven through a mint core, so coverage/agreement/retention for
+those three are historical-support facts about STORED tokens rather than live
+cross-copy tripwires. They are pinned here as literal expectations, which is the
+honest weaker guarantee — a skipped `importorskip` would have looked like a passing
+gate while asserting nothing. `combdrift/fp`'s agreement ratchet survives intact,
+because `hive.combdrift` is still first-party (the census uses it).
 """
 
 from __future__ import annotations
@@ -60,85 +70,61 @@ _COMBDRIFT_GOLDENS = {
 # ── coverage: every minted key has its row (and no row is a ghost) ────────────────
 
 
-def test_registry_covers_every_minted_key(tmp_path, monkeypatch, capsys):
-    # the mint surfaces live in the first-party edge CLI (absorbed from hive_edge);
-    # this ratchet runs once that package is importable.
-    cli = pytest.importorskip("hive.edge.cli")
-    import json
-    import subprocess
+def test_the_server_side_minting_door_is_gone():
+    """The coverage ratchet's replacement. It used to drive the real mint cores and
+    require a registry row for every key they emitted. Those cores are gone with the
+    drift engine, and so is the ONE store verb that merged a minted key into an
+    episode's anchor carrier (``fill_anchor_fp``) — so there is no server-side door
+    left through which an unregistered key could reach the corpus.
 
-    # keep the cli state / error-log off the real ~/.hive-edge — the edge suite's
-    # autouse `edge_home`, re-homed locally since this ratchet moved out of tests/edge/.
-    monkeypatch.setattr(cli, "CONFIG_DIR", tmp_path / "dot-hive-edge")
+    Asserted on the store SURFACE rather than by scanning for token literals: a token
+    is built by f-string, which no constant scan can see, but a key cannot be
+    PERSISTED without a write verb, and this is the absence of the only one."""
+    from hive.adapters.store_sqlite import SqliteEpisodeStore
 
-    # a plain (non-git) tree with one resolvable callable: pkg/f.py:foo(a, b)
-    py_repo = tmp_path / "pyrepo"
-    (py_repo / "pkg").mkdir(parents=True)
-    (py_repo / "pkg" / "f.py").write_text(
-        "def foo(a, b):\n    return a + b\n", encoding="utf-8"
-    )
-
-    # a multi-root tree: main.py:entry -> pkg/svc.py:mid_fn -> helper
-    graph_repo = tmp_path / "graphrepo"
-    (graph_repo / "pkg").mkdir(parents=True)
-    (graph_repo / "main.py").write_text(_MAIN_PY, encoding="utf-8")
-    (graph_repo / "pkg" / "svc.py").write_text(_SVC_PY, encoding="utf-8")
-
-    minted: set[str] = set()
-    minted |= set(cli._mint_core(str(py_repo), "pkg/f.py:foo"))
-    minted |= set(cli._subgraph_fp_core(str(py_repo), "pkg/f.py:foo"))
-    minted |= set(cli._mint_core(str(graph_repo), "pkg/svc.py:mid_fn"))
-    minted |= set(cli._subgraph_fp_core(str(graph_repo), "pkg/svc.py:mid_fn"))
-    # the third mint surface: the opt-in --branch-scope tag rides the mint VERB only
-    # (never a core, never the hook) — drive the real verb on a real branch.
-    repo = tmp_path / "registryrepo"
-    (repo / "pkg").mkdir(parents=True)
-    (repo / "pkg" / "f.py").write_text(
-        "def foo(a, b):\n    return a + b\n", encoding="utf-8"
-    )
-    subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
-    subprocess.run(["git", "-C", str(repo), "config", "user.email", "t@t"], check=True)
-    subprocess.run(["git", "-C", str(repo), "config", "user.name", "t"], check=True)
-    subprocess.run(["git", "-C", str(repo), "add", "."], check=True)
-    subprocess.run(["git", "-C", str(repo), "commit", "-qm", "add f"], check=True)
-    assert (
-        cli.main(
-            ["mint", "--repo", str(repo), "--anchor", "pkg/f.py:foo", "--branch-scope"]
+    for verb in ("fill_anchor_fp", "anchors_lacking_fp", "anchor_carriers"):
+        assert not hasattr(SqliteEpisodeStore, verb), (
+            f"{verb} is back — an episode-meta key can reach the corpus again, so "
+            "the coverage ratchet must be restored with the minting core it drives"
         )
-        == 0
-    )
-    minted |= set(json.loads(capsys.readouterr().out))
-    # every mint surface resolved: the union covers every EDGE-minted key, no edge key
-    # uncatalogued and no edge row a ghost. The one server-minted row (hive-sync/minted,
-    # owned under hive/app/) is catalogued here by the envelope law but minted by the
-    # hivemind server, so this suite can never observe it minting.
-    edge_minted = {
-        spec.key for spec in REGISTRY if not spec.owner.startswith("hive/app/")
-    }
-    assert minted == edge_minted, (
-        f"minted keys {sorted(minted)} != edge-owned registry keys {sorted(edge_minted)}"
-        f" — a new meta key lands WITH its meta_registry.py row in the same change"
-    )
-    assert minted <= KEYS
+
+
+def test_every_registry_row_is_reachable_from_the_keys_projection():
+    """No row is a ghost: the projection every consumer reads is exactly the rows."""
+    assert set(KEYS) == {spec.key for spec in REGISTRY}
+    assert len(KEYS) == len(REGISTRY), "the projection deduplicated a row away"
 
 
 # ── agreement: row literals == the owning code constants ─────────────────────────
 
 
 def test_registry_current_versions_match_code():
+    """``combdrift/fp``'s owner is still first-party, so this stays a live tripwire."""
     cd_fp = pytest.importorskip("hive.combdrift.fingerprint")
-    cli = pytest.importorskip("hive.edge.cli")
     assert _BY_KEY["combdrift/fp"].current_version == cd_fp.FINGERPRINT_VERSION
-    assert _BY_KEY["matrix/subgraph_fp"].current_version == cli.SUBGRAPH_FP_VERSION
-    assert _BY_KEY["git/branches"].current_version == cli.BRANCHES_VERSION
 
 
 def test_registry_token_prefixes_match_code():
     cd_fp = pytest.importorskip("hive.combdrift.fingerprint")
-    cli = pytest.importorskip("hive.edge.cli")
     assert _BY_KEY["combdrift/fp"].token_prefix == cd_fp._PREFIX
-    assert _BY_KEY["matrix/subgraph_fp"].token_prefix == cli._SUBGRAPH_FP_PREFIX
-    assert _BY_KEY["git/branches"].token_prefix == cli._BRANCHES_PREFIX
+
+
+def test_the_reader_less_rows_are_pinned_as_historical_support():
+    """The three rows whose minter AND reader are gone. Their versions and prefixes
+    can no longer be derived from any live code, so they are pinned literally: the
+    point is that they never CHANGE, because a stored token from that era must keep
+    reading the same way forever (and today reads as silence — no reader means no
+    annotation, which is the failure direction the envelope law names)."""
+    for key, version, prefix in (
+        ("matrix/subgraph_fp", "1", "matrix-subgraph-fp/"),
+        ("git/branches", "1", "git-branches/"),
+    ):
+        row = _BY_KEY[key]
+        assert row.current_version == version, (
+            f"{key}: a key nothing mints cannot get a NEW current version"
+        )
+        assert row.token_prefix == prefix
+        assert version in row.known_versions
 
 
 # ── retention: every registered known version stays readable ─────────────────────
@@ -146,7 +132,6 @@ def test_registry_token_prefixes_match_code():
 
 def test_registry_known_versions_stay_readable():
     cd_fp = pytest.importorskip("hive.combdrift.fingerprint")
-    cli = pytest.importorskip("hive.edge.cli")
     probe_iface = cd_fp.Interface(
         category="func",
         is_generator=False,
@@ -169,20 +154,22 @@ def test_registry_known_versions_stay_readable():
         assert cd_fp.matches(golden, probe_iface) != "incomparable", (
             f"combdrift v{version} tokens became unreadable while still registered"
         )
-    # opaque-hash tier (matrix/subgraph_fp): every known version is still RECOGNIZED by
-    # the envelope parse (recognize-old-version => silence, never a false `changed`).
-    for version in _BY_KEY["matrix/subgraph_fp"].known_versions:
-        token = f"matrix-subgraph-fp/{version}:{'0' * 64}"
-        assert cli._subgraph_fp_version(token) == version, (
-            f"matrix/subgraph_fp v{version} no longer recognized while still registered"
-        )
-    # structural tier (git/branches): every known version's token still parses to its
-    # branch-name set with the CURRENT reader (never "incomparable" while registered).
-    for version in _BY_KEY["git/branches"].known_versions:
-        token = f"git-branches/{version}:dev main"
-        assert cli._branch_scope(token) == frozenset({"dev", "main"}), (
-            f"git/branches v{version} tokens became unreadable while still registered"
-        )
+    # the two reader-less rows: their tokens now route to SILENCE, which is exactly
+    # what clause 5 prescribes for an unreadable version — never a false verdict. The
+    # ONE reader left that touches them is the opacity carve-out (the version prefix,
+    # for the health histogram), so that is what stays pinned readable.
+    from hive.domain.meta import token_version
+
+    for key, prefix in (
+        ("matrix/subgraph_fp", "matrix-subgraph-fp"),
+        ("git/branches", "git-branches"),
+    ):
+        for version in _BY_KEY[key].known_versions:
+            token = f"{prefix}/{version}:{'0' * 64}"
+            assert token_version(token) == version, (
+                f"{key} v{version} lost even its ENVELOPE parse while still "
+                "registered — the aggregate histogram is its last live reader"
+            )
 
 
 # ── validity: an illegal row is unconstructable ──────────────────────────────────
@@ -229,14 +216,15 @@ def test_registry_keys_projection_matches_rows():
 
 
 def test_registry_carries_the_hive_sync_minted_row_verbatim():
-    # hive-sync backfill provenance (U1): the ONE catalog still lives in this repo,
-    # so the server-minted key's row is pinned literal-for-literal — hivemind's
-    # sync builder is built AGAINST these values, drift here is contract drift.
+    # hive-sync backfill provenance (U1), now RETIRED with the leg that stamped it:
+    # the ONE catalog still lives in this repo and the row is pinned
+    # literal-for-literal, because a stamp already stored must keep reading the same
+    # way forever even though nothing writes a new one.
     spec = _BY_KEY["hive-sync/minted"]
     assert spec.token_prefix == "hive-sync-minted/"
     assert spec.current_version == "1"
     assert spec.known_versions == ("1",)
-    assert spec.owner == "hive/app/sync.py:_backfill"
+    assert spec.owner == "retired: hive/app/sync.py:_backfill"
     assert spec.compare == "advisory"
     assert spec.tier == "structural"
     assert spec.on_unreadable == "provenance only — never affects any verdict"

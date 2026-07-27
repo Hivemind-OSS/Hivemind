@@ -17,6 +17,7 @@ import re
 
 import numpy as np
 
+from tests.contract.conftest import BASE_TIP, drift_put as seed_drift
 from tests.fakes._fakes import FakeProvider
 from tests.mcp._helpers import (
     build_real_server,
@@ -53,6 +54,9 @@ class AxisProvider(FakeProvider):
         v[0] = _A
         v[1 + int(m.group(1)) % (self.d - 1)] = math.sqrt(1.0 - _A * _A)
         return v / float(np.linalg.norm(v))
+
+
+BASE = BASE_TIP  # the baseline the seeded verdicts were judged from
 
 
 def _recall(server, query, **args):
@@ -173,8 +177,9 @@ def test_materialized_verdict_rides_the_hit():
         "fact about the changed anchor",
         anchors=[{"repo": "alpha", "anchor": "pkg/mod.py::fn"}],
     )["id"]
-    server.store.drift_put(
-        [("alpha", TIP, "pkg/mod.py::fn", "anchor_changed", "{}", 5)]
+    seed_drift(
+        server.store,
+        [("alpha", TIP, BASE, "pkg/mod.py::fn", "anchor_changed", "{}", 5)],
     )
     env = _recall(server, "fact about the changed anchor")
     hit = next(h for h in env["reference_context"] if h["episode_id"] == eid)
@@ -229,7 +234,9 @@ def test_name_at_branch_routes_ref_and_records_request():
         "fact judged against a feature branch",
         anchors=[{"repo": "alpha", "anchor": "pkg/feat.py::fn"}],
     )["id"]
-    server.store.drift_put([("alpha", TIP, "pkg/feat.py::fn", "fresh", "{}", 5)])
+    seed_drift(
+        server.store, [("alpha", TIP, BASE, "pkg/feat.py::fn", "fresh", "{}", 5)]
+    )
     env = _recall(
         server, "fact judged against a feature branch", repos=["alpha@feature"]
     )
@@ -254,7 +261,9 @@ def test_drift_reader_fault_degrades_not_breaks(monkeypatch):
         "fact that must survive a drift-cache fault",
         anchors=[{"repo": "alpha", "anchor": "pkg/faulty.py::fn"}],
     )["id"]
-    server.store.drift_put([("alpha", TIP, "pkg/faulty.py::fn", "fresh", "{}", 5)])
+    seed_drift(
+        server.store, [("alpha", TIP, BASE, "pkg/faulty.py::fn", "fresh", "{}", 5)]
+    )
 
     def boom(*a, **kw):
         raise RuntimeError("drift cache exploded")

@@ -49,33 +49,22 @@ def test_sync_config_v3_surface():
         "interval_s",
         "webhook_secret",
         "mirror_dir",
-        "drift_per_tick",
-        "backfill_per_tick",
         "workers",
     }
     with pytest.raises(ValueError):
         SyncConfig(interval_s=4)  # the floor is 5
 
 
-def test_capacity_knobs_default_and_validate():
-    """The three throughput knobs: shipped defaults, a floor of 1 each, and env
-    coercion through the HIVE_SYNC__ namespace. They bound spawn/thread COUNT
-    only — no verdict rides them (a capped tick carries the rest over)."""
+def test_the_one_capacity_knob_defaults_and_validates():
+    """``workers`` is the only throughput knob left: it bounds how many repos tick
+    concurrently and no verdict rides it. The two per-tick spawn caps went with the
+    engine subprocesses they bounded — the git ladder's call count is bounded by real
+    churn, which no operator can pick better than the churn itself."""
     cfg = SyncConfig()
-    assert (cfg.drift_per_tick, cfg.backfill_per_tick, cfg.workers) == (200, 200, 1)
-    for knob in ("drift_per_tick", "backfill_per_tick", "workers"):
-        with pytest.raises(ValueError):
-            SyncConfig(**{knob: 0})
-    loaded = Config.load(
-        db_path=":memory:",
-        env={
-            "HIVE_SYNC__DRIFT_PER_TICK": "500",
-            "HIVE_SYNC__BACKFILL_PER_TICK": "400",
-            "HIVE_SYNC__WORKERS": "8",
-        },
-    )
-    assert loaded.sync.drift_per_tick == 500
-    assert loaded.sync.backfill_per_tick == 400
+    assert cfg.workers == 1
+    with pytest.raises(ValueError):
+        SyncConfig(workers=0)
+    loaded = Config.load(db_path=":memory:", env={"HIVE_SYNC__WORKERS": "8"})
     assert loaded.sync.workers == 8
     # webhook_secret is standalone-valid — no repo_url pairing rule exists
     cfg = Config.load(
@@ -95,13 +84,20 @@ def test_deleted_env_vars_never_reach_syncconfig():
             "HIVE_SYNC__REPO_URL": "https://example.invalid/o/r.git",
             "HIVE_SYNC__TOKEN": "tok-credential",
             "HIVE_SYNC__VERIFY_CANDIDATES": "true",
+            "HIVE_SYNC__DRIFT_PER_TICK": "500",
+            "HIVE_SYNC__BACKFILL_PER_TICK": "400",
             "HIVE_CENSUS__CANONICAL_REF": "main",
         },
     )
-    assert cfg.sync == SyncConfig()
+    assert cfg.sync == SyncConfig(), (
+        "a leftover knob in an operator env WARNs on an unknown field — it never "
+        "resurrects a switch and never fails boot"
+    )
     assert not hasattr(cfg.sync, "repo_url")
     assert not hasattr(cfg.sync, "token")
     assert not hasattr(cfg.sync, "verify_candidates")
+    assert not hasattr(cfg.sync, "drift_per_tick")
+    assert not hasattr(cfg.sync, "backfill_per_tick")
     assert not hasattr(cfg, "census")
 
 

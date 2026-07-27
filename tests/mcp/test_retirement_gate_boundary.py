@@ -24,6 +24,7 @@ from hive.app.mcp_server import (
     ServerIdentity,
 )
 from hive.domain.evidence_kinds import EK_VERIFY_STALE
+from tests.contract.conftest import BASE_TIP, drift_put as seed_drift
 from tests.fakes._fakes import FakeClusterProvider
 from tests.mcp._helpers import (
     build_real_server,
@@ -35,6 +36,9 @@ from tests.mcp._helpers import (
 )
 
 TIP = "b" * 40
+
+
+BASE = BASE_TIP  # the baseline the seeded verdicts were judged from
 
 
 def call_as(server, agent_id, name, args, req_id=1):
@@ -242,7 +246,9 @@ def test_drift_at_canonical_tip_qualifies():
         "the greet helper trims its input",
         anchors=[{"repo": "alpha", "anchor": "app.py::greet"}],
     )["id"]
-    server.store.drift_put([("alpha", TIP, "app.py::greet", "anchor_missing", "{}", 5)])
+    seed_drift(
+        server.store, [("alpha", TIP, BASE, "app.py::greet", "anchor_missing", "{}", 5)]
+    )
     env = _prune(server, eid)
     assert env["status"] == "pruned"
     assert any(s.startswith("drift:") for s in env["signals"])
@@ -257,7 +263,7 @@ def test_fresh_drift_does_not_qualify():
         "a fresh anchored memory",
         anchors=[{"repo": "alpha", "anchor": "app.py::fresh"}],
     )["id"]
-    server.store.drift_put([("alpha", TIP, "app.py::fresh", "fresh", "{}", 5)])
+    seed_drift(server.store, [("alpha", TIP, BASE, "app.py::fresh", "fresh", "{}", 5)])
     _assert_gate_noop(server, _prune(server, eid), eid)
 
 
@@ -276,9 +282,10 @@ def test_declared_line_tip_qualifies_even_when_canonical_is_fresh():
         anchors=[{"repo": "alpha", "anchor": "app.py::greet"}],
         repos=["alpha@feature"],
     )["id"]
-    server.store.drift_put([("alpha", TIP, "app.py::greet", "fresh", "{}", 5)])
-    server.store.drift_put(
-        [("alpha", feature_tip, "app.py::greet", "anchor_missing", "{}", 5)]
+    seed_drift(server.store, [("alpha", TIP, BASE, "app.py::greet", "fresh", "{}", 5)])
+    seed_drift(
+        server.store,
+        [("alpha", feature_tip, BASE, "app.py::greet", "anchor_missing", "{}", 5)],
     )
     env = _prune(server, eid)
     assert env["status"] == "pruned", env
@@ -301,8 +308,12 @@ def test_declared_line_fresh_blocks_even_when_canonical_is_stale():
         anchors=[{"repo": "alpha", "anchor": "app.py::greet"}],
         repos=["alpha@feature"],
     )["id"]
-    server.store.drift_put([("alpha", TIP, "app.py::greet", "anchor_missing", "{}", 5)])
-    server.store.drift_put([("alpha", feature_tip, "app.py::greet", "fresh", "{}", 5)])
+    seed_drift(
+        server.store, [("alpha", TIP, BASE, "app.py::greet", "anchor_missing", "{}", 5)]
+    )
+    seed_drift(
+        server.store, [("alpha", feature_tip, BASE, "app.py::greet", "fresh", "{}", 5)]
+    )
     _assert_gate_noop(server, _prune(server, eid), eid)
 
 
@@ -319,7 +330,9 @@ def test_declared_ref_read_fault_fails_closed(monkeypatch):
         anchors=[{"repo": "alpha", "anchor": "app.py::greet"}],
         repos=["alpha@feature"],
     )["id"]
-    server.store.drift_put([("alpha", TIP, "app.py::greet", "anchor_missing", "{}", 5)])
+    seed_drift(
+        server.store, [("alpha", TIP, BASE, "app.py::greet", "anchor_missing", "{}", 5)]
+    )
 
     def boom(*a, **kw):
         raise RuntimeError("episode_refs read exploded")

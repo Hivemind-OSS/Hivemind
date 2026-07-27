@@ -4,8 +4,8 @@
   - hive/domain/** may not import the moved-in engines (hive.census|hive.verifier);
     hive.census|hive.verifier stay standalone of the server stack, importing only
     each other + the edge engines (hive.matrix|hive.combdrift).
-  - the absorbed edge engines (hive.matrix|hive.combdrift|hive.edge) stay standalone
-    too — they never import the hive server stack or the census/verifier consumers.
+  - the absorbed engines (hive.matrix|hive.combdrift) stay standalone too — they
+    never import the hive server stack or the census/verifier consumers.
   - nothing on the hivemind side imports the pre-move top-level names
     (hive_census|hive_verifier|hive_edge|matrix|combdrift) — the still-installed
     old wheels would silently satisfy a missed rename.
@@ -152,12 +152,15 @@ def test_engines_never_import_hive_domain_or_app() -> None:
 
 def test_absorbed_engines_never_import_the_server_stack() -> None:
     # The edge engines moved IN as first-party subpackages (hive.matrix,
-    # hive.combdrift, hive.edge) but stay standalone: they may import each other,
-    # never the hive server stack (domain/app/adapters/tools) nor the
-    # census/verifier engines that consume them — the dependency arrow points one
-    # way (server -> engines), so the engines remain independently shippable.
+    # hive.combdrift) but stay standalone: they may import each other, never the
+    # hive server stack (domain/app/adapters/tools) nor the census/verifier
+    # engines that consume them — the dependency arrow points one way
+    # (server -> engines), so the engines remain independently shippable. Their
+    # only consumer now is the census; the drift path asks git instead.
+    paths = _full_module_paths("matrix", "combdrift")
+    assert paths, "the scan found no engine modules at all — it would pass vacuously"
     offenders: dict[str, set[str]] = {}
-    for path in _full_module_paths("matrix", "combdrift", "edge"):
+    for path in paths:
         bad = _imports_under(
             path,
             (

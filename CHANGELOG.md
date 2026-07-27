@@ -2,7 +2,70 @@
 
 All notable changes to this project are documented here.
 
+## Changed
+- **Staleness is now answered by git, not by a fingerprint.** A memory's code binding is stamped
+  with the commit it was written against (the repo's sync watermark — a dict read, so the write
+  path grows no I/O), and each tick the daemon asks git what the range from that commit to the
+  judged tip did to the anchored path: two read-only plumbing reads per distinct baseline
+  (`ls-tree` at the baseline, `diff --name-status` over the range) and, only for a symbol anchor
+  whose file actually moved, one `git log -L ':sym:path'`. No parser, no dependency graph, no
+  worktree, no `hive-edge` subprocess, no per-anchor work queue. This measures what the old signal
+  could not: a **rewritten function body** with an unchanged signature and unchanged callees
+  served `fresh` before and now reads `anchor_changed`, while churn elsewhere in the same file
+  correctly leaves a symbol anchor `fresh`. Both `file.py::method` and `file.py::Class.method`
+  resolve, because the lookup falls back to the last dotted segment. Coverage widens from the
+  five languages the fingerprint engine parsed to the ~25 git ships funcname drivers for; a
+  language with no driver falls back to the file tier, which is the more sensitive verdict.
+- **A stale hit now carries the evidence for its verdict.** `drift.detail.per_anchor[i]` gains
+  `since` (the baseline commit it drifted from), `commits` (up to 10 SHAs, newest first) and
+  `n_commits`. SHAs and ints only — never a commit subject or message, which is unscanned repo
+  text; the agent resolves them in its own checkout.
+- **The drift cache is keyed by every input to its verdict.** `anchor_drift`'s primary key is now
+  `(repo, tip_sha, base_tip, anchor)`. Because sqlite cannot alter a primary key in place, **the
+  table is dropped and recreated at boot** — legal without a migration because it is a rebuildable
+  cache whose loss degrades reads to `unverifiable` (the honest unknown) for one tick. No episode
+  row, no anchor row and no memory text is read or rewritten. A baseline written or changed while
+  a tip stands still can no longer be answered from a row that predates it.
+- **A repo's baselines join deregistration's forget-list.** The new `anchor_baselines` table is a
+  server OBSERVATION, so `hive repo remove` drops it alongside `ref_tips` / `anchor_drift` /
+  `ref_requests` / `sync:<name>:*`, and a re-registered repo re-baselines at the tip it can
+  actually see. The writer's own declarations (`episode_anchors`, `episode_refs`) still survive.
+- `blast_radius_changed` keeps its place in the wire vocabulary and its producer moved: it is now
+  emitted when the census's own `stale_suspect` evidence puts an otherwise-`fresh` anchor in a
+  breaking change's blast radius. `episode_anchors.fp_meta` is retired — nothing writes or reads
+  it — and the column stays because dropping it would be a table rebuild, i.e. a migration.
+
+## Removed
+- **`HIVE_SYNC__DRIFT_PER_TICK` and `HIVE_SYNC__BACKFILL_PER_TICK` are gone.** They bounded engine
+  subprocess spawns; the git ladder spawns none, and its call count is bounded by how much the
+  repo actually changed — a bound no operator can pick better, and a cap on a check this cheap
+  could only add latency to coverage. A repo's whole anchor set reconverges in one tick now,
+  whatever its size. A leftover value in an `.env` logs `config.env_unknown_field` at boot and is
+  ignored; `HIVE_SYNC__WORKERS` is unchanged and is the only capacity knob left.
+- **The `hive-edge` console script and the `hive/edge/` package.** They existed to keep engine
+  machinery out of the server process for mint/verify; git plumbing is already a subprocess that
+  reads only the object database, so the extra hop bought nothing. `hive/matrix` and
+  `hive/combdrift` STAY — the census still uses them for symbol attribution and blast radius —
+  but nothing on the drift path imports an engine at all. `hive-sync/minted`, `combdrift/fp`,
+  `matrix/subgraph_fp` and `git/branches` keep their registry rows (the meta namespace is
+  add-only) and now record that their minter is retired.
+
 ## Fixed
+- **A symbol that never existed no longer reads `fresh` on a quiet file.** "The file is not in the
+  diff" says nothing about a name inside it, so an anchor naming a symbol that was never there
+  (a typo, a renamed helper) inherited `fresh` — a positive claim about something the server had
+  never observed. Each symbol binding is now resolved once against its own baseline commit and
+  the answer stored beside it; a symbol that did not resolve there reads `unverifiable` whatever
+  the diff says, and can therefore never qualify a retirement the evidence does not support. The
+  baseline is an immutable commit, so this is measured once per binding and never re-asked — a
+  repo with no new bindings spawns nothing for it.
+- **Historical single-colon anchors keep a computed drift verdict (BUG-083).** Deleting the
+  fingerprint CLI took with it the reader that deliberately resolved the pre-gate
+  `path/file.py:Symbol` spelling, dropping that whole population to `unverifiable` and out of
+  machine-gated retirement. The reader is back as `probe_target`, now living beside the strict
+  tokenizer it must agree with, so the two cannot fork across a package boundary again. The write
+  gate still refuses the spelling and the census join still cannot match it — that is BUG-077 and
+  it stays closed.
 - **A wrongly-spelled anchor is now refused at the write boundary instead of dying silently.**
   `anchors=[{"repo": "alpha", "anchor": "path/file.py:Symbol"}]` — one colon, not two — was
   accepted, served, and reported healthy drift, because the engine's tokenizer resolves both
