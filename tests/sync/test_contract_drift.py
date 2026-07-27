@@ -386,3 +386,35 @@ def test_a_retired_memorys_baseline_leaves_with_its_anchor(origin, store, tmp_pa
         ).fetchone()["c"]
         == 0
     )
+
+
+# ── one hostile binding may not fault the leg (the per-binding guard) ─────────
+def test_an_unaskable_binding_leaves_its_row_unprobed_and_the_leg_intact(
+    origin, store, tmp_path
+):
+    """A stored spelling git cannot even be HANDED — a control character reaches the
+    argv and raises before the process starts — is the same case as one git cannot
+    answer: the row stays unprobed and materializes nothing, while every other anchor
+    in the repo still earns its verdict and the tick's prunes still run.
+
+    Without the guard the raise escapes the whole materializer, so no verdict is
+    written at all and every cached one freezes at its last value."""
+    poison = "poison.py\x00::boom"
+    seed_episode(store, "greet lesson")
+    seed_episode(store, "poisoned binding", anchor=poison)
+    svc = _armed(origin, store, tmp_path)
+
+    svc.tick()
+
+    tip = origin.origin_sha("refs/heads/main")
+    assert _verdict_for(store, tip, ANCHOR) == "fresh", "a sibling lost its verdict"
+    assert _verdict_for(store, tip, poison) is None, (
+        "an unprobed binding must materialize NOTHING — absence is what the reader "
+        "turns into `unverifiable`, the honest unknown"
+    )
+    probes = store.anchor_symbol_probes(REPO)
+    assert probes[(tip, ANCHOR)] == 1
+    assert probes[(tip, poison)] == -1, (
+        "the unaskable binding recorded a probe result it never measured"
+    )
+    assert meta(store, f"sync:{REPO}:last_error") is None

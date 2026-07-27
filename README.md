@@ -19,8 +19,8 @@ line wherever a memory is about real code (`repos=["name@branch"]` + `anchors=[{
 — that declared line is what a branch-scoped recall and the retirement gate judge it against.
 Retirement is **machine-gated**: the server
 retires a memory only when it verifies a qualifying machine signal (anchor drift on the
-memory's own declared line, hurt evidence, a mechanical contradiction) — never on an agent's
-say-so, and an
+memory's own declared line, hurt evidence, or a near-dup successor named in a supersede) —
+never on an agent's say-so, and an
 unqualified call is a benign no-op, not an error. Unused memories decay on a TTL. Nothing is
 auto-trusted, and the store never silently migrates across schema generations.
 

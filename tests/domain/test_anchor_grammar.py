@@ -170,6 +170,31 @@ def test_probe_target_differs_from_the_gate_exactly_on_the_refused_shape():
             "a.py::42",
             "'a.py::42' — '42' is a line number, not a symbol; bind the file as 'a.py'",
         ),
+        # 0. a control character anywhere — named as itself, and named FIRST, so a
+        # control byte is never mis-described by whichever later clause it trips
+        (
+            "a.py\x00::f",
+            "'a.py\\x00::f' contains the control character '\\x00' — anchors are "
+            "plain text",
+        ),
+        (
+            "a.py\n::f",
+            "'a.py\\n::f' contains the control character '\\n' — anchors are plain text",
+        ),
+        (
+            "a.py::\x7f",
+            "'a.py::\\x7f' contains the control character '\\x7f' — anchors are "
+            "plain text",
+        ),
+        # the control clause OUTRANKS the empty-path and bare-number clauses
+        (
+            "\x00",
+            "'\\x00' contains the control character '\\x00' — anchors are plain text",
+        ),
+        (
+            "a.py::\t42",
+            "'a.py::\\t42' contains the control character '\\t' — anchors are plain text",
+        ),
     ],
 )
 def test_refused_spellings_name_their_violated_clause(anchor, message):
@@ -219,9 +244,11 @@ def test_a_refusal_reads_as_one_sentence_after_the_callers_prefix(anchor):
 # ── the properties: total over any str, and the admitted set is colon-safe ────
 
 _ANCHOR_CHARS = "::.a/S0_ ü"  # colons, a dot, a slash, digits, space, non-ascii
+_CONTROL_CHARS = "".join(chr(c) for c in range(0x20)) + "\x7f"
 
 anchors = st.one_of(
     st.text(alphabet=_ANCHOR_CHARS, max_size=12),
+    st.text(alphabet=_ANCHOR_CHARS + _CONTROL_CHARS, max_size=12),
     st.text(max_size=40),
 )
 
@@ -243,13 +270,46 @@ def test_both_functions_are_total_and_the_admitted_set_is_joinable(anchor: str) 
     assert anchor.endswith(probe_symbol)
 
     error = anchor_grammar_error(anchor)  # never raises
+    control = set(anchor) & set(_CONTROL_CHARS)
     if error is None:
         assert ":" not in anchor or SYMBOL_SEP in anchor
         assert path, "an admitted anchor always has a path component"
+        assert not control, "a control character reached the store"
         if SYMBOL_SEP in anchor:
             assert symbol and not symbol.isdecimal()
     else:
         assert isinstance(error, str) and error
+        if control:
+            assert "control character" in error, error
+
+
+@settings(max_examples=300, deadline=None)
+@given(
+    head=st.text(alphabet=_ANCHOR_CHARS, max_size=8),
+    bad=st.sampled_from(_CONTROL_CHARS),
+    tail=st.text(alphabet=_ANCHOR_CHARS, max_size=8),
+)
+def test_any_string_carrying_a_control_character_is_refused(
+    head: str, bad: str, tail: str
+) -> None:
+    """The clause is a character-class rule, not a table: EVERY string containing one
+    is refused, whatever else it spells, and the message names the character so the
+    writer can find it in a string whose damage is invisible."""
+    anchor = head + bad + tail
+    error = anchor_grammar_error(anchor)
+    assert error is not None, f"{anchor!r} admitted a control character"
+    assert "control character" in error
+    assert repr(bad).strip("'\"") in error, error
+
+
+@pytest.mark.parametrize("anchor", ["a.py\x00::f", "a.py:greet", "a.py::42"])
+def test_the_read_side_still_tokenizes_what_the_gate_refuses(anchor):
+    """MINT-CURRENT, READ-HISTORICAL: the refusal is one-sided. A stored row keeps
+    tokenizing exactly as it did, so no already-stored population changes verdict
+    because a new mint clause landed (BUG-083's rule, restated for clause 0)."""
+    assert anchor_grammar_error(anchor) is not None
+    assert probe_target(anchor) == probe_target(anchor)  # total, never raises
+    assert split_anchor(anchor)[0]
 
 
 # ── the cross-copy tripwires ──────────────────────────────────────────────────

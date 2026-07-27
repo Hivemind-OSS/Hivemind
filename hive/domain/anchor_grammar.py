@@ -18,11 +18,11 @@ The grammar, stated once::
     path::Symbol         symbol-scoped      (partition on the FIRST '::')
     path::Ns::Cls.m      symbol-scoped      (nested '::' belongs to the SYMBOL)
 
-and the four refusals ``anchor_grammar_error`` names: an empty path component, a
-``":"`` with no ``"::"`` (the dead spelling — lexically ambiguous, and a
-colon-bearing path is indistinguishable from it), a ``"::"`` naming no symbol, and
-a ``"::"`` whose symbol is a bare line number. Colon-free prose still admits: an
-anchor need not be code.
+and the five refusals ``anchor_grammar_error`` names: a control character anywhere in
+the string, an empty path component, a ``":"`` with no ``"::"`` (the dead spelling —
+lexically ambiguous, and a colon-bearing path is indistinguishable from it), a ``"::"``
+naming no symbol, and a ``"::"`` whose symbol is a bare line number. Colon-free prose
+still admits: an anchor need not be code.
 
 MINT-CURRENT, READ-HISTORICAL (the meta-envelope posture, THEORY §5). The two halves
 live HERE, adjacent, because they forked once before when they lived in different
@@ -49,6 +49,11 @@ from __future__ import annotations
 
 #: The symbol separator. A single ``":"`` is NOT it — that is the whole bug.
 SYMBOL_SEP = "::"
+
+#: The character class no anchor may contain. C0 plus DEL: none of them can name a
+#: path or a symbol, and every one of them is hostile to the tools that must ask git
+#: about the stored string. MINT-side only — the read side never re-checks it.
+_CONTROL = frozenset(chr(c) for c in range(0x20)) | {"\x7f"}
 
 
 def split_anchor(anchor: str) -> tuple[str, str]:
@@ -104,6 +109,13 @@ def anchor_grammar_error(anchor: str) -> str | None:
     The clauses, in order — each closes a spelling that is dead in the census join,
     unresolvable in the drift engine, or a redundant form of one that already works:
 
+    0. a control character anywhere in the string. It runs FIRST so a control byte is
+       named as itself rather than mis-described by whichever later clause its
+       presence happens to trip. Unlike the others this one is not about the census
+       join: the stored string is handed to git as an argv element, and a NUL there
+       raises before any probe can answer — a whole repo's drift leg, from one row.
+       MINT-side only: ``probe_target`` and ``split_anchor`` stay READ-HISTORICAL and
+       are untouched, so an already-stored anchor still tokenizes exactly as before;
     1. no path component at all;
     2. a ``":"`` with no ``"::"`` — the dead spelling. The guard is deliberately
        ``"::" not in anchor``, not "the path holds no colon": once an explicit
@@ -122,6 +134,12 @@ def anchor_grammar_error(anchor: str) -> str | None:
     Symbol shape is deliberately NOT constrained beyond the bare-number case: an
     identifier regex would false-refuse exotic-language spellings the census
     legitimately emits, and only the bare-number shape is evidence-backed as dead."""
+    # marker: deleting this clause reds tests/contract/test_minimal_hardening_e2e.py::
+    # test_a_control_character_anchor_is_refused_at_write — a control character reaches
+    # git argv and raises before any probe can answer, which is a whole repo leg.
+    bad = next((c for c in anchor if c in _CONTROL), "")
+    if bad:
+        return f"{anchor!r} contains the control character {bad!r} — anchors are plain text"
     path, symbol = split_anchor(anchor)
     if not path:
         return "has an empty path component"

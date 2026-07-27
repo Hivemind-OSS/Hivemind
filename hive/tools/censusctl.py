@@ -3,8 +3,8 @@
 `python -m hive.tools.censusctl ingest <receipt.json|->` decodes an unsigned census
 DSSE-shaped receipt, derives the SHA-bound change outcome server-side, joins the receipt's touched
 ``path::Symbol`` subjects against episode anchors, and appends one ``change_outcome``
-evidence row per matched episode — plus, pre-merge under a full version stamp, the
-mechanical ``outcome_verified_*`` / ``verify_*`` rider rows and the advisory
+evidence row per matched episode — plus, under a full version stamp, the mechanical
+``outcome_verified_*`` rider rows and the advisory
 ``stale_suspect`` rows for the receipt's optional propagation block — in ONE
 transaction, idempotent, trust-untouched. The `hive ingest` operator verb execs this in-container
 and pipes the receipt over stdin (no host path leaks into the container).
@@ -19,7 +19,7 @@ unit-testable without a real DB file.
 
 STDOUT carries exactly ONE machine-readable JSON report line
 (inserted/already_recorded/matched/range_skipped/skipped_lines + the verified_helped/
-verified_hurt/verify_current/verify_stale/stale_suspects rider counters); human
+verified_hurt/stale_suspects rider counters); human
 notes go to STDERR. The store doubles as the durable range ledger (``ranges=store``):
 a receipt whose exact (repo, base, head, phase) range already ingested is skipped
 whole — ``range_skipped`` true, zero rows, still exit 0.
@@ -170,8 +170,6 @@ def main(
                 "stale_suspects": report.stale_suspects,
                 "verified_helped": report.verified_helped,
                 "verified_hurt": report.verified_hurt,
-                "verify_current": report.verify_current,
-                "verify_stale": report.verify_stale,
             },
             sort_keys=True,
             separators=(",", ":"),
@@ -185,9 +183,7 @@ def main(
         f"skipped_lines={report.skipped_lines} "
         f"stale_suspects={report.stale_suspects} "
         f"verified_helped={report.verified_helped} "
-        f"verified_hurt={report.verified_hurt} "
-        f"verify_current={report.verify_current} "
-        f"verify_stale={report.verify_stale}",
+        f"verified_hurt={report.verified_hurt}",
         file=sys.stderr,
     )
     return EX_OK

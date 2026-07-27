@@ -12,16 +12,10 @@ import pytest
 
 from hive.adapters.sqlite_db import connect
 from hive.adapters.store_sqlite import SqliteEpisodeStore
-from hive.domain.change_evidence import (
-    SubjectEvidence,
-    TouchedSubject,
-    render_verify_payload,
-)
 from hive.domain.evidence_kinds import (
     EK_CHANGE_OUTCOME,
     EK_OUTCOME_HURT,
     EK_OUTCOME_VERIFIED_HURT,
-    EK_VERIFY_STALE,
 )
 from hive.domain.ports import AnchoredEpisodeReader, ChangeEvidenceAppender
 
@@ -158,46 +152,29 @@ def test_anchored_episodes_includes_all_trust_states():
 def test_evidence_rows_for_filters_to_the_named_kinds_in_order():
     s = _store()
     eid = _approved(s, "gated target", anchors=[("r", "a.py::f")])
-    s.insert_audit(eid, EK_VERIFY_STALE, "census", 30, "{}")
+    s.insert_audit(eid, EK_OUTCOME_VERIFIED_HURT, "census", 30, "{}")
     s.insert_audit(eid, EK_OUTCOME_HURT, "agent-B", 10, "{}")
     s.insert_audit(eid, EK_CHANGE_OUTCOME, "census", 20, "{}")  # foreign kind
-    rows = s.evidence_rows_for(eid, [EK_OUTCOME_HURT, EK_VERIFY_STALE])
+    rows = s.evidence_rows_for(eid, [EK_OUTCOME_HURT, EK_OUTCOME_VERIFIED_HURT])
     assert rows == [
-        (EK_VERIFY_STALE, "census", 30, ""),  # ref-less payload ⇒ line unknown
-        (EK_OUTCOME_HURT, "agent-B", 10, ""),  # a hurt kind stamps no ref, ever
+        (EK_OUTCOME_VERIFIED_HURT, "census", 30),
+        (EK_OUTCOME_HURT, "agent-B", 10),
     ]  # insertion order, kinds only
-    # the 4-tuple shape is exactly what retirement_evidence's duck-typed feed takes
-    kind, actor, ts, ref = rows[0]
+    # the 3-tuple shape is exactly what retirement_evidence's duck-typed feed takes
+    kind, actor, ts = rows[0]
     assert isinstance(kind, str) and isinstance(actor, str) and isinstance(ts, int)
-    assert isinstance(ref, str)
 
 
-def test_evidence_rows_for_projects_the_measured_line_from_the_payload():
-    # the store hands the gate a TYPED line, not a raw body: the grammar's one
-    # owner is change_evidence.verify_payload_ref, beside the render that writes
-    # it, so the pure gate never parses JSON.
+def test_evidence_rows_for_never_projects_a_payload():
+    """The gate is decided by kind, actor and recency alone, so the feed carries no
+    payload projection at all — there is no second grammar parser between the
+    ledger and the pure gate, and an unparseable body cannot break the read."""
     s = _store()
-    eid = _approved(s, "branch memory", anchors=[("r", "a.py::f")])
-    stamp = {"head_sha": "b" * 40}
-    on_feature = render_verify_payload(
-        TouchedSubject(path="a.py", symbol="f"),
-        SubjectEvidence(exists_after=True, drift="signature_changed"),
-        stamp,
-        "feature",
-    )
-    on_canonical = render_verify_payload(
-        TouchedSubject(path="a.py", symbol="f"),
-        SubjectEvidence(exists_after=True, drift="signature_changed"),
-        stamp,
-    )  # no ref ⇒ legacy bytes, unchanged
-    s.insert_audit(eid, EK_VERIFY_STALE, "census", 10, on_feature)
-    s.insert_audit(eid, EK_VERIFY_STALE, "census", 20, on_canonical)
-    s.insert_audit(eid, EK_VERIFY_STALE, "census", 30, "not json at all")
-    assert [ref for _k, _a, _t, ref in s.evidence_rows_for(eid, [EK_VERIFY_STALE])] == [
-        "feature",
-        "",  # a row that stamps no ref reads as an unknown line
-        "",  # an unparseable body reads as an unknown line, never raises
-    ]
+    eid = _approved(s, "gated target", anchors=[("r", "a.py::f")])
+    s.insert_audit(eid, EK_OUTCOME_HURT, "agent-B", 10, "not json at all")
+    rows = s.evidence_rows_for(eid, [EK_OUTCOME_HURT])
+    assert rows == [(EK_OUTCOME_HURT, "agent-B", 10)]
+    assert all(len(r) == 3 for r in rows)
 
 
 def test_evidence_rows_for_empty_kinds_reads_empty():

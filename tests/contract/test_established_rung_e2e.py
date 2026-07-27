@@ -113,8 +113,9 @@ def test_a_real_canonical_ingest_establishes_a_dont_memory(rig):
     served = call(server, "hive_recall", {"query": DONT}, agent="agent-z")
     hit = next(h for h in served["reference_context"] if h["episode_id"] == eid)
     assert hit["trust"] == "established", hit
-    # and the same ingest recorded the anchor as stale on the ledger
-    assert "verify_stale" in kinds, kinds
+    # and the staleness of the anchor rides the ONE oracle, never a second ledger row
+    assert not any(k.startswith("verify_") for k in kinds), kinds
+    assert hit["drift"]["type"] in ("anchor_changed", "anchor_missing"), hit["drift"]
 
 
 def test_opting_out_makes_the_rung_unreachable(tmp_path):

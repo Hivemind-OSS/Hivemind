@@ -17,7 +17,7 @@ import pytest
 
 from hive.adapters.sqlite_db import connect
 from hive.adapters.store_sqlite import SqliteEpisodeStore
-from hive.domain.evidence_kinds import EK_CHANGE_OUTCOME, EK_VERIFY_STALE
+from hive.domain.evidence_kinds import EK_CHANGE_OUTCOME
 from hive.tools import censusctl
 
 _DATA = pathlib.Path(__file__).resolve().parents[1] / "data"
@@ -116,13 +116,13 @@ def test_stdin_dash_and_file_input_are_equivalent():
 
     assert rc_f == rc_s == censusctl.EX_OK
     assert json.loads(out_f) == json.loads(out_s)  # identical machine report
-    assert len(_rows(cf_file.conn)) == len(_rows(cf_stdin.conn)) == 2
+    assert len(_rows(cf_file.conn)) == len(_rows(cf_stdin.conn)) == 1
 
 
 # ── the REAL signed receipt against a seeded real store (offline D7 half) ─────
 
 
-def test_real_receipt_lands_change_outcome_and_verify_rows_with_the_receipt_shas():
+def test_real_receipt_lands_its_change_outcome_row_with_the_receipt_shas():
     cf = RecordingConnect()
     eid = _seed_anchored(cf.conn, "LanguageConfig gotcha", REAL_ANCHOR)
     _seed_anchored(cf.conn, "unrelated memory", "other/place.py::Elsewhere")
@@ -130,7 +130,7 @@ def test_real_receipt_lands_change_outcome_and_verify_rows_with_the_receipt_shas
     assert rc == censusctl.EX_OK
 
     rows = _rows(cf.conn)
-    assert len(rows) == 2  # one matched episode, two kinds
+    assert len(rows) == 1  # one matched episode, one kind
     row = rows[0]
     assert row["episode_id"] == eid
     assert row["kind"] == EK_CHANGE_OUTCOME and row["actor"] == "census"
@@ -152,25 +152,15 @@ def test_real_receipt_lands_change_outcome_and_verify_rows_with_the_receipt_shas
     assert body["phase"] == "pre_merge"
     assert body["verdict"] == "fail" and body["tag"] == "bounded-estimate"
 
-    # the Flow A rider on the real receipt: LanguageConfig was REMOVED at head
-    # (existence exists_after=false, contract drift=removed) ⇒ one verify_stale row,
-    # SHA-and-version-stamped from the receipt's combdrift + matrix.head blocks…
-    verify = rows[1]
-    assert verify["episode_id"] == eid and verify["kind"] == EK_VERIFY_STALE
-    vbody = json.loads(verify["payload"])
-    assert vbody["schema"] == "verify/v1"
-    assert (vbody["exists_after"], vbody["drift"]) == (False, "removed")
-    assert vbody["stamp"]["head_sha"] == prov["head_sha"]
-    assert (
-        vbody["stamp"]["matrix_head"]["graph_sha256"]
-        == prov["matrix"]["head"]["graph_sha256"]
-    )
-    # …and ZERO verified rows: the tests line is not_run and the regression reach is
-    # empty — the honest abstention (only a DECIDED failing run with reach backwrites).
+    # ZERO rider rows: LanguageConfig was REMOVED at head, but the tests line is
+    # not_run and the regression reach is empty — the honest abstention (only a
+    # DECIDED failing run with reach backwrites) — and there is no verification
+    # channel any more: whether the anchor moved is git's answer, not the receipt's.
+    assert len(rows) == 1, rows
     report = json.loads(out)
-    assert report["matched"] == 1 and len(report["inserted"]) == 2
+    assert report["matched"] == 1 and len(report["inserted"]) == 1
     assert (report["verified_helped"], report["verified_hurt"]) == (0, 0)
-    assert (report["verify_current"], report["verify_stale"]) == (0, 1)
+    assert not any(k.startswith("verify_") for k in report), report
 
 
 SINGLEROOT_RECEIPT = _DATA / "receipt.singleroot.json"
@@ -194,7 +184,7 @@ def test_single_source_root_receipt_joins_a_repo_relative_anchor():
     report = json.loads(out)
     assert report["matched"] == 1, report  # the repo-relative subject joined
     rows = _rows(cf.conn)
-    assert [r["episode_id"] for r in rows] == [eid, eid]
+    assert [r["episode_id"] for r in rows] == [eid]
     outcome = json.loads(rows[0]["payload"])
     assert rows[0]["kind"] == EK_CHANGE_OUTCOME
     assert outcome["matched"] == {
@@ -202,10 +192,9 @@ def test_single_source_root_receipt_joins_a_repo_relative_anchor():
         "symbol": "fn",
         "level": "symbol",
     }
-    # fn was NARROWED at head (drift=breaking, still exists) ⇒ one verify_stale row.
-    assert rows[1]["kind"] == EK_VERIFY_STALE
-    vbody = json.loads(rows[1]["payload"])
-    assert (vbody["exists_after"], vbody["drift"]) == (True, "breaking")
+    # fn was NARROWED at head (drift=breaking, still exists) — the join lands the
+    # change_outcome row and nothing else: the receipt no longer answers staleness.
+    assert [r["kind"] for r in rows] == [EK_CHANGE_OUTCOME]
 
 
 def test_reingest_of_the_same_receipt_is_idempotent():
@@ -219,9 +208,9 @@ def test_reingest_of_the_same_receipt_is_idempotent():
     cf.conn.execute("DELETE FROM ingested_ranges")  # simulate a pre-ledger store
     rc2, out2, _ = _run(["ingest", str(REAL_RECEIPT)], connect_fn=cf)
     assert rc1 == rc2 == censusctl.EX_OK
-    assert len(_rows(cf.conn)) == 2  # still the same two rows
+    assert len(_rows(cf.conn)) == 1  # still the same single row
     report = json.loads(out2)
-    assert report["already_recorded"] == 2 and report["inserted"] == []
+    assert report["already_recorded"] == 1 and report["inserted"] == []
     assert report["range_skipped"] is False  # content dedupe absorbed, not the ledger
     assert (
         cf.conn.execute("SELECT COUNT(*) AS c FROM ingested_ranges").fetchone()["c"]
@@ -246,7 +235,7 @@ def test_range_dedupe_skips():
     report = json.loads(out2)
     assert report["range_skipped"] is True
     assert report["inserted"] == [] and report["matched"] == 0
-    assert len(_rows(cf.conn)) == 2  # nothing new landed
+    assert len(_rows(cf.conn)) == 1  # nothing new landed
     ledger = cf.conn.execute("SELECT repo, phase FROM ingested_ranges").fetchall()
     assert [(r["repo"], r["phase"]) for r in ledger] == [("", "pre_merge")]
 
@@ -494,8 +483,6 @@ def test_report_golden_one_json_line_on_stdout():
         "skipped_lines",
         "verified_helped",
         "verified_hurt",
-        "verify_current",
-        "verify_stale",
         "stale_suspects",
     }
     assert lines[0] == json.dumps(
@@ -508,8 +495,6 @@ def test_report_golden_one_json_line_on_stdout():
             "stale_suspects": 0,
             "verified_helped": 0,
             "verified_hurt": 0,
-            "verify_current": 0,
-            "verify_stale": 1,
         },
         sort_keys=True,
         separators=(",", ":"),

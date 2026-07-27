@@ -2,6 +2,71 @@
 
 All notable changes to this project are documented here.
 
+## Removed
+- **A near-duplicate no longer authorizes destroying a memory.** The retirement gate's
+  conflict-pair feed is gone — `_gate_conflict_pairs` at the boundary, the `conflict_pairs`
+  parameter on `retirement_evidence`, its `_involves` helper and the `contradiction` signal.
+  Filtering the feed by relation would not have closed the hole: `polarity` is supplied by the
+  caller at write time, so an attacker earned a mechanically-detected "contradiction" by writing
+  an opposing paraphrase. Near-duplication is the expected steady state of a fleet store, so the
+  feed opened `hive_prune` on most of the corpus to any caller, including one with no prior
+  relationship to the target. The retire-and-replace flow is untouched: `hive_supersede` /
+  `hive_write(replaces=)` still qualify on a near-dup WINNER, which is measured between the loser
+  and the successor the caller names. Conflict DETECTION is untouched too — the recall `conflicts`
+  carrier and `hive_health(include_conflicts=true)` still surface pairs as guidance to call
+  `hive_supersede`. The qualifying set is now four signals: anchor drift, server-verified hurt,
+  other-identity hurt, and the supersede winner. An UNANCHORED memory therefore now needs a second
+  identity's hurt evidence to be retired at all.
+- **The census anchor-verification channel is retired; git is the one staleness oracle.** A
+  served hit used to carry `drift` (git) and `last_verified` (a combdrift-derived census rider)
+  simultaneously, and after staleness moved to git the two measured different things and could
+  disagree in either direction. Rather than reconcile them — two channels that always agree are
+  one fact spelled twice, with two producers and two grammars to keep in sync forever — the second
+  one is deleted end to end: `classify_verify`, `render_verify_payload`, `verify_payload_ref` and
+  the `verify/v1` payload schema; the `verify_current` / `verify_stale` evidence kinds and their
+  `censusctl` counters; the `LastVerificationReader` port and the store's `last_verification`
+  read; the `last_verified` wire key; and retirement clause 1b with its `own_lines` feed and
+  `EvidenceRow.ref` field. The retirement gate's ledger feed is a 3-tuple that parses no payload.
+  **Historical `verify_*` rows stay in `evidence_events`** — honest, append-only history, read by
+  nothing and migrated by nothing. A memory anchored into a deregistered repo now reads
+  `unverifiable` and exits via the provisional TTL rather than being retirable by a hand-ingested
+  receipt for a repo the fleet no longer observes.
+
+## Changed
+- **The served set is the `tau_serve` prefix, so `recall_top_n` is a cap and not a target.**
+  The relevance floor was only ever a call-level decision: one candidate clearing it un-suppressed
+  the whole call and up to `recall_top_n` hits then rode along unfiltered — measured against the
+  real embedder, 8 of 60 served hits cleared the floor and hits rode as low as cos 0.35. The
+  shortlist is now filtered at `gate.tau_serve` (read by identity off the gate the pipeline
+  already holds — no new knob, no second copy), BEFORE resolve and therefore before selection and
+  before the exposure write, so a row the floor rejects is never surfaced and never has its
+  liveness refreshed by the read that rejected it. A recall that returned ten hits will typically
+  return one to three. The abstain decision is unchanged, and an empty post-filter set routes
+  through the existing empty-envelope path rather than becoming a confident-with-zero-hits state.
+- **A control character in an anchor is refused at the write boundary.** `anchor_grammar_error`
+  gains a fifth clause, positioned first so the offending character is named as itself rather than
+  mis-described by whichever later clause it trips. A NUL in a stored anchor reached git's argv
+  and raised before any probe could answer, which failed the repo's whole drift leg on every tick
+  thereafter and froze every other anchor's cached verdict at its last value — a false `fresh`
+  that outlived the code it described. The refusal is mint-side only; already-stored anchors still
+  tokenize exactly as before.
+- **One unprobeable binding can no longer fault a repo's drift leg.** The symbol prober guards
+  each binding individually, so a stored anchor git cannot even be HANDED is treated as the same
+  case as one git cannot answer: the row stays unprobed, materializes no verdict (reading
+  `unverifiable`, the honest unknown), and every other binding in that repo still earns its
+  verdict while the tick's prunes still run. This is what the prober's own docstring already
+  promised and the code did not implement for a fault raised before the subprocess started.
+- **The stale-remediation rider is keyed to the one oracle.** `REMEDIATION_NOTICE` now rides a hit
+  whose routed `drift.type` is in `QUALIFYING_DRIFT` instead of a census `state == "stale"` stamp,
+  so it reaches every git-detected stale hit rather than a minority of them and can never
+  contradict the `drift` key on the same hit. The rule that a memory is never reported stale on a
+  line it never claimed is now structural rather than hand-maintained: an off-line stale-tier
+  verdict is routed to the advisory `branch_scoped`, which `QUALIFYING_DRIFT` deliberately
+  excludes.
+- The served contract, both retirement tool descriptions and the remediation notice no longer
+  advertise a mechanical contradiction as a qualifying signal — advertised and enforced move in
+  the same change.
+
 ## Changed
 - **Staleness is now answered by git, not by a fingerprint.** A memory's code binding is stamped
   with the commit it was written against (the repo's sync watermark — a dict read, so the write

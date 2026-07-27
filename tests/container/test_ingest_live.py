@@ -231,16 +231,17 @@ def test_d7_gate_real_receipt_real_row_o7_idempotent_byte_inert(stack):
     assert ing.returncode == 0, f"hive ingest failed:\n{ing.stderr[-3000:]}"
     report = json.loads(ing.stdout.strip().splitlines()[-1])
     print(f"D7-EVIDENCE ingest-report: {json.dumps(report, sort_keys=True)}")
-    # one matched episode ⇒ two rows: change_outcome + the verify_stale rider
-    # (LanguageConfig was removed at head); ZERO verified rows — the receipt's tests
-    # line is not_run and its regression reach is empty (the honest abstention).
-    assert report["matched"] == 1 and len(report["inserted"]) == 2, report
+    # one matched episode => ONE row: change_outcome. ZERO verified rows — the
+    # receipt's tests line is not_run and its regression reach is empty (the honest
+    # abstention) — and zero verification rows: that channel is retired, git alone
+    # answers whether the anchor moved.
+    assert report["matched"] == 1 and len(report["inserted"]) == 1, report
     assert (report["verified_helped"], report["verified_hurt"]) == (0, 0), report
-    assert (report["verify_current"], report["verify_stale"]) == (0, 1), report
+    assert not any(k.startswith("verify_") for k in report), report
 
-    # 4. exactly the two REAL rows, in the SAME store the daemon serves, SHA-bound
+    # 4. exactly the ONE REAL row, in the SAME store the daemon serves, SHA-bound
     rows = _evidence_rows(env)
-    assert len(rows) == 2, rows
+    assert len(rows) == 1, rows
     row = rows[0]
     print(f"D7-EVIDENCE evidence-row: {json.dumps(row, sort_keys=True)}")
     assert row["episode_id"] == eid and row["actor"] == "census"
@@ -249,13 +250,6 @@ def test_d7_gate_real_receipt_real_row_o7_idempotent_byte_inert(stack):
     assert body["head_sha"] == prov["head_sha"]
     assert body["receipt_sha256"] == statement["subject"][0]["digest"]["sha256"]
     assert body["matched"]["symbol"] == "LanguageConfig"
-    verify_row = rows[1]
-    print(f"D7-EVIDENCE verify-row: {json.dumps(verify_row, sort_keys=True)}")
-    assert verify_row["episode_id"] == eid and verify_row["kind"] == "verify_stale"
-    vbody = json.loads(verify_row["payload"])
-    assert (vbody["exists_after"], vbody["drift"]) == (False, "removed")
-    assert vbody["stamp"]["head_sha"] == prov["head_sha"]
-
     # 5. O7 live: the feed mutated NO trust — the seeded row stays exactly as seeded
     health_after = _mcp(port, "hive_health", {})
     assert health_after["trust_counts"] == health_before["trust_counts"]

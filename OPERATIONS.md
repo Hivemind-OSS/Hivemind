@@ -86,7 +86,7 @@ in the model the good→stale path is the single largest degradation. Establishe
   the blast radius of a breaking change; `hive_supersede` / `hive_write(replaces=<id>)` /
   `hive_prune` retire — machine-gated, so the server retires only a target it can qualify
   with a verified signal (anchor drift, hurt evidence from another identity or a verified
-  outcome, mechanical contradiction).
+  outcome, or a near-dup winner naming the successor — supersede only).
 - **Operate:** treat an old `ts` on an established hit as a staleness suspect, not a
   guarantee. Sweep the stale-suspect and conflict worklists on a fixed cadence and resolve
   them into retirement calls — an unqualified call is a benign no-op, so calling is safe;

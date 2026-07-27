@@ -122,7 +122,9 @@ def test_force_push_discontinuity_is_per_repo(sync_store, tmp_path):
     assert meta_value(sync_store, "sync:beta:last_tip") == beta_tip0
 
 
-def test_riders_land_from_canonical_post_merge_ingest(sync_store, tmp_path):
+def test_the_canonical_post_merge_ingest_lands_one_staleness_answer(
+    sync_store, tmp_path
+):
     a, _b = (Origin(tmp_path / "remote-a"), None)
     register_repo(sync_store, "alpha", a.url, canonical_ref="main")
     eid = seed_scoped_episode(
@@ -148,15 +150,19 @@ def test_riders_land_from_canonical_post_merge_ingest(sync_store, tmp_path):
     # §6.2.5 canary rule preserved: no canary/randomized signal ⇒ never machine-checked
     assert body.get("tag") != "machine-checked"
 
-    stale = [r for r in _evidence(sync_store, "verify_stale") if r["episode_id"] == eid]
-    assert stale, (
-        "the verify rider now lands from the canonical POST_MERGE ingest "
-        "(the phase=='pre_merge' rider gate is the named mutation)"
+    # the rider gate is the STAMP, not the phase: the canonical post_merge ingest
+    # carries a full version stamp, so the payload it renders is stamp-bound.
+    assert (body.get("stamp") or {}).get("head_sha") or body.get("head_sha"), (
+        f"the canonical post_merge ingest must be SHA-bound: {body}"
     )
-    rider = json.loads(stale[-1]["payload"])
-    assert (rider.get("stamp") or {}).get("head_sha"), (
-        f"riders land only under a FULL version stamp: {rider}"
-    )
+    # and it writes exactly ONE staleness answer — none. Git owns that question now;
+    # a census row claiming it would be the second oracle this removal deleted.
+    kinds = {
+        r["kind"]
+        for r in sync_store.conn.execute("SELECT DISTINCT kind FROM evidence_events")
+    }
+    assert kinds, "precondition: the ingest wrote evidence at all"
+    assert not any(k.startswith("verify_") for k in kinds), kinds
 
 
 def test_cross_repo_join_is_exact(sync_store, tmp_path):

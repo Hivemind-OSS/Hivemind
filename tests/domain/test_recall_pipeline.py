@@ -234,9 +234,11 @@ def test_confident_hit_carries_kind_repos_and_anchors():
         kind="bug",
         anchors=[("alpha", "hive/domain/recall.py::RecallPipeline")],
     )
-    reader.add(2, "distractor a", weight=1.0)  # no labels ⇒ under-claims
+    # a SECOND servable row, unlabelled — it must also clear the serve floor, since
+    # a sub-tau row never reaches the envelope to carry its defaults there
+    reader.add(2, "sibling a", weight=1.0, value=_axis_vec(0.75, 2))
     index.add(1, _e(0))
-    index.add(2, _cos_vec(0.1))
+    index.add(2, _axis_vec(0.75, 2))
     index.add(3, _cos_vec(0.05))
     reader.add(3, "distractor b", weight=1.0)
     r = _pipe(index=index, reader=reader, query_vec=_e(0)).recall("q", agent_id="A")
@@ -346,8 +348,16 @@ def test_trace_id_emitted_and_unique():
 
 # ── top_n is hits-length only, never the abstain decision ─────────────────────
 def test_recall_top_n_size_only():
-    r1 = _confident_setup(top_n=1).recall("q", agent_id="A")
-    r5 = _confident_setup(top_n=5).recall("q", agent_id="A")
+    def field(top_n):
+        index, reader = FakeIndex(), FakeEpisodeReader()
+        for i in range(3):
+            index.add(i + 1, _axis_vec(0.75, 2 + i))
+            reader.add(i + 1, f"servable {i}", weight=1.0, value=_axis_vec(0.75, 2 + i))
+        return _pipe(
+            index=index, reader=reader, query_vec=_e(0), recall_top_n=top_n
+        ).recall("q", agent_id="A")
+
+    r1, r5 = field(1), field(5)
     assert r1.state == CONFIDENT and r5.state == CONFIDENT  # same gate decision
     assert len(r1.hits) == 1 and len(r5.hits) == 3  # only hits length changes
     assert r1.top_cos == pytest.approx(r5.top_cos)
@@ -934,3 +944,60 @@ def test_scoped_reader_fakes_satisfy_the_ports():
     assert isinstance(FakeScopedReader(), RepoScopeReader)
     assert isinstance(FakeScopedReader(), ScopedEpisodeReader)
     assert not isinstance(FakeEpisodeReader(), ScopedEpisodeReader)
+
+
+# ── the floor is a per-hit filter as well as a call-level decision ────────────
+def _tau_field(*, relevant: int, weak: int, cos: float = 0.75, top_n: int = 10):
+    """A field of ``relevant`` rows each at cosine ``cos`` to the query on its OWN
+    residual axis (mutual cosine cos^2 < dup_tau, so the MMR pass keeps them all)
+    plus ``weak`` rows the floor rejects."""
+    index, reader = FakeIndex(), FakeEpisodeReader()
+    eid = 0
+    for i in range(relevant):
+        eid += 1
+        index.add(eid, _axis_vec(cos, 2 + i))
+        reader.add(eid, f"relevant {i}", weight=1.0, value=_axis_vec(cos, 2 + i))
+    for j in range(weak):
+        eid += 1
+        index.add(eid, _cos_vec(0.10))
+        reader.add(eid, f"weak {j}", weight=1.0, value=_cos_vec(0.10))
+    return index, reader
+
+
+def test_only_rows_clearing_tau_serve_are_served():
+    """One relevant candidate un-suppresses the CALL; it must not also authorize
+    serving the sub-tau field behind it."""
+    index, reader = _tau_field(relevant=1, weak=20)
+    r = _pipe(index=index, reader=reader, query_vec=_e(0)).recall("q", agent_id="A")
+    assert r.state == CONFIDENT
+    assert [h.episode_id for h in r.hits] == [1]
+    assert all(h.sim >= 0.70 for h in r.hits)
+
+
+def test_recall_top_n_caps_a_field_that_all_clears_the_floor():
+    index, reader = _tau_field(relevant=12, weak=3)
+    r = _pipe(index=index, reader=reader, query_vec=_e(0), recall_top_n=10).recall(
+        "q", agent_id="A"
+    )
+    assert len(r.hits) == 10
+    assert all(h.sim >= 0.70 for h in r.hits)
+
+
+def test_a_sub_tau_row_is_never_exposed_belt_ordering():
+    """Belt-ordering: the filter sits BEFORE resolve, so a rejected row is never
+    resolved, never surfaced, and — critically — never liveness-refreshed."""
+    led = FakeLedger()
+    index, reader = _tau_field(relevant=1, weak=20)
+    _pipe(index=index, reader=reader, query_vec=_e(0), ledger=led).recall(
+        "q", agent_id="A"
+    )
+    exposed = {e for ex in led.exposures for e, _m in ex["items"]}
+    assert exposed == {1}
+
+
+def test_the_filter_never_touches_the_abstain_decision():
+    """A field with nothing above the floor abstains exactly as before — the filter
+    removes hits from a serve, it does not change WHETHER the call serves."""
+    index, reader = _tau_field(relevant=0, weak=20)
+    r = _pipe(index=index, reader=reader, query_vec=_e(0)).recall("q", agent_id="A")
+    assert r.state == ABSTAIN and r.hits == ()

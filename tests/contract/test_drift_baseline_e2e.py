@@ -174,8 +174,9 @@ def test_a_real_receipt_still_lands_its_verify_rows(rig):
         )
     }
     assert "change_outcome" in kinds, kinds
-    assert kinds & {"verify_current", "verify_stale"}, (
-        f"the census verify rows (clause 1b's feed) stopped landing: {kinds}"
+    assert not any(k.startswith("verify_") for k in kinds), (
+        f"the census verification channel is retired — git is the ONE staleness "
+        f"oracle, so no second one may start writing rows again: {kinds}"
     )
 
 

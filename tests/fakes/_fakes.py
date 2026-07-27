@@ -135,6 +135,74 @@ class FakeClusterProvider:
         return np.stack([self._vec(t) for t in rows], axis=0)
 
 
+class FakeAngleProvider:
+    """An ``EmbeddingProvider`` with CONTROLLED angles, for fields where several
+    DISTINCT memories must all clear the serve floor at once.
+
+    ``FakeClusterProvider`` can only make texts near-identical or near-orthogonal, so a
+    field it builds is either collapsed by the near-dup dedup or entirely below
+    ``tau_serve``. This one adds the middle band:
+
+      ``dir=<n>``      -> the unit direction ``e_n`` (a query direction)
+      ``near=<n>:<k>`` -> cosine ``cos`` to ``e_n``, residual on its OWN axis ``k``, so
+                          two ``near=<n>:*`` texts have mutual cosine ``cos**2`` —
+                          above a serve floor of 0.70 and below a near-dup floor of
+                          0.80 at the default 0.75
+      anything else    -> an orthogonal hash vector (its own singleton direction)
+
+    Also satisfies the warm contract (``loaded``/``load``/``name``)."""
+
+    name = "fake-angle"
+
+    def __init__(self, d: int = 64, cos: float = 0.75, loaded: bool = True) -> None:
+        self.d = int(d)
+        self.cos = float(cos)
+        self.loaded = bool(loaded)
+
+    def load(self) -> "FakeAngleProvider":
+        self.loaded = True
+        return self
+
+    def _hashvec(self, text: str) -> np.ndarray:
+        rng = np.random.default_rng(
+            int.from_bytes(hashlib.sha256(text.encode()).digest()[:8], "big")
+        )
+        v = rng.standard_normal(self.d).astype(np.float32)
+        n = float(np.linalg.norm(v))
+        return v / n if n else v
+
+    def _axis(self, i: int) -> int:
+        return int(i) % self.d
+
+    def _vec(self, text: str) -> np.ndarray:
+        import re
+
+        near = re.search(r"near=(\d+):(\d+)", text)
+        if near is not None:
+            base = self._axis(int(near.group(1)))
+            residual = self._axis(int(near.group(2)) + self.d // 2)
+            v = np.zeros(self.d, dtype=np.float64)
+            v[base] = self.cos
+            v[residual] = float(np.sqrt(max(0.0, 1.0 - self.cos**2)))
+        else:
+            direction = re.search(r"dir=(\d+)", text)
+            if direction is None:
+                return self._hashvec(text)
+            v = np.zeros(self.d, dtype=np.float64)
+            v[self._axis(int(direction.group(1)))] = 1.0
+        n = float(np.linalg.norm(v))
+        return (v / n).astype(np.float32)
+
+    def encode(self, text: str) -> np.ndarray:
+        return self._vec(text)
+
+    def encode_batch(self, texts: Sequence[str]) -> np.ndarray:
+        rows = list(texts)
+        if not rows:
+            return np.zeros((0, self.d), dtype=np.float32)
+        return np.stack([self._vec(t) for t in rows], axis=0)
+
+
 class FakeIndex:
     """Exhaustive cosine over an in-memory {eid: unit-vec}. Authoritative."""
 

@@ -323,7 +323,7 @@ class TestFetchDefensiveParse:
                 5,
                 "good with future enrichments",
                 meta={"combdrift/fp": "combdrift-fp/1:function(a)"},
-                last_verified={"ts": 1, "sha": "e" * 40, "state": "current"},
+                remediation="this memory's anchor no longer matches the code",
             ),
             _hit(
                 6,

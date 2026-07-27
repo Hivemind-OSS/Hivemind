@@ -150,6 +150,7 @@ def test_no_bare_engine_imports() -> None:
     forbids and imports no engine by construction. RED pre-move; green after the
     consumer rewrite (plan Step 3)."""
     offenders: list[str] = []
+    scanned = 0
     for rel in _tracked_files():
         if not rel.endswith(".py"):
             continue
@@ -157,10 +158,16 @@ def test_no_bare_engine_imports() -> None:
             continue
         if rel.startswith("tests/contract/"):
             continue
-        text = (REPO_ROOT / rel).read_text(encoding="utf-8", errors="replace")
+        try:
+            text = (REPO_ROOT / rel).read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            continue  # tracked but deleted in the working tree — carries no import
+        scanned += 1
         for lineno, line in enumerate(text.splitlines(), 1):
             if BARE_ENGINE_IMPORT.match(line):
                 offenders.append(f"{rel}:{lineno}: {line.strip()}")
+    # a scan that read nothing would pass while asserting nothing
+    assert scanned > 10, f"the import scan read almost no files ({scanned})"
     assert not offenders, (
         "bare engine imports must be rewritten to hive.matrix / hive.combdrift / "
         "hive.edge (D2); still present:\n" + "\n".join(offenders)

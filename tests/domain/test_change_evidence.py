@@ -28,7 +28,6 @@ from hive.domain.change_evidence import (
     SubjectEvidence,
     TouchedSubject,
     classify_verified,
-    classify_verify,
     decided_tests_state,
     derive_post_merge,
     derive_post_merge_tag,
@@ -46,8 +45,6 @@ from hive.domain.evidence_kinds import (
     EK_OUTCOME_VERIFIED_HELPED,
     EK_OUTCOME_VERIFIED_HURT,
     EK_STALE_SUSPECT,
-    EK_VERIFY_CURRENT,
-    EK_VERIFY_STALE,
 )
 
 BASE = "a" * 40
@@ -925,33 +922,7 @@ def test_classify_verified_truth_table(
     assert classify_verified(polarity, ev, tests_state) == expected
 
 
-# ── 4. classify_verify: current/stale/None per the drift/existence grid ────────
-
-
-@pytest.mark.parametrize(
-    "exists_after, drift, expected",
-    [
-        (True, "unchanged", EK_VERIFY_CURRENT),
-        (True, "additive", EK_VERIFY_CURRENT),
-        (True, "", EK_VERIFY_CURRENT),
-        (False, "", EK_VERIFY_STALE),
-        (False, "unchanged", EK_VERIFY_STALE),  # gone trumps drift
-        (True, "removed", EK_VERIFY_STALE),
-        (True, "breaking", EK_VERIFY_STALE),
-        (None, "breaking", EK_VERIFY_STALE),  # drift alone proves stale
-        (None, "", None),  # nothing proven: under-claim
-        (None, "unchanged", None),  # existence unknown
-        (True, "indeterminate", None),  # unknown drift: under-claim
-    ],
-)
-def test_verify_kind_truth_table(exists_after, drift, expected):
-    assert (
-        classify_verify(SubjectEvidence(drift=drift, exists_after=exists_after))
-        == expected
-    )
-
-
-# ── version_stamp: L7 — no stamp, no verified/verify row ───────────────────────
+# ── version_stamp: L7 — no stamp, no verified row ─────────────────────────────
 
 
 def test_version_stamp_extracts_the_full_version_binding():
@@ -1008,20 +979,16 @@ def _stamped_receipt(lines):
 def test_ingest_batch_is_atomic_and_idempotent_across_kinds():
     svc, appender = _service([(7, _ANCHOR, "dont")])
     report = svc.ingest(_stamped_receipt(_verified_lines()))
-    # ONE batch carrying change_outcome + verified + verify (never a second tx)
+    # ONE batch carrying change_outcome + verified (never a second tx)
     assert len(appender.batches) == 1
     kinds = [row[1] for row in appender.batches[0]]
-    assert kinds == [EK_CHANGE_OUTCOME, EK_OUTCOME_VERIFIED_HELPED, EK_VERIFY_STALE]
-    assert len(report.inserted) == 3 and report.already_recorded == 0
+    assert kinds == [EK_CHANGE_OUTCOME, EK_OUTCOME_VERIFIED_HELPED]
+    assert len(report.inserted) == 2 and report.already_recorded == 0
     assert (report.verified_helped, report.verified_hurt) == (1, 0)
-    assert (report.verify_current, report.verify_stale) == (0, 1)
     # re-ingest: content-keyed idempotency covers ALL kinds
     again = svc.ingest(_stamped_receipt(_verified_lines()))
-    assert again.inserted == () and again.already_recorded == 3
-    assert (again.verified_helped, again.verify_stale) == (
-        1,
-        1,
-    )  # rendered, not re-inserted
+    assert again.inserted == () and again.already_recorded == 2
+    assert again.verified_helped == 1  # rendered, not re-inserted
 
 
 def test_do_polarity_contradiction_writes_verified_hurt():
@@ -1030,8 +997,8 @@ def test_do_polarity_contradiction_writes_verified_hurt():
         _stamped_receipt(_verified_lines(drift="unchanged", exists_after=True))
     )
     kinds = [row[1] for row in appender.batches[0]]
-    assert kinds == [EK_CHANGE_OUTCOME, EK_OUTCOME_VERIFIED_HURT, EK_VERIFY_CURRENT]
-    assert report.verified_hurt == 1 and report.verify_current == 1
+    assert kinds == [EK_CHANGE_OUTCOME, EK_OUTCOME_VERIFIED_HURT]
+    assert report.verified_hurt == 1
 
 
 def test_verified_rows_require_full_version_stamp():
@@ -1043,26 +1010,21 @@ def test_verified_rows_require_full_version_stamp():
         report = svc.ingest(_receipt(_verified_lines(), provenance=prov))
         assert [row[1] for row in appender.batches[0]] == [EK_CHANGE_OUTCOME]
         assert report.matched == 1 and len(report.inserted) == 1
-        assert (
-            report.verified_helped,
-            report.verified_hurt,
-            report.verify_current,
-            report.verify_stale,
-        ) == (0, 0, 0, 0)
+        assert (report.verified_helped, report.verified_hurt) == (0, 0)
 
 
-def test_neutral_polarity_abstains_from_verified_but_still_verifies():
+def test_neutral_polarity_abstains_from_the_verified_rider():
     svc, appender = _service([(7, _ANCHOR)])  # neutral polarity
     report = svc.ingest(_stamped_receipt(_verified_lines()))
     kinds = [row[1] for row in appender.batches[0]]
-    assert kinds == [EK_CHANGE_OUTCOME, EK_VERIFY_STALE]  # no verified row
-    assert report.verified_helped == 0 and report.verify_stale == 1
+    assert kinds == [EK_CHANGE_OUTCOME]  # no verified row
+    assert report.verified_helped == 0
 
 
 def test_post_merge_stamped_ingest_writes_rider_rows():
-    # THE named-mutation twin (CT-9 rider): the verified/verify riders are gated
+    # THE named-mutation twin (CT-9 rider): the verified-outcome rider is gated
     # ONLY on the full version stamp — ANY phase; the canonical post_merge ingest
-    # is their normal carrier in v3. Restoring the old `phase == "pre_merge"`
+    # is its normal carrier in v3. Restoring the old `phase == "pre_merge"`
     # rider condition reds here.
     svc, appender = _service([(7, _ANCHOR, "dont")])
     report = svc.ingest(
@@ -1072,8 +1034,8 @@ def test_post_merge_stamped_ingest_writes_rider_rows():
         signal="canary",
     )
     kinds = [row[1] for row in appender.batches[0]]
-    assert kinds == [EK_CHANGE_OUTCOME, EK_OUTCOME_VERIFIED_HELPED, EK_VERIFY_STALE]
-    assert (report.verified_helped, report.verify_stale) == (1, 1)
+    assert kinds == [EK_CHANGE_OUTCOME, EK_OUTCOME_VERIFIED_HELPED]
+    assert report.verified_helped == 1
     # the decided failing tests line derived the outcome verdict
     assert json.loads(appender.batches[0][0][4])["verdict"] == "fail"
 
@@ -1086,12 +1048,7 @@ def test_stampless_post_merge_ingest_writes_no_riders():
         _receipt(_verified_lines()), phase="post_merge", verdict="fail", signal="canary"
     )
     assert [row[1] for row in appender.batches[0]] == [EK_CHANGE_OUTCOME]
-    assert (
-        report.verified_helped,
-        report.verified_hurt,
-        report.verify_current,
-        report.verify_stale,
-    ) == (0, 0, 0, 0)
+    assert (report.verified_helped, report.verified_hurt) == (0, 0)
 
 
 def test_change_outcome_row_shape_is_unchanged_by_the_extension():
@@ -1159,14 +1116,10 @@ def test_payloads_are_ids_enums_and_stamps_only():
         "level": "symbol",
     }
     assert verified["stamp"]["matrix_head"]["graph_sha256"] == "f" * 64
-    verify = json.loads(by_kind[EK_VERIFY_STALE])
-    assert set(verify) == {"schema", "matched", "exists_after", "drift", "stamp"}
-    assert verify["schema"] == "verify/v1"
-    assert (verify["exists_after"], verify["drift"]) == (False, "removed")
-    assert verify["stamp"]["head_sha"] == HEAD
+    assert not any(k.startswith("verify_") for k in by_kind), by_kind
     for payload in by_kind.values():  # Law 4: no receipt prose
         assert "REASONPROSE" not in payload
-    # byte-stable across calls (the idempotency key across all three kinds)
+    # byte-stable across calls (the idempotency key across both kinds)
     svc2, appender2 = _service([(7, _ANCHOR, "dont")])
     svc2.ingest(_stamped_receipt(lines))
     assert appender2.batches[0] == appender.batches[0]
@@ -1181,13 +1134,10 @@ def test_hurt_reason_is_contradicted():
 
 def test_report_counters_default_zero_and_are_additive():
     rep = IngestReport(inserted=(), already_recorded=0, matched=0, skipped_lines=0)
-    assert (
-        rep.verified_helped,
-        rep.verified_hurt,
-        rep.verify_current,
-        rep.verify_stale,
-    ) == (0, 0, 0, 0)
+    assert (rep.verified_helped, rep.verified_hurt) == (0, 0)
     assert rep.stale_suspects == 0
+    # the retired verification channel keeps no counter of its own
+    assert not any(f.startswith("verify_") for f in IngestReport.__dataclass_fields__)
 
 
 # ═══ T2: graph-propagated staleness — the propagation block → stale_suspect rows ═
@@ -1410,11 +1360,11 @@ def test_change_outcome_ref_defaults_empty_and_carries():
 
 def test_ingest_threads_ref_into_payloads():
     # A ref-stamped receipt: EVERY rendered payload — change_outcome AND the
-    # verified/verify riders — carries {"ref": "<the measured line>"}.
+    # verified-outcome rider — carries {"ref": "<the measured line>"}.
     svc, appender = _service([(7, _ANCHOR, "dont")])
     report = svc.ingest(_ref_stamped_receipt(_verified_lines()))
     kinds = [row[1] for row in appender.batches[0]]
-    assert kinds == [EK_CHANGE_OUTCOME, EK_OUTCOME_VERIFIED_HELPED, EK_VERIFY_STALE]
+    assert kinds == [EK_CHANGE_OUTCOME, EK_OUTCOME_VERIFIED_HELPED]
     assert report.matched == 1
     for row in appender.batches[0]:
         assert json.loads(row[4])["ref"] == "master", row[1]
@@ -1457,8 +1407,8 @@ def test_ingest_legacy_receipt_payloads_byte_identical():
 
 
 def test_legacy_stamped_receipt_rider_payloads_carry_no_ref_key():
-    # The verified/verify riders of a ref-LESS stamped receipt keep their exact pre-U3
-    # key sets (the conditional key is absent, never null) — dedup bytes unchanged.
+    # The verified-outcome rider of a ref-LESS stamped receipt keeps its exact pre-U3
+    # key set (the conditional key is absent, never null) — dedup bytes unchanged.
     svc, appender = _service([(7, _ANCHOR, "dont")])
     svc.ingest(_stamped_receipt(_verified_lines()))
     by_kind = {row[1]: json.loads(row[4]) for row in appender.batches[0]}
@@ -1470,13 +1420,6 @@ def test_legacy_stamped_receipt_rider_payloads_carry_no_ref_key():
         "tag",
         "matched",
         "reason",
-        "stamp",
-    }
-    assert set(by_kind[EK_VERIFY_STALE]) == {
-        "schema",
-        "matched",
-        "exists_after",
-        "drift",
         "stamp",
     }
 
@@ -1548,8 +1491,8 @@ def test_service_cross_repo_anchor_rows_never_receive_evidence():
 
 
 def test_ingest_threads_repo_into_the_change_outcome_payload_only():
-    # repo rides the change_outcome payload; the verified/verify riders keep their
-    # exact key sets (ref is their only conditional key).
+    # repo rides the change_outcome payload; the verified-outcome rider keeps its
+    # exact key set (ref is its only conditional key).
     prov = json.loads(json.dumps(_STAMPED_PROV))
     prov["repo"] = _REPO
     svc, appender = _service(_repo_rows((7, _ANCHOR), polarity="dont"))
@@ -1557,7 +1500,6 @@ def test_ingest_threads_repo_into_the_change_outcome_payload_only():
     by_kind = {row[1]: json.loads(row[4]) for row in appender.batches[0]}
     assert by_kind[EK_CHANGE_OUTCOME]["repo"] == _REPO
     assert "repo" not in by_kind[EK_OUTCOME_VERIFIED_HELPED]
-    assert "repo" not in by_kind[EK_VERIFY_STALE]
 
 
 def test_ingest_non_string_repo_is_ignored():

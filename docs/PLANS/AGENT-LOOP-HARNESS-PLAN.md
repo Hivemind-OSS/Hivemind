@@ -262,7 +262,7 @@ un-mechanizable / out of scope. Nothing is silently absent.
 | "SINGLE-POINTED — never bundle" | **F1** feedback on a recall that both carried ≥2 intents **and** abstained — the server's own abstain is the evidence | ✅ post-hoc, zero false positives |
 | recall scope (`repos` / `anchor_prefix`) | — | ⛔ un-mechanizable: a GLOBAL recall is contract-legal, so no scope is wrong |
 | "Empty/abstained: proceed, NEVER invent" | — | ⛔ un-mechanizable: requires judging the answer |
-| "Drifted = REFERENCE ONLY — re-verify" | **D3** opens on a served hit the server itself marks actionable: `drift.type ∈ QUALIFYING_DRIFT`, a `remediation` rider (`last_verified.state == "stale"`), or an id in the `conflicts` note | ✅ |
+| "Drifted = REFERENCE ONLY — re-verify" | **D3** opens on a served hit the server itself marks actionable: `drift.type ∈ QUALIFYING_DRIFT`, a `remediation` rider (keyed off that same verdict), or an id in the `conflicts` note | ✅ |
 | "STORE, per durable lesson" | **D4**, closed by a store verb that landed or a `no-store` sentinel | ✅ decision point (§3) |
 | "WHAT + WHERE + WHY … anchors / repos / neither = general" | **D5** opens when a store landed in an armed session carrying neither `anchors` nor `repos`; closed by a `general` sentinel | ✅ decision point (§3) |
 | write-vs-capture | **D4**'s reason names both verbs and defers the choice to the served contract | ✅ decision point (§3) |
@@ -562,9 +562,8 @@ would demand a retirement the gate structurally declines. A served id is `action
 
 - `hit["drift"]["type"] ∈ QUALIFYING_DRIFT` — `{anchor_missing, anchor_changed,
   blast_radius_changed}`, imported by name and pinned by CT-H8;
-- the hit carries a `remediation` key — the server's own per-hit stale rider
-  (`mcp_server.py:961`, added after the prior revision), attached exactly when
-  `last_verified.state == "stale"`;
+- the hit carries a `remediation` key — the server's own per-hit stale rider, attached
+  exactly when the hit's routed `drift.type` is in `retirement.QUALIFYING_DRIFT`;
 - the id appears in the envelope's top-level `conflicts` list.
 
 Three signals, one debt, all three emitted by the server itself. The harness never computes

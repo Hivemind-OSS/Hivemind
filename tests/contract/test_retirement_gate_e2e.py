@@ -3,6 +3,10 @@ Nothing is seeded — every qualifying signal is MANUFACTURED BY PRODUCTION CODE
   - drift:anchor_missing  <- a real push that deletes the symbol + a real sync tick
   - outcome_hurt(other)   <- a real hive_outcome call from a second identity
 No fixture is hand-written into evidence_events or anchor_drift.
+
+Git is the ONE staleness oracle: the census verification channel that used to write a
+second, ledger-shaped answer is retired, so the only drift signal here is the one the
+sync tick materialized.
 """
 
 from __future__ import annotations
@@ -17,9 +21,8 @@ from hive.app.config import ConflictConfig, SyncConfig
 from hive.app.mcp_server import MCPRequest, ServerIdentity
 from hive.app.sync import SyncService
 from hive.domain.change_evidence import ChangeEvidenceService
-from hive.domain.evidence_kinds import EK_VERIFY_STALE
 from tests.mcp._helpers import build_real_server
-from tests.sync.conftest import Origin, build_receipt
+from tests.sync.conftest import Origin
 
 ANCHOR = "app.py::greet"
 TEXT = "greet() must stay single-arg; callers pass positionally"
@@ -207,114 +210,11 @@ def test_a_branch_scoped_memory_is_judged_at_its_own_line(rig):
     assert trust(server, eid) == "deprecated"
 
 
-def _stale_rows(server, eid):
-    """Every ``verify_stale`` ledger row on the target, as (ts, measured line) —
-    read back through the SAME projection the gate's feed uses."""
-    return [
-        (ts, ref)
-        for kind, _actor, ts, ref in server.store.evidence_rows_for(
-            eid, [EK_VERIFY_STALE]
-        )
-        if kind == EK_VERIFY_STALE
-    ]
-
-
-def test_a_ledger_stale_row_on_another_line_never_retires_a_declared_line_memory(
-    rig, tmp_path
-):
-    """J1, the refusing direction. The daemon censuses a repo's CANONICAL branch
-    only, so every verify row it writes is stamped with that line. A memory that
-    declared a DIFFERENT line must not be retired by it: the ledger keeps the row
-    (honest history), the gate decides relevance."""
-    origin, server, clock, syncer = rig
-    origin.push("HEAD:refs/heads/feature")  # a real, healthy declared line
-    env, _err = call(
-        server,
-        "hive_write",
-        {
-            "text": TEXT,
-            "anchors": [{"repo": "alpha", "anchor": ANCHOR}],
-            "repos": ["alpha@feature"],
-        },
-    )
-    eid = env["id"]
-    call(server, "hive_recall", {"query": TEXT, "repos": ["alpha@feature"]})
-    syncer.tick()  # baseline both lines, mint, materialize `fresh` on feature
-
-    # PRODUCTION manufactures the off-line signal: break the anchor on CANONICAL
-    # main, never on feature, and let the real daemon census it.
-    origin.commit("app.py", "def other():\n    return 1\n", "remove greet on main")
-    origin.push()
-    syncer.tick()
-
-    assert _stale_rows(server, eid) == [(424_242, "main")], (
-        "the real ledger leg must have written a verify_stale row stamped with the "
-        "canonical line it measured"
-    )
-    env, err = call(server, "hive_prune", {"episode_id": eid})
-    assert err is False, "an unqualified prune must never be an error"
-    assert env["status"] == "noop", (
-        "a stale row measured on a line the memory never declared must not retire "
-        f"it — the ledger clause has to judge at the memory's own line: {env}"
-    )
-    assert trust(server, eid) == "provisional"
-
-
-def test_a_ledger_stale_row_on_the_memorys_own_line_still_retires_it(rig, tmp_path):
-    """J1, the permissive direction — the half that proves the filter under-claims
-    rather than disabling the clause. A non-canonical ``ref`` stamp is reachable
-    ONLY through the manual ingest door (the daemon censuses the canonical branch
-    only), so this drives the REAL ``census build --ref feature`` CLI and the REAL
-    ``ChangeEvidenceService.ingest``."""
-    origin, server, clock, syncer = rig
-    base = origin.origin_sha("refs/heads/main")
-    origin.push("HEAD:refs/heads/feature")
-    env, _err = call(
-        server,
-        "hive_write",
-        {
-            "text": TEXT,
-            "anchors": [{"repo": "alpha", "anchor": ANCHOR}],
-            "repos": ["alpha@feature"],
-        },
-    )
-    eid = env["id"]
-    syncer.tick()  # canonical baseline; main is never broken in this test
-
-    # a REAL break on the declared line, censused by the REAL CLI with --ref, and
-    # ingested through the REAL service door — nothing seeded.
-    head = origin.commit(
-        "app.py", "def greet(name, punct):\n    return name\n", "break greet on feature"
-    )
-    origin.push("HEAD:refs/heads/feature")
-    receipt = build_receipt(
-        origin.work, base, head, tmp_path, repo_id="alpha", ref="feature"
-    )
-    evidence = ChangeEvidenceService(
-        reader=server.store, appender=server.store, now=lambda: 424_243
-    )
-    report = evidence.ingest(receipt, phase="post_merge", verdict="pass", signal="none")
-    assert report.matched == 1, f"the real census must have joined the anchor: {report}"
-    assert _stale_rows(server, eid) == [(424_243, "feature")], (
-        "the manual door must stamp the line it measured"
-    )
-
-    env, err = call(server, "hive_prune", {"episode_id": eid})
-    assert err is False
-    assert env["status"] == "pruned", (
-        f"a stale row on the memory's OWN declared line must still retire it: {env}"
-    )
-    assert "verify_stale" in env["signals"], (
-        f"the LEDGER clause is what must authorize this retirement: {env}"
-    )
-    assert trust(server, eid) == "deprecated"
-
-
-def test_an_anchorless_memory_never_acquires_a_verify_row(rig, tmp_path):
-    """J2. Clause 1b's population is anchored-only MECHANICALLY: the census join
-    reads ``anchored_episodes()``, which filters ``anchor != ''``, so no production
-    writer can put a ``verify_*`` row on an anchor-less memory. The module docstring
-    must not claim otherwise (the BUG-059/064 advertised-but-unreachable seam)."""
+def test_an_anchorless_memory_never_qualifies_on_a_census_row(rig, tmp_path):
+    """The census join reads ``anchored_episodes()``, which filters ``anchor != ''``,
+    so no production writer can put a census evidence row on an anchor-less memory —
+    and with the conflict-pair feed gone, such a memory has NO single-caller
+    retirement route at all (residual R4, stated as a test)."""
     origin, server, clock, syncer = rig
     general = _write(server, "prefer small diffs", anchored=False)
     env, _err = call(
@@ -330,21 +230,25 @@ def test_an_anchorless_memory_never_acquires_a_verify_row(rig, tmp_path):
     syncer.tick()  # a real receipt over a real change
 
     for eid in (general, scope_only):
-        assert server.store.evidence_rows_for(eid, [EK_VERIFY_STALE]) == [], (
-            "an anchor-less memory can never acquire a verify row — the census "
-            "join filters on a non-empty anchor"
-        )
+        rows = [
+            r["kind"]
+            for r in server.store.conn.execute(
+                "SELECT kind FROM evidence_events WHERE episode_id=?", (eid,)
+            )
+        ]
+        assert rows == [], f"an anchor-less memory acquired census evidence: {rows}"
         env, err = call(server, "hive_prune", {"episode_id": eid})
         assert err is False
         assert env["status"] == "noop", env
         assert trust(server, eid) == "provisional"
 
 
-def test_the_recall_rider_never_reports_a_memory_stale_on_a_foreign_line(rig):
-    """J7. The advisory twin of blocking defect 1: the served ``last_verified``
-    rider must not stamp a memory "stale" on a line it never declared. Driven
-    through the server the REAL container builds, with the stale row manufactured
-    by a REAL tick over a REAL break on the canonical line."""
+def test_the_remediation_rider_never_fires_on_a_line_the_memory_never_claimed(rig):
+    """BUG-070's rule, re-homed. The ``own_refs`` machinery that used to enforce it
+    by hand is gone; the rule now holds STRUCTURALLY because ``attach_drift`` routes
+    a stale-tier verdict to the advisory ``branch_scoped`` for an off-line consumer,
+    and ``branch_scoped`` is deliberately not in ``QUALIFYING_DRIFT`` — the one set
+    the rider reads."""
     origin, server, clock, syncer = rig
     origin.push("HEAD:refs/heads/feature")
     declared = call(
@@ -366,13 +270,15 @@ def test_the_recall_rider_never_reports_a_memory_stale_on_a_foreign_line(rig):
 
     env, _err = call(server, "hive_recall", {"query": control_text})
     hit = next(h for h in env["reference_context"] if h["episode_id"] == control)
-    assert hit.get("last_verified", {}).get("state") == "stale", (
-        f"a memory that declared NO line keeps being judged on canonical rows: {hit}"
+    assert hit["drift"]["type"] == "anchor_missing", hit["drift"]
+    assert hit.get("remediation"), (
+        f"a memory that declared NO line keeps being judged on the canonical line: {hit}"
     )
 
-    env, _err = call(server, "hive_recall", {"query": TEXT})
+    env, _err = call(server, "hive_recall", {"query": TEXT, "repos": ["alpha@main"]})
     hit = next(h for h in env["reference_context"] if h["episode_id"] == declared)
-    assert "last_verified" not in hit, (
-        "the rider must WITHHOLD a stamp measured on a line the memory never "
-        f"declared: {hit.get('last_verified')}"
+    assert hit["drift"]["type"] == "branch_scoped", hit["drift"]
+    assert "remediation" not in hit, (
+        f"the rider fired on a line the memory never declared: {hit}"
     )
+    assert "last_verified" not in hit, hit

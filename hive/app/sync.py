@@ -954,7 +954,11 @@ class SyncService:
 
         Direction (Law 6): a git answer we cannot read leaves the row UNPROBED, and an
         unprobed row materializes no verdict at all (``_verdicts_at``) rather than a
-        guessed one. Caller must NOT hold the lock. // O(new symbol bindings)."""
+        guessed one. An UNASKABLE binding — one whose stored spelling cannot even be
+        handed to git — is the same case as an unanswerable one, and is treated
+        identically here: the row stays unprobed, materializes nothing, and the repo's
+        other bindings are unaffected. Caller must NOT hold the lock.
+        // O(new symbol bindings)."""
         pending: list[tuple[str, str, str, str]] = []  # (base, anchor, path, symbol)
         for _eid, anchor, base in work:
             key = (base, anchor)
@@ -966,7 +970,16 @@ class SyncService:
             pending.append((base, anchor, path, symbol))
         rows: list[tuple[str, str, int]] = []
         for base, anchor, path, symbol in pending:
-            resolved = self._resolves_at(mirror, path, symbol, base)
+            try:
+                resolved = self._resolves_at(mirror, path, symbol, base)
+            except Exception:  # noqa: BLE001 — marker: removing this guard reds
+                # tests/contract/test_minimal_hardening_e2e.py::
+                # test_one_unprobeable_binding_does_not_fault_the_repo_leg — one stored
+                # row whose argv git cannot even be handed would abort the whole repo's
+                # drift leg, freezing every OTHER anchor's cached verdict at its last
+                # value (false-fresh).
+                _log.warning("sync.binding_unprobeable repo=%s anchor=%r", repo, anchor)
+                continue
             if resolved is None:
                 continue  # git could not say — stay unprobed, claim nothing
             state = _SYMBOL_RESOLVED if resolved else _SYMBOL_ABSENT

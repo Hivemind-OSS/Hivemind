@@ -36,7 +36,6 @@ from typing import Any, Iterable, Mapping, Optional, Protocol, Sequence
 import numpy as np
 
 from hive.adapters.sqlite_db import tx
-from hive.domain.change_evidence import verify_payload_ref
 from hive.domain.evidence_kinds import (
     EK_OUTCOME_HELPED,
     EK_OUTCOME_VERIFIED_HELPED,
@@ -45,8 +44,6 @@ from hive.domain.evidence_kinds import (
     EK_STALE_SUSPECT,
     EK_SUPERSEDE,
     EK_TTL_EXPIRED,
-    EK_VERIFY_CURRENT,
-    EK_VERIFY_STALE,
 )
 from hive.domain.kinds import DEFAULT_KIND, KIND_NAMES
 from hive.domain.lifecycle import (
@@ -975,60 +972,6 @@ class SqliteEpisodeStore:
             )
         }
 
-    def last_verification(
-        self,
-        episode_ids: Sequence[int],
-        *,
-        own_refs: Optional[Mapping[int, frozenset[str]]] = None,
-    ) -> dict[int, tuple[int, str, str]]:
-        """LastVerificationReader: the newest ``verify_current``/``verify_stale``
-        ledger row per requested id → ``{eid: (ts, head_sha, state)}``, state derived
-        from the kind. Read-only, no DDL. DEFENSIVE payload parse (the
-        ``promotion_provenance`` idiom): a malformed payload or a missing
-        ``stamp.head_sha`` SKIPS that row — an older parseable row may still answer;
-        an id with nothing parseable is simply ABSENT (under-claim, never a raise).
-
-        ``own_refs`` maps an episode to the line(s) IT declared (absent/empty ⇒ an
-        unscoped read of that id, unchanged). A row whose payload ``ref`` names a
-        line the memory never declared is SKIPPED — the same first-parseable-wins
-        loop lets an on-line row answer instead — so the rider never reports a
-        memory stale on a line it never claimed. This only ever WITHHOLDS a stamp;
-        it can never upgrade one to "current". A legacy ref-LESS row always counts
-        (the absence rule: scoping filters foreign refs, never the pre-stamp
-        corpus). // O(rows)."""
-        ids = [int(e) for e in episode_ids]
-        if not ids:
-            return {}
-        out: dict[int, tuple[int, str, str]] = {}
-        placeholders = ",".join("?" for _ in ids)
-        # newest-first per episode: ORDER BY ts DESC, id DESC, first parseable wins.
-        for r in self.conn.execute(
-            f"SELECT episode_id, kind, ts, payload FROM evidence_events "
-            f"WHERE kind IN (?,?) AND episode_id IN ({placeholders}) "
-            f"ORDER BY episode_id, ts DESC, id DESC",
-            [EK_VERIFY_CURRENT, EK_VERIFY_STALE, *ids],
-        ):
-            eid = int(r["episode_id"])
-            if eid in out:
-                continue  # already have the newest for this id
-            # marker: skipping legacy ref-less rows under a set own-line filter is a
-            # mutation (the absence rule) — only a PRESENT, FOREIGN ref is skipped.
-            lines = (own_refs or {}).get(eid) or frozenset()
-            row_ref = verify_payload_ref(r["payload"])
-            if lines and row_ref and row_ref not in lines:
-                continue  # measured a line this memory never declared ⇒ skip
-            try:
-                payload = json.loads(r["payload"])
-                stamp = payload.get("stamp")
-                head_sha = stamp.get("head_sha") if isinstance(stamp, dict) else None
-                if not isinstance(head_sha, str) or not head_sha:
-                    continue  # stamp-less row ⇒ skip (under-claim)
-                state = "current" if r["kind"] == EK_VERIFY_CURRENT else "stale"
-                out[eid] = (int(r["ts"]), head_sha, state)
-            except (TypeError, ValueError, json.JSONDecodeError):
-                continue  # malformed ⇒ skip, never raise
-        return out
-
     def stale_suspect_rows(self) -> list[tuple[int, int, str]]:
         """The newest ``stale_suspect`` ledger row per episode →
         ``[(episode_id, ts, payload)]`` (no port — consumed by the hive_health
@@ -1070,27 +1013,25 @@ class SqliteEpisodeStore:
 
     def evidence_rows_for(
         self, episode_id: int, kinds: Sequence[str]
-    ) -> list[tuple[str, str, int, str]]:
-        """The retirement gate's ledger feed: the target's ``(kind, actor, ts,
-        ref)`` rows restricted to ``kinds``, in insertion order — exactly the
-        4-sequence shape ``retirement.retirement_evidence`` consumes. Empty
-        ``kinds`` → [] (the caller names what qualifies; an unfiltered read here
-        would hand the gate foreign kinds to ignore).
+    ) -> list[tuple[str, str, int]]:
+        """The retirement gate's ledger feed: the target's ``(kind, actor, ts)``
+        rows restricted to ``kinds``, in insertion order — exactly the 3-sequence
+        shape ``retirement.retirement_evidence`` consumes. Empty ``kinds`` → []
+        (the caller names what qualifies; an unfiltered read here would hand the
+        gate foreign kinds to ignore).
 
-        ``ref`` is the measured LINE, projected by
-        ``change_evidence.verify_payload_ref`` — the gate decides RELEVANCE (a
-        memory that declared its own line must not be retired on another line's
-        evidence), the payload grammar stays in the one module that writes it.
-        "" = unknown line; a kind that stamps no ref (the hurt kinds) always reads
-        "". Read-only, no DDL. // O(rows)."""
+        The payload is deliberately NOT projected: the surviving gate clauses are
+        decided by kind, actor and recency alone, so reading a payload grammar here
+        would put a second parser between the ledger and the gate for a field no
+        clause consumes. Read-only, no DDL. // O(rows)."""
         ks = [str(k) for k in kinds]
         if not ks:
             return []
         placeholders = ",".join("?" for _ in ks)
         return [
-            (r["kind"], r["actor"], int(r["ts"]), verify_payload_ref(r["payload"]))
+            (r["kind"], r["actor"], int(r["ts"]))
             for r in self.conn.execute(
-                f"SELECT kind, actor, ts, payload FROM evidence_events "
+                f"SELECT kind, actor, ts FROM evidence_events "
                 f"WHERE episode_id=? AND kind IN ({placeholders}) ORDER BY id",
                 [int(episode_id), *ks],
             )

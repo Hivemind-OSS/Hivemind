@@ -17,8 +17,8 @@ Exactly five public names, nothing else:
 - ``SERVER_INSTRUCTIONS`` — the v3 usage contract: recall-first, scoped store/recall,
   write-vs-capture, outcome evidence, machine-gated retirement.
 - ``REMEDIATION_NOTICE`` — the per-hit rider the server attaches to a recall hit whose anchor
-  it already knows is stale, so a stale memory carries its options on every harness with zero
-  client tooling. Serving-side text (a tool RESULT, the uncapped channel).
+  its ONE staleness oracle says has moved, so a stale memory carries its options on every
+  harness with zero client tooling. Serving-side text (a tool RESULT, the uncapped channel).
 - ``WRITE_VS_CAPTURE`` — the store-verb decision rule: prefer ``hive_write`` for a lesson
   that spares a future agent a repeat mistake, a regression, or relearning what led to
   landed code; ``hive_capture`` for the ambiguous tail; tag the line (repo/branch + anchor)
@@ -57,8 +57,9 @@ BAD_VS_STALE: str = (
     "hive_prune. Old ts: not a guarantee."
 )
 
-# The per-hit rider the SERVER attaches to a recall hit it already knows is stale, so the
-# stale memory carries its options on EVERY harness with zero client tooling. Rewritten for
+# The per-hit rider the SERVER attaches to a recall hit whose drift verdict is in the
+# stale tier, so the stale memory carries its options on EVERY harness with zero client
+# tooling. Rewritten for
 # the agent-adjudicated flow: no human escalation exists — the agent CALLS retirement, and the
 # server refuses (a benign no-op) unless it verifies a qualifying machine signal itself.
 # hive_flag is deliberately ABSENT — it is a memory-vs-memory conflict tool (two episode ids),
@@ -70,8 +71,7 @@ REMEDIATION_NOTICE: str = (
     "hive_write(replaces=...) carrying the corrected fact; it was wrong even when written "
     "(BAD) -> hive_prune(episode_id). Retirement is MACHINE-GATED: the server itself verifies "
     "a qualifying machine signal for the target (anchor drift on the memory's own declared "
-    "line, hurt "
-    "evidence from another identity or a verified outcome, mechanical contradiction) — an "
+    "line, hurt evidence from another identity or a verified outcome) — an "
     "unqualified call is a benign no-op: nothing retired, never an error."
 )
 
@@ -102,7 +102,7 @@ SERVER_INSTRUCTIONS: str = (
     "- RETIRE (machine-gated): "
     + BAD_VS_STALE
     + " The server retires ONLY on a machine "
-    "signal it verifies (drift, other-identity or verified hurt, contradiction); "
+    "signal it verifies (drift, other-identity or verified hurt); "
     "unqualified = benign no-op, never an error. hive_flag is advisory only — never "
     "retires, never qualifies the gate.\n"
     "- MAINTAIN: hive_health worklists surface what needs resolving.\n\n"

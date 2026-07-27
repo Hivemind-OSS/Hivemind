@@ -39,7 +39,8 @@ In one pass: read trends → gaps → conflicts → suspect-consensus → stale-
 demand-gap into a `hive_write`, each contested / stale established row into a `hive_supersede`
 (or `hive_prune` for the flat-wrong). Retirement is **machine-gated**: the server retires only
 when it verifies a qualifying machine signal for the target (anchor drift at the canonical tip,
-hurt evidence from another identity or a verified outcome, a mechanical contradiction) — an
+hurt evidence from another identity or a verified outcome, or — for `hive_supersede` /
+`hive_write(replaces=)` — a near-dup winner naming the successor) — an
 unqualified call is a benign no-op, never an error. The sweep is operator-paced and there is no
 substitute — staleness on the **established** tier is the dominant long-run decay and the
 worklists only surface it; resolving it is this pass.
@@ -109,7 +110,7 @@ hive ingest receipt.json --post-merge --verdict fail --signal canary   # rollout
 `--signal randomized|canary` is what makes a post-merge outcome machine-checked (anything else
 records unverified judgment). The one-line JSON report on stdout carries
 `inserted/already_recorded/matched/range_skipped/skipped_lines` and the
-`verified_helped/verified_hurt/verify_current/verify_stale/stale_suspects` rider counters
+`verified_helped/verified_hurt/stale_suspects` rider counters
 (`range_skipped: true` = the exact `(repo, base, head, phase)` range was already in the ledger —
 the whole receipt was skipped before any row work).
 Receipts are unsigned by policy — there is no signature to check; integrity rides the subject

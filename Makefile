@@ -7,7 +7,7 @@
 UV ?= uv
 RUN := $(UV) run --extra dev
 
-.PHONY: check format lint typecheck test
+.PHONY: check format lint typecheck test check-embed
 
 # The four legs run in this fixed order even under `make -j` (cheap legs fail first).
 check:
@@ -29,3 +29,10 @@ typecheck:
 # per the marker's own doc in pyproject.toml: run it with `uv run --extra embed pytest -m embed`.
 test:
 	$(RUN) pytest -m "not embed"
+
+# The opt-in tier, as one un-mistypeable verb. Deliberately NOT part of `check`: a
+# 1.2 GB model load in every gate run would fail on any machine without the extra.
+# The assertions that need it are the ones whose subject IS what the real embedder
+# does to a real corpus (recall quality, the served-set relevance distribution).
+check-embed:
+	$(UV) run --extra embed pytest -m embed
