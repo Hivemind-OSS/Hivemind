@@ -98,7 +98,8 @@ line from §2 works as-is.
 | Tunnel | compose-internal `8766`, ngrok-forwarded | **token-required** — the only remote-reachable door | remote teammates |
 
 The bearer token **authenticates** the tunnel door; it is never the identity. **Never publish
-`0.0.0.0:8765`** — a bearer token over plain LAN HTTP is cleartext. A leftover `HIVE_AUTH__MODE` in
+`0.0.0.0:8765`** — that door is tokenless, so publishing it hands unauthenticated recall and write
+to the whole LAN. A leftover `HIVE_AUTH__MODE` in
 an old `.env` is ignored (a WARN, not a crash) — remove it. Offboard a seat any time with
 `hive revoke <seat>` (its next request 401s).
 

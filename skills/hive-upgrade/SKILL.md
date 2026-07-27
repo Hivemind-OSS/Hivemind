@@ -8,7 +8,7 @@ description: "Move a running Hivemind server to a different release ref safely v
 `hive upgrade` moves the **server's checkout** to a different git ref and rebuilds it. That is
 different from `hive up` (which rebuilds whatever is already checked out) and from `hive restore`
 (which replaces store contents, not code). Lifecycle basics: **hive-bringup**. Snapshots and
-recovery: **hive-backup-restore**. Full reference: `HIVE-ADMIN.md` §5.
+recovery: **hive-backup-restore**. Full reference: `HIVE-ADMIN.md` §8.
 
 **CLI resolve (once per shell):** `command -v hive >/dev/null 2>&1 || hive() { python3 -m hive.tools.cli "$@"; }`
 — makes every `hive …` line below run on an uninstalled checkout (the CLI is stdlib-only;

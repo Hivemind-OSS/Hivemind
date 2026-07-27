@@ -24,8 +24,8 @@ Call these from any connected agent (there is no host-side verb):
 | Call | Tells you | Act on |
 |---|---|---|
 | `hive_health(include_trends=true)` | `confident_rate` + `demand_entropy`, current vs prior 7d + deltas | `tau_serve`, `demand_m` |
-| `hive_health(include_gaps=true)` | topics wanted but uncovered (misses carry their repo scope); established rows with rivals | `hive_write` the answers; `hive_supersede` the wrong one |
-| `hive_health(include_conflicts=true)` | near-duplicate / contradicting memories + agent advisories, bucketed by repo and anchor | `hive_supersede` |
+| `hive_health(include_gaps=true)` | topics wanted but uncovered (misses carry their repo scope) | `hive_write` the answers |
+| `hive_health(include_conflicts=true)` | near-duplicate / contradicting memories + agent advisories, bucketed by repo and anchor; established rows with rivals rank above provisional | `hive_supersede` the wrong one |
 | `hive_health(include_suspect_consensus=true)` | promotions on thin *effective* independence | re-examine; retire via `hive_supersede` / `hive_prune` |
 | `hive_health(include_stale_suspects=true)` | servable memories whose anchor sat in the blast radius of a breaking/removed change | re-verify each against the code; retire the truly stale |
 | `hive_health(include_census_health=true)` | `repos` — per registered repo: days since the last `change_outcome` + the `sync` block (`tracked_ref`/`last_tip`/`last_sync_ts`/`last_error`/`backfilled_total`; `status: "no change_outcome evidence yet"` when configured yet dark — a measured fact about EVIDENCE, never a daemon verdict). `fleet` — the daemon's own `last_sync_ts`/`last_error` | read `fleet` FIRST: a `last_error` there (or a frozen `last_sync_ts`) means the daemon is down and every repo block is a stale snapshot that still reads as passing → `hive logs`. Otherwise check the registry (`hive repos`), the token env var, remote reachability |
