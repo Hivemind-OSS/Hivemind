@@ -3,6 +3,16 @@
 All notable changes to this project are documented here.
 
 ## Fixed
+- **Admin docs no longer misdescribe removed or misplaced functionality.** Fixed the "never
+  publish `0.0.0.0:8765`" rationale in `HIVE-ADMIN.md` and `skills/hive-connect-team/SKILL.md` —
+  both blamed bearer-token cleartext exposure, but 8765 is the *tokenless* loopback door; the real
+  risk is unauthenticated recall/write to the whole LAN. Fixed `skills/hive-upgrade/SKILL.md`'s
+  cross-reference to `HIVE-ADMIN.md` (was §5, an unrelated day-2-ops table; the upgrade narrative
+  is §8). Fixed `skills/hive-operate/SKILL.md`, which listed "established rows with rivals" under
+  `hive_health(include_gaps=true)` — that trust-ranking concept belongs to `include_conflicts`,
+  which has no gap-report equivalent.
+
+## Fixed
 - **The isolated dev-testing sidecar (`compose.dev.yaml`) can now run alongside a live prod stack
   (BUG-088).** Docker Compose merges short-syntax `ports:` lists by concatenation, not override,
   so the documented `docker compose -p hive-dev -f compose.yaml -f compose.dev.yaml up` collided

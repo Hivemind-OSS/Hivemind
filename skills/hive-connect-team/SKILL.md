@@ -70,8 +70,8 @@ Then the teammate uses the **local** loopback line above as-is — no ngrok, no 
   captures, so a fleet of K agents promotes identically whether 1 or N engineers run it.
 - **Auth is a property of the socket, not a config knob.** There is no `HIVE_AUTH__MODE`. Loopback
   is tokenless; the tunnel door (compose-internal `8766`) is token-required and is the only
-  remote-reachable one. **Never publish `0.0.0.0:8765`** — a bearer token over plain LAN HTTP is
-  cleartext.
+  remote-reachable one. **Never publish `0.0.0.0:8765`** — that door is tokenless, so publishing
+  it hands unauthenticated recall and write to the whole LAN.
 - **The usage contract is served, never installed.** The MCP registration above is the **only**
   client-side step — there is no handshake call and nothing to install on the workstation or in
   any repo. The whole contract (recall-first, scoped store/recall, write-vs-capture, outcome
