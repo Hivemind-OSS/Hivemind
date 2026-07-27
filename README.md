@@ -210,7 +210,6 @@ tests/                the test suite
 compose.yaml          the single-service stack (+ opt-in ngrok tunnel profile)
 Dockerfile            the hermetically-offline server image (embedder baked at build)
 Makefile              the canonical mechanical gate — `make check` (format, lint, strict typecheck, tests)
-docs/engines/         reference docs for the first-party census engines (matrix, comb-drift)
 llms.txt              link index to the project docs (llmstxt.org convention)
 llms-full.txt         the complete, self-contained operating guide for agents & integrators
 HIVE-ADMIN.md         admin & operator guide

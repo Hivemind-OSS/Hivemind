@@ -71,6 +71,9 @@ CLAUDE.md
 # local context files and agent artifacts
 CONTEXT/
 
+# local-only design/engine notes and planning docs (never shipped)
+docs/
+
 # ── /looper agent-loop scratch state (local only; never shipped) ──
 .looper/
 

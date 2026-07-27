@@ -2,6 +2,12 @@
 
 All notable changes to this project are documented here.
 
+## Removed
+- **`docs/` is no longer tracked.** It held local design/engine notes and planning docs
+  (`docs/engines/`, `docs/PLANS/`) that belong with the repo's other local-only, gitignored
+  artifacts rather than in version control. Added to `.gitignore`; the README's repository-layout
+  listing no longer names it, matching how `CONTEXT/` is already handled there.
+
 ## Fixed
 - **Admin docs no longer misdescribe removed or misplaced functionality.** Fixed the "never
   publish `0.0.0.0:8765`" rationale in `HIVE-ADMIN.md` and `skills/hive-connect-team/SKILL.md` —
