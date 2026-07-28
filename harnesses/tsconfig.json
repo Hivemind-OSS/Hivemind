@@ -6,7 +6,6 @@
     "noUnusedParameters": true,
     "noImplicitOverride": true,
     "noFallthroughCasesInSwitch": true,
-    "noUncheckedIndexedAccess": true,
     "target": "es2023",
     "lib": ["es2023"],
     "module": "nodenext",

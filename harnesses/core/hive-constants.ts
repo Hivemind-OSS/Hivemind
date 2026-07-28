@@ -50,3 +50,22 @@ export const NON_AFFIRMATIVE_STATUS = [
 
 /** The one status that means nothing was stored. */
 export const STATUS_REFUSED = "refused"
+
+/** The argument keys a memory's code binding or repo scope rides on. */
+export const CARRIER_ARGS = [
+  "anchors",
+  "repos",
+] as const
+
+/** The argument key a recall's question rides on. */
+export const QUERY_ARG = "query"
+
+/** The id-bearing arguments of each verb that can name a memory to retire. */
+export const ID_ARGS: Readonly<Record<string, readonly string[]>> = {
+  "hive_flag": ["a", "b", "winner"],
+  "hive_prune": ["episode_id"],
+  "hive_supersede": ["loser", "winner"],
+}
+
+/** The argument key a store rides its own retirement rider on. */
+export const REPLACES_ARG = "replaces"

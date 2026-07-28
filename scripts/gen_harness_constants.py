@@ -25,7 +25,7 @@ import re
 import sys
 from pathlib import Path
 
-from hive.app.tool_defs import TOOL_NAMES
+from hive.app.tool_defs import TOOL_DEFINITIONS, TOOL_NAMES
 from hive.domain.retirement import QUALIFYING_DRIFT
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -62,7 +62,47 @@ NAMED_VERBS = {
     "HEALTH": "hive_health",
 }
 
+#: The argument keys that carry a memory's code binding or repo scope. Declared
+#: here, but each is asserted to exist on both store verbs' advertised schema, so
+#: a rename in ``tool_defs`` breaks generation rather than silently un-checking it.
+CARRIER_ARGS = ("anchors", "repos")
+
+#: The argument key a recall's question rides on.
+QUERY_ARG = "query"
+
+#: The argument key a store rides its own retirement rider on.
+REPLACES_ARG = "replaces"
+
 _STATUS_LITERAL = re.compile(r'"status"\s*:\s*"([a-z_]+)"')
+
+
+def _schema(verb: str) -> dict:
+    for tool in TOOL_DEFINITIONS:
+        if tool["name"] == verb:
+            return dict(tool.get("inputSchema") or {})
+    raise SystemExit(f"gen_harness_constants: {verb!r} is not an advertised tool")
+
+
+def _id_args(verb: str) -> tuple[str, ...]:
+    """Every integer-typed argument on a verb's advertised schema — read, not
+    listed, so a renamed or newly-added id argument travels with the schema."""
+    props = dict(_schema(verb).get("properties") or {})
+    return tuple(
+        sorted(k for k, v in props.items() if dict(v).get("type") == "integer")
+    )
+
+
+def id_args() -> dict[str, tuple[str, ...]]:
+    """The id-bearing arguments of every verb that can name a memory to retire."""
+    return {
+        verb: _id_args(verb)
+        for verb in (
+            NAMED_VERBS["SUPERSEDE"],
+            NAMED_VERBS["PRUNE"],
+            NAMED_VERBS["FLAG"],
+        )
+    }
+
 
 HEADER = """// GENERATED FROM THE SERVER SOURCE — DO NOT EDIT BY HAND.
 //
@@ -90,6 +130,31 @@ def render() -> str:
             raise SystemExit(
                 f"gen_harness_constants: VERB_{label} names {verb!r}, which is not an "
                 f"advertised tool — the server renamed it; update NAMED_VERBS."
+            )
+    for verb in (NAMED_VERBS["WRITE"], NAMED_VERBS["CAPTURE"]):
+        props = dict(_schema(verb).get("properties") or {})
+        missing = [a for a in CARRIER_ARGS if a not in props]
+        if missing:
+            raise SystemExit(
+                f"gen_harness_constants: {verb} no longer advertises {missing} — the "
+                f"carrier check would silently stop checking anything."
+            )
+    if QUERY_ARG not in (dict(_schema(NAMED_VERBS["RECALL"]).get("properties") or {})):
+        raise SystemExit(
+            f"gen_harness_constants: hive_recall no longer advertises {QUERY_ARG!r}"
+        )
+    if REPLACES_ARG not in (
+        dict(_schema(NAMED_VERBS["WRITE"]).get("properties") or {})
+    ):
+        raise SystemExit(
+            f"gen_harness_constants: hive_write no longer advertises {REPLACES_ARG!r}"
+        )
+    ids = id_args()
+    for verb, args in ids.items():
+        if not args:
+            raise SystemExit(
+                f"gen_harness_constants: {verb} advertises no integer argument, so a "
+                f"maintenance call could never name the memory it acted on."
             )
     sides = (AFFIRMATIVE_STATUS, NON_AFFIRMATIVE_STATUS, OTHER_STATUS)
     partition = set().union(*(set(s) for s in sides))
@@ -119,6 +184,17 @@ def render() -> str:
         "\n/** Nothing the caller asked for happened. */\n",
         _ts_list("NON_AFFIRMATIVE_STATUS", NON_AFFIRMATIVE_STATUS),
         '\n/** The one status that means nothing was stored. */\nexport const STATUS_REFUSED = "refused"\n',
+        "\n/** The argument keys a memory's code binding or repo scope rides on. */\n",
+        _ts_list("CARRIER_ARGS", CARRIER_ARGS),
+        f'\n/** The argument key a recall\'s question rides on. */\nexport const QUERY_ARG = "{QUERY_ARG}"\n',
+        "\n/** The id-bearing arguments of each verb that can name a memory to retire. */\n",
+        "export const ID_ARGS: Readonly<Record<string, readonly string[]>> = {\n",
+        *(
+            f'  "{verb}": [{", ".join(chr(34) + a + chr(34) for a in args)}],\n'
+            for verb, args in sorted(ids.items())
+        ),
+        "}\n",
+        f'\n/** The argument key a store rides its own retirement rider on. */\nexport const REPLACES_ARG = "{REPLACES_ARG}"\n',
     ]
     return "".join(parts)
 

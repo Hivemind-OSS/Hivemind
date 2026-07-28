@@ -9,7 +9,11 @@
 
 import {
   AFFIRMATIVE_STATUS,
+  CARRIER_ARGS,
+  ID_ARGS,
   QUALIFYING_DRIFT,
+  QUERY_ARG,
+  REPLACES_ARG,
   STATUS_REFUSED,
   VERBS,
   VERB_CAPTURE,
@@ -156,4 +160,40 @@ export function affirmed(envelope: JsonObject): boolean {
  */
 export function retiredByRider(envelope: JsonObject): number | null {
   return asId(envelope["superseded"])
+}
+
+/**
+ * The memory ids a maintenance call named. The argument keys come from the
+ * advertised schemas, so a renamed one is a generation failure rather than a
+ * check that quietly stops finding anything.
+ */
+export function namedIds(verb: string, args: JsonObject): readonly number[] {
+  const keys = ID_ARGS[verb]
+  if (keys === undefined) return []
+  const out: number[] = []
+  for (const key of keys) {
+    const id = asId(args[key])
+    if (id !== null && !out.includes(id)) out.push(id)
+  }
+  return out
+}
+
+/** The id a store call asked to retire alongside it, if it asked at all. */
+export function riderTarget(args: JsonObject): number | null {
+  return asId(args[REPLACES_ARG])
+}
+
+/** The store carried neither a code binding nor a repo scope. */
+export function carrierless(args: JsonObject): boolean {
+  for (const key of CARRIER_ARGS) {
+    const value = args[key]
+    if (Array.isArray(value) && value.length > 0) return false
+    if (value !== undefined && value !== null && !Array.isArray(value)) return false
+  }
+  return true
+}
+
+/** The question a recall asked, as text. Never interpreted, only measured. */
+export function queryOf(args: JsonObject): string {
+  return asText(args[QUERY_ARG])
 }

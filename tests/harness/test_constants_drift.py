@@ -130,3 +130,34 @@ def test_the_refused_status_is_named_and_non_affirmative() -> None:
 def test_the_generated_module_lives_under_the_pure_core() -> None:
     assert OUTPUT.parent.name == "core"
     assert Path(OUTPUT).suffix == ".ts"
+
+
+def test_the_emitted_argument_keys_exist_on_the_advertised_schemas() -> None:
+    """The harness reads ids and carriers out of a call's arguments, so those key
+    names are coupling too. Reading them off the schema is what makes a rename a
+    generation failure instead of a silently-dead check."""
+    from scripts.gen_harness_constants import (
+        CARRIER_ARGS,
+        QUERY_ARG,
+        REPLACES_ARG,
+        _schema,
+        id_args,
+    )
+
+    lists, scalars = _emitted()
+    assert set(lists["CARRIER_ARGS"]) == set(CARRIER_ARGS)
+    assert scalars["QUERY_ARG"] == QUERY_ARG
+    assert scalars["REPLACES_ARG"] == REPLACES_ARG
+
+    for verb in ("hive_write", "hive_capture"):
+        props = dict(_schema(verb).get("properties") or {})
+        for arg in CARRIER_ARGS:
+            assert arg in props, f"{verb} no longer advertises {arg}"
+    assert QUERY_ARG in dict(_schema("hive_recall").get("properties") or {})
+    assert REPLACES_ARG in dict(_schema("hive_write").get("properties") or {})
+
+    body = OUTPUT.read_text(encoding="utf-8")
+    for verb, args in id_args().items():
+        assert args, f"{verb} advertises no integer argument to name a memory with"
+        rendered = f'"{verb}": [{", ".join(chr(34) + a + chr(34) for a in args)}]'
+        assert rendered in body, f"{verb} id arguments drifted from the schema"

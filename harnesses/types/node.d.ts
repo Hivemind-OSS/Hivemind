@@ -43,6 +43,13 @@ declare module "node:crypto" {
   export function createHash(algorithm: string): Hash
 }
 
+declare class URL {
+  constructor(input: string, base?: string | URL)
+  readonly href: string
+  readonly pathname: string
+  toString(): string
+}
+
 declare module "node:url" {
   export function fileURLToPath(url: string | URL): string
 }
@@ -57,9 +64,11 @@ declare module "node:test" {
 }
 
 declare module "node:assert/strict" {
+  // `ok` and the callable form narrow, exactly as the runtime does: a value the
+  // assertion let through is a value the rest of the test may use.
   interface Assert {
-    (value: unknown, message?: string): void
-    ok(value: unknown, message?: string): void
+    (value: unknown, message?: string): asserts value
+    ok(value: unknown, message?: string): asserts value
     equal(actual: unknown, expected: unknown, message?: string): void
     notEqual(actual: unknown, expected: unknown, message?: string): void
     deepEqual(actual: unknown, expected: unknown, message?: string): void
