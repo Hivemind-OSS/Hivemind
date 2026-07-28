@@ -96,12 +96,44 @@ the point.
 ### The observed MCP tool-name prefix
 
 Claude Code namespaces a plugin-declared MCP server, so the memory verbs arrive under a prefix
-rather than as bare names. The hook matchers deliberately **do not encode that prefix** — they are
-prefix-agnostic (`mcp__.*__hive_write`), and the adapter classifies a call by the segment after the
-last `__`. A matcher is a cost filter, not a semantic: over-including costs a few milliseconds on a
-foreign tool the adapter then declines to act on, while under-including would silently blank every
-hook. So a namespaced server, a project-declared one named `hive`, and a renamed plugin all work
-with no edit.
+rather than as bare names. **Observed live on Claude Code 2.1.220:**
+
+```
+mcp__plugin_hive-loop_hive__hive_recall
+mcp__plugin_hive-loop_hive__hive_write
+…
+```
+
+— `mcp__plugin_<plugin>_<server>__<verb>`, with the hyphenated plugin name carried through verbatim
+rather than transformed.
+
+The hook matchers deliberately **do not encode that prefix** — they are prefix-agnostic
+(`mcp__.*__hive_write`), and the adapter classifies a call by the segment after the last `__`. A
+matcher is a cost filter, not a semantic: over-including costs a few milliseconds on a foreign tool
+the adapter then declines to act on, while under-including would silently blank every hook. So a
+namespaced server, a project-declared one named `hive`, and a renamed plugin all work with no edit.
+
+**In a headless `claude -p` run you must grant the namespaced names explicitly**, or every memory
+call is refused before it reaches the server and the loop can never be satisfied:
+
+```bash
+claude -p "…" --plugin-dir /path/to/harnesses \
+  --allowedTools Read Edit mcp__plugin_hive-loop_hive__hive_recall mcp__plugin_hive-loop_hive__hive_outcome
+```
+
+### Two measured limits
+
+**`async: true` is honored on the post-tool hook** — measured at 11 s against 39 s for the same
+30-second hook run synchronously. Breadth on that matcher is therefore cheap, which is the whole
+reason the read tools sit there and not on the blocking one. Caveat: a headless run reaps a still-
+running background hook when it exits; the harness's own post-tool work is milliseconds, so it has
+always finished long before.
+
+**The bundled-recall feedback does not reach the model in a headless run.** The hook fires and
+journals correctly — the ledger proves it — and the harness emits the feedback on the error channel
+with exit 2, but Claude Code 2.1.220 did not surface that text to the model in `claude -p`, with
+`async` either true or false. Everything the loop depends on is unaffected: the feedback never
+blocks, and it is the one purely advisory signal in the harness.
 
 ---
 
