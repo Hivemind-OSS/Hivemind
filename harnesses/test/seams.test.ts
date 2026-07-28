@@ -115,3 +115,52 @@ test("no shipped runtime source states a hive semantic or opens a transport", ()
     }
   }
 })
+
+// ── every emitting decision owes a delivery proof ────────────────────────────
+//
+// A decision that serializes correctly and is discarded by the platform is a
+// green suite over an inert feature. The live tier proves each CHANNEL is
+// actually received; this binds the two, so a new channel cannot be added
+// without one. Both sides are read from source — nothing is hand-copied, or the
+// registry itself becomes the thing that drifts.
+
+const EVENTS = fileURLToPath(new URL("../core/events.ts", import.meta.url))
+const LIVE_SUITE = fileURLToPath(new URL("./live.test.ts", import.meta.url))
+
+/** the Decision union's members, straight from the type that declares them */
+function decisionKinds(): string[] {
+  const body = readFileSync(EVENTS, "utf8")
+  const union = /export type Decision =([\s\S]*?)\n\n/.exec(body)
+  assert.ok(union !== null, "core/events.ts declares no Decision union")
+  return [...(union[1] ?? "").matchAll(/kind:\s*"([a-z]+)"/g)].map((m) => m[1] as string)
+}
+
+/** the channels the live tier actually drives end to end */
+function probedChannels(): string[] {
+  const body = readFileSync(LIVE_SUITE, "utf8")
+  const table = /const CHANNELS:[\s\S]*?\n\]/.exec(body)
+  assert.ok(table !== null, "the live tier declares no CHANNELS table")
+  return [...table[0].matchAll(/kind:\s*"([a-z]+)"/g)].map((m) => m[1] as string)
+}
+
+test("every decision that EMITS has a live delivery probe", () => {
+  // `inert` writes nothing, so it has nothing to deliver — it is the one
+  // exemption, and naming it here is what keeps the exemption reviewable
+  const emitting = decisionKinds().filter((k) => k !== "inert")
+  const probed = probedChannels()
+  assert.ok(emitting.length > 0, "no emitting decision kinds found")
+  for (const kind of emitting) {
+    assert.ok(
+      probed.includes(kind),
+      `the ${kind} decision emits but no live probe proves it is DELIVERED — ` +
+        `add one to live.test.ts's CHANNELS table`,
+    )
+  }
+})
+
+test("no delivery probe outlives the decision it covers", () => {
+  const kinds = decisionKinds()
+  for (const kind of probedChannels()) {
+    assert.ok(kinds.includes(kind), `a probe covers "${kind}", which is no longer a decision kind`)
+  }
+})

@@ -134,3 +134,202 @@ test("a session that touches no source never arms", { skip: !LIVE }, () => {
     assert.notEqual(ledger["armed"], true, "a conversational turn must stay unarmed")
   }
 })
+
+// ═════════════════════════════════════════════════════════════════════════════
+// Channel delivery — that an emission is RECEIVED, not merely that it was sent
+// ═════════════════════════════════════════════════════════════════════════════
+//
+// Emitting and delivering are claims about two different systems, and only the
+// first is cheap to test. A decision can serialize perfectly and be discarded by
+// the platform, which is a green suite over an inert feature: the bundled-recall
+// observation shipped that way, undeliverable in every session from the day it
+// was written, because it rode an error channel out of a DETACHED hook and a
+// detached process has no turn left to write back into.
+//
+// So the probe is per CHANNEL, not per rule. Channels are few and fixed; rules
+// are many and grow, and driving every rule end-to-end needs the model to choose
+// an exact call, which is neither cheap nor deterministic. A synthetic marker
+// through each channel is both.
+//
+// Each case carries the async flag READ FROM the shipped manifest, so flipping
+// async on an event that carries a channel reds here rather than in production.
+// The evidence predicates below are MEASURED against the platform, not assumed —
+// re-measure before changing one.
+
+interface Channel {
+  readonly kind: string
+  readonly event: string
+  readonly matcher?: string
+  readonly emit: (marker: string) => string
+  /** did the platform PARSE and honor it — as opposed to merely running us? */
+  readonly honored: (marker: string, records: Record<string, unknown>[], result: Json) => boolean
+}
+
+type Json = Record<string, unknown>
+
+function attachments(records: Record<string, unknown>[], marker: string): Json[] {
+  return records
+    .filter((r) => JSON.stringify(r).includes(marker))
+    .map((r) => r["attachment"])
+    .filter((a): a is Json => typeof a === "object" && a !== null)
+}
+
+const CHANNELS: readonly Channel[] = [
+  {
+    kind: "context",
+    event: "SessionStart",
+    emit: (m) =>
+      JSON.stringify({ hookSpecificOutput: { hookEventName: "SessionStart", additionalContext: m } }),
+    honored: (m, recs) => attachments(recs, m).some((a) => a["type"] === "hook_additional_context"),
+  },
+  {
+    kind: "deny",
+    event: "PreToolUse",
+    matcher: "Read",
+    emit: (m) =>
+      JSON.stringify({
+        hookSpecificOutput: {
+          hookEventName: "PreToolUse",
+          permissionDecision: "deny",
+          permissionDecisionReason: m,
+        },
+      }),
+    // a denied call is recorded by the platform as a refusal, not as an attachment
+    honored: (_m, _recs, result) => Array.isArray(result["permission_denials"])
+      && (result["permission_denials"] as unknown[]).length > 0,
+  },
+  {
+    kind: "block",
+    event: "Stop",
+    emit: (m) => JSON.stringify({ decision: "block", reason: m }),
+    honored: (m, recs) => attachments(recs, m).some((a) => a["type"] === "hook_blocking_error"),
+  },
+  {
+    kind: "feedback",
+    event: "PostToolUse",
+    matcher: "Read",
+    emit: (m) =>
+      JSON.stringify({ hookSpecificOutput: { hookEventName: "PostToolUse", additionalContext: m } }),
+    // a DETACHED hook is recorded either way; an EMPTY response is the signature
+    // of an emission the platform took nothing from
+    honored: (m, recs) =>
+      attachments(recs, m).some(
+        (a) =>
+          a["type"] === "async_hook_response" &&
+          typeof a["response"] === "object" &&
+          a["response"] !== null &&
+          Object.keys(a["response"] as Json).length > 0,
+      ),
+  },
+]
+
+/** the async flag the SHIPPED manifest carries for this event — never a literal */
+function shippedAsync(event: string): boolean {
+  const manifest = JSON.parse(readFileSync(join(HARNESS_ROOT, "hooks", "hooks.json"), "utf8")) as Json
+  const groups = (manifest["hooks"] as Json)[event] as { hooks?: Json[] }[] | undefined
+  assert.ok(groups !== undefined, `the shipped manifest registers no ${event}`)
+  const first = groups[0]?.hooks?.[0]
+  return first?.["async"] === true
+}
+
+function transcriptOf(sessionId: string): Record<string, unknown>[] {
+  const root = join(process.env["HOME"] ?? "", ".claude", "projects")
+  const stack = [root]
+  while (stack.length > 0) {
+    const dir = stack.pop() as string
+    let names: string[] = []
+    try {
+      names = readdirSync(dir)
+    } catch {
+      continue
+    }
+    for (const name of names) {
+      const full = join(dir, name)
+      if (name === `${sessionId}.jsonl`) {
+        return readFileSync(full, "utf8")
+          .split("\n")
+          .filter((l) => l.trim().startsWith("{"))
+          .map((l) => JSON.parse(l) as Record<string, unknown>)
+      }
+      if (!name.endsWith(".jsonl")) stack.push(full)
+    }
+  }
+  assert.fail(`no transcript found for session ${sessionId}`)
+}
+
+for (const channel of CHANNELS) {
+  test(`the ${channel.kind} channel is DELIVERED, not merely emitted`, { skip: !LIVE }, () => {
+    const marker = `HIVE-LOOP-PROBE-${channel.kind.toUpperCase()}`
+    const base = mkdtempSync(join(tmpdir(), `hive-loop-chan-${channel.kind}-`))
+    const plug = join(base, "plug")
+    const work = join(base, "work")
+    mkdirSync(join(plug, ".claude-plugin"), { recursive: true })
+    mkdirSync(join(plug, "hooks"), { recursive: true })
+    mkdirSync(work, { recursive: true })
+    writeFileSync(join(work, "f.txt"), "probe target\n", "utf8")
+    writeFileSync(
+      join(plug, ".claude-plugin", "plugin.json"),
+      JSON.stringify({
+        name: `chan-${channel.kind}`,
+        description: "channel delivery probe",
+        version: "0.0.1",
+        license: "Apache-2.0",
+        author: { name: "hive-loop" },
+      }),
+      "utf8",
+    )
+    // a Stop hook that blocks unconditionally would wedge the probe; the
+    // continuation carries the re-entrancy flag, exactly as the harness relies on
+    writeFileSync(
+      join(plug, "hooks", "probe.js"),
+      `let raw="";process.stdin.on("data",c=>raw+=c);process.stdin.on("end",()=>{\n` +
+        `let d={};try{d=JSON.parse(raw)}catch{}\n` +
+        `if(d.stop_hook_active){process.exit(0)}\n` +
+        `process.stdout.write(${JSON.stringify(channel.emit(marker))});process.exit(0)})\n`,
+      "utf8",
+    )
+    const entry: Json = {
+      type: "command",
+      command: 'node "${CLAUDE_PLUGIN_ROOT}/hooks/probe.js"',
+      timeout: 10,
+    }
+    if (shippedAsync(channel.event)) entry["async"] = true
+    const group: Json = { hooks: [entry] }
+    if (channel.matcher !== undefined) group["matcher"] = channel.matcher
+    writeFileSync(
+      join(plug, "hooks", "hooks.json"),
+      JSON.stringify({ hooks: { [channel.event]: [group] } }),
+      "utf8",
+    )
+
+    const r = spawnSync(
+      "claude",
+      [
+        "-p",
+        "Read f.txt then reply with one short sentence.",
+        "--output-format",
+        "json",
+        "--plugin-dir",
+        plug,
+        "--setting-sources",
+        "",
+        "--strict-mcp-config",
+        "--mcp-config",
+        '{"mcpServers":{}}',
+        "--allowedTools",
+        "Read",
+      ],
+      { encoding: "utf8", cwd: work, timeout: 600_000 },
+    )
+    const result = JSON.parse(r.stdout || "{}") as Json
+    const sessionId = String(result["session_id"] ?? "")
+    assert.ok(sessionId !== "", `no session id returned:\n${r.stdout}\n${r.stderr}`)
+
+    assert.ok(
+      channel.honored(marker, transcriptOf(sessionId), result),
+      `the ${channel.kind} channel emitted but the platform did not honor it — ` +
+        `the decision would be inert in production with a green suite. ` +
+        `event=${channel.event} async=${shippedAsync(channel.event)}`,
+    )
+  })
+}
