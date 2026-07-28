@@ -48,13 +48,5 @@ export const NON_AFFIRMATIVE_STATUS = [
   "rejected",
 ] as const
 
-/** A call that did its own non-maintenance job (a landing, an acknowledgement). */
-export const OTHER_STATUS = [
-  "approved",
-  "quarantined",
-  "recorded",
-  "redacted",
-] as const
-
 /** The one status that means nothing was stored. */
 export const STATUS_REFUSED = "refused"

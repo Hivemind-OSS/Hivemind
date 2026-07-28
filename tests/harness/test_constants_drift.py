@@ -84,11 +84,15 @@ def test_the_status_partition_is_disjoint_and_covers_the_whole_boundary() -> Non
             set(lists["NON_AFFIRMATIVE_STATUS"]),
             set(NON_AFFIRMATIVE_STATUS),
         ),
-        "OTHER_STATUS": (set(lists["OTHER_STATUS"]), set(OTHER_STATUS)),
     }
     for name, (emitted, declared) in sides.items():
         assert emitted == declared, name
-    partition = [emitted for emitted, _ in sides.values()]
+    assert "OTHER_STATUS" not in lists, (
+        "the non-maintenance statuses are classified here but never handed to the "
+        "harness — it decides a store landed by the ABSENCE of a refusal, so those "
+        "names would be lifecycle vocabulary it has no rule for"
+    )
+    partition = [emitted for emitted, _ in sides.values()] + [set(OTHER_STATUS)]
     total = set().union(*partition)
     assert sum(len(s) for s in partition) == len(total), "the status partition overlaps"
     in_boundary = _status_literals()
@@ -105,7 +109,7 @@ def test_the_advisory_verb_status_is_the_one_the_service_really_returns() -> Non
     outcome verb's ``recorded`` instead would leave the advisory close dead."""
     lists, _ = _emitted()
     assert "flagged" in set(lists["AFFIRMATIVE_STATUS"])
-    assert "recorded" in set(lists["OTHER_STATUS"])
+    assert "recorded" in set(OTHER_STATUS)
     body = (
         Path(__file__).resolve().parent.parent.parent
         / "hive"

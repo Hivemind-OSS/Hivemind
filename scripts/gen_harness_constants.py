@@ -43,8 +43,10 @@ AFFIRMATIVE_STATUS = ("flagged", "pruned", "superseded")
 NON_AFFIRMATIVE_STATUS = ("disabled", "noop", "refused", "rejected")
 
 #: A call that did its own non-maintenance job — the store verbs' landing states
-#: and the outcome verb's acknowledgement. Classified so the partition is total;
-#: the harness never credits a maintenance debt from one.
+#: and the outcome verb's acknowledgement. Classified here so the partition is
+#: total, but deliberately NOT emitted: the harness decides a store landed by the
+#: ABSENCE of a refusal, so handing it these names would hand it lifecycle
+#: vocabulary it has no rule for — the second contract the whole pair refuses.
 OTHER_STATUS = ("approved", "quarantined", "recorded", "redacted")
 
 #: The verbs the harness reasons about by role. Each is asserted to be a real
@@ -116,8 +118,6 @@ def render() -> str:
         _ts_list("AFFIRMATIVE_STATUS", AFFIRMATIVE_STATUS),
         "\n/** Nothing the caller asked for happened. */\n",
         _ts_list("NON_AFFIRMATIVE_STATUS", NON_AFFIRMATIVE_STATUS),
-        "\n/** A call that did its own non-maintenance job (a landing, an acknowledgement). */\n",
-        _ts_list("OTHER_STATUS", OTHER_STATUS),
         '\n/** The one status that means nothing was stored. */\nexport const STATUS_REFUSED = "refused"\n',
     ]
     return "".join(parts)
