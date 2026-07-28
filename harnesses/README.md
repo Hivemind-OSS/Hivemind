@@ -62,6 +62,7 @@ Once armed:
 | a call that changes the working tree, with no recall journaled | **denied**, with a reason naming the recall |
 | a store call, with no recall journaled | **denied**, same reason shape |
 | a recall that **abstained** on a query carrying two or more intents | one line of feedback; never a denial |
+| a store that landed carrying a structural signal (no code site named, two or more named, a list, repeated `::` separators, three or more sentence terminators) | one line of feedback naming what was counted, **once per session**; never a denial |
 | the turn ends with an unmade decision | **one** block naming every open item at once |
 | the context is compacted | the open items are re-stated so the loop survives |
 
@@ -72,7 +73,7 @@ The five turn-end items, and what closes each:
 | `recall_missing` | the tree changed and no recall was journaled | any recall |
 | `outcome_missing` | a recall served hits and no outcome call followed | any outcome call |
 | `maintenance_missing` | the **server** marked a served hit as needing an answer | a maintenance call the server affirmed, or a `defer` line |
-| `store_missing` | the tree changed and no store landed | a store that landed, or a `no-store` line |
+| `store_missing` | the tree changed and no `hive_write` landed | a `hive_write` that landed, a landed `hive_capture` **plus** a `capture` line, or a `no-store` line |
 | `scope_missing` | a store landed carrying neither `anchors` nor `repos` | a `general` line |
 
 **Each item blocks at most once per session.** After that it degrades to advisory. A stubborn or
@@ -85,6 +86,7 @@ the decision: you close a judgment item by ending your reply with one line, exac
 
 ```
 HIVE-LOOP: no-store — <why nothing applied>
+HIVE-LOOP: capture — <why the verb choice was not clear>
 HIVE-LOOP: defer 12,40 — <why these stay open>
 HIVE-LOOP: general — <why this binds to no repo or path>
 ```
@@ -92,6 +94,12 @@ HIVE-LOOP: general — <why this binds to no repo or path>
 The dash is an em dash (`—`), and **a line with an empty rationale closes nothing** — that is what
 keeps it a decision rather than a way past the gate. The line stays visible to the human, which is
 the point.
+
+The `capture` line is the one that pairs with a call rather than replacing one: the harness counts
+the two store verbs separately, so a landed `hive_capture` closes `store_missing` only alongside
+this line, and a landed `hive_write` closes it with no line at all. The harness states nothing about
+which verb suits which situation — that is your served contract's to say. What it enforces is that
+the choice was made in the open.
 
 ### The observed MCP tool-name prefix
 

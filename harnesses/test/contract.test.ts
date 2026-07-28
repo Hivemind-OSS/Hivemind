@@ -573,16 +573,9 @@ test("CT-H3 · a landed hive_write closes store_missing", () => {
   assert.doesNotMatch(blockReason(end), /store_missing/)
 })
 
-test("CT-H3 · a landed hive_capture closes store_missing", () => {
-  const end = last(
-    drive(ctx(), [
-      ...mutatedSession(),
-      post(`${HIVE}hive_capture`, { text: "a lesson", repos: ["alpha"] }, fixture("capture", "approved")),
-      stop("done"),
-    ]),
-  )
-  assert.doesNotMatch(blockReason(end), /store_missing/)
-})
+// RETIRED — a landed hive_capture no longer closes store_missing on its own. Its
+// successor is "CT-H14 · a landed hive_capture alone leaves store_missing open",
+// with the rest of the capture contract, at the foot of this file.
 
 test("CT-H3 · a no-store sentinel WITH a rationale closes store_missing", () => {
   const end = last(
@@ -617,25 +610,11 @@ test("CT-H3 · a session with zero mutations never opens store_missing", () => {
   assert.doesNotMatch(blockReason(end), /store_missing/)
 })
 
-// ═════════════════════════════════════════════════════════════════════════════
-// CT-H4 · I4 — the store block names BOTH verbs and defers the choice
-// ═════════════════════════════════════════════════════════════════════════════
-
-test("CT-H4 · the store_missing reason names both store verbs and defers to the served contract", () => {
-  const end = last(drive(ctx(), [...mutatedSession(), stop("done")]))
-  const reason = blockReason(end)
-  assert.match(reason, /hive_write/)
-  assert.match(reason, /hive_capture/)
-  assert.match(reason, /served[^.]*contract/i, "authority lives in the served contract")
-})
-
-test("CT-H4 · the store_missing reason states no hive semantics", () => {
-  const reason = blockReason(last(drive(ctx(), [...mutatedSession(), stop("done")]))).toLowerCase()
-  assert.ok(reason.length > 0, "there must be a reason to scan")
-  for (const word of BANNED_SEMANTICS) {
-    assert.ok(!reason.includes(word), `the block reason states hive semantics: ${word}`)
-  }
-})
+// RETIRED SECTION — CT-H4 held that the two store verbs are equal to the harness.
+// They are not: the item opens on the absence of a write, and a capture closes it
+// only alongside a declaration. The successor, which still requires the reason to
+// name both verbs, to defer, and to state no hive semantic, is "CT-H14 · the
+// store_missing reason names the store verbs and defers to the served contract".
 
 // ═════════════════════════════════════════════════════════════════════════════
 // CT-H5 · I5 — recall precedes every store
@@ -1001,8 +980,11 @@ test("CT-H10 · every reason the harness emits states no hive semantic", () => {
   ])
   collect(full[4])
   collect(full[5])
+  // the store-shape observation is an emitting path like any other, so the one
+  // named home of this scan drives it too rather than trusting a per-test check
+  collect(storePost("hive_write", LOUD_STORE, fixture("write", "approved")))
 
-  assert.ok(reasons.length >= 5, "the collector must have driven every emitting path")
+  assert.ok(reasons.length >= 6, "the collector must have driven every emitting path")
   for (const reason of reasons) {
     const lower = reason.toLowerCase()
     for (const word of BANNED_SEMANTICS) {
@@ -1163,11 +1145,14 @@ test("CT-H11 · no build output is committed and no runtime dependency is declar
 // ═════════════════════════════════════════════════════════════════════════════
 
 /**
- * The maximal simultaneously-open debt set is THREE, not five: recall_missing needs
- * zero recalls while outcome_missing and maintenance_missing each need one, and
- * store_missing needs no landed store while scope_missing needs one. Two of the five
- * pairs are mutually exclusive by construction, so "every open debt in one block" is
- * asserted over both maximal sets that can actually co-exist.
+ * The maximal simultaneously-open debt set is FOUR, not five: recall_missing needs
+ * zero recalls while outcome_missing and maintenance_missing each need one, and that
+ * is the only pair mutually exclusive by construction. store_missing and scope_missing
+ * are NOT exclusive — a session that lands a carrierless capture and no write opens
+ * both at once — so the two sets driven from here are co-existing sets rather than the
+ * maximum, and the four-item maximum is driven by "CT-H14 · the capture-only maximal
+ * open set blocks once, naming all of it". Every one of them blocks exactly once, which
+ * is what these tests are for.
  */
 function maximalOpenSet(): Json[] {
   return [armPayload(), recallPost("drift_anchor_missing"), post("Edit", { file_path: SRC }, { ok: true })]
@@ -1381,5 +1366,409 @@ test("CT-H13 · nothing under core/ imports the adapter layer", () => {
   for (const name of requireDir(CORE_DIR, "harnesses/core/")) {
     const body = readFileSync(join(CORE_DIR, name), "utf8")
     assert.doesNotMatch(body, /from\s+["'][^"']*adapters\//, `core/${name} depends outward`)
+  }
+})
+
+// ═════════════════════════════════════════════════════════════════════════════
+// CT-H14 — the two store verbs are not interchangeable, and a capture is DECLARED
+//
+// The store item opens on the absence of a WRITE. A landed capture alone does not
+// close it; the declared-ambiguity line closes it, and an empty rationale does not.
+// A landed write still closes it with no line. The block reason still names both
+// verbs, still defers, and still states no hive semantic; and the open set that
+// this asymmetry makes four items wide still blocks exactly once.
+//
+// The successor of the retired CT-H3 capture test, and of the whole retired CT-H4
+// section, lives here.
+// ═════════════════════════════════════════════════════════════════════════════
+
+/** The declaration keyword that closes the store item alongside a landed capture. */
+const CAPTURE_KEYWORD = "capture"
+
+function captureLine(why: string): string {
+  return `HIVE-LOOP: ${CAPTURE_KEYWORD} — ${why}`
+}
+
+const ANCHOR_ONE = { repo: "alpha", anchor: "app.py::greet" }
+const ANCHOR_TWO = { repo: "alpha", anchor: "b.py::helper" }
+
+/** A store's arguments carrying nothing the shape rules count. */
+const FLAT_TEXT = "a lesson worth keeping"
+
+function capturePost(args: Record<string, Json>, result: Json = fixture("capture", "approved")): Json {
+  return post(`${HIVE}hive_capture`, { text: FLAT_TEXT, ...args }, result)
+}
+
+function writePost(args: Record<string, Json>, scenario = "approved"): Json {
+  return post(`${HIVE}hive_write`, { text: FLAT_TEXT, ...args }, fixture("write", scenario))
+}
+
+/**
+ * The recorded capture result with the server's own refusal status substituted in.
+ * The status literal is read off the recorded refused write rather than typed here,
+ * so a renamed status is a fixture problem and not a silently-passing test.
+ */
+function refusedCapture(): Json {
+  return variant("capture", "approved", (env) => {
+    env["status"] = envelopeOf(fixture("write", "refused"))["status"]
+  })
+}
+
+function assertNoHiveSemantic(emitted: string, label: string): void {
+  const lower = emitted.toLowerCase()
+  for (const word of BANNED_SEMANTICS) {
+    assert.ok(!lower.includes(word), `${label}: an emitted reason states a hive semantic (${word})`)
+  }
+}
+
+test("CT-H14 · a landed hive_capture alone leaves store_missing open", () => {
+  const cases: [string, Json][] = [
+    ["a capture carrying anchors", capturePost({ anchors: [ANCHOR_ONE] })],
+    ["a capture carrying repos only", capturePost({ repos: ["alpha"] })],
+    ["a capture carrying neither", capturePost({})],
+    ["a REFUSED capture", capturePost({ repos: ["alpha"] }, refusedCapture())],
+  ]
+  for (const [label, landed] of cases) {
+    const end = last(drive(ctx(), [...mutatedSession(), landed, stop("done")]))
+    assert.ok(isBlock(end), `${label}: expected a block, got ${end.stdout || "(silence)"}`)
+    assert.match(blockReason(end), /store_missing/, `${label}: store_missing must still be named`)
+  }
+})
+
+test("CT-H14 · a capture that follows a landed write closes nothing further", () => {
+  // a landed write closes the item with no line, and `replaces=` rides a write that
+  // still lands; the capture after it neither re-opens nor re-closes anything
+  const writes: [string, Json][] = [
+    ["a plain write", writePost({ anchors: [ANCHOR_ONE] })],
+    ["a write carrying replaces=", writePost({ anchors: [ANCHOR_ONE], replaces: 1 }, "replaces_affirmed")],
+  ]
+  for (const [label, landed] of writes) {
+    const end = last(
+      drive(ctx(), [...mutatedSession(), landed, capturePost({ repos: ["alpha"] }), stop("done")]),
+    )
+    assert.doesNotMatch(blockReason(end), /store_missing/, `${label}: the write closed it and no line was needed`)
+  }
+  // the control that gives "nothing further" its content: drop the write, and the
+  // very same capture closes nothing at all
+  const withoutWrite = last(
+    drive(ctx(), [...mutatedSession(), capturePost({ repos: ["alpha"] }), stop("done")]),
+  )
+  assert.match(blockReason(withoutWrite), /store_missing/, "the capture on its own closed nothing")
+})
+
+test("CT-H14 · the capture line WITH a rationale closes store_missing", () => {
+  const why = "the lesson may not generalize past this one branch"
+  const trailing = last(
+    drive(ctx(), [
+      ...mutatedSession(),
+      capturePost({ repos: ["alpha"] }),
+      stop(`Work done.\n${captureLine(why)}`),
+    ]),
+  )
+  assert.doesNotMatch(blockReason(trailing), /store_missing/, "a declared capture closes it")
+
+  const midReply = last(
+    drive(ctx(), [
+      ...mutatedSession(),
+      capturePost({ repos: ["alpha"] }),
+      stop(`${captureLine(why)}\nAnd here is the rest of the reply.`),
+    ]),
+  )
+  assert.doesNotMatch(blockReason(midReply), /store_missing/, "the line is read wherever it sits in the reply")
+
+  // the control that makes "WITH a rationale" load-bearing: the identical session
+  // with no line at all leaves the item open, so it is the declaration that closed it
+  const undeclared = last(
+    drive(ctx(), [...mutatedSession(), capturePost({ repos: ["alpha"] }), stop("Work done.")]),
+  )
+  assert.match(blockReason(undeclared), /store_missing/, "an undeclared capture closes nothing")
+})
+
+test("CT-H14 · the capture line with an EMPTY rationale still blocks", () => {
+  for (const tail of [captureLine(""), captureLine("   ")]) {
+    const end = last(drive(ctx(), [...mutatedSession(), capturePost({ repos: ["alpha"] }), stop(tail)]))
+    assert.ok(isBlock(end), `an empty rationale is a bypass, not a decision: ${JSON.stringify(tail)}`)
+    assert.match(
+      blockReason(end),
+      /store_missing/,
+      `store_missing must stay open under an empty rationale: ${JSON.stringify(tail)}`,
+    )
+  }
+})
+
+test("CT-H14 · a look-alike capture line closes nothing", () => {
+  const why = "the lesson may not generalize past this one branch"
+  // the control: the grammar itself DOES close it, so "closes nothing" below is a
+  // claim about the look-alikes and not about a harness that reads no line at all
+  const genuine = last(
+    drive(ctx(), [...mutatedSession(), capturePost({ repos: ["alpha"] }), stop(captureLine(why))]),
+  )
+  assert.doesNotMatch(blockReason(genuine), /store_missing/, "the grammar closes it")
+
+  const lookAlikes = [
+    `HIVE-LOOP: ${CAPTURE_KEYWORD} - ${why}`, // a hyphen is not the em dash
+    `HIVE-LOOP: ${CAPTURE_KEYWORD}d — ${why}`, // a longer word is not the keyword
+    `HIVE-LOOP ${CAPTURE_KEYWORD} — ${why}`, // no colon
+    `hive-loop: ${CAPTURE_KEYWORD} — ${why}`, // the prefix is not lowercase
+    `Next I will HIVE-LOOP: ${CAPTURE_KEYWORD} — ${why}`, // not at the start of its line
+  ]
+  for (const line of lookAlikes) {
+    const end = last(drive(ctx(), [...mutatedSession(), capturePost({ repos: ["alpha"] }), stop(line)]))
+    assert.ok(isBlock(end), `a look-alike closed the item: ${line}`)
+    assert.match(blockReason(end), /store_missing/, `a look-alike closed store_missing: ${line}`)
+  }
+
+  // the grammar with nothing captured at all closes nothing either — the line
+  // declares an ambiguity about a store that landed, not a substitute for one
+  const noCapture = last(drive(ctx(), [...mutatedSession(), stop(captureLine(why))]))
+  assert.ok(isBlock(noCapture), "a declaration with no capture landed closes nothing")
+  assert.match(blockReason(noCapture), /store_missing/)
+})
+
+test("CT-H14 · the store_missing reason names the store verbs and defers to the served contract", () => {
+  const sessions: [string, Json[]][] = [
+    ["nothing stored", [...mutatedSession(), stop("done")]],
+    [
+      "a capture landed and no write",
+      [...mutatedSession(), capturePost({ repos: ["alpha"] }), stop("done")],
+    ],
+  ]
+  for (const [label, payloads] of sessions) {
+    const reason = blockReason(last(drive(ctx(), payloads)))
+    assert.match(reason, /store_missing/, `${label}: the item must be named to be read`)
+    assert.match(reason, /hive_write/, label)
+    assert.match(reason, /hive_capture/, label)
+    assert.match(reason, /served[^.]*contract/i, `${label}: authority lives in the served contract`)
+    assertNoHiveSemantic(reason, label)
+  }
+})
+
+test("CT-H14 · the capture-only maximal open set blocks once, naming all of it", () => {
+  const results = drive(ctx(), [...maximalOpenSet(), capturePost({}), stop("done"), stop("done again")])
+  const first = results[results.length - 2]
+  assert.ok(first !== undefined)
+  assert.ok(isBlock(first), `the first turn-end blocks once, got ${first.stdout || "(silence)"}`)
+  const reason = blockReason(first)
+  for (const key of ["outcome_missing", "maintenance_missing", "store_missing", "scope_missing"]) {
+    assert.match(reason, new RegExp(key), `${key} must be named in the same block`)
+  }
+  assertInert(last(results), "a debt blocks at most once per session")
+})
+
+/** The keywords the sentinel grammar is actually live on, read out of the reducer. */
+function sentinelKeywords(): readonly string[] {
+  const path = join(CORE_DIR, "decide.ts")
+  if (!existsSync(path)) assert.fail("harnesses/core/decide.ts not built yet")
+  const declaration = /SENTINEL\s*=\s*\/(.*)\/[a-z]*\s*$/m.exec(readFileSync(path, "utf8"))
+  assert.ok(declaration !== null, "core/decide.ts no longer declares a SENTINEL pattern to read")
+  const group = /\(([^)]*\|[^)]*)\)/.exec(declaration[1] ?? "")
+  assert.ok(group !== null, "the SENTINEL pattern declares no keyword alternation")
+  return (group[1] ?? "")
+    .replace(/^\?:/, "")
+    .split("|")
+    .map((keyword) => keyword.trim())
+    .filter((keyword) => keyword.length > 0)
+}
+
+/** The keywords the operator documentation tells a reader to use. */
+function documentedKeywords(): readonly string[] {
+  const path = join(HARNESS_ROOT, "README.md")
+  if (!existsSync(path)) assert.fail("harnesses/README.md not written yet")
+  const out: string[] = []
+  for (const line of readFileSync(path, "utf8").split("\n")) {
+    const match = /^\s*HIVE-LOOP:\s*([A-Za-z][A-Za-z-]*)/.exec(line)
+    const keyword = match?.[1]
+    if (keyword !== undefined && !out.includes(keyword)) out.push(keyword)
+  }
+  return out
+}
+
+test("CT-H14 · every sentinel keyword is documented, and no documented one is dead", () => {
+  const live = sentinelKeywords()
+  const documented = documentedKeywords()
+  assert.ok(live.length > 0, "the grammar must declare at least one keyword")
+  assert.deepEqual(
+    [...live].sort(),
+    [...documented].sort(),
+    "the live sentinel grammar and the documented declaration block must not drift",
+  )
+  assert.ok(
+    live.includes(CAPTURE_KEYWORD),
+    `the declaration that closes the store item alongside a capture is missing from the grammar: ${CAPTURE_KEYWORD}`,
+  )
+  assert.equal(
+    live.length,
+    4,
+    "the sentinel vocabulary is four keywords; a fifth is a grammar change, not a doc edit",
+  )
+})
+
+// ═════════════════════════════════════════════════════════════════════════════
+// CT-H15 — a landed store's SHAPE is observed once, and never blocks
+//
+// The signals are counts, never classifications, and each is pinned at its own
+// threshold with the just-under case asserted silent alongside it. The two-sentence
+// store is the named false positive the three-terminator floor exists to refuse.
+// ═════════════════════════════════════════════════════════════════════════════
+
+/** Drive an armed, tree-changed session up to ONE landed store and read its post. */
+function storePost(verb: string, args: Record<string, Json>, result: Json): Res {
+  return last(
+    drive(ctx(), [
+      armPayload(),
+      recallPost("abstained"),
+      post("Edit", { file_path: SRC }, { ok: true }),
+      post(`${HIVE}${verb}`, args, result),
+    ]),
+  )
+}
+
+/** A store whose arguments trip several signals at once. */
+const LOUD_STORE: Record<string, Json> = {
+  text: "the fix lives in app.py::greet and again in b.py::helper. It bites here too. And here.",
+  anchors: [ANCHOR_ONE, ANCHOR_TWO],
+}
+
+/**
+ * One case per structural signal, each AT its threshold and tripping nothing else,
+ * with the count the observation must name. The absent-binding signal counts no
+ * number — it is an absence, not a tally.
+ */
+const SIGNAL_CASES: [string, Record<string, Json>, number | null][] = [
+  ["names no code site (anchors absent)", { text: FLAT_TEXT, repos: ["alpha"] }, null],
+  [
+    "names more than one code site (2 anchors)",
+    { text: FLAT_TEXT, anchors: [ANCHOR_ONE, ANCHOR_TWO] },
+    2,
+  ],
+  [
+    "carries a list (2 list markers)",
+    { text: "a lesson\n- the first thing\n- the second thing", anchors: [ANCHOR_ONE] },
+    2,
+  ],
+  [
+    "names multiple symbols in prose (2 :: tokens)",
+    { text: "the fix lives in app.py::greet and again in b.py::helper", anchors: [ANCHOR_ONE] },
+    2,
+  ],
+  [
+    "carries many sentences (3 terminators)",
+    { text: "X breaks Y. Use Z instead. The third one is what tips it.", anchors: [ANCHOR_ONE] },
+    3,
+  ],
+]
+
+test("CT-H15 · each shape signal alone produces the observation", () => {
+  const spoken: string[] = []
+  for (const [label, args, count] of SIGNAL_CASES) {
+    const res = storePost("hive_write", args, fixture("write", "approved"))
+    const observation = feedbackText(res)
+    assert.ok(observation.trim().length > 0, `${label}: no observation was delivered`)
+    assert.match(observation, /served[^.]*contract/i, `${label}: the verdict defers to the served contract`)
+    assertNoHiveSemantic(observation, label)
+    if (count !== null) {
+      assert.match(
+        observation,
+        new RegExp(`\\b${count}\\b`),
+        `${label}: the observation must name what it counted`,
+      )
+    }
+    spoken.push(observation)
+  }
+  assert.equal(
+    new Set(spoken).size,
+    spoken.length,
+    "each signal is reported as itself, not as one generic sentence",
+  )
+
+  // the binding signal has two triggers: the key absent, and the key present-but-empty
+  const empty = storePost(
+    "hive_write",
+    { text: FLAT_TEXT, anchors: [], repos: ["alpha"] },
+    fixture("write", "approved"),
+  )
+  assert.ok(feedbackText(empty).trim().length > 0, "an empty anchors list names no code site either")
+
+  // several together are reported together, each with its own count
+  const together = storePost(
+    "hive_write",
+    {
+      text: "a lesson\n- one\n- two\n- three. It bites here. And here. And here.",
+      anchors: [ANCHOR_ONE, ANCHOR_TWO],
+    },
+    fixture("write", "approved"),
+  )
+  const combined = feedbackText(together)
+  assert.ok(combined.trim().length > 0, "a store tripping several signals is observed")
+  for (const count of [2, 3, 4]) {
+    assert.match(combined, new RegExp(`\\b${count}\\b`), `the combined observation names the count ${count}`)
+  }
+})
+
+test("CT-H15 · a clean single-fact anchored store observes nothing", () => {
+  const justUnder: [string, Record<string, Json>][] = [
+    ["one anchor, one dense two-sentence fact", { text: "X breaks Y. Use Z instead.", anchors: [ANCHOR_ONE] }],
+    ["one list marker", { text: "a lesson\n- the only thing", anchors: [ANCHOR_ONE] }],
+    ["one :: token", { text: "the fix lives in app.py::greet", anchors: [ANCHOR_ONE] }],
+    ["one anchor and flat prose", { text: FLAT_TEXT, anchors: [ANCHOR_ONE] }],
+  ]
+  for (const [label, args] of justUnder) {
+    assertInert(storePost("hive_write", args, fixture("write", "approved")), `${label}: under every threshold`)
+  }
+
+  // the two-sentence store is the false positive the three-terminator floor refuses;
+  // one more terminator, and nothing else, is what tips it
+  const tips = storePost(
+    "hive_write",
+    { text: "X breaks Y. Use Z instead. And W matters too.", anchors: [ANCHOR_ONE] },
+    fixture("write", "approved"),
+  )
+  assert.ok(feedbackText(tips).trim().length > 0, "the third terminator crosses the floor")
+})
+
+test("CT-H15 · a refused store is never observed", () => {
+  assertInert(
+    storePost("hive_write", LOUD_STORE, fixture("write", "refused")),
+    "a refused write landed nothing to observe",
+  )
+  assertInert(
+    storePost("hive_capture", LOUD_STORE, refusedCapture()),
+    "a refused capture landed nothing to observe",
+  )
+  // the control: the very same arguments on a store that LANDED are observed
+  const landed = storePost("hive_write", LOUD_STORE, fixture("write", "approved"))
+  assert.ok(feedbackText(landed).trim().length > 0, "the same shape on a landed store is observed")
+})
+
+test("CT-H15 · the observation is delivered at most once per session", () => {
+  const results = drive(ctx(), [
+    armPayload(),
+    recallPost("abstained"),
+    post("Edit", { file_path: SRC }, { ok: true }),
+    post(`${HIVE}hive_write`, LOUD_STORE, fixture("write", "approved")),
+    post(`${HIVE}hive_write`, LOUD_STORE, fixture("write", "anchored")),
+    post(`${HIVE}hive_capture`, LOUD_STORE, fixture("capture", "approved")),
+  ])
+  const spoke = results.filter((res) => feedbackText(res).trim().length > 0)
+  assert.equal(spoke.length, 1, `three tripping stores are observed once, got ${spoke.length}`)
+})
+
+test("CT-H15 · the observation never denies and never blocks", () => {
+  const verbs: [string, Json][] = [
+    ["hive_write", fixture("write", "approved")],
+    ["hive_capture", fixture("capture", "approved")],
+  ]
+  for (const [verb, result] of verbs) {
+    const res = storePost(verb, LOUD_STORE, result)
+    const observation = feedbackText(res)
+    assert.ok(observation.trim().length > 0, `${verb}: the observation must reach the agent`)
+    assert.equal(res.code, 0, `${verb}: an observation never signals a block`)
+    assert.ok(!isDeny(res), `${verb}: an observation is never a deny`)
+    assert.ok(!isBlock(res), `${verb}: an observation is never a block`)
+    assert.doesNotMatch(res.stdout, /"decision"\s*:\s*"block"/, verb)
+    assert.doesNotMatch(res.stdout, /permissionDecision/, verb)
+    for (const key of DEBT_KEYS) {
+      assert.ok(!observation.includes(key), `${verb}: an observation is not a loop item (${key})`)
+    }
   }
 })

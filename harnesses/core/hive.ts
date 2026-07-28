@@ -9,12 +9,14 @@
 
 import {
   AFFIRMATIVE_STATUS,
+  ANCHORS_ARG,
   CARRIER_ARGS,
   ID_ARGS,
   QUALIFYING_DRIFT,
   QUERY_ARG,
   REPLACES_ARG,
   STATUS_REFUSED,
+  TEXT_ARG,
   VERBS,
   VERB_CAPTURE,
   VERB_FLAG,
@@ -196,4 +198,14 @@ export function carrierless(args: JsonObject): boolean {
 /** The question a recall asked, as text. Never interpreted, only measured. */
 export function queryOf(args: JsonObject): string {
   return asText(args[QUERY_ARG])
+}
+
+/** The body a store carried, as text. Never interpreted, only measured. */
+export function textOf(args: JsonObject): string {
+  return asText(args[TEXT_ARG])
+}
+
+/** The code bindings a store named. Total: a missing or hostile value is none. */
+export function anchorsOf(args: JsonObject): readonly Json[] {
+  return asArray(args[ANCHORS_ARG])
 }

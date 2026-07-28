@@ -21,7 +21,7 @@ import { join } from "node:path"
 import { createHash } from "node:crypto"
 
 /** Bumped when the shape changes. An unknown version reads absent (silence, never a crash). */
-export const STATE_VERSION = 1
+export const STATE_VERSION = 2
 
 /** Ledger files older than this are swept on load, which is why no end-of-session hook exists. */
 export const PRUNE_AFTER_MS = 7 * 24 * 60 * 60 * 1000
@@ -42,16 +42,25 @@ export interface LoopState {
   readonly actionable: readonly number[]
   /** An outcome call followed the last serving recall. */
   readonly outcomeAfterServe: boolean
-  /** Store calls whose envelope was not a refusal. */
-  readonly stored: number
+  /**
+   * Landed store calls, counted PER VERB. Two counters rather than one because
+   * the two verbs close different things — a single total could not tell a
+   * session that wrote from one that captured.
+   */
+  readonly writes: number
+  readonly captures: number
   /** A landed store carried neither binding nor scope. */
   readonly unscopedStore: boolean
+  /** The one-per-session shape observation has been spent. */
+  readonly shapeObserved: boolean
   /** Ids in a maintenance call the server AFFIRMED. */
   readonly maintained: readonly number[]
   /** Ids deferred by a final-message sentinel. */
   readonly deferred: readonly number[]
   /** The recorded "nothing applies" rationale. */
   readonly noStoreWhy: string
+  /** The recorded "the verb choice was not clear" rationale. */
+  readonly captureWhy: string
   /** The recorded "this binds to nothing" rationale. */
   readonly generalWhy: string
   /** Loop keys that already blocked once. */
@@ -67,11 +76,14 @@ export const EMPTY: LoopState = Object.freeze({
   served: Object.freeze([]) as readonly number[],
   actionable: Object.freeze([]) as readonly number[],
   outcomeAfterServe: false,
-  stored: 0,
+  writes: 0,
+  captures: 0,
   unscopedStore: false,
+  shapeObserved: false,
   maintained: Object.freeze([]) as readonly number[],
   deferred: Object.freeze([]) as readonly number[],
   noStoreWhy: "",
+  captureWhy: "",
   generalWhy: "",
   blocks: Object.freeze([]) as readonly string[],
 })
@@ -153,11 +165,14 @@ export function load(
     served: numbers(doc["served"]),
     actionable: numbers(doc["actionable"]),
     outcomeAfterServe: doc["outcomeAfterServe"] === true,
-    stored: count(doc["stored"]),
+    writes: count(doc["writes"]),
+    captures: count(doc["captures"]),
     unscopedStore: doc["unscopedStore"] === true,
+    shapeObserved: doc["shapeObserved"] === true,
     maintained: numbers(doc["maintained"]),
     deferred: numbers(doc["deferred"]),
     noStoreWhy: text(doc["noStoreWhy"]),
+    captureWhy: text(doc["captureWhy"]),
     generalWhy: text(doc["generalWhy"]),
     blocks: strings(doc["blocks"]),
   })

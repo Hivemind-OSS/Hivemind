@@ -5,8 +5,8 @@
 //   ─────────────────   ────────────────────────────────────────────────────────
 //   SESSION_RESUMED     re-state open loop items as context. Cannot block.
 //   TOOL_PRE            two gates. Deny with a reason, or nothing.
-//   TOOL_POST           arming, journalling, one feedback case. Never blocks.
-//   TURN_END            the five loop items and the three sentinels. Blocks once.
+//   TOOL_POST           arming, journalling, two feedback cases. Never blocks.
+//   TURN_END            the five loop items and the four sentinels. Blocks once.
 //   anything else       inert.
 //
 // The wedge-proofs are structural rather than remembered: a missing ledger reads
@@ -27,6 +27,7 @@ import {
   abstained,
   actionableIds,
   affirmed,
+  anchorsOf,
   carrierless,
   isMaintenance,
   isStore,
@@ -37,6 +38,7 @@ import {
   retiredByRider,
   riderTarget,
   servedIds,
+  textOf,
 } from "./hive.ts"
 
 /** What the reducer decided, and what to journal. A null ledger writes nothing. */
@@ -60,7 +62,7 @@ export const LOOP_KEYS = [
   SCOPE_MISSING,
 ] as const
 
-const SENTINEL = /^\s*HIVE-LOOP:\s*(no-store|defer|general)\b([^—]*)—(.*)$/
+const SENTINEL = /^\s*HIVE-LOOP:\s*(no-store|capture|defer|general)\b([^—]*)—(.*)$/
 
 // ── the one place every emitted string lives ─────────────────────────────────
 //
@@ -84,6 +86,7 @@ const GATE_STORE = unresolved("stores a memory")
 const SENTINEL_HELP =
   "Close an item by making the call, or end your reply with one of these lines:\n" +
   "  HIVE-LOOP: no-store — <why nothing applied>\n" +
+  "  HIVE-LOOP: capture — <why the verb choice was not clear>\n" +
   "  HIVE-LOOP: defer <ids> — <why they stay open>\n" +
   "  HIVE-LOOP: general — <why this binds to no repo or path>"
 
@@ -93,6 +96,15 @@ function bundledFeedback(query: string): string {
     `separate intents (observed: ${intentSignals(query).join(", ")}). Whether to ` +
     `re-ask it as separate calls is your decision, and what a well-scoped query ` +
     `looks like ${AUTHORITY}.`
+  )
+}
+
+function shapeFeedback(verb: string, signals: readonly string[]): string {
+  return (
+    `hive-loop: this ${verb} landed carrying ${signals.length} structural ` +
+    `observation(s) (observed: ${signals.join(", ")}). What to do about that — ` +
+    `whether it is one memory or several, and what it should bind to — is your ` +
+    `decision, and what a well-formed one looks like ${AUTHORITY}.`
   )
 }
 
@@ -118,9 +130,10 @@ function itemLine(key: string, state: LoopState, open: readonly number[]): strin
   }
   if (key === STORE_MISSING) {
     return (
-      `- ${STORE_MISSING}: ${state.mutations} tree-changing call(s) observed and no ` +
-      `store landed. ${WRITE} and ${CAPTURE} are both available; which one applies, ` +
-      `or neither, ${AUTHORITY}.`
+      `- ${STORE_MISSING}: ${state.mutations} tree-changing call(s) observed, ` +
+      `${state.writes} landed ${WRITE} call(s) and ${state.captures} landed ` +
+      `${CAPTURE} call(s) journaled. Which one applies, or neither, ${AUTHORITY}. ` +
+      `A landed ${CAPTURE} closes this item alongside the declaration line below.`
     )
   }
   return (
@@ -164,6 +177,48 @@ function bundled(query: string): boolean {
   return intentSignals(query).length > 0
 }
 
+// ── the store-shape measurement (counting, never classifying) ────────────────
+//
+// Every member is a tally or an absence a parser can settle. None of them reads
+// what the text MEANS, which is the whole reason this can be observed at all:
+// the harness reports the count and leaves the verdict where it belongs.
+//
+// The floors are chosen against the false positive each one has. Two sentences
+// ("X breaks Y. Use Z instead.") is one dense fact, so the terminator floor is
+// THREE and not two; a single list marker or a single symbol separator is prose,
+// so both of those are two.
+//
+// A terminator counts only where it ENDS a word — the dot inside `recall.py` or
+// `0.7` terminates nothing. Without that clause the population this observes is
+// exactly the one it misreads: a single-fact lesson about code names files, and
+// two file names plus a real full stop would trip a floor meant for three
+// sentences, spending the session's one observation on prose that carries one fact.
+
+const LIST_MARKER = /^\s*(?:[-*+]|\d+[.)])\s+/
+const SENTENCE_END = /[.!?](?:\s|$)/g
+const SYMBOL_SEPARATOR = "::"
+
+const LIST_FLOOR = 2
+const SYMBOL_FLOOR = 2
+const SENTENCE_FLOOR = 3
+const BINDING_FLOOR = 2
+
+/** The observations that make a landed store read as more than one thing. Never a verdict. */
+export function shapeSignals(args: JsonObject): readonly string[] {
+  const out: string[] = []
+  const bindings = anchorsOf(args).length
+  if (bindings === 0) out.push("no code site named")
+  else if (bindings >= BINDING_FLOOR) out.push(`${bindings} code sites named`)
+  const body = textOf(args)
+  const markers = body.split("\n").filter((line) => LIST_MARKER.test(line)).length
+  if (markers >= LIST_FLOOR) out.push(`${markers} list markers`)
+  const separators = body.split(SYMBOL_SEPARATOR).length - 1
+  if (separators >= SYMBOL_FLOOR) out.push(`${separators} ${SYMBOL_SEPARATOR} separators`)
+  const terminators = (body.match(SENTENCE_END) ?? []).length
+  if (terminators >= SENTENCE_FLOOR) out.push(`${terminators} sentence terminators`)
+  return out
+}
+
 // ── the loop items ───────────────────────────────────────────────────────────
 
 /** Actionable ids the session has neither resolved nor deferred. */
@@ -179,7 +234,14 @@ export function openKeys(state: LoopState): readonly string[] {
   if (state.mutations > 0 && state.recalls === 0) out.push(RECALL_MISSING)
   if (state.served.length > 0 && !state.outcomeAfterServe) out.push(OUTCOME_MISSING)
   if (openIds(state).length > 0) out.push(MAINTENANCE_MISSING)
-  if (state.mutations > 0 && state.stored === 0 && state.noStoreWhy === "") out.push(STORE_MISSING)
+  if (
+    state.mutations > 0 &&
+    state.writes === 0 &&
+    state.noStoreWhy === "" &&
+    !(state.captures > 0 && state.captureWhy !== "")
+  ) {
+    out.push(STORE_MISSING)
+  }
   if (state.unscopedStore && state.generalWhy === "") out.push(SCOPE_MISSING)
   return out
 }
@@ -187,7 +249,7 @@ export function openKeys(state: LoopState): readonly string[] {
 // ── the sentinels ────────────────────────────────────────────────────────────
 
 /**
- * Read the three declarations out of the turn's final message. A declaration
+ * Read the four declarations out of the turn's final message. A declaration
  * with an EMPTY rationale closes nothing — that is what keeps it a decision
  * rather than a way past the gate.
  */
@@ -201,6 +263,8 @@ export function applySentinels(state: LoopState, finalMessage: string): LoopStat
     const kind = match[1]
     if (kind === "no-store") {
       next = { ...next, noStoreWhy: why }
+    } else if (kind === "capture") {
+      next = { ...next, captureWhy: why }
     } else if (kind === "general") {
       next = { ...next, generalWhy: why }
     } else {
@@ -258,7 +322,10 @@ function journal(state: LoopState, event: Event): LoopState {
 
   if (isStore(event.verb)) {
     if (envelope === undefined || refused(envelope)) return next
-    next = { ...next, stored: next.stored + 1 }
+    next =
+      event.verb === WRITE
+        ? { ...next, writes: next.writes + 1 }
+        : { ...next, captures: next.captures + 1 }
     if (carrierless(event.args)) next = { ...next, unscopedStore: true }
     // a store's own retirement rider routes through the one retirement owner
     // after the write lands, so its outcome is reported in this same envelope
@@ -313,6 +380,15 @@ export function decide(event: Event, state: LoopState | null, env: Env): Outcome
       const query = queryOf(event.args)
       if (envelope !== undefined && abstained(envelope) && bundled(query)) {
         return resolved(feedback(bundledFeedback(query)), next)
+      }
+    }
+    // one observation per session, spent on the first landed store that trips a
+    // signal: the budget is what keeps a channel with no server-side gate credible
+    if (isStore(event.verb) && next.armed && !next.shapeObserved) {
+      const envelope = readEnvelope(event.result)
+      const signals = envelope === undefined || refused(envelope) ? [] : shapeSignals(event.args)
+      if (signals.length > 0) {
+        return resolved(feedback(shapeFeedback(event.verb, signals)), { ...next, shapeObserved: true })
       }
     }
     return resolved(INERT, next)

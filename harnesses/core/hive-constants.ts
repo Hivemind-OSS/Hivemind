@@ -60,6 +60,12 @@ export const CARRIER_ARGS = [
 /** The argument key a recall's question rides on. */
 export const QUERY_ARG = "query"
 
+/** The argument key a memory's own text rides on. */
+export const TEXT_ARG = "text"
+
+/** The argument key a memory's code bindings ride on. */
+export const ANCHORS_ARG = "anchors"
+
 /** The id-bearing arguments of each verb that can name a memory to retire. */
 export const ID_ARGS: Readonly<Record<string, readonly string[]>> = {
   "hive_flag": ["a", "b", "winner"],

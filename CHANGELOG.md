@@ -7,9 +7,15 @@ All notable changes to this project are documented here.
   mechanical client-side.** A governed session cannot change code without a recall, cannot store
   without one, and cannot end a turn leaving a decision silently unmade — where before every one of
   those was advisory. Five turn-end items (`recall_missing`, `outcome_missing`,
-  `maintenance_missing`, `store_missing`, `scope_missing`), two blocking gates, one feedback case
-  and three declaration sentinels; each item blocks at most once per session, so a session can
-  never wedge. **Zero server behavior changes** — the harness is detect-only, opens no socket, holds
+  `maintenance_missing`, `store_missing`, `scope_missing`), two blocking gates, two feedback cases
+  and four declaration sentinels; each item blocks at most once per session, so a session can
+  never wedge. The two store verbs are not interchangeable to it: `store_missing` opens on the
+  absence of a landed `hive_write`, and a landed `hive_capture` closes it only alongside a
+  human-visible `HIVE-LOOP: capture — <why>` line. A landed store whose arguments carry a
+  structural signal — no code site named, two or more named, a list, repeated `::` separators, or
+  three or more sentence terminators — earns ONE observation per session naming what was counted;
+  it is advisory and can never deny or block. **Zero server behavior changes** — the harness is
+  detect-only, opens no socket, holds
   no store handle, and states no memory semantics of its own; the served contract remains the only
   contract. A clone yields inert files: enforcement needs the plugin installed and a session
   restart, and `HIVE_LOOP__ENABLED=0` makes every hook byte-inert.

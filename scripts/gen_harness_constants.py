@@ -70,6 +70,16 @@ CARRIER_ARGS = ("anchors", "repos")
 #: The argument key a recall's question rides on.
 QUERY_ARG = "query"
 
+#: The argument key a memory's own text rides on. Asserted on both store verbs'
+#: advertised schema below, so a rename breaks generation rather than silently
+#: leaving a rule measuring an argument that no longer arrives.
+TEXT_ARG = "text"
+
+#: The argument key a memory's code bindings ride on. Also a member of
+#: ``CARRIER_ARGS``, but named on its own because a rule reads the LIST — how
+#: many bindings arrived — rather than only asking whether some carrier was set.
+ANCHORS_ARG = "anchors"
+
 #: The argument key a store rides its own retirement rider on.
 REPLACES_ARG = "replaces"
 
@@ -139,6 +149,12 @@ def render() -> str:
                 f"gen_harness_constants: {verb} no longer advertises {missing} — the "
                 f"carrier check would silently stop checking anything."
             )
+        unshaped = [a for a in (TEXT_ARG, ANCHORS_ARG) if a not in props]
+        if unshaped:
+            raise SystemExit(
+                f"gen_harness_constants: {verb} no longer advertises {unshaped} — the "
+                f"shape observation would silently stop counting anything."
+            )
     if QUERY_ARG not in (dict(_schema(NAMED_VERBS["RECALL"]).get("properties") or {})):
         raise SystemExit(
             f"gen_harness_constants: hive_recall no longer advertises {QUERY_ARG!r}"
@@ -187,6 +203,8 @@ def render() -> str:
         "\n/** The argument keys a memory's code binding or repo scope rides on. */\n",
         _ts_list("CARRIER_ARGS", CARRIER_ARGS),
         f'\n/** The argument key a recall\'s question rides on. */\nexport const QUERY_ARG = "{QUERY_ARG}"\n',
+        f'\n/** The argument key a memory\'s own text rides on. */\nexport const TEXT_ARG = "{TEXT_ARG}"\n',
+        f'\n/** The argument key a memory\'s code bindings ride on. */\nexport const ANCHORS_ARG = "{ANCHORS_ARG}"\n',
         "\n/** The id-bearing arguments of each verb that can name a memory to retire. */\n",
         "export const ID_ARGS: Readonly<Record<string, readonly string[]>> = {\n",
         *(

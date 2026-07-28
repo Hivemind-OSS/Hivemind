@@ -21,6 +21,7 @@ import {
   decide,
   intentSignals,
   openKeys,
+  shapeSignals,
 } from "../core/decide.ts"
 
 const ON: Env = { enabled: true, stateDir: "/tmp/state", warnings: [] }
@@ -36,6 +37,21 @@ function fixture(group: string, scenario: string): Json {
   const slot = all[group]?.[scenario]
   assert.ok(slot !== undefined, `fixture ${group}.${scenario} not generated yet`)
   return slot
+}
+
+/** The recorded capture result with the server's own refusal status substituted in. */
+function refusedCapture(): Json {
+  const result = JSON.parse(JSON.stringify(fixture("capture", "approved"))) as {
+    content?: { text?: string }[]
+  }
+  const slot = result.content?.[0]
+  assert.ok(slot !== undefined && typeof slot.text === "string", "recorded result has no content[].text")
+  const refusedText = (fixture("write", "refused") as { content?: { text?: string }[] }).content?.[0]?.text
+  assert.ok(typeof refusedText === "string", "the recorded refusal carries no envelope")
+  const envelope = JSON.parse(slot.text) as Record<string, Json>
+  envelope["status"] = (JSON.parse(refusedText) as Record<string, Json>)["status"] ?? null
+  slot.text = JSON.stringify(envelope)
+  return result as Json
 }
 
 function kindOf(d: Decision): string {
@@ -192,19 +208,25 @@ test("each actionable signal is recorded and each non-signal is not", () => {
   }
 })
 
-test("a landed store counts and a refused one does not", () => {
-  for (const [group, scenario, counted] of [
-    ["write", "approved", 1],
-    ["write", "anchored", 1],
-    ["capture", "approved", 1],
-    ["write", "refused", 0],
+test("a landed store counts under ITS OWN verb and a refused one does not", () => {
+  for (const [group, scenario, writes, captures] of [
+    ["write", "approved", 1, 0],
+    ["write", "anchored", 1, 0],
+    ["capture", "approved", 0, 1],
+    ["write", "refused", 0, 0],
+    ["capture", "refused", 0, 0],
   ] as const) {
+    const result =
+      scenario === "refused" && group === "capture"
+        ? refusedCapture()
+        : fixture(group, scenario)
     const out = decide(
-      post({ verb: group === "capture" ? "hive_capture" : "hive_write", args: { text: "x" }, result: fixture(group, scenario) }),
+      post({ verb: group === "capture" ? "hive_capture" : "hive_write", args: { text: "x" }, result }),
       ARMED,
       ON,
     )
-    assert.equal(out.next?.stored, counted, `${group}.${scenario}`)
+    assert.equal(out.next?.writes, writes, `${group}.${scenario}`)
+    assert.equal(out.next?.captures, captures, `${group}.${scenario}`)
   }
 })
 
@@ -260,7 +282,7 @@ test("an unreadable result records nothing but never loses the attempt", () => {
   assert.equal(out.next?.recalls, 1)
   assert.deepEqual(out.next?.served, [])
   const store = decide(post({ verb: "hive_write", args: { text: "x" }, result: null }), ARMED, ON)
-  assert.equal(store.next?.stored, 0, "an unreadable store envelope never counts as landed")
+  assert.equal(store.next?.writes, 0, "an unreadable store envelope never counts as landed")
 })
 
 // ── F1: the one feedback case ────────────────────────────────────────────────
@@ -305,6 +327,69 @@ test("a non-string or empty query never trips the feedback", () => {
   }
 })
 
+// ── F2: the store-shape observation ──────────────────────────────────────────
+
+test("each shape signal stands alone, and the case just under each floor trips none", () => {
+  const anchor = { repo: "alpha", anchor: "app.py::greet" }
+  const other = { repo: "alpha", anchor: "b.py::helper" }
+  const tripping: [string, Record<string, Json>][] = [
+    ["no binding at all", { text: "a flat lesson", repos: ["alpha"] }],
+    ["an empty binding list", { text: "a flat lesson", anchors: [] }],
+    ["two bindings", { text: "a flat lesson", anchors: [anchor, other] }],
+    ["two list markers", { text: "a lesson\n- one\n- two", anchors: [anchor] }],
+    ["two symbol separators", { text: "a.py::g and b.py::h", anchors: [anchor] }],
+    ["three terminators", { text: "X breaks Y. Use Z. And W too.", anchors: [anchor] }],
+  ]
+  for (const [label, args] of tripping) {
+    assert.ok(shapeSignals(args).length > 0, label)
+  }
+  const silent: [string, Record<string, Json>][] = [
+    ["one binding and flat prose", { text: "a flat lesson", anchors: [anchor] }],
+    ["one list marker", { text: "a lesson\n- the only one", anchors: [anchor] }],
+    ["one symbol separator", { text: "the fix is in a.py::g", anchors: [anchor] }],
+    ["two terminators — one dense fact", { text: "X breaks Y. Use Z.", anchors: [anchor] }],
+  ]
+  for (const [label, args] of silent) {
+    assert.deepEqual([...shapeSignals(args)], [], label)
+  }
+  // a hostile value coerces rather than throwing: an unreadable binding list is
+  // no binding, which is exactly the absence the first signal reports
+  assert.deepEqual([...shapeSignals({ text: 42, anchors: "not a list" })], ["no code site named"])
+  assert.deepEqual([...shapeSignals({})], ["no code site named"])
+})
+
+test("the observation is spent once per session and never on a store that did not land", () => {
+  const loud = {
+    text: "a lesson\n- one\n- two. It bites here. And here.",
+    anchors: [{ repo: "alpha", anchor: "app.py::greet" }, { repo: "alpha", anchor: "b.py::helper" }],
+  }
+  const first = decide(
+    post({ verb: "hive_write", args: loud, result: fixture("write", "approved") }),
+    ARMED,
+    ON,
+  )
+  assert.equal(kindOf(first.decision), "feedback")
+  assert.equal(first.next?.shapeObserved, true)
+  const second = decide(
+    post({ verb: "hive_capture", args: loud, result: fixture("capture", "approved") }),
+    first.next,
+    ON,
+  )
+  assert.equal(kindOf(second.decision), "inert", "the budget is one observation per session")
+  const refusedStore = decide(
+    post({ verb: "hive_write", args: loud, result: fixture("write", "refused") }),
+    ARMED,
+    ON,
+  )
+  assert.equal(kindOf(refusedStore.decision), "inert", "a refused store landed nothing to observe")
+  const unarmed = decide(
+    post({ verb: "hive_write", args: loud, result: fixture("write", "approved") }),
+    EMPTY,
+    ON,
+  )
+  assert.equal(kindOf(unarmed.decision), "inert", "an unarmed session is silent")
+})
+
 // ── the five loop items ──────────────────────────────────────────────────────
 
 test("each loop item opens on exactly its own predicate", () => {
@@ -312,7 +397,10 @@ test("each loop item opens on exactly its own predicate", () => {
     [{}, []],
     [{ mutations: 1 }, [RECALL_MISSING, STORE_MISSING]],
     [{ mutations: 1, recalls: 1 }, [STORE_MISSING]],
-    [{ mutations: 1, recalls: 1, stored: 1 }, []],
+    [{ mutations: 1, recalls: 1, writes: 1 }, []],
+    [{ mutations: 1, recalls: 1, captures: 1 }, [STORE_MISSING]],
+    [{ mutations: 1, recalls: 1, captures: 1, captureWhy: "the choice was not clear" }, []],
+    [{ mutations: 1, recalls: 1, captureWhy: "the choice was not clear" }, [STORE_MISSING]],
     [{ mutations: 1, recalls: 1, noStoreWhy: "nothing applied" }, []],
     [{ served: [1] }, [OUTCOME_MISSING]],
     [{ served: [1], outcomeAfterServe: true }, []],
@@ -339,39 +427,43 @@ test("every loop item is reachable and none is dead", () => {
   assert.deepEqual([...reachable].sort(), [...LOOP_KEYS].sort())
 })
 
-test("the two mutually exclusive pairs mean the largest open set is three", () => {
-  // recall_missing needs zero recalls; outcome_missing and maintenance_missing
-  // each need one. store_missing needs no landed store; scope_missing needs one.
+test("one mutually exclusive pair is left, so the largest open set is four", () => {
+  // recall_missing needs zero recalls while outcome_missing and maintenance_missing
+  // each need one — the only pair exclusive by construction. store_missing and
+  // scope_missing are NOT: a carrierless capture with no write opens both at once.
   let largest = 0
   for (const mutations of [0, 1]) {
     for (const recalls of [0, 1]) {
-      for (const stored of [0, 1]) {
-        for (const served of [[], [1]]) {
-          for (const actionable of [[], [1]]) {
-            for (const unscopedStore of [false, true]) {
-              const consistent =
-                (recalls > 0 || served.length === 0) &&
-                (recalls > 0 || actionable.length === 0) &&
-                (actionable.length === 0 || served.length > 0) &&
-                (!unscopedStore || stored > 0)
-              if (!consistent) continue
-              const keys = openKeys({
-                ...ARMED,
-                mutations,
-                recalls,
-                stored,
-                served,
-                actionable,
-                unscopedStore,
-              })
-              largest = Math.max(largest, keys.length)
+      for (const writes of [0, 1]) {
+        for (const captures of [0, 1]) {
+          for (const served of [[], [1]]) {
+            for (const actionable of [[], [1]]) {
+              for (const unscopedStore of [false, true]) {
+                const consistent =
+                  (recalls > 0 || served.length === 0) &&
+                  (recalls > 0 || actionable.length === 0) &&
+                  (actionable.length === 0 || served.length > 0) &&
+                  (!unscopedStore || writes + captures > 0)
+                if (!consistent) continue
+                const keys = openKeys({
+                  ...ARMED,
+                  mutations,
+                  recalls,
+                  writes,
+                  captures,
+                  served,
+                  actionable,
+                  unscopedStore,
+                })
+                largest = Math.max(largest, keys.length)
+              }
             }
           }
         }
       }
     }
   }
-  assert.equal(largest, 3)
+  assert.equal(largest, 4)
 })
 
 // ── TURN_END ─────────────────────────────────────────────────────────────────
@@ -393,7 +485,7 @@ test("an item that first opens AFTER a block may block once more, and no more", 
   const first = decide(end(), { ...ARMED, mutations: 1 }, ON)
   assert.equal(kindOf(first.decision), "block")
   assert.ok(first.next !== null)
-  const later = { ...first.next, unscopedStore: true, stored: 1 }
+  const later = { ...first.next, unscopedStore: true, writes: 1 }
   const second = decide(end(), later, ON)
   assert.equal(kindOf(second.decision), "block")
   assert.match(reasonOf(second.decision), new RegExp(SCOPE_MISSING))
@@ -427,6 +519,12 @@ test("the block reason names both store verbs and no hive semantics", () => {
 test("each sentinel closes exactly its own item when it carries a rationale", () => {
   const noStore = decide(end("HIVE-LOOP: no-store — a one-line typo fix"), { ...ARMED, mutations: 1, recalls: 1 }, ON)
   assert.equal(kindOf(noStore.decision), "inert")
+  const captured = decide(
+    end("HIVE-LOOP: capture — the lesson may not generalize past this branch"),
+    { ...ARMED, mutations: 1, recalls: 1, captures: 1 },
+    ON,
+  )
+  assert.equal(kindOf(captured.decision), "inert")
   const general = decide(end("HIVE-LOOP: general — a language-level fact"), { ...ARMED, unscopedStore: true }, ON)
   assert.equal(kindOf(general.decision), "inert")
   const defer = decide(
