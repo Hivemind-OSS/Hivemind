@@ -1040,7 +1040,11 @@ test("CT-H11 · claude plugin validate --strict exits 0", () => {
 })
 
 test("CT-H11 · hooks.json registers exactly the handled events, and the adapter agrees both ways", async () => {
-  const hooks = requireManifest(HOOKS_MANIFEST, "harnesses/hooks/hooks.json")
+  // the platform reads registrations from a top-level `hooks` record, not from the
+  // file root — the event map is one level in
+  const hooks = requireManifest(HOOKS_MANIFEST, "harnesses/hooks/hooks.json")[
+    "hooks"
+  ] as Record<string, Json>
   const mod = await requireAdapterModule()
   const map = mod["EVENT_MAP"] as Record<string, string> | undefined
   assert.ok(map !== undefined, "the adapter must export its event-name map")
@@ -1057,7 +1061,11 @@ test("CT-H11 · hooks.json registers exactly the handled events, and the adapter
 })
 
 test("CT-H11 · every hook command is the one adapter under the plugin root", () => {
-  const hooks = requireManifest(HOOKS_MANIFEST, "harnesses/hooks/hooks.json")
+  // the platform reads registrations from a top-level `hooks` record, not from the
+  // file root — the event map is one level in
+  const hooks = requireManifest(HOOKS_MANIFEST, "harnesses/hooks/hooks.json")[
+    "hooks"
+  ] as Record<string, Json>
   const commands: string[] = []
   for (const groups of Object.values(hooks)) {
     for (const group of groups as { hooks?: { command?: string }[] }[]) {
@@ -1074,7 +1082,11 @@ test("CT-H11 · every hook command is the one adapter under the plugin root", ()
 })
 
 test("CT-H11 · the blocking matcher carries no read tool and no literal MCP prefix", () => {
-  const hooks = requireManifest(HOOKS_MANIFEST, "harnesses/hooks/hooks.json")
+  // the platform reads registrations from a top-level `hooks` record, not from the
+  // file root — the event map is one level in
+  const hooks = requireManifest(HOOKS_MANIFEST, "harnesses/hooks/hooks.json")[
+    "hooks"
+  ] as Record<string, Json>
   const preGroups = hooks["PreToolUse"] as { matcher?: string }[] | undefined
   assert.ok(preGroups !== undefined && preGroups.length > 0, "the blocking hook must be registered")
   for (const group of preGroups) {
