@@ -16,6 +16,10 @@ load only one file, read `llms-full.txt` — it is the complete guide and assume
 - [README.md](README.md): Quickstart from a clone — requirements, `hive up`, connecting local and remote agents, registering repos (`hive repo add` / `hive repos`), the two-door auth model, configuration, and repository layout.
 - [HIVE-ADMIN.md](HIVE-ADMIN.md): Admin & operator guide — first-time setup, tunneling, tuning the recall/safety knobs, the synced-repo registry + per-repo census feed (`HIVE_SYNC__*`), KPIs, day-2 operations (incl. `hive ingest`, the manual census escape hatch), and staying current (`hive upgrade` + the first-party server-side census engines).
 
+## Client-side enforcement
+
+- [harnesses/README.md](harnesses/README.md): The agent-loop harness (`hive-loop`) — an opt-in Claude Code plugin that makes the recall-before-change, recall-before-store and decide-before-turn-end loop mechanical rather than advisory. Detect-only: it states no memory semantics, opens no socket, and holds no handle; the served contract stays the only contract. Install it at user scope — a clone yields inert files.
+
 ## Operator runbooks
 
 - [skills/README.md](skills/README.md): Index of the runnable operator skills (bringup, connect-team, connect-repo, upgrade, backup-restore, operate) for the load-bearing `hive` operations.
