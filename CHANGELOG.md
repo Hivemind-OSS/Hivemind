@@ -2,6 +2,44 @@
 
 All notable changes to this project are documented here.
 
+## Added
+- **The agent-loop harness (`harnesses/`), an opt-in Claude Code plugin that makes the memory loop
+  mechanical client-side.** A governed session cannot change code without a recall, cannot store
+  without one, and cannot end a turn leaving a decision silently unmade — where before every one of
+  those was advisory. Five turn-end items (`recall_missing`, `outcome_missing`,
+  `maintenance_missing`, `store_missing`, `scope_missing`), two blocking gates, two feedback cases
+  and four declaration sentinels; each item blocks at most once per session, so a session can
+  never wedge. The two store verbs are not interchangeable to it: `store_missing` opens on the
+  absence of a landed `hive_write`, and a landed `hive_capture` closes it only alongside a
+  human-visible `HIVE-LOOP: capture — <why>` line. A landed store whose arguments carry a
+  structural signal — no code site named, two or more named, a list, repeated `::` separators, or
+  three or more sentence terminators — earns ONE observation per session naming what was counted;
+  it is advisory and can never deny or block. **Zero server behavior changes** — the harness is
+  detect-only, opens no socket, holds
+  no store handle, and states no memory semantics of its own; the served contract remains the only
+  contract. A clone yields inert files: enforcement needs the plugin installed and a session
+  restart, and `HIVE_LOOP__ENABLED=0` makes every hook byte-inert.
+- **The harness-to-server coupling is generated and gated, not hand-copied.**
+  `scripts/gen_harness_constants.py` emits `harnesses/core/hive-constants.ts` from the server source
+  (verb names, `retirement.QUALIFYING_DRIFT`, the affirmative-status allow-list, and the argument
+  keys read off the advertised tool schemas), and `tests/harness/` regenerates it, fails on any
+  diff, and records a REAL `HiveMCPServer` envelope as the fixture the TypeScript parser asserts
+  against. A renamed verb, a widened drift tier, a new status literal or a moved envelope key is now
+  a failing test in this repo's own suite rather than silent client rot.
+
+## Fixed
+- **`hive_flag`'s affirmative status is `flagged`, not `recorded`.** Found while recording the
+  envelope fixture: `recorded` is `hive_outcome`'s status, and the advisory verb echoes
+  `FlagResult.status`. Crediting `recorded` would have left the advisory close path dead. The
+  status vocabulary is now classified exhaustively, with both the boundary's literal scan and the
+  recorded envelopes asserting the classification covers it.
+
+## Changed
+- **`make check` covers both languages.** The typecheck verb runs the strict TypeScript checker
+  after `mypy`, and the test verb runs the harness suite after `pytest`; a missing
+  `harnesses/node_modules` bootstraps itself rather than failing with a bare `tsc: not found`. No
+  existing leg changed, and `pyproject.toml` needed no change at all.
+
 ## Removed
 - **`docs/` is no longer tracked.** It held local design/engine notes and planning docs
   (`docs/engines/`, `docs/PLANS/`) that belong with the repo's other local-only, gitignored

@@ -16,6 +16,9 @@ __pycache__/
 htmlcov/
 coverage.xml
 
+# ── Harness dev gate (the type checker only; the shipped plugin resolves nothing outside node:*) ──
+harnesses/node_modules/
+
 # ── Packaging / build artifacts ──
 build/
 dist/
