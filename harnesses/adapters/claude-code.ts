@@ -269,7 +269,18 @@ export function render(decision: Decision, kind: EventKind): Emission {
     }
   }
   if (decision.kind === "feedback") {
-    return { stdout: "", stderr: decision.reason, code: 2 }
+    // structured stdout, never stderr+exit-2: this rides a detached hook, and a
+    // detached process has no turn left to feed stderr back into
+    return {
+      stdout: JSON.stringify({
+        hookSpecificOutput: {
+          hookEventName: WIRE_EVENT[kind],
+          additionalContext: decision.reason,
+        },
+      }),
+      stderr: "",
+      code: 0,
+    }
   }
   return SILENT
 }

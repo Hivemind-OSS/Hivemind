@@ -351,6 +351,19 @@ function blockReason(res: Res): string {
   return String(res.json?.["reason"] ?? "")
 }
 
+/**
+ * The text an observation actually delivers to the agent. Reads the emission the
+ * way the platform does, so the assertion names the outcome and not the wire.
+ */
+function feedbackText(res: Res): string {
+  const trimmed = res.stdout.trim()
+  if (trimmed === "") return ""
+  const parsed = JSON.parse(trimmed) as Record<string, Json>
+  const hso = parsed["hookSpecificOutput"] as Record<string, Json> | undefined
+  const text = hso?.["additionalContext"]
+  return typeof text === "string" ? text : ""
+}
+
 function assertInert(res: Res, what: string): void {
   assert.equal(res.code, 0, `${what}: expected exit 0, got ${res.code} — ${res.stderr}`)
   assert.equal(res.stdout.trim(), "", `${what}: expected no stdout, got ${res.stdout}`)
@@ -463,9 +476,12 @@ test("CT-H2 · an abstained recall carrying two intents produces feedback", () =
       post(`${HIVE}hive_recall`, { query: BUNDLED }, fixture("recall", "abstained")),
     ]),
   )
-  assert.equal(res.code, 2, "feedback is stderr + exit 2")
-  assert.ok(res.stderr.trim().length > 0, "feedback must carry text")
-  assert.equal(res.stdout.trim(), "", "feedback never writes hook JSON")
+  // the OBSERVATION must reach the agent; the transport is the adapter's choice.
+  // it rides structured stdout because this hook is detached (`async`), and a
+  // detached process's stderr has no turn left to feed back into
+  assert.equal(res.code, 0, "feedback never signals a block")
+  assert.ok(feedbackText(res).trim().length > 0, "feedback must carry text")
+  assert.equal(res.stderr.trim(), "", "the observation never rides stderr")
 })
 
 test("CT-H2 · the feedback reports BOTH observations and never blocks", () => {
@@ -475,8 +491,8 @@ test("CT-H2 · the feedback reports BOTH observations and never blocks", () => {
       post(`${HIVE}hive_recall`, { query: BUNDLED }, fixture("recall", "abstained")),
     ]),
   )
-  assert.match(res.stderr, /abstain/i, "the server's own abstain is the evidence")
-  assert.match(res.stderr, /intent/i, "the second observation is the bundled query")
+  assert.match(feedbackText(res), /abstain/i, "the server's own abstain is the evidence")
+  assert.match(feedbackText(res), /intent/i, "the second observation is the bundled query")
   assert.doesNotMatch(res.stdout, /"decision"\s*:\s*"block"/)
   assert.doesNotMatch(res.stdout, /permissionDecision/)
 })
