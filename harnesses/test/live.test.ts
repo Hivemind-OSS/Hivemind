@@ -159,7 +159,14 @@ test("a session that touches no source never arms", { skip: !LIVE }, () => {
 interface Channel {
   readonly kind: string
   readonly event: string
+  /** the matcher the PROBE registers, chosen to be easy to trigger in a scratch repo */
   readonly matcher?: string
+  /**
+   * the matcher of the SHIPPED group that carries this channel — the probe takes
+   * its async flag from there, so this channel is driven the way it really runs.
+   * An event with one group leaves it undefined.
+   */
+  readonly shippedMatcher?: string
   readonly emit: (marker: string) => string
   /** did the platform PARSE and honor it — as opposed to merely running us? */
   readonly honored: (marker: string, records: Record<string, unknown>[], result: Json) => boolean
@@ -208,28 +215,40 @@ const CHANNELS: readonly Channel[] = [
     kind: "feedback",
     event: "PostToolUse",
     matcher: "Read",
+    // the hive group, which is SYNCHRONOUS: a detached hook's output has no turn
+    // held open for it, so it is collected only if another turn happens to follow
+    shippedMatcher: "mcp__.*__hive_.*",
     emit: (m) =>
       JSON.stringify({ hookSpecificOutput: { hookEventName: "PostToolUse", additionalContext: m } }),
-    // a DETACHED hook is recorded either way; an EMPTY response is the signature
-    // of an emission the platform took nothing from
     honored: (m, recs) =>
       attachments(recs, m).some(
         (a) =>
-          a["type"] === "async_hook_response" &&
-          typeof a["response"] === "object" &&
-          a["response"] !== null &&
-          Object.keys(a["response"] as Json).length > 0,
+          a["type"] === "hook_additional_context" ||
+          // detached delivery, kept so a regression to async is diagnosed rather
+          // than merely failing: an EMPTY response is what a dropped one looks like
+          (a["type"] === "async_hook_response" &&
+            typeof a["response"] === "object" &&
+            a["response"] !== null &&
+            Object.keys(a["response"] as Json).length > 0),
       ),
   },
 ]
 
-/** the async flag the SHIPPED manifest carries for this event — never a literal */
-function shippedAsync(event: string): boolean {
+/** the async flag the SHIPPED manifest carries for this channel — never a literal */
+function shippedAsync(event: string, shippedMatcher?: string): boolean {
   const manifest = JSON.parse(readFileSync(join(HARNESS_ROOT, "hooks", "hooks.json"), "utf8")) as Json
-  const groups = (manifest["hooks"] as Json)[event] as { hooks?: Json[] }[] | undefined
+  const groups = (manifest["hooks"] as Json)[event] as { matcher?: string; hooks?: Json[] }[] | undefined
   assert.ok(groups !== undefined, `the shipped manifest registers no ${event}`)
-  const first = groups[0]?.hooks?.[0]
-  return first?.["async"] === true
+  const group =
+    shippedMatcher === undefined
+      ? groups[0]
+      : groups.find((g) => g.matcher === shippedMatcher)
+  assert.ok(
+    group !== undefined,
+    `the shipped manifest has no ${event} group matching ${shippedMatcher} — ` +
+      `the probe would measure a channel the harness does not actually run`,
+  )
+  return group.hooks?.[0]?.["async"] === true
 }
 
 function transcriptOf(sessionId: string): Record<string, unknown>[] {
@@ -293,7 +312,7 @@ for (const channel of CHANNELS) {
       command: 'node "${CLAUDE_PLUGIN_ROOT}/hooks/probe.js"',
       timeout: 10,
     }
-    if (shippedAsync(channel.event)) entry["async"] = true
+    if (shippedAsync(channel.event, channel.shippedMatcher)) entry["async"] = true
     const group: Json = { hooks: [entry] }
     if (channel.matcher !== undefined) group["matcher"] = channel.matcher
     writeFileSync(
@@ -329,7 +348,7 @@ for (const channel of CHANNELS) {
       channel.honored(marker, transcriptOf(sessionId), result),
       `the ${channel.kind} channel emitted but the platform did not honor it — ` +
         `the decision would be inert in production with a green suite. ` +
-        `event=${channel.event} async=${shippedAsync(channel.event)}`,
+        `event=${channel.event} async=${shippedAsync(channel.event, channel.shippedMatcher)}`,
     )
   })
 }

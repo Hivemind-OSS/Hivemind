@@ -121,19 +121,39 @@ claude -p "…" --plugin-dir /path/to/harnesses \
   --allowedTools Read Edit mcp__plugin_hive-loop_hive__hive_recall mcp__plugin_hive-loop_hive__hive_outcome
 ```
 
-### Two measured limits
+### Why the post-tool hook is registered twice
 
-**`async: true` is honored on the post-tool hook** — measured at 11 s against 39 s for the same
-30-second hook run synchronously. Breadth on that matcher is therefore cheap, which is the whole
-reason the read tools sit there and not on the blocking one. Caveat: a headless run reaps a still-
-running background hook when it exits; the harness's own post-tool work is milliseconds, so it has
-always finished long before.
+The two halves of that event do different work, so they run differently. The rule is one line:
+**a hook is synchronous if and only if it may speak to the model.**
 
-**The bundled-recall feedback does not reach the model in a headless run.** The hook fires and
-journals correctly — the ledger proves it — and the harness emits the feedback on the error channel
-with exit 2, but Claude Code 2.1.220 did not surface that text to the model in `claude -p`, with
-`async` either true or false. Everything the loop depends on is unaffected: the feedback never
-blocks, and it is the one purely advisory signal in the harness.
+| Group | Matcher | Mode | Why |
+|---|---|---|---|
+| journal-only | `Read\|Glob\|Grep\|Edit\|Write\|MultiEdit\|NotebookEdit\|Bash` | `async: true` | arms the session and counts changes; emits nothing, so nothing can be lost. Detached keeps the harness off the read hot path — measured at 11 s against 39 s for the same 30-second hook run synchronously |
+| memory calls | `mcp__.*__hive_.*` | synchronous | reads the envelope **and** may emit the bundled-recall observation. A handful of calls per session, so the wait is immaterial |
+
+**The matchers are disjoint, and that is load-bearing.** Both groups run the same entry point, so a
+tool matching both would run it twice and count one call as two — an over-count that silently
+satisfies a gate nothing cleared. `test/seams.test.ts` asserts no tool name matches two groups of
+one event, and that every tool the harness acts on still matches exactly one.
+
+**Why not detach both.** A detached hook has no turn held open for its output, so the platform can
+only deliver it by attaching it to a *following* turn — and if none follows, it is discarded.
+Measured against 2.1.220 with the same plugin and payload, varying only the shape of the session: a
+two-turn session (read → reply) delivers **nothing**, a two-turn session with a far longer reply
+also delivers nothing — so it is turn count, not elapsed time — and a three-turn session delivers.
+An agent that recalls and then answers is a two-turn session, which is the common shape, and a
+subagent ends the same way with no user to continue it. Synchronous registration removes the
+dependency entirely.
+
+### Delivery is tested, not assumed
+
+Emitting and delivering are claims about two different systems. `test/live.test.ts` drives a
+synthetic marker through **every** decision channel under the async flag read from the shipped
+manifest, then reads the platform's own record of what it honored — `hook_additional_context`,
+`hook_blocking_error`, a populated `permission_denials`, or an `async_hook_response` whose
+`response` is non-empty. `test/seams.test.ts` binds each emitting decision to a probe, so a new
+channel cannot arrive without one, and flipping `async` on an event that carries one reds here
+rather than in production.
 
 ---
 

@@ -164,3 +164,66 @@ test("no delivery probe outlives the decision it covers", () => {
     assert.ok(kinds.includes(kind), `a probe covers "${kind}", which is no longer a decision kind`)
   }
 })
+
+// ── one event, two groups, and they must never both fire ─────────────────────
+//
+// An event is registered twice so each half runs the way its work needs: the
+// journal-only half is detached and stays off the read hot path, the half that
+// can speak to the model is synchronous so the platform holds a turn open for
+// its output. The entry point is the same command either way, so a tool matching
+// BOTH groups would run it twice and count one call as two — an over-count that
+// silently satisfies a gate nothing actually cleared.
+
+const MANIFEST = fileURLToPath(new URL("../hooks/hooks.json", import.meta.url))
+
+/** tool names the harness actually sees, spanning both halves of every matcher */
+const TOOL_NAMES = [
+  "Read",
+  "Glob",
+  "Grep",
+  "Edit",
+  "Write",
+  "MultiEdit",
+  "NotebookEdit",
+  "Bash",
+  "Task",
+  "WebFetch",
+  "mcp__hive__hive_recall",
+  "mcp__hive__hive_write",
+  "mcp__hive__hive_capture",
+  "mcp__hive__hive_outcome",
+  "mcp__hive__hive_supersede",
+  "mcp__hive__hive_prune",
+  "mcp__hive__hive_flag",
+  "mcp__hive__hive_health",
+  "mcp__plugin_hive-loop_hive__hive_recall",
+  "mcp__plugin_hive-loop_hive__hive_write",
+  "mcp__other__not_a_hive_verb",
+]
+
+test("no tool can match two groups of the same event", () => {
+  const manifest = JSON.parse(readFileSync(MANIFEST, "utf8")) as Record<string, unknown>
+  const events = manifest["hooks"] as Record<string, { matcher?: string }[]>
+  for (const [event, groups] of Object.entries(events)) {
+    if (groups.length < 2) continue
+    for (const tool of TOOL_NAMES) {
+      const hit = groups.filter((g) => g.matcher !== undefined && new RegExp(g.matcher).test(tool))
+      assert.ok(
+        hit.length <= 1,
+        `${tool} matches ${hit.length} ${event} groups — the adapter would run twice ` +
+          `and journal the call twice. Matchers on one event must be disjoint.`,
+      )
+    }
+  }
+})
+
+test("every tool the harness acts on still matches exactly one group", () => {
+  const manifest = JSON.parse(readFileSync(MANIFEST, "utf8")) as Record<string, unknown>
+  const post = (manifest["hooks"] as Record<string, { matcher?: string }[]>)["PostToolUse"]
+  assert.ok(post !== undefined, "the manifest registers no PostToolUse")
+  // splitting the event must not have dropped anything on the floor
+  for (const tool of TOOL_NAMES.filter((t) => !t.startsWith("mcp__other") && t !== "Task" && t !== "WebFetch")) {
+    const hit = post.filter((g) => g.matcher !== undefined && new RegExp(g.matcher).test(tool))
+    assert.equal(hit.length, 1, `${tool} matches ${hit.length} PostToolUse groups, expected exactly 1`)
+  }
+})

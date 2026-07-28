@@ -25,13 +25,23 @@
     ],
     "PostToolUse": [
       {
-        "matcher": "Read|Glob|Grep|Edit|Write|MultiEdit|NotebookEdit|Bash|mcp__.*__hive_.*",
+        "matcher": "Read|Glob|Grep|Edit|Write|MultiEdit|NotebookEdit|Bash",
         "hooks": [
           {
             "type": "command",
             "command": "node \"${CLAUDE_PLUGIN_ROOT}/adapters/claude-code.ts\"",
             "timeout": 5,
             "async": true
+          }
+        ]
+      },
+      {
+        "matcher": "mcp__.*__hive_.*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/adapters/claude-code.ts\"",
+            "timeout": 5
           }
         ]
       }
