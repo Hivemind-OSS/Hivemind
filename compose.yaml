@@ -23,6 +23,11 @@ services:
     # tunnel door (8766) is NEVER host-published — it is reachable only over the compose network
     # (the ngrok sidecar below), so a remote caller is ALWAYS bearer-gated. No stdin_open/tty —
     # an HTTP service does not attach to stdin (the superseded stdio transport needed it).
+    # Those four addresses are the entrypoint's DEFAULTS (HIVE_HTTP_{LOOPBACK,TUNNEL}_{HOST,PORT}),
+    # not constants — this file and them are one posture, so changing a port here means changing
+    # it in .env too. The `127.0.0.1:` prefix on the map below is what makes the tokenless door
+    # safe HERE; a deployment that does not use this file has no such prefix and must move that
+    # door to the container's own loopback instead (see .env.example).
     ports:
       - "127.0.0.1:8765:8765"
     restart: unless-stopped

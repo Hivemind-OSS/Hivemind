@@ -103,6 +103,38 @@ to the whole LAN. A leftover `HIVE_AUTH__MODE` in
 an old `.env` is ignored (a WARN, not a crash) — remove it. Offboard a seat any time with
 `hive revoke <seat>` (its next request 401s).
 
+### If you front the daemon with something other than compose
+
+The two doors above are the supported postures, and `hive up` gives you both correctly — this
+section is for when you deliberately leave them, not a third way to deploy.
+
+The addresses are `compose.yaml`'s posture, not fixed properties of the server. Read what actually
+protects the tokenless door: **the `127.0.0.1:` prefix on the compose port map**, not the bind
+address — inside the container that door answers on all interfaces, because docker's proxy reaches
+the container by its own IP and could not otherwise deliver to it.
+
+A reverse proxy, a container platform's router, an orchestrator, or a plain `docker run -p`
+supplies no such prefix. There, set the addresses explicitly (`.env.example` carries the block):
+
+```bash
+HIVE_HTTP_LOOPBACK_HOST=127.0.0.1   # the tokenless door leaves the wire entirely
+HIVE_HTTP_TUNNEL_PORT=8766          # the token-required door — the ONLY one to expose
+```
+
+Then point the router at the tunnel port and confirm the exposure before trusting it: a POST with
+no `Authorization` header must answer **401**. If it answers 200, the tokenless door is what got
+published. `GET /healthz` answers 200 on both doors, pre-auth and content-free, for whatever
+health-checks the deployment (the image's own `HEALTHCHECK` runs inside the container, where a
+supervisor in front of the socket cannot see it). Every other `GET` is a 405, so a health check
+must name that exact path. Set `HIVE_PUBLIC_URL` to the address agents actually reach and
+`hive connect` prints the matching token-gated registration line.
+
+Two constraints are structural, not tunables: the store is one SQLite file behind one process
+lock and the embedder is resident in-process, so the daemon runs as **exactly one instance**, and
+`/data` must be **writable by the container's runtime user** (a volume owned by another uid fails
+boot with `EX_CONFIG` naming the path — mount it with matching ownership, or run the container as
+its owner).
+
 ## 4. Tuneable parameters
 
 All config is applied **only at boot** — restart to change it; there is no live reload. Override by
@@ -111,6 +143,23 @@ boot loudly** (it never silently clamps); an env key naming an unknown group or 
 with a WARN (this layer's own verdict only — a leftover key from an older config is usually inert, but `HIVE_SYNC__TOKEN` / `HIVE_STORE__DB_PATH` are read directly elsewhere and stay live regardless). The defaults are a
 conservative starting point — recalibrate the empirical floors (`tau_serve`, `conflict.tau`,
 `demand_m`) against your real corpus and query distribution.
+
+**Transport — where the two doors listen** (flat `HIVE_HTTP_*`, one underscore: these are read by
+the entrypoint, not by the config tree, because an address describes the *deployment* rather than
+the memory system. The defaults are exactly what `compose.yaml` assumes — leave them alone for
+`hive up`, and see §3 for when they must change.)
+
+| Env var | Default | Controls |
+|---|---|---|
+| `HIVE_HTTP_LOOPBACK_HOST` | `0.0.0.0` | bind address of the **tokenless** door; `127.0.0.1` takes it off the wire when no `127.0.0.1:` port map protects it |
+| `HIVE_HTTP_LOOPBACK_PORT` | `8765` | port of the tokenless door |
+| `HIVE_HTTP_TUNNEL_HOST` | `0.0.0.0` | bind address of the **token-required** door — the only one safe to expose |
+| `HIVE_HTTP_TUNNEL_PORT` | `8766` | port of the token-required door; set it to whatever your router forwards to |
+| `HIVE_HTTP_MAX_BODY_BYTES` | `1048576` | request body cap; an oversized body is refused (413) before a byte is read |
+
+Both doors on one port **fails boot** with `EX_CONFIG` rather than binding one and silently
+dropping the other. `HIVE_PUBLIC_URL` (no default) names the address remote agents reach and only
+changes what `hive connect` prints — the server never reads it.
 
 **Recall — the never-hallucinate gate**
 
@@ -295,8 +344,11 @@ qualifies) — that is what fights the dominant long-run decay.
 - The repo registry stores **no secret bytes** — only the names of token env vars; per-repo git
   credentials resolve from the environment at tick time and live only in the mirror's git config.
 - The server image is **hermetically offline** — a runtime model or dependency download is impossible.
-- Only the **loopback door** is host-published; remote access is **always bearer-gated** by
-  construction (the tunnel door binds token-required, and ngrok forwards only to it).
+- Under `compose.yaml` only the **loopback door** is host-published and remote access is
+  **always bearer-gated** (the tunnel door binds token-required, and ngrok forwards only to it).
+  That guarantee is the compose port map's, not the server's: a deployment that fronts the daemon
+  itself owns it, and must move the tokenless door to `HIVE_HTTP_LOOPBACK_HOST=127.0.0.1` and
+  expose the tunnel door alone (§3).
 - Schema upgrades are a recoverable `hive reset`, never an in-place migration.
 
 ## 8. Staying current — server upgrades

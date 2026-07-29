@@ -135,6 +135,11 @@ silently clamping.
 
 There is no `HIVE_AUTH__MODE` switch — delete any leftover one from `.env` (it is ignored).
 
+Those addresses are `compose.yaml`'s defaults. What keeps the tokenless door off the network
+under compose is the port map's `127.0.0.1:` prefix, so a deployment that fronts the daemon some
+other way must set `HIVE_HTTP_LOOPBACK_HOST=127.0.0.1` and expose only the tunnel door —
+**[HIVE-ADMIN.md §3](HIVE-ADMIN.md)**.
+
 **Per-repo census feed.** Which repos the sync daemon feeds is operational data — the repo
 registry (`hive repo add`, above), re-read every tick — not boot config. The `HIVE_SYNC__*`
 group carries only the loop's own knobs (poll cadence, webhook nudge, mirror dir); the feed is

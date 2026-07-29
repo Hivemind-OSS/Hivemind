@@ -62,17 +62,33 @@ RUN groupadd --system hive && useradd --system --gid hive --home /home/hive --cr
 # (Deliberately the ONLY runtime apt package — the build toolchain stays out.)
 RUN apt-get update && apt-get install -y --no-install-recommends git \
  && rm -rf /var/lib/apt/lists/*
-# uv: provisions candidate-eval test envs (`uv sync --frozen`) inside the container.
-COPY --from=ghcr.io/astral-sh/uv:latest /uv /usr/local/bin/uv
 COPY --from=builder /opt/venv /opt/venv
-COPY --from=builder /opt/hf-cache /opt/hf-cache
+# Ownership is set AT COPY TIME, never by a later `RUN chown -R`: a recursive chown
+# rewrites every file it touches into a new layer, so chowning the ~1.2 GB weights cache
+# after copying it DUPLICATED the whole tree — 1.65 GB of pure layer bloat in a shipped
+# image. `--chown` costs nothing because the copy is happening anyway.
+COPY --from=builder --chown=hive:hive /opt/hf-cache /opt/hf-cache
 COPY --from=builder /build/hive /opt/venv/lib/python3.12/site-packages/hive
-# The baked pyright node cache (possibly empty — the bake is best-effort).
-COPY --from=builder /root/.cache /home/hive/.cache
-RUN mkdir -p /data/sync && chown -R hive:hive /data /opt/hf-cache /home/hive/.cache
+# /data is EMPTY here (a mount lands on it at runtime), so chowning it recursively copies
+# nothing — this is the one chown that stays a RUN.
+RUN mkdir -p /data/sync && chown -R hive:hive /data
 VOLUME ["/data"]
 # Healthy IFF the embedder is resident (not merely importable).
 HEALTHCHECK --interval=15s --timeout=10s --start-period=120s --retries=10 \
   CMD ["python", "-m", "hive.tools.healthcheck"]
 USER hive
 ENTRYPOINT ["python", "-m", "hive.tools.entrypoint"]
+
+# ---------- candidate-eval verifier tooling (the DEFAULT build target) ----------
+# The tools the census candidate-eval tier shells to — used by `hive.verifier`, reached only
+# from `hive.census.execution`. They are ~500 MB the memory server itself never executes, so
+# they ride a stage ON TOP of a complete, runnable `runtime`: `docker build .` (no --target)
+# still lands here, byte-for-byte the image that shipped before, while a deployment with no
+# census candidate-eval builds `--target runtime` and carries neither. Everything the daemon
+# needs — USER, ENTRYPOINT, HEALTHCHECK, VOLUME — is inherited, so the two targets differ in
+# tooling ONLY, never in how the server boots.
+FROM runtime AS verifier
+# uv: provisions candidate-eval test envs (`uv sync --frozen`) inside the container.
+COPY --from=ghcr.io/astral-sh/uv:latest /uv /usr/local/bin/uv
+# The baked pyright node cache (possibly empty — the bake is best-effort).
+COPY --from=builder --chown=hive:hive /root/.cache /home/hive/.cache

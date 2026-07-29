@@ -744,9 +744,32 @@ def _connect(
     Identity is per-agent-SESSION — the server-minted ``Mcp-Session-Id`` any conforming
     client echoes (or an explicit ``X-Hive-Agent-Id`` header) — so the line bakes no
     static id. The remote (tunnel) door is token-gated; the bearer only AUTHENTICATES,
-    it is never the identity. The local (loopback) door is tokenless."""
+    it is never the identity. The local (loopback) door is tokenless.
+
+    Three postures, most explicit first. ``HIVE_PUBLIC_URL`` names the address a remote
+    agent actually reaches — whatever terminates TLS in front of the token-required door
+    (a reverse proxy, a container platform's router, a tunnel this CLI did not start).
+    ``NGROK_DOMAIN`` is the built-in sidecar's convenience form of the same posture. With
+    neither, the tokenless loopback line. The first two print the same token-gated line
+    because they describe the same door reached two ways — the URL is transport, and the
+    seat token is what the door checks."""
+    public_url = (env.get("HIVE_PUBLIC_URL") or "").strip()
     domain = (env.get("NGROK_DOMAIN") or "").strip()
-    if domain:
+    if public_url:
+        # The operator's URL is taken as given except for the endpoint path: `/mcp` is the
+        # server's, not theirs to choose, so it is appended when absent and never doubled.
+        base = public_url.rstrip("/")
+        url = base if base.endswith("/mcp") else f"{base}/mcp"
+        print(
+            f"claude mcp add --transport http hive {url} "
+            '--header "Authorization: Bearer <seat-token>"',
+            file=out,
+        )
+        print(
+            f"hive: replace <seat-token> with the seat's token; {_SEAT_HINT}",
+            file=sys.stderr,
+        )
+    elif domain:
         # remote: the token-required tunnel door. This line is copy-pasted by a teammate on
         # an unknown OS/shell and `claude mcp add` bakes the header at add-time, so print a
         # literal placeholder — never shell-expansion syntax (bash ${VAR} / PowerShell
@@ -768,8 +791,10 @@ def _connect(
             file=out,
         )
         print(
-            "hive: NGROK_DOMAIN not set — printed the tokenless local-loopback line "
-            "(`hive up --tunnel` + NGROK_DOMAIN gives the token-gated public one).",
+            "hive: neither HIVE_PUBLIC_URL nor NGROK_DOMAIN set — printed the tokenless "
+            "local-loopback line (set HIVE_PUBLIC_URL to the address that fronts the "
+            "token-required door, or `hive up --tunnel` + NGROK_DOMAIN, for the "
+            "token-gated public one).",
             file=sys.stderr,
         )
     return EX_OK

@@ -53,6 +53,15 @@ EXTERNALLY_CONSUMED = {
     "HIVE_AGENT_ID",
     # hive/tools/entrypoint.py:_resolve_max_body
     "HIVE_HTTP_MAX_BODY_BYTES",
+    # hive/tools/entrypoint.py:_resolve_http_bind — the two doors' addresses. Deliberately
+    # NOT a config group: an address is a property of the deployment (what fronts the
+    # daemon), not of the memory system, so it stops at the driving adapter.
+    "HIVE_HTTP_LOOPBACK_HOST",
+    "HIVE_HTTP_LOOPBACK_PORT",
+    "HIVE_HTTP_TUNNEL_HOST",
+    "HIVE_HTTP_TUNNEL_PORT",
+    # hive/tools/cli.py:_connect — host-side only; the server never reads it
+    "HIVE_PUBLIC_URL",
     # hive/app/container.py — the engine home the sync loop spawns against
     "HIVE_EDGE_HOME",
 }

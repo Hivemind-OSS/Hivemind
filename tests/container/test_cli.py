@@ -1006,6 +1006,69 @@ def test_connect_renders_mcp_add_line(capsys):
     assert "hive_init" not in both  # M11/M12: no handshake here
 
 
+def test_connect_public_url_renders_the_token_gated_line(capsys):
+    """HIVE_PUBLIC_URL names whatever fronts the token-required door — a reverse proxy, a
+    platform router, a tunnel this CLI did not start. It prints the same token-gated line
+    as the ngrok posture because it describes the same door reached another way."""
+    fake = FakeRun()
+    out = io.StringIO()
+    rc = cli.main(
+        ["connect"],
+        run=fake,
+        out=out,
+        env={"HIVE_PUBLIC_URL": "https://hive.example.dev"},
+    )
+    assert rc == cli.EX_OK
+    assert fake.calls == []  # purely local — nothing is run
+    text = out.getvalue()
+    assert (
+        "claude mcp add --transport http hive https://hive.example.dev/mcp "
+        '--header "Authorization: Bearer <seat-token>"'
+    ) in text
+    err = capsys.readouterr().err
+    assert "hive token <seat>" in err  # the seat hint rides every token-gated posture
+    for expansion in ("${HIVE_TOKEN}", "$env:", "%HIVE_TOKEN%"):
+        assert expansion not in text + err  # shell-neutral, like every printed line
+
+
+@pytest.mark.parametrize(
+    "given",
+    [
+        "https://hive.example.dev",
+        "https://hive.example.dev/",
+        "https://hive.example.dev/mcp",
+    ],
+)
+def test_connect_public_url_appends_the_endpoint_path_exactly_once(given, capsys):
+    # `/mcp` is the SERVER's path, not the operator's to choose — appended when absent and
+    # never doubled, so a URL copied with or without it registers the same endpoint.
+    out = io.StringIO()
+    assert cli.main(
+        ["connect"], run=FakeRun(), out=out, env={"HIVE_PUBLIC_URL": given}
+    ) == (cli.EX_OK)
+    assert "https://hive.example.dev/mcp " in out.getvalue()
+    assert "/mcp/mcp" not in out.getvalue()
+    capsys.readouterr()
+
+
+def test_connect_public_url_wins_over_the_ngrok_domain(capsys):
+    # most explicit posture first: an operator who set both is describing their own front
+    # door, and the sidecar's convenience form must not override it.
+    out = io.StringIO()
+    cli.main(
+        ["connect"],
+        run=FakeRun(),
+        out=out,
+        env={
+            "HIVE_PUBLIC_URL": "https://hive.example.dev",
+            "NGROK_DOMAIN": "brain.ngrok.app",
+        },
+    )
+    text = out.getvalue()
+    assert "hive.example.dev/mcp" in text and "ngrok" not in text
+    capsys.readouterr()
+
+
 def test_connect_without_domain_prints_tokenless_loopback_line(capsys):
     out = io.StringIO()
     rc = cli.main(["connect"], run=FakeRun(), out=out, env={})

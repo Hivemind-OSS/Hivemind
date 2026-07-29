@@ -221,7 +221,10 @@ The model gives directions, not a single setpoint — these depend on your costs
 The levers above are the high-impact ones the model ranks; these are the remaining
 operator-settable knobs, overridden the same way (`HIVE_<GROUP>__<FIELD>` in `.env`, applied
 **only at boot** — there is no live reload, and an out-of-range value fails boot loudly). Lower
-leverage on the outcome, but part of the full surface.
+leverage on the outcome, but part of the full surface. The `HIVE_HTTP_*` transport vars are the
+one flat family (a single underscore): they are read by the entrypoint rather than the config
+tree, because an address describes the *deployment* — what fronts the daemon — not the memory
+system.
 
 | Knob | Default | Controls |
 |---|---|---|
@@ -237,6 +240,8 @@ leverage on the outcome, but part of the full surface.
 | `HIVE_SYNC__MIRROR_DIR` | `""` ⇒ `/data/sync/mirror` | where the sync daemon keeps its per-repo mirrors (`<dir>/<name>-<sha256(url)[:16]>` — rebuildable caches in the hive-data volume) |
 | `HIVE_SYNC__WORKERS` | `1` | registered repos ticking concurrently (floor 1); raise toward the repo count when one serial pass outlasts the interval |
 | `HIVE_HTTP_MAX_BODY_BYTES` | `1048576` | request-body cap in bytes on both HTTP doors (1 MiB) |
+| `HIVE_HTTP_LOOPBACK_HOST` / `HIVE_HTTP_LOOPBACK_PORT` | `0.0.0.0` / `8765` | where the **tokenless** door listens. Under compose what keeps it off the network is the port map's `127.0.0.1:` prefix, not this address — front the daemon any other way and set the host to `127.0.0.1` yourself |
+| `HIVE_HTTP_TUNNEL_HOST` / `HIVE_HTTP_TUNNEL_PORT` | `0.0.0.0` / `8766` | where the **token-required** door listens — the only one safe to expose. Both doors on one port fails boot (`78`) rather than binding one and dropping the other |
 | `HIVE_RETENTION__BACKUP_KEEP` | `30` | most-recent `hive backup` snapshots kept |
 | `HIVE_RETENTION__BACKUP_DIR` | `<db_dir>/backups` | where snapshots are written |
 | `HIVE_OBS__LOG_LEVEL` | `20` | Python `logging` level (`20` = INFO) |

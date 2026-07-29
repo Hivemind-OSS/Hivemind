@@ -7,7 +7,8 @@ tested in isolation. Auth is a property of the door (``auth_required``): the TUN
 (``False``) is tokenless and never 401s. AUTH is orthogonal to IDENTITY: on BOTH doors the
 per-request identity is resolved ``X-Hive-Agent-Id`` → echoed ``Mcp-Session-Id`` → ``"local"``,
 and the token is NEVER the identity. Also covered: ``Mcp-Session-Id`` mint at ``initialize``,
-202 notification, 405 GET, 403 Origin, INV-3 robustness, and channel separation (protocol
+202 notification, 405 GET, the pre-auth ``GET /healthz`` probe (200 on both doors, and no
+hole in the bearer gate), 403 Origin, INV-3 robustness, and channel separation (protocol
 errors ride a 200). The mutation (do_POST skips the ``verify``-None → 401 guard) reds the
 missing-token test.
 
@@ -178,6 +179,49 @@ def test_delete_is_405(live):
     assert status == 405
     assert "POST" in (hdrs.get("Allow") or "")
     assert spy.calls == []  # rejected before handle
+
+
+def test_healthz_is_200_pre_auth_on_both_doors(live):
+    """The liveness signal a supervisor in FRONT of the socket can read — a reverse proxy,
+    an orchestrator's readiness gate, an uptime monitor. It answers 200 on the
+    token-required door with NO token (a prober holds no seat) and on the tokenless one,
+    and never reaches handle(), so it carries nothing from the store."""
+    url, spy = live
+    base = url.rsplit("/mcp", 1)[0]
+    status, body, _ = _request(f"{base}/healthz", method="GET")
+    assert status == 200 and json.loads(body) == {"status": "ok"}
+    assert spy.calls == []  # rejected/answered before handle — no store handle in reach
+
+    loop_url, stop = _serve(_SpyServer(), lambda tok: None, auth_required=False)
+    try:
+        status, body, _ = _request(
+            f"{loop_url.rsplit('/mcp', 1)[0]}/healthz", method="GET"
+        )
+        assert status == 200 and json.loads(body) == {"status": "ok"}
+    finally:
+        stop()
+
+
+def test_healthz_opens_no_hole_in_the_bearer_gate(live):
+    """The health route lives in do_GET alone: POSTing to it on the token-required door
+    still 401s without a token. A probe path that bypassed auth for POST would be a
+    tokenless write channel wearing a health check's name."""
+    url, spy = live
+    base = url.rsplit("/mcp", 1)[0]
+    status, _, _ = _request(f"{base}/healthz", body=_RPC)
+    assert status == 401
+    assert spy.calls == []
+
+
+def test_only_the_exact_health_path_answers_200(live):
+    """Exact match, not a prefix: a supervisor is configured with one path, and a
+    prefix-matched probe would answer for URLs the server never agreed to serve."""
+    url, _ = live
+    base = url.rsplit("/mcp", 1)[0]
+    for path in ("/health", "/healthz/", "/healthz/extra", "/"):
+        status, _, hdrs = _request(f"{base}{path}", method="GET")
+        assert status == 405, path
+        assert "POST" in (hdrs.get("Allow") or "")
 
 
 def test_request_with_origin_header_is_403(live):

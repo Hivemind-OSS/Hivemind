@@ -27,7 +27,30 @@ All notable changes to this project are documented here.
   against. A renamed verb, a widened drift tier, a new status literal or a moved envelope key is now
   a failing test in this repo's own suite rather than silent client rot.
 
+- **Each door carries its own bind address, resolved from the environment.**
+  `HIVE_HTTP_LOOPBACK_HOST` / `HIVE_HTTP_LOOPBACK_PORT` / `HIVE_HTTP_TUNNEL_HOST` /
+  `HIVE_HTTP_TUNNEL_PORT` default to exactly what `compose.yaml` assumed, so the shipped stack is
+  unchanged, while a deployment that fronts the daemon some other way can put the tokenless door
+  on the container's own loopback and expose only the token-required one. Two doors resolved onto
+  one port now fails boot with `EX_CONFIG` instead of binding one and leaving the other dead
+  behind a healthy-looking container. `HIVE_PUBLIC_URL` makes `hive connect` print the token-gated
+  registration line for whatever address actually fronts that door.
+- **`GET /healthz` — a pre-auth, content-free liveness probe on both doors.** The image's
+  `HEALTHCHECK` runs inside the container, where a reverse proxy or an orchestrator's readiness
+  gate cannot see it. The route lives in `do_GET` alone, so it opens no hole in the bearer gate:
+  `POST /healthz` without a token still 401s, and every other `GET` is still a 405.
+- **A store directory that exists but is not writable fails boot with `EX_CONFIG` naming it.** The
+  mounted-volume ownership mismatch used to surface three steps later as sqlite's
+  `unable to open database file`, an `EX_SOFTWARE` naming neither the path nor the cause.
+
 ## Fixed
+- **The shipped image is 1.65 GB smaller.** A recursive `chown` after `COPY` rewrites every file
+  it touches into a new layer, so chowning the 1.2 GB weights cache and the pyright cache after
+  copying them wrote a second full copy of both into the image — over a third of its 4.57 GB.
+  Ownership now rides `COPY --chown`, which costs nothing because the copy happens anyway, and a
+  regression test refuses `chown -R` over any large copied tree. The candidate-eval tooling (uv +
+  the pyright cache, ~500 MB, used only by the census verifier) moved to a `verifier` stage
+  layered on `runtime`: it stays the default build, and `--target runtime` omits it.
 - **`hive_flag`'s affirmative status is `flagged`, not `recorded`.** Found while recording the
   envelope fixture: `recorded` is `hive_outcome`'s status, and the advisory verb echoes
   `FlagResult.status`. Crediting `recorded` would have left the advisory close path dead. The

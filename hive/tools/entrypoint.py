@@ -19,8 +19,11 @@ Boundary: the entrypoint OWNS the operator-facing env contract for the two
 boot-critical operator values (`tenant_id` / `db_path`, the compose keys
 `HIVE_TENANT_ID` / `HIVE_STORE__DB_PATH`) and bridges them into `Config.load`;
 `agent_id` carries a process default and is not operator-facing in the HTTP build
-(per-request attribution is the transport-resolved per-session identity). The rest of the
-config tree is M-config's `HIVE_*__`
+(per-request attribution is the transport-resolved per-session identity). It also owns the
+flat `HIVE_HTTP_*` transport knobs — `MAX_BODY_BYTES` plus the two doors' addresses
+(`LOOPBACK_HOST`/`LOOPBACK_PORT`, `TUNNEL_HOST`/`TUNNEL_PORT`) — which are properties of the
+DEPLOYMENT rather than of the memory system, so they stop at this adapter and never enter
+`Config`. The rest of the config tree is M-config's `HIVE_*__`
 namespace, which the entrypoint does NOT re-parse. The REAL adapter assembly (store +
 embedder + index + server) lands in P1.14 (`hive.app.container.build_container`) and is
 INJECTED here as `build_boot` — so the boot ORDER, the fail-fast exit codes and the
@@ -58,6 +61,16 @@ _DEFAULT_HTTP_PORT = (
 _DEFAULT_TUNNEL_PORT = (
     8766  # the tunnel door — compose-internal only (ngrok forwards to it)
 )
+# Both doors default to the container's own interface, because that is what the compose
+# port map REQUIRES: `127.0.0.1:8765:8765` publishes to the HOST's loopback and docker's
+# proxy reaches the container by its container IP, so a process bound to 127.0.0.1 INSIDE
+# the container is unreachable through the map. The tokenless door's safety under compose
+# is therefore the map's `127.0.0.1:` prefix, NOT this bind address. A deployment with no
+# such map — a container platform, a bare `docker run -p`, a host process — has nothing
+# supplying that safety and must set HIVE_HTTP_LOOPBACK_HOST=127.0.0.1, which is the whole
+# reason the address is a knob rather than a constant.
+_DEFAULT_BIND_HOST = "0.0.0.0"
+_MEMORY_DB = ":memory:"  # an ephemeral store has no directory to probe
 # Part S hardening: the rate-limit belt is fixed (no operator knob — disabling a DoS belt
 # on a tunnel-reachable daemon is a footgun). The 1 MiB body cap mirrors
 # http_server._DEFAULT_MAX_BODY (kept separate so http_server stays importable without it
@@ -145,6 +158,8 @@ def _make_http_serve(
     loopback_port: int,
     tunnel_port: int,
     *,
+    loopback_host: str = _DEFAULT_BIND_HOST,
+    tunnel_host: str = _DEFAULT_BIND_HOST,
     rate_limit: int = _DEFAULT_RATE_LIMIT,
     rate_window_s: float = _DEFAULT_RATE_WINDOW_S,
     max_body_bytes: int = _DEFAULT_MAX_BODY_BYTES,
@@ -154,9 +169,10 @@ def _make_http_serve(
     webhook_nudge: Optional[Callable[[], None]] = None,
 ) -> Callable[[Any], None]:
     """The DEFAULT serve step (replacing stdio): a warm HTTP daemon binding BOTH doors — the
-    tokenless LOOPBACK door (host-published `loopback_port`) and the token-required TUNNEL door
-    (compose-internal `tunnel_port`, ngrok-forwarded). Auth is a property of the listening
-    socket, not a config mode. The tunnel door's bearer gate depends on a `verify` CALLABLE
+    tokenless LOOPBACK door (`loopback_host:loopback_port`) and the token-required TUNNEL door
+    (`tunnel_host:tunnel_port`). Auth is a property of the listening socket, not a config mode;
+    the addresses default to the compose posture and are resolved from the environment by
+    `main()`, so what fronts the daemon can decide them without a rebuild. The tunnel door's bearer gate depends on a `verify` CALLABLE
     (`boot.token_store.verify`) — never the concrete SQLite class. ONE `threading.Lock` (passed
     by `main()`, which shares the SAME lock with the sync daemon thread; created here only for
     a standalone caller) + ONE `TokenBucketLimiter` are threaded into BOTH listeners, so the
@@ -179,8 +195,9 @@ def _make_http_serve(
     def serve(server: Any) -> None:
         run_http_dual(
             server,
-            host="0.0.0.0",
+            loopback_host=loopback_host,
             loopback_port=loopback_port,
+            tunnel_host=tunnel_host,
             tunnel_port=tunnel_port,
             verify=boot.token_store.verify,
             lock=lock,
@@ -215,6 +232,88 @@ def _resolve_max_body(env: Mapping[str, str]) -> Optional[int]:
         )
         return None
     return max_body
+
+
+def _resolve_port(env: Mapping[str, str], var: str, default: int) -> Optional[int]:
+    """Resolve one door's port from ``var`` (blank/absent ⇒ ``default``). A non-numeric or
+    out-of-range value is malformed → None → EX_CONFIG; port 0 is rejected with the rest
+    because an ephemeral port is one no operator could ever reach. NEVER echoes the value —
+    a malformed env value is arbitrary text and may be a mis-pasted credential. // O(1)."""
+    raw = (env.get(var) or "").strip()
+    if not raw:
+        return default
+    try:
+        port = int(raw)
+    except ValueError:
+        _log.error("entrypoint.invalid_port var=%s code=%d", var, EX_CONFIG)
+        return None
+    if not (1 <= port <= 65535):
+        _log.error("entrypoint.invalid_port var=%s code=%d", var, EX_CONFIG)
+        return None
+    return port
+
+
+def _resolve_http_bind(
+    env: Mapping[str, str],
+) -> Optional[tuple[str, int, str, int]]:
+    """Resolve ``(loopback_host, loopback_port, tunnel_host, tunnel_port)`` from the four
+    ``HIVE_HTTP_*`` knobs; every default reproduces the compose posture exactly, so an
+    unset environment binds what it always bound.
+
+    The knobs exist because the addresses are a property of the DEPLOYMENT, not of the
+    software: what fronts the daemon (a compose port map, a platform router, a reverse
+    proxy, an SSH forward) decides which port must be public and which address the
+    tokenless door may safely answer on. Baking them in exported one deployment's posture
+    to every other.
+
+    None ⇒ EX_CONFIG. Two doors on the SAME port is refused whatever their addresses,
+    because the second bind would fail with EADDRINUSE *after* the readiness markers are
+    stamped — a container that looks healthy while serving one door. Failing at boot is the
+    difference between a wrong value and a silent half-daemon. // O(1)."""
+    loopback_host = (
+        env.get("HIVE_HTTP_LOOPBACK_HOST") or ""
+    ).strip() or _DEFAULT_BIND_HOST
+    tunnel_host = (env.get("HIVE_HTTP_TUNNEL_HOST") or "").strip() or _DEFAULT_BIND_HOST
+    loopback_port = _resolve_port(env, "HIVE_HTTP_LOOPBACK_PORT", _DEFAULT_HTTP_PORT)
+    tunnel_port = _resolve_port(env, "HIVE_HTTP_TUNNEL_PORT", _DEFAULT_TUNNEL_PORT)
+    if loopback_port is None or tunnel_port is None:
+        return None
+    if loopback_port == tunnel_port:
+        # A port number is not a credential, so naming it is safe and is the whole
+        # diagnostic: the operator set one knob to the other door's port.
+        _log.error(
+            "entrypoint.bind_port_collision port=%d code=%d (the tokenless loopback door "
+            "and the token-required tunnel door cannot share a port — one of "
+            "HIVE_HTTP_LOOPBACK_PORT / HIVE_HTTP_TUNNEL_PORT must change)",
+            loopback_port,
+            EX_CONFIG,
+        )
+        return None
+    return loopback_host, loopback_port, tunnel_host, tunnel_port
+
+
+def _probe_db_dir(db_path: str) -> Optional[str]:
+    """Return the store's directory iff it EXISTS but this process cannot write it, else
+    None. That state is the mounted-volume ownership mismatch — a volume whose files belong
+    to a different uid than the image's runtime user — and without this probe it surfaces
+    three steps later as sqlite's ``unable to open database file``, an EX_SOFTWARE that
+    names neither the path nor the cause.
+
+    A MISSING directory is a different failure and is only WARNed: on the shipped image
+    ``/data`` always exists (VOLUME), so an absent directory means a deliberately custom
+    ``db_path``, and creating it is not this probe's call to make. ``:memory:`` has no
+    directory at all. // O(1) stat."""
+    if db_path == _MEMORY_DB:
+        return None
+    directory = os.path.dirname(os.path.abspath(db_path)) or "."
+    if not os.path.isdir(directory):
+        _log.warning(
+            "entrypoint.db_dir_missing path=%s (migrate cannot create the store under a "
+            "directory that does not exist)",
+            directory,
+        )
+        return None
+    return None if os.access(directory, os.W_OK | os.X_OK) else directory
 
 
 # The env vars whose VALUES are credentials: a value must never ride any log line
@@ -334,6 +433,25 @@ def main(
     )  # all default; tenant is a label, not required
     max_body_bytes = _resolve_max_body(env)
     if max_body_bytes is None:
+        return EX_CONFIG
+    bind = _resolve_http_bind(env)
+    if bind is None:
+        return EX_CONFIG
+    loopback_host, loopback_port, tunnel_host, tunnel_port = bind
+    # The store's directory is probed BEFORE assembly: a volume whose ownership does not
+    # match this process is a config fault the operator can fix, and it must not reach
+    # migrate — where it becomes an EX_SOFTWARE naming neither the path nor the cause.
+    unwritable = _probe_db_dir(db_path)
+    if unwritable is not None:
+        _log.error(
+            "entrypoint.db_dir_not_writable path=%s uid=%d code=%d (the store's directory "
+            "exists but this process cannot write it — typically a mounted volume owned by "
+            "a different uid than the image's runtime user; chown the mount to that uid or "
+            "run the container as its owner)",
+            unwritable,
+            os.geteuid() if hasattr(os, "geteuid") else -1,
+            EX_CONFIG,
+        )
         return EX_CONFIG
     try:
         cfg = Config.load(db_path=db_path, env=env, runtime={"tenant_id": tenant_id})
@@ -468,16 +586,18 @@ def main(
     # after assembly (it needs boot.token_store.verify) and after start_sync, so the tunnel
     # door's webhook nudge is the LIVE sync thread's wake Event's `set` (no thread ⇒ nudge
     # None: a webhook 204, armed by cfg.sync.webhook_secret, degrades to a no-op wake).
-    # The ports are fixed: the loopback door at 8765 (the compose host map + `hive connect`
-    # assume it) and the tunnel door at 8766 (the compose-internal port ngrok forwards to).
-    # Auth is a property of the socket — no posture to resolve. The rate-limit belt uses its
-    # fixed defaults. An injected `serve` (every unit test) takes precedence.
+    # The addresses come from `_resolve_http_bind` (defaults = the compose posture: the
+    # loopback door at 8765, which the compose host map and `hive connect` assume, and the
+    # tunnel door at 8766). Auth is a property of the socket — no posture to resolve. The
+    # rate-limit belt uses its fixed defaults. An injected `serve` (every unit test) wins.
     if serve is None:
         nudge = getattr(sync_thread, "sync_nudge", None)
         serve = _make_http_serve(
             boot,
-            _DEFAULT_HTTP_PORT,
-            _DEFAULT_TUNNEL_PORT,
+            loopback_port,
+            tunnel_port,
+            loopback_host=loopback_host,
+            tunnel_host=tunnel_host,
             max_body_bytes=max_body_bytes,
             lock=lock,
             webhook_secret=cfg.sync.webhook_secret,
