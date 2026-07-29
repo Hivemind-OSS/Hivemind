@@ -22,8 +22,16 @@ session start**, so a fresh install takes effect on your *next* session, not the
 claude --plugin-dir /path/to/hivemind/harnesses
 
 # for every session on this machine — the primary path
-claude plugin install /path/to/hivemind/harnesses
+mkdir -p ~/.claude/skills
+ln -sfn /path/to/hivemind/harnesses ~/.claude/skills/hive-loop
 ```
+
+The symlink installs it at **user scope**, loaded as `hive-loop@skills-dir` — confirm with
+`claude plugin list`. Note that `claude plugin install <path>` is *not* the way in: that verb
+resolves a plugin name against a configured marketplace, and this repo ships no marketplace
+manifest, so a path argument fails with a message that reads like a broken plugin. The step-by-step
+operator runbook, including the block to forward to a teammate, is
+`skills/hive-connect-harness/SKILL.md`.
 
 Set the endpoint the manifest points at before your first governed session:
 

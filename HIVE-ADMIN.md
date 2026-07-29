@@ -386,3 +386,51 @@ the step this section cannot: a **schema pre-flight**
 compares them to the live store read-only — so an incompatible ref is known *before* a rebuild and
 rollback cycle, not after. It fails closed: only `PASS` (exit 0) means safe; `SCHEMA BREAK` (1) and
 `UNKNOWN` (2) both mean stop.
+
+## 9. The optional client-side harness
+
+§8's "agents and workstations install nothing" describes the *required* setup, and it stays true:
+an agent needs only the MCP registration of §2 or §3, and the usage contract reaches it over MCP at
+every connect. This section covers the one thing an operator **may** additionally install, on either
+posture — the **agent-loop harness** (`hive-loop`), a Claude Code plugin rooted at `harnesses/`.
+
+**What it changes, and what it does not.** It makes the served discipline mechanical inside a
+governed session — a session cannot change code without a recall, cannot store without one, and
+cannot end a turn leaving a decision silently unmade. It adds **zero server behavior**: it opens no
+socket, calls no `hive_*` verb, and holds no identity or trust handle. It also states no memory
+semantics of its own, so a workstation running an old copy loses *enforcement*, never *correctness*
+— what the agent is told to do is served fresh at its next connect either way. Full design:
+`harnesses/README.md`.
+
+**Installing it.** Two supported routes; the runbook, including the block to forward to a teammate,
+is the **`hive-connect-harness`** skill (`skills/hive-connect-harness/SKILL.md`).
+
+| Route | Command | Scope |
+|---|---|---|
+| user-scope install (the durable one) | `ln -sfn /path/to/hivemind/harnesses ~/.claude/skills/hive-loop` | every session on that machine, as `hive-loop@skills-dir` |
+| one invocation — trying it, or CI | `claude --plugin-dir /path/to/hivemind/harnesses` | that invocation only |
+
+`claude plugin install <path>` is **not** a third route: that verb resolves a plugin name against a
+configured marketplace, and this repo ships no marketplace manifest, so a path argument fails with a
+message that reads like a broken plugin rather than a wrong command.
+
+The plugin's manifest declares the MCP server itself, interpolating `HIVE_MCP_URL` and `HIVE_TOKEN`
+from the environment — so a workstation that installs the harness does **not** also need
+`claude mcp add`, and the memory verbs arrive namespaced as `mcp__plugin_hive-loop_hive__*`. On the
+loopback door `HIVE_TOKEN` may be left unset. Whether a client carrying *both* a prior
+`claude mcp add hive` and the plugin's declaration composes is untested — provision one or the other.
+
+**Rolling it out to a team.** Forward a sparse clone pinned to the commit the server runs
+(`git rev-parse HEAD` in the server checkout): `git clone --no-checkout`, then
+`git sparse-checkout set --no-cone harnesses`, then `git checkout <sha>`. That fetches the harness
+directory alone at an exact version, with no marketplace and no extra repo file. The seat token
+travels separately from the block — it is not in it.
+
+**Every failure mode here is silent, which is the operator-relevant part.** Requirements are
+Node **≥ 23.6** (the hooks run TypeScript by type stripping; on an older runtime the hook fails and
+the harness is inert with no message) and an endpoint visible to the session's environment (an
+`export` at a prompt reaches only sessions launched from that prompt — put it in a shell profile).
+Hooks load at **session start**, so every install, upgrade and toggle takes effect on the next
+session and never the current one. `HIVE_LOOP__ENABLED=0` makes every hook byte-inert, and
+`claude --bare` skips hooks entirely: enforcement is strong *inside* a governed session and
+bypassable *at launch*, which is what keeps a benchmark measurable.

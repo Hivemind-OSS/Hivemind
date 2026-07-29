@@ -42,8 +42,42 @@ All notable changes to this project are documented here.
 - **A store directory that exists but is not writable fails boot with `EX_CONFIG` naming it.** The
   mounted-volume ownership mismatch used to surface three steps later as sqlite's
   `unable to open database file`, an `EX_SOFTWARE` naming neither the path nor the cause.
+- **`hive-connect-harness` — the operator runbook for installing the agent-loop harness.** The
+  harness shipped with no operator entry point: nothing under `skills/`, `HIVE-ADMIN.md` or
+  `OPERATIONS.md` mentioned it, so an operator following the runbooks could not discover it exists.
+  The new skill covers both cases — installing it on your own device, and the copy-pasteable block
+  an admin forwards so a teammate's agent clones `harnesses/` alone at a pinned commit and installs
+  it. Because the plugin's manifest declares the MCP server itself, an installing workstation needs
+  no `claude mcp add`, and the memory verbs arrive namespaced `mcp__plugin_hive-loop_hive__*`. The
+  runbook is built around the three failures that are otherwise silent: an endpoint exported into
+  one shell rather than a profile, a Node older than 23.6 (the hooks fail and the harness is inert
+  with no message), and the assumption that installing is enforcing — hooks load at session start,
+  so the installing session is never the governed one. Long-form posture: `HIVE-ADMIN.md` §9.
+- **A stale operator doc surface fails the build.** `tests/harness/test_operator_docs.py` pins the
+  skills index to the tree in both directions (table row and activation loop), requires that
+  `README.md`, `llms.txt` and `HIVE-ADMIN.md` reference `harnesses/` while it ships, and refuses a
+  shipped skill that claims there is nothing to install client-side. It asserts structure and
+  reference only, so rewording any of these files is free.
 
 ## Fixed
+- **The documented way to install the harness could not work.** `harnesses/README.md` gave
+  `claude plugin install /path/to/hivemind/harnesses` as "the primary path" for a durable
+  user-scope install. That verb resolves a plugin *name* against a configured marketplace, so a
+  path argument fails with `not found in any configured marketplace` — a message naming the plugin,
+  which reads as a broken plugin rather than a wrong command. No marketplace manifest ships (by
+  choice: a sparse clone at a SHA pins the version exactly and adds no repo file), so
+  `claude plugin marketplace add` was no route either, and `--plugin-dir` lasts one invocation.
+  The harness therefore had no working durable install documented anywhere. The measured route —
+  `ln -sfn <repo>/harnesses ~/.claude/skills/hive-loop`, which loads at user scope as
+  `hive-loop@skills-dir` carrying both the hooks and the manifest's endpoint declaration — now
+  replaces it, with the failing verb called out explicitly wherever the install is described.
+  Related: `claude plugin details` reports `MCP servers (0)` for such an install even while all
+  eight verbs are live, so the session's tool list is the check that means anything.
+- **`hive-connect-team` claimed the MCP registration is the only client-side step.** True of the
+  contract and false of the harness: an agent reading it would tell an operator the harness needs
+  no install. The load-bearing half stays — the usage contract is served over MCP at connect, never
+  installed, and the harness carries no contract text of its own — but the absolute is gone, and
+  the skill now points at `hive-connect-harness` for the optional client-side layer.
 - **The shipped image is 1.65 GB smaller.** A recursive `chown` after `COPY` rewrites every file
   it touches into a new layer, so chowning the 1.2 GB weights cache and the pyright cache after
   copying them wrote a second full copy of both into the image — over a third of its 4.57 GB.
