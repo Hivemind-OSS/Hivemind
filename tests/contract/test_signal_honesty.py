@@ -11,7 +11,8 @@ never observed. This suite pins the honest form of each.
     echoes a value.
   - the fleet-default credential (I8): the subject of that WARN is provably live — a
     registry row with an empty ``token_env`` fetches with ``HIVE_SYNC__TOKEN``'s value,
-    asserted through the mirror's own recorded remote, never through a log line.
+    asserted through the env each network git spawn is handed (the credential's real
+    destination since BUG-100), never through a log line.
   - the tracked operator template (I10): ``.env.example`` advertises only keys that
     something actually reads.
 
@@ -29,6 +30,7 @@ from pathlib import Path
 from hive.app.config import Config
 from tests.contract.conftest import (  # noqa: F401 — Origin/git are pytest-fixture kin
     Origin,
+    RecordingRun,
     git,
     make_syncer,
     meta_value,
@@ -183,33 +185,54 @@ def test_fleet_default_token_env_is_what_reaches_the_fetch(
     sync_store, tmp_path, monkeypatch
 ):
     """A registry row with an EMPTY ``token_env`` (the ``hive repo add`` default)
-    authenticates with ``HIVE_SYNC__TOKEN``. Asserted through the URL git itself
-    recorded for the mirror's origin — the credential's real destination — with the
-    transport redirected to a real local origin so every git call stays real."""
+    authenticates with ``HIVE_SYNC__TOKEN``. Asserted at the credential's real
+    destination — the env each NETWORK git spawn is handed (BUG-100 moved it
+    there: invocation state, never the persisted remote) — with the transport
+    redirected to a real local origin so every git call stays real."""
+    import base64
+
     origin = Origin(tmp_path / "remote")
     https_url = "https://example.invalid/o/r.git"
-    authed = f"https://x-access-token:{FLEET_TOKEN}@example.invalid/o/r.git"
-    for i, url in enumerate((https_url, authed)):
-        monkeypatch.setenv("GIT_CONFIG_COUNT", "2")
-        monkeypatch.setenv(f"GIT_CONFIG_KEY_{i}", f"url.{origin.url}.insteadOf")
-        monkeypatch.setenv(f"GIT_CONFIG_VALUE_{i}", url)
+    monkeypatch.setenv("GIT_CONFIG_COUNT", "1")
+    monkeypatch.setenv("GIT_CONFIG_KEY_0", f"url.{origin.url}.insteadOf")
+    monkeypatch.setenv("GIT_CONFIG_VALUE_0", https_url)
     monkeypatch.setenv(FLEET_TOKEN_VAR, FLEET_TOKEN)
 
     register_repo(sync_store, "alpha", https_url, canonical_ref="main")
-    syncer = make_syncer(sync_store, tmp_path)
+    run = RecordingRun()
+    syncer = make_syncer(sync_store, tmp_path, run=run)
     syncer.service.tick()
 
     assert mirror_is_git(syncer.mirror_base, "alpha", https_url), (
         "the anonymous-looking registry row must have cloned"
     )
+    expected = "Authorization: Basic " + (
+        base64.b64encode(f"x-access-token:{FLEET_TOKEN}".encode()).decode()
+    )
+    network_envs = [
+        env
+        for argv, env in zip(run.calls, run.envs)
+        if "clone" in argv or "fetch" in argv
+    ]
+    assert network_envs, "precondition: the tick spawned a network git call"
+    for env in network_envs:
+        count = int(env.get("GIT_CONFIG_COUNT", "0"))
+        entries = {
+            env.get(f"GIT_CONFIG_KEY_{i}", ""): env.get(f"GIT_CONFIG_VALUE_{i}", "")
+            for i in range(count)
+        }
+        assert entries.get(f"http.{https_url}.extraHeader") == expected, (
+            "the fleet-default var IS the credential that reaches the fetch — it "
+            f"is anything but ignored: {sorted(entries)}"
+        )
     from hive.app.sync import mirror_dirname
 
     mirror = syncer.mirror_base / mirror_dirname("alpha", https_url)
     recorded = git(mirror, "config", "--get", "remote.origin.url").stdout.strip()
-    assert FLEET_TOKEN in recorded, (
-        "the fleet-default var IS the credential that reaches the fetch — it is "
-        f"anything but ignored: {recorded.replace(FLEET_TOKEN, '<token>')!r}"
+    assert FLEET_TOKEN not in recorded, (
+        "the credential authenticates the invocation, never the persisted remote"
     )
+    assert recorded == https_url
 
 
 def test_fleet_default_token_absent_ticks_anonymous_and_boots_clean(

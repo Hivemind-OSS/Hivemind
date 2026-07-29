@@ -9,9 +9,14 @@ worklists still serve; miss scope rides the gap report; every probe stays fail-o
 
 from __future__ import annotations
 
+from hive.app.sync_keys import fleet_last_error_key
+
 from tests.contract.conftest import (
+    Origin,
     call,
     make_rig,
+    make_syncer,
+    meta_value,
     payload,
     recall,
     register_repo,
@@ -121,22 +126,106 @@ def test_dark_block_states_the_measured_fact_not_a_verdict(rig):
     )
 
 
-def test_sticky_last_error_does_not_resurrect_a_stall_claim(rig):
-    """``sync:<name>:last_error`` is STICKY — no clean tick clears it — so a single
-    transient fault must never turn into a permanent verdict. The block reports the
-    error verbatim and still refuses to editorialize."""
-    register_repo(rig.store, "alpha", "https://example.invalid/alpha.git")
-    rig.store.meta_set("sync:alpha:last_tip", "a" * 40)
-    rig.store.meta_set("sync:alpha:last_error", "fetch: transient DNS failure")
-    rig.store.meta_set("sync:alpha:last_sync_ts", str(int(rig.clock.now())))
+def test_a_healed_fault_serves_null_last_error_beside_a_fresh_last_sync_ts(
+    rig, tmp_path
+):
+    """Replaces the sticky-``last_error`` pin (BUGS-098/099/100 plan, S1):
+    ``last_error`` non-null ⇔ the most recent completed tick of its scope faulted.
+    A repo tick that faults and then heals must serve ``last_error: null`` — the
+    key is DELETED, byte-identical to never-faulted, never ``""`` — beside a fresh
+    ``last_sync_ts``. The sticky design served a PAST fault as PRESENT state:
+    BUG-099 was filed against a demonstrably healthy feed on exactly that misread."""
+    late_root = tmp_path / "remote-late"
+    register_repo(rig.store, "alpha", str(late_root / "origin.git"))
+    syncer = make_syncer(rig.store, tmp_path)
+    syncer.service.tick()  # the remote does not exist yet: this tick faults
     sync = _health(rig, include_census_health=True)["census_health"]["repos"]["alpha"][
         "sync"
     ]
-    assert sync["last_error"] == "fetch: transient DNS failure", (
-        "the measured fault is served verbatim — that is the liveness channel"
+    assert sync["last_error"], "precondition: the faulted tick surfaced its error"
+    assert sync["last_sync_ts"] is None, "a faulted tick never stamps freshness"
+
+    Origin(late_root)  # the remote comes up in place; the fault heals itself
+    syncer.service.tick()  # fault-free
+    sync = _health(rig, include_census_health=True)["census_health"]["repos"]["alpha"][
+        "sync"
+    ]
+    assert sync["last_error"] is None, (
+        f"a clean tick must clear its own scope's error — a served fossil asserts "
+        f"an outage on a healthy feed (BUG-099): {sync}"
     )
-    assert sync["status"] == "no change_outcome evidence yet", (
-        f"the evidence key still states only evidence: {sync}"
+    assert sync["last_sync_ts"] is not None, "the clean tick stamps freshness"
+    assert meta_value(rig.store, "sync:alpha:last_error") is None, (
+        "cleared means DELETED — an empty-string tombstone would mint a third state"
+    )
+
+
+def test_a_persistent_fault_serves_last_error_on_every_read(rig, tmp_path):
+    """The other half of presence-means-current: while the fault PERSISTS, the key
+    is re-stamped by every faulted tick — present on every poll beside a frozen
+    ``last_sync_ts`` — so a live outage still reads as one."""
+    register_repo(rig.store, "alpha", str(tmp_path / "never-exists.git"))
+    syncer = make_syncer(rig.store, tmp_path)
+    syncer.service.tick()
+    syncer.service.tick()
+    sync = _health(rig, include_census_health=True)["census_health"]["repos"]["alpha"][
+        "sync"
+    ]
+    assert sync["last_error"], "a still-faulting repo keeps its error on every read"
+    assert sync["last_sync_ts"] is None, "and its freshness stamp stays withheld"
+
+
+def test_fleet_last_error_clears_on_a_clean_shell_independent_of_repo_faults(
+    rig, tmp_path
+):
+    """The fleet key answers for the tick SHELL alone (registry read + prune): a
+    shell-fault-free tick clears it even while a repo is faulting — the repo's own
+    key still says so — or the healed-shell fossil just moves the misread one level
+    up. The faulted repo still withholds the fleet freshness stamp."""
+    rig.store.meta_set(
+        fleet_last_error_key(), "registry: OperationalError: transient (healed since)"
+    )
+    register_repo(rig.store, "alpha", str(tmp_path / "missing.git"))
+    make_syncer(rig.store, tmp_path).service.tick()
+    block = _health(rig, include_census_health=True)["census_health"]
+    assert block["fleet"]["last_error"] is None, (
+        f"the shell ran fault-free — its healed fault must not survive a repo's "
+        f"unrelated one: {block['fleet']}"
+    )
+    assert block["repos"]["alpha"]["sync"]["last_error"], (
+        "the repo's own current fault still stands on the repo's own key"
+    )
+    assert block["fleet"]["last_sync_ts"] is None, (
+        "clearing the shell's error is not claiming the fleet synced"
+    )
+
+
+def test_a_shell_fault_stamps_the_fleet_key_while_a_clean_repo_clears_its_own(
+    rig, tmp_path, monkeypatch
+):
+    """The inverse independence arm: a prune fault is the SHELL's — it lands on the
+    fleet key — while the registered repo's clean tick clears that repo's own healed
+    residue in the same cycle. Neither scope's verdict leaks into the other."""
+    import shutil
+
+    healthy = Origin(tmp_path / "remote-b")
+    register_repo(rig.store, "beta", healthy.url, canonical_ref="main")
+    rig.store.meta_set("sync:beta:last_error", "mirror: residue of a healed fault")
+    (tmp_path / "mirrors" / "gone").mkdir(parents=True)  # a deregistered leftover
+
+    def boom(path, *args, **kwargs):
+        raise OSError(f"device busy: {path}")
+
+    monkeypatch.setattr(shutil, "rmtree", boom)
+    make_syncer(rig.store, tmp_path).service.tick()
+    block = _health(rig, include_census_health=True)["census_health"]
+    fleet_error = block["fleet"]["last_error"] or ""
+    assert "prune" in fleet_error, (
+        f"the shell fault lands on the fleet key: {block['fleet']}"
+    )
+    assert block["repos"]["beta"]["sync"]["last_error"] is None, (
+        f"beta's OWN tick ran clean — its healed residue is cleared regardless of "
+        f"the shell's fault: {block['repos']['beta']['sync']}"
     )
 
 

@@ -50,7 +50,7 @@ MUST_NOT_FLAG = [
     ),  # H≈3.9, passed before too
     ("module_path", "hive/tools/entrypoint.py"),
     ("anchor_class", "hive/app/config.py::SyncConfig"),
-    ("anchor_function", "hive/app/sync.py::authenticated_url"),
+    ("anchor_function", "hive/app/sync.py::mirror_dirname"),
     ("anchor_method", "hive/adapters/store_sqlite.py::repo_remove"),
     ("git_sha_40", "86011691f602670f562dda9fe345e2d9c4158128"),
     ("remote_url", "https://github.com/Hivemind-OSS/Hivemind.git"),

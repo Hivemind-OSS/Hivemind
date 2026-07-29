@@ -223,9 +223,10 @@ def test_status_is_present_only_when_dark():
     assert "status" not in _repos(store)["alpha"]["sync"]
 
 
-def test_sticky_last_error_does_not_resurrect_a_stall_claim():
-    # last_error is sticky (no clean tick clears it), so it can never become the
-    # condition for a verdict — it is served verbatim and the key stays factual.
+def test_a_present_last_error_is_served_verbatim_without_a_verdict():
+    # A present last_error means the most recent completed tick faulted (BUG-099:
+    # the daemon deletes it on the next clean tick) — the reader serves the text
+    # verbatim and still never turns it into a verdict about anything else.
     store = _store("alpha")
     store.meta_set("sync:alpha:last_tip", "a" * 40)
     store.meta_set("sync:alpha:last_error", "fetch: transient DNS failure")

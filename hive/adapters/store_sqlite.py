@@ -1745,3 +1745,11 @@ class SqliteEpisodeStore:
             "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
             (key, value),
         )
+
+    def meta_delete(self, key: str) -> None:
+        """Remove one meta row; an absent key is a no-op. The sync daemon's
+        error-clear door (BUG-099): a cleared key SERVES as null — byte-identical
+        to never-faulted — which is the point. Never write ``""`` instead: an
+        empty-string tombstone would mint a third served state every reader must
+        then decode."""
+        self.conn.execute("DELETE FROM meta WHERE key=?", (key,))

@@ -14,9 +14,14 @@ no engine, and the mirrors dir is never CREATED (pruning a leftover mirror is
 the one allowed filesystem act). A DEREGISTERED repo loses its mirror on the
 next tick (BUG-050): the reconciliation prune deletes only direct, slug-named,
 non-symlink children of the configured mirrors dir, fails open per name, and
-runs BEFORE the empty-registry early-return. The credential never escapes the
-mirror's remote config — and that config is RECONCILED against the registry
-every tick, so a rotated secret takes effect without a re-clone. Logs and the
+runs BEFORE the empty-registry early-return. The credential is INVOCATION
+state (BUG-100): it rides each network git call as env-carried config — an
+``http.<registry-url>.extraHeader`` Authorization header, wire-identical to
+the old userinfo form — and never persists, so the mirror's ``.git/config``
+carries the registry URL verbatim and zero token bytes at every observable
+point, a legacy token-bearing remote is scrubbed toward the registry URL in
+place, and a rotated secret takes effect on the very next fetch with no
+re-clone and no persisted state to reconcile. Logs and the
 error meta are redacted. A fault in the
 tick SHELL itself belongs to no repo, so it rides the 2-part fleet keys and is
 SERVED in the health report's ``fleet`` block — the only in-band statement that
@@ -25,6 +30,7 @@ the daemon is down (BUG-062).
 
 from __future__ import annotations
 
+import base64
 import logging
 import shutil
 import sqlite3
@@ -68,12 +74,14 @@ def _probe_repo_args(calls) -> list[str]:
     ]
 
 
-# A credential is observable in a mirror's remote config only under an https
-# registry URL (``authenticated_url`` rewrites nothing else), so the token tests
+# A credential presents only under an https registry URL, so the token tests
 # below register one and let git's own ``url.<base>.insteadOf`` redirect the
 # transport to a REAL local origin. Only the transport is redirected: the URL git
-# RECORDS — the thing under test — is exactly what production writes, so every
-# clone, fetch, config read and set-url stays real git on a real repository.
+# RECORDS and the env each spawn is HANDED — the things under test — are exactly
+# what production writes, so every clone, fetch, config read and set-url stays
+# real git on a real repository. One rule suffices: the URL git is handed is the
+# registry URL always (BUG-100 — the credential rides the invocation env, never
+# the URL). ``_authed`` remains only to FABRICATE the legacy persisted form.
 HTTPS_URL = "https://example.invalid/o/r.git"
 TOKEN_VAR = "HIVE_SYNC_TEST_ROTATING_TOKEN"
 TOKEN_ONE = "rotating-token-one-aaaa"
@@ -81,18 +89,43 @@ TOKEN_TWO = "rotating-token-two-bbbb"
 
 
 def _authed(token: str) -> str:
+    """The PRE-FIX persisted remote shape — seeded by the legacy tests, asserted
+    absent everywhere else."""
     return f"https://x-access-token:{token}@example.invalid/o/r.git"
 
 
-def _https_registry_url(monkeypatch, origin: Origin, *tokens: str) -> str:
-    """Back ``HTTPS_URL`` with ``origin``: one rewrite rule per credential the test
-    will present, plus the credential-free form."""
-    urls = [HTTPS_URL, *(_authed(t) for t in tokens)]
-    monkeypatch.setenv("GIT_CONFIG_COUNT", str(len(urls)))
-    for i, url in enumerate(urls):
-        monkeypatch.setenv(f"GIT_CONFIG_KEY_{i}", f"url.{origin.url}.insteadOf")
-        monkeypatch.setenv(f"GIT_CONFIG_VALUE_{i}", url)
+def _https_registry_url(monkeypatch, origin: Origin) -> str:
+    """Back ``HTTPS_URL`` with ``origin`` for transport."""
+    monkeypatch.setenv("GIT_CONFIG_COUNT", "1")
+    monkeypatch.setenv("GIT_CONFIG_KEY_0", f"url.{origin.url}.insteadOf")
+    monkeypatch.setenv("GIT_CONFIG_VALUE_0", HTTPS_URL)
     return HTTPS_URL
+
+
+def _config_bytes(mirror: Path) -> str:
+    """The mirror's WHOLE persisted git config — the exposure surface BUG-100
+    names (any ``remote -v``, ``config -l``, backup or tar reprints it)."""
+    return (mirror / ".git" / "config").read_text(encoding="utf-8")
+
+
+def _auth_headers(env: dict[str, str]) -> dict[str, str]:
+    """The env-carried auth entries one spawn was handed: ``{key: value}`` for
+    every ``http.*.extraHeader`` pair in its ``GIT_CONFIG_*`` namespace."""
+    raw = env.get("GIT_CONFIG_COUNT", "")
+    count = int(raw) if raw.isdigit() else 0
+    out: dict[str, str] = {}
+    for i in range(count):
+        key = env.get(f"GIT_CONFIG_KEY_{i}", "")
+        if key.startswith("http.") and key.endswith(".extraHeader"):
+            out[key] = env.get(f"GIT_CONFIG_VALUE_{i}", "")
+    return out
+
+
+def _basic(token: str) -> str:
+    """The Authorization header value curl derived from the old userinfo form —
+    the wire bytes must stay identical so no server-side auth behavior changes."""
+    cred = base64.b64encode(f"x-access-token:{token}".encode()).decode()
+    return f"Authorization: Basic {cred}"
 
 
 def test_tick_fetches_all_branches_per_repo_mirror(
@@ -203,22 +236,41 @@ def test_token_resolved_from_row_named_var_and_never_logged(
     assert "sekrit-token-123" not in (meta(store, "sync:alpha:last_error") or "")
 
 
-def test_authenticated_url_shapes():
-    """The token rides ONLY an https remote URL (the x-access-token form); non-https
-    URLs and an empty token pass through byte-identical."""
-    from hive.app.sync import authenticated_url
+def test_auth_env_shapes(monkeypatch):
+    """The unit successor of the deleted ``authenticated_url`` shapes: the
+    credential is invocation state. https+token appends exactly ONE env-carried
+    config entry — ``http.<registry-url>.extraHeader`` with the Basic payload
+    byte-identical to what the userinfo form put on the wire — AFTER any
+    ``GIT_CONFIG_*`` entries already present (an operator's own rules survive);
+    non-https URLs and an empty token add nothing; the raw token bytes never
+    appear in argv-destined material at all."""
+    from hive.app import sync as sync_mod
 
-    assert (
-        authenticated_url("https://github.com/o/r.git", "tok")
-        == "https://x-access-token:tok@github.com/o/r.git"
+    auth_env = getattr(sync_mod, "_auth_env", None)
+    assert auth_env is not None, "hive.app.sync._auth_env does not exist yet"
+    for var in ("GIT_CONFIG_COUNT", "GIT_CONFIG_KEY_0", "GIT_CONFIG_VALUE_0"):
+        monkeypatch.delenv(var, raising=False)
+
+    env = auth_env("https://github.com/o/r.git", "tok")
+    assert env["GIT_CONFIG_COUNT"] == "1"
+    assert env["GIT_CONFIG_KEY_0"] == "http.https://github.com/o/r.git.extraHeader"
+    assert env["GIT_CONFIG_VALUE_0"] == "Authorization: Basic " + (
+        base64.b64encode(b"x-access-token:tok").decode()
     )
-    assert (
-        authenticated_url("https://github.com/o/r.git", "")
-        == "https://github.com/o/r.git"
-    )
-    assert (
-        authenticated_url("/local/path/origin.git", "tok") == "/local/path/origin.git"
-    )
+
+    # empty token / non-https: byte-identical to the clean child env — no entry
+    clean = sync_mod._clean_env()
+    assert auth_env("https://github.com/o/r.git", "") == clean
+    assert auth_env("/local/path/origin.git", "tok") == clean
+
+    # append, never clobber: entries already in the parent env keep their slots
+    monkeypatch.setenv("GIT_CONFIG_COUNT", "1")
+    monkeypatch.setenv("GIT_CONFIG_KEY_0", "url./somewhere.insteadOf")
+    monkeypatch.setenv("GIT_CONFIG_VALUE_0", "https://example.invalid/o/r.git")
+    env = auth_env("https://github.com/o/r.git", "tok")
+    assert env["GIT_CONFIG_COUNT"] == "2"
+    assert env["GIT_CONFIG_KEY_0"] == "url./somewhere.insteadOf"
+    assert env["GIT_CONFIG_KEY_1"] == "http.https://github.com/o/r.git.extraHeader"
 
 
 def test_registry_canonical_ref_overrides_tracked_branch(store, tmp_path):
@@ -607,18 +659,21 @@ def test_a_legacy_name_only_mirror_is_reaped_and_recloned(origin, store, tmp_pat
 def test_a_rotated_token_is_reconciled_without_a_reclone(
     origin, store, tmp_path, monkeypatch, caplog
 ):
-    """The credential enters the mirror once, at clone time, and every later fetch
-    reads it back out of the mirror's own config — so a rotated secret has to be
-    written INTO that config or it never takes effect and the repo eventually fails
-    open forever. The registry URL is unchanged and the path already pins the
-    repository, so the difference can only be the credential: reconcile in place
-    rather than pay a re-clone. The value itself must never be logged."""
-    url = _https_registry_url(monkeypatch, origin, TOKEN_ONE, TOKEN_TWO)
+    """A rotated secret has to take effect or the repo eventually fails open
+    forever — reconciled in place rather than paying a re-clone. The value itself
+    must never be logged. Held STRUCTURALLY now (BUG-100): every network
+    invocation reads the freshly resolved token and carries it as invocation
+    state, so rotation reaches the very next fetch by construction, with no
+    re-clone and no persisted state to reconcile — and at every point the
+    mirror's whole ``.git/config`` holds the registry URL verbatim, zero token
+    bytes."""
+    url = _https_registry_url(monkeypatch, origin)
     monkeypatch.setenv(TOKEN_VAR, TOKEN_ONE)
     register_repo(store, "alpha", url, token_env=TOKEN_VAR)
     make_service(store, tmp_path).tick()
     mirror = _mirror(tmp_path, "alpha", url)
-    assert _remote_url(mirror) == _authed(TOKEN_ONE)  # precondition: cloned with t1
+    assert _remote_url(mirror) == url  # the persisted remote is the registry URL
+    assert TOKEN_ONE not in _config_bytes(mirror)
     sentinel = mirror / ".git" / "hive-reclone-probe"
     sentinel.write_text("kept")
 
@@ -629,12 +684,28 @@ def test_a_rotated_token_is_reconciled_without_a_reclone(
     with caplog.at_level(logging.DEBUG, logger="hive.sync"):
         make_service(store, tmp_path, run=run).tick()
 
-    assert _remote_url(mirror) == _authed(TOKEN_TWO)
-    assert sentinel.exists(), "reconciling a credential must not cost a re-clone"
-    assert not any("clone" in c for c in run.calls)
-    # the rotated credential is what actually fetched
+    # the rotated credential is what actually fetched — the tip LANDED …
     assert meta(store, "sync:alpha:last_tip") == origin.origin_sha("refs/heads/main")
     assert meta(store, "sync:alpha:last_error") is None
+    # … and what every network spawn PRESENTED is the current token, env-carried
+    fetch_envs = [e for c, e in zip(run.calls, run.envs) if "fetch" in c]
+    assert fetch_envs, "precondition: the tick fetched"
+    for env in fetch_envs:
+        headers = _auth_headers(env)
+        assert headers == {f"http.{url}.extraHeader": _basic(TOKEN_TWO)}, (
+            f"the fetch must present the CURRENT token, wire-identical to the "
+            f"old userinfo form: {headers}"
+        )
+    for argv in run.calls:
+        joined_argv = " ".join(argv)
+        assert TOKEN_ONE not in joined_argv and TOKEN_TWO not in joined_argv, (
+            f"the token must never ride argv (world-readable /proc): {argv}"
+        )
+    assert sentinel.exists(), "rotation must not cost a re-clone"
+    assert not any("clone" in c for c in run.calls)
+    assert _remote_url(mirror) == url
+    assert TOKEN_ONE not in _config_bytes(mirror)
+    assert TOKEN_TWO not in _config_bytes(mirror)
     joined = "\n".join(r.getMessage() for r in caplog.records)
     assert TOKEN_ONE not in joined and TOKEN_TWO not in joined
 
@@ -643,14 +714,20 @@ def test_token_removal_strips_the_credential_from_the_remote(
     origin, store, tmp_path, monkeypatch
 ):
     """Rotation's other direction: a repo that stops being private must stop
-    presenting a credential. The mirror's remote is reconciled TOWARD the registry's
-    own URL — never the reverse — and still with no re-clone."""
-    url = _https_registry_url(monkeypatch, origin, TOKEN_ONE)
+    presenting a credential — the registry's own URL wins, never the reverse, and
+    still with no re-clone. With the credential as invocation state there is
+    nothing on disk to strip: the persisted remote was the registry URL all
+    along (asserted BEFORE the removal too — the token must not persist even
+    while it is live), and the next fetch simply presents nothing."""
+    url = _https_registry_url(monkeypatch, origin)
     monkeypatch.setenv(TOKEN_VAR, TOKEN_ONE)
     register_repo(store, "alpha", url, token_env=TOKEN_VAR)
     make_service(store, tmp_path).tick()
     mirror = _mirror(tmp_path, "alpha", url)
-    assert _remote_url(mirror) == _authed(TOKEN_ONE)  # precondition
+    assert _remote_url(mirror) == url
+    assert TOKEN_ONE not in _config_bytes(mirror), (
+        "a LIVE token is already barred from the persisted config (BUG-100)"
+    )
 
     monkeypatch.setenv(TOKEN_VAR, "")  # the secret is emptied; the registry row stands
     origin.commit("app.py", "def greet(name):\n    return name\n", "after removal")
@@ -659,9 +736,74 @@ def test_token_removal_strips_the_credential_from_the_remote(
     make_service(store, tmp_path, run=run).tick()
 
     assert _remote_url(mirror) == url
-    assert "x-access-token" not in _remote_url(mirror)
+    assert "x-access-token" not in _config_bytes(mirror)
+    assert not any("clone" in c for c in run.calls)
+    fetch_envs = [e for c, e in zip(run.calls, run.envs) if "fetch" in c]
+    assert fetch_envs, "precondition: the tick fetched"
+    for env in fetch_envs:
+        assert _auth_headers(env) == {}, (
+            "an emptied token presents NOTHING — byte-identical to a public repo"
+        )
+    assert meta(store, "sync:alpha:last_tip") == origin.origin_sha("refs/heads/main")
+
+
+def test_the_mirrors_config_never_carries_a_token_byte(
+    origin, store, tmp_path, monkeypatch
+):
+    """BUG-100's core contract: at EVERY observable point — after the fresh clone,
+    after a steady-state fetch — the mirror's whole ``.git/config`` contains zero
+    token bytes and ``remote.origin.url`` is the registry URL verbatim, while the
+    network legs still authenticate (the tracked tip lands)."""
+    url = _https_registry_url(monkeypatch, origin)
+    monkeypatch.setenv(TOKEN_VAR, TOKEN_ONE)
+    register_repo(store, "alpha", url, token_env=TOKEN_VAR)
+    svc = make_service(store, tmp_path)
+    svc.tick()  # the fresh clone
+    mirror = _mirror(tmp_path, "alpha", url)
+    config = _config_bytes(mirror)
+    assert TOKEN_ONE not in config, f"the clone persisted the credential: {config!r}"
+    assert "x-access-token" not in config
+    assert _remote_url(mirror) == url
+    assert meta(store, "sync:alpha:last_tip") == origin.origin_sha("refs/heads/main")
+
+    origin.commit("app.py", "def greet(name):\n    return name\n", "steady state")
+    origin.push()
+    svc.tick()  # the steady-state fetch
+    assert meta(store, "sync:alpha:last_tip") == origin.origin_sha("refs/heads/main")
+    assert TOKEN_ONE not in _config_bytes(mirror)
+    assert _remote_url(mirror) == url
+    assert meta(store, "sync:alpha:last_error") is None
+
+
+def test_a_legacy_token_bearing_remote_is_scrubbed_without_a_reclone(
+    origin, store, tmp_path, monkeypatch
+):
+    """The migration story for mirrors cloned BEFORE the fix: the path already pins
+    which repository this mirrors, so a persisted remote differing from the
+    registry URL can only be legacy credential-bearing config or corruption — it
+    is scrubbed toward the registry URL in place on the next tick. One tick, no
+    re-clone, no operator step."""
+    url = _https_registry_url(monkeypatch, origin)
+    monkeypatch.setenv(TOKEN_VAR, TOKEN_ONE)
+    register_repo(store, "alpha", url, token_env=TOKEN_VAR)
+    make_service(store, tmp_path).tick()
+    mirror = _mirror(tmp_path, "alpha", url)
+    git(mirror, "remote", "set-url", "origin", _authed(TOKEN_ONE))  # the pre-fix state
+    assert TOKEN_ONE in _config_bytes(mirror), "precondition: the legacy exposure"
+    sentinel = mirror / ".git" / "hive-reclone-probe"
+    sentinel.write_text("kept")
+
+    origin.commit("app.py", "def greet(name):\n    return name\n", "after upgrade")
+    origin.push()
+    run = RecordingRun()
+    make_service(store, tmp_path, run=run).tick()
+
+    assert _remote_url(mirror) == url, "the legacy remote is scrubbed in place"
+    assert TOKEN_ONE not in _config_bytes(mirror)
+    assert sentinel.exists(), "the scrub must not cost a re-clone"
     assert not any("clone" in c for c in run.calls)
     assert meta(store, "sync:alpha:last_tip") == origin.origin_sha("refs/heads/main")
+    assert meta(store, "sync:alpha:last_error") is None
 
 
 def test_unreadable_remote_config_forces_a_reclone(origin, store, tmp_path):
@@ -689,12 +831,14 @@ def test_unreadable_remote_config_forces_a_reclone(origin, store, tmp_path):
 
 
 def test_set_url_fault_fails_that_repo_open(origin, store, tmp_path, monkeypatch):
-    """The reconcile is a git WRITE, so it can fail. Direction: this repo skips the
-    tick under its own error key rather than fetching with a credential the registry
-    no longer names; the sibling repo syncs, nothing raises past the tick, the
-    faulted tick withholds the clean stamp, and the token never reaches the surfaced
-    message."""
-    url = _https_registry_url(monkeypatch, origin, TOKEN_ONE, TOKEN_TWO)
+    """The reconcile — now the LEGACY scrub — is a git WRITE, so it can fail.
+    Direction: this repo skips the tick under its own error key rather than
+    fetching a mirror whose persisted remote still carries a credential; the
+    sibling repo syncs, nothing raises past the tick, the faulted tick withholds
+    the clean stamp, and the token never reaches the surfaced message. The failed
+    write leaves the legacy remote INTACT (never half-applied) for the next
+    writable tick to scrub."""
+    url = _https_registry_url(monkeypatch, origin)
     healthy = Origin(tmp_path / "remote-healthy")
     monkeypatch.setenv(TOKEN_VAR, TOKEN_ONE)
     register_repo(store, "alpha", url, token_env=TOKEN_VAR)
@@ -704,10 +848,10 @@ def test_set_url_fault_fails_that_repo_open(origin, store, tmp_path, monkeypatch
     svc.tick()
     mirror = _mirror(tmp_path, "alpha", url)
     assert mirror.is_dir(), "precondition: mirrored"
+    git(mirror, "remote", "set-url", "origin", _authed(TOKEN_ONE))  # legacy state
     git_dir = mirror / ".git"
     mode = stat.S_IMODE(git_dir.stat().st_mode)
 
-    monkeypatch.setenv(TOKEN_VAR, TOKEN_TWO)
     clock[0] = 42_000
     git_dir.chmod(0o555)  # git cannot take the config lock
     try:

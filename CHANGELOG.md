@@ -60,6 +60,45 @@ All notable changes to this project are documented here.
   reference only, so rewording any of these files is free.
 
 ## Fixed
+- **The symlink-installed harness never enforced.** Under the documented install
+  (`ln -sfn <repo>/harnesses ~/.claude/skills/hive-loop`) the entry guard compared
+  `process.argv[1]` — the spelling as invoked, through the symlink — against node's
+  realpath-resolved `import.meta.url`, an equality that never held there, so `main()` never ran:
+  every hook exited 0 having read nothing and decided nothing, byte-identical to an armed harness
+  with nothing to say, on the only durable install route the docs name. The entry identity is now
+  an exported `isEntry()` that realpaths BOTH sides, with every throw meaning "not the entry"
+  (imports stay side-effect-free — the contract suite imports the module for `EVENT_MAP`), so
+  symlink, hardlink and `--preserve-symlinks-main` spellings all converge on the same answer.
+  `hooks.json` is byte-identical. Pinned by `harnesses/test/install.test.ts` — a symlinked-root
+  spawn that must decide, wire-equality with the real-path spawn, import side-effect-freeness,
+  the predicate's four arms — plus a live-tier probe driving the real CLI through a symlinked
+  `--plugin-dir`.
+- **`last_error` asserted past faults as present state.** `sync:<repo>:last_error` and its fleet
+  twin were sticky — written on fault, cleared by nothing — so one healed transient blip served
+  forever beside an advancing `last_sync_ts`: an outage claim on a demonstrably healthy feed, and
+  the designed "read the error against the timestamp" disambiguation was inexpressible with the
+  served data. Presence now means current: a repo's fault-free tick deletes its own key in the
+  same locked section as its freshness stamp, and a tick whose SHELL (registry read + prune) ran
+  fault-free deletes the fleet key independently of per-repo results (`meta_delete` on the store;
+  a deleted key serves `null`, byte-identical to never-faulted — no empty-string third state).
+  The invariant: `last_error` non-null ⇔ the most recent completed tick of that scope faulted. A
+  dead daemon ticks nothing and clears nothing, so the in-band down-statement survives untouched;
+  fault history lives where it always did, in the `sync.repo_leg_failed` / `sync.tick_failed` log
+  lines. The `hive_health` description now states this lifetime.
+- **The mirror's `.git/config` held the live access token in plaintext.** `authenticated_url()`
+  rewrote the remote as `https://x-access-token:<token>@…` and git persisted it verbatim, so any
+  `remote -v`, `config -l`, backup or tar of the mirrors dir reprinted the credential — strictly
+  wider than the log surface the code guarded. The credential is now invocation state:
+  `_auth_env()` injects the per-tick-resolved token into exactly the two network invocations
+  (clone, fetch) as env-carried git config — `http.<registry-url>.extraHeader` carrying the same
+  `Authorization: Basic` value the userinfo form put on the wire, appended after any operator-set
+  `GIT_CONFIG_*` entries — so the URL git is handed, and the only URL it ever persists, is the
+  registry URL verbatim. A legacy token-bearing remote is scrubbed toward the registry URL on its
+  next tick (the whole migration for pre-fix mirrors: one tick, no re-clone), rotation reaches
+  the very next fetch by construction, and the token never rides argv. `authenticated_url()` is
+  deleted; the persisted-config token-absence, the legacy scrub, the rotation path and the
+  fleet-default credential's real destination are all pinned in `tests/sync/` and
+  `tests/contract/`.
 - **The documented way to install the harness could not work.** `harnesses/README.md` gave
   `claude plugin install /path/to/hivemind/harnesses` as "the primary path" for a durable
   user-scope install. That verb resolves a plugin *name* against a configured marketplace, so a
