@@ -1,0 +1,10 @@
+{
+  "name": "hive-loop-harness",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Dev manifest for the hive-loop harness. The SHIPPED runtime resolves nothing outside node:* — this file exists only so the strict typecheck leg has a compiler.",
+  "devDependencies": {
+    "typescript": "^7.0.2"
+  }
+}

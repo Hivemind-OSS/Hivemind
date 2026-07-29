@@ -1,0 +1,224 @@
+{
+  "_generated_by": "tests/harness/test_envelope_fixture.py \u2014 real HiveMCPServer results over a real temp store; DO NOT HAND-EDIT",
+  "capture": {
+    "approved": {
+      "content": [
+        {
+          "text": "{\"status\": \"quarantined\", \"id\": 4, \"scan\": {\"action\": \"clean\", \"rules\": [], \"n_findings\": 0, \"findings\": []}, \"deduped\": false}",
+          "type": "text"
+        }
+      ],
+      "isError": false
+    }
+  },
+  "flag": {
+    "recorded": {
+      "content": [
+        {
+          "text": "{\"status\": \"flagged\", \"kind\": \"conflict\", \"recorded\": true, \"a\": 1, \"b\": 2}",
+          "type": "text"
+        }
+      ],
+      "isError": false
+    }
+  },
+  "outcome": {
+    "ok": {
+      "content": [
+        {
+          "text": "{\"status\": \"recorded\", \"helped\": [], \"hurt\": []}",
+          "type": "text"
+        }
+      ],
+      "isError": false
+    }
+  },
+  "prune": {
+    "affirmed": {
+      "content": [
+        {
+          "text": "{\"status\": \"pruned\", \"episode_id\": 1, \"signals\": [\"drift:anchor_missing\"]}",
+          "type": "text"
+        }
+      ],
+      "isError": false
+    },
+    "noop": {
+      "content": [
+        {
+          "text": "{\"status\": \"noop\", \"episode_id\": 1, \"reason\": \"no qualifying machine signal \\u2014 nothing retired\", \"signals\": []}",
+          "type": "text"
+        }
+      ],
+      "isError": false
+    }
+  },
+  "recall": {
+    "abstained": {
+      "content": [
+        {
+          "text": "{\"reference_context\": [], \"abstained\": true, \"trace_id\": \"trace-recorded\", \"state\": \"ABSTAIN\", \"top_cos\": -0.1314546763896942, \"note\": \"no confident match \\u2014 abstained rather than surface a weak guess\"}",
+          "type": "text"
+        }
+      ],
+      "isError": false
+    },
+    "confident_multi": {
+      "content": [
+        {
+          "text": "{\"reference_context\": [{\"episode_id\": 1, \"text\": \"cone=1 the 1th caller passes the row, never the id\", \"sim\": 0.8600000143051147, \"trust\": \"provisional\", \"ts\": 1000000, \"polarity\": \"neutral\", \"kind\": \"note\", \"repos\": [], \"anchors\": [], \"drift\": {\"type\": \"n/a\", \"detail\": {\"per_anchor\": []}}}, {\"episode_id\": 2, \"text\": \"cone=2 the 2th caller passes the row, never the id\", \"sim\": 0.8600000143051147, \"trust\": \"provisional\", \"ts\": 1000000, \"polarity\": \"neutral\", \"kind\": \"note\", \"repos\": [], \"anchors\": [], \"drift\": {\"type\": \"n/a\", \"detail\": {\"per_anchor\": []}}}], \"abstained\": false, \"trace_id\": \"trace-recorded\", \"state\": \"CONFIDENT\", \"top_cos\": 0.8600000143051147}",
+          "type": "text"
+        }
+      ],
+      "isError": false
+    },
+    "conflicts": {
+      "content": [
+        {
+          "text": "{\"reference_context\": [{\"episode_id\": 2, \"text\": \"cid=3 never resolve the tip before probing\", \"sim\": 0.9996957182884216, \"trust\": \"provisional\", \"ts\": 1000000, \"polarity\": \"dont\", \"kind\": \"note\", \"repos\": [], \"anchors\": [], \"drift\": {\"type\": \"n/a\", \"detail\": {\"per_anchor\": []}}}], \"abstained\": false, \"trace_id\": \"trace-recorded\", \"state\": \"CONFIDENT\", \"top_cos\": 0.9996957182884216, \"conflicts\": [{\"a_id\": 1, \"b_id\": 2, \"relation\": \"contradiction\", \"cosine\": 0.9995, \"anchor\": \"\", \"loser_hint\": null, \"source\": \"mechanical\", \"note\": \"opposing polarity (do vs dont) on near-duplicate memories \\u2014 they disagree; resolve which holds via hive_supersede (machine-gated)\"}]}",
+          "type": "text"
+        }
+      ],
+      "isError": false
+    },
+    "drift_anchor_changed": {
+      "content": [
+        {
+          "text": "{\"reference_context\": [{\"episode_id\": 1, \"text\": \"cone=1 greet() must stay single-arg; callers pass positionally\", \"sim\": 0.8600000143051147, \"trust\": \"provisional\", \"ts\": 1000000, \"polarity\": \"neutral\", \"kind\": \"note\", \"repos\": [\"alpha\"], \"anchors\": [{\"repo\": \"alpha\", \"anchor\": \"app.py::greet\"}], \"drift\": {\"type\": \"anchor_changed\", \"detail\": {\"per_anchor\": [{\"repo\": \"alpha\", \"anchor\": \"app.py::greet\", \"tip_sha\": \"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\", \"verdict\": \"anchor_changed\"}]}}, \"remediation\": \"This memory's anchor no longer matches the code (stale) \\u2014 treat it as REFERENCE ONLY, do not follow it. Record evidence now: hive_outcome(hurt=[<episode_id>]). To retire it, diagnose per BAD_VS_STALE: it has a SUCCESSOR (STALE) -> hive_supersede(loser, winner) or hive_write(replaces=...) carrying the corrected fact; it was wrong even when written (BAD) -> hive_prune(episode_id). Retirement is MACHINE-GATED: the server itself verifies a qualifying machine signal for the target (anchor drift on the memory's own declared line, hurt evidence from another identity or a verified outcome) \\u2014 an unqualified call is a benign no-op: nothing retired, never an error.\"}], \"abstained\": false, \"trace_id\": \"trace-recorded\", \"state\": \"CONFIDENT\", \"top_cos\": 0.8600000143051147}",
+          "type": "text"
+        }
+      ],
+      "isError": false
+    },
+    "drift_anchor_missing": {
+      "content": [
+        {
+          "text": "{\"reference_context\": [{\"episode_id\": 1, \"text\": \"cone=1 greet() must stay single-arg; callers pass positionally\", \"sim\": 0.8600000143051147, \"trust\": \"provisional\", \"ts\": 1000000, \"polarity\": \"neutral\", \"kind\": \"note\", \"repos\": [\"alpha\"], \"anchors\": [{\"repo\": \"alpha\", \"anchor\": \"app.py::greet\"}], \"drift\": {\"type\": \"anchor_missing\", \"detail\": {\"per_anchor\": [{\"repo\": \"alpha\", \"anchor\": \"app.py::greet\", \"tip_sha\": \"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\", \"verdict\": \"anchor_missing\"}]}}, \"remediation\": \"This memory's anchor no longer matches the code (stale) \\u2014 treat it as REFERENCE ONLY, do not follow it. Record evidence now: hive_outcome(hurt=[<episode_id>]). To retire it, diagnose per BAD_VS_STALE: it has a SUCCESSOR (STALE) -> hive_supersede(loser, winner) or hive_write(replaces=...) carrying the corrected fact; it was wrong even when written (BAD) -> hive_prune(episode_id). Retirement is MACHINE-GATED: the server itself verifies a qualifying machine signal for the target (anchor drift on the memory's own declared line, hurt evidence from another identity or a verified outcome) \\u2014 an unqualified call is a benign no-op: nothing retired, never an error.\"}], \"abstained\": false, \"trace_id\": \"trace-recorded\", \"state\": \"CONFIDENT\", \"top_cos\": 0.8600000143051147}",
+          "type": "text"
+        }
+      ],
+      "isError": false
+    },
+    "drift_blast_radius_changed": {
+      "content": [
+        {
+          "text": "{\"reference_context\": [{\"episode_id\": 1, \"text\": \"cone=1 greet() must stay single-arg; callers pass positionally\", \"sim\": 0.8600000143051147, \"trust\": \"provisional\", \"ts\": 1000000, \"polarity\": \"neutral\", \"kind\": \"note\", \"repos\": [\"alpha\"], \"anchors\": [{\"repo\": \"alpha\", \"anchor\": \"app.py::greet\"}], \"drift\": {\"type\": \"blast_radius_changed\", \"detail\": {\"per_anchor\": [{\"repo\": \"alpha\", \"anchor\": \"app.py::greet\", \"tip_sha\": \"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\", \"verdict\": \"blast_radius_changed\"}]}}, \"remediation\": \"This memory's anchor no longer matches the code (stale) \\u2014 treat it as REFERENCE ONLY, do not follow it. Record evidence now: hive_outcome(hurt=[<episode_id>]). To retire it, diagnose per BAD_VS_STALE: it has a SUCCESSOR (STALE) -> hive_supersede(loser, winner) or hive_write(replaces=...) carrying the corrected fact; it was wrong even when written (BAD) -> hive_prune(episode_id). Retirement is MACHINE-GATED: the server itself verifies a qualifying machine signal for the target (anchor drift on the memory's own declared line, hurt evidence from another identity or a verified outcome) \\u2014 an unqualified call is a benign no-op: nothing retired, never an error.\"}], \"abstained\": false, \"trace_id\": \"trace-recorded\", \"state\": \"CONFIDENT\", \"top_cos\": 0.8600000143051147}",
+          "type": "text"
+        }
+      ],
+      "isError": false
+    },
+    "drift_branch_scoped": {
+      "content": [
+        {
+          "text": "{\"reference_context\": [{\"episode_id\": 1, \"text\": \"cone=1 greet() must stay single-arg; callers pass positionally\", \"sim\": 0.8600000143051147, \"trust\": \"provisional\", \"ts\": 1000000, \"polarity\": \"neutral\", \"kind\": \"note\", \"repos\": [\"alpha\"], \"anchors\": [{\"repo\": \"alpha\", \"anchor\": \"app.py::greet\", \"ref\": \"feature\"}], \"drift\": {\"type\": \"branch_scoped\", \"detail\": {\"per_anchor\": [{\"repo\": \"alpha\", \"anchor\": \"app.py::greet\", \"tip_sha\": \"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\", \"verdict\": \"branch_scoped\"}]}}}], \"abstained\": false, \"trace_id\": \"trace-recorded\", \"state\": \"CONFIDENT\", \"top_cos\": 0.8600000143051147}",
+          "type": "text"
+        }
+      ],
+      "isError": false
+    },
+    "drift_fresh": {
+      "content": [
+        {
+          "text": "{\"reference_context\": [{\"episode_id\": 1, \"text\": \"cone=1 greet() must stay single-arg; callers pass positionally\", \"sim\": 0.8600000143051147, \"trust\": \"provisional\", \"ts\": 1000000, \"polarity\": \"neutral\", \"kind\": \"note\", \"repos\": [\"alpha\"], \"anchors\": [{\"repo\": \"alpha\", \"anchor\": \"app.py::greet\"}], \"drift\": {\"type\": \"fresh\", \"detail\": {\"per_anchor\": [{\"repo\": \"alpha\", \"anchor\": \"app.py::greet\", \"tip_sha\": \"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\", \"verdict\": \"fresh\"}]}}}], \"abstained\": false, \"trace_id\": \"trace-recorded\", \"state\": \"CONFIDENT\", \"top_cos\": 0.8600000143051147}",
+          "type": "text"
+        }
+      ],
+      "isError": false
+    },
+    "drift_na": {
+      "content": [
+        {
+          "text": "{\"reference_context\": [{\"episode_id\": 1, \"text\": \"cone=1 a general lesson that binds to no repo or path\", \"sim\": 0.8600000143051147, \"trust\": \"provisional\", \"ts\": 1000000, \"polarity\": \"neutral\", \"kind\": \"note\", \"repos\": [], \"anchors\": [], \"drift\": {\"type\": \"n/a\", \"detail\": {\"per_anchor\": []}}}], \"abstained\": false, \"trace_id\": \"trace-recorded\", \"state\": \"CONFIDENT\", \"top_cos\": 0.8600000143051147}",
+          "type": "text"
+        }
+      ],
+      "isError": false
+    },
+    "drift_unverifiable": {
+      "content": [
+        {
+          "text": "{\"reference_context\": [{\"episode_id\": 1, \"text\": \"cone=1 greet() must stay single-arg; callers pass positionally\", \"sim\": 0.8600000143051147, \"trust\": \"provisional\", \"ts\": 1000000, \"polarity\": \"neutral\", \"kind\": \"note\", \"repos\": [\"alpha\"], \"anchors\": [{\"repo\": \"alpha\", \"anchor\": \"app.py::greet\"}], \"drift\": {\"type\": \"unverifiable\", \"detail\": {\"per_anchor\": [{\"repo\": \"alpha\", \"anchor\": \"app.py::greet\", \"tip_sha\": \"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\", \"verdict\": \"unverifiable\"}]}}}], \"abstained\": false, \"trace_id\": \"trace-recorded\", \"state\": \"CONFIDENT\", \"top_cos\": 0.8600000143051147}",
+          "type": "text"
+        }
+      ],
+      "isError": false
+    },
+    "multi_actionable": {
+      "content": [
+        {
+          "text": "{\"reference_context\": [{\"episode_id\": 1, \"text\": \"cone=1 binding 1 that the tree has since moved\", \"sim\": 0.8600000143051147, \"trust\": \"provisional\", \"ts\": 1000000, \"polarity\": \"neutral\", \"kind\": \"note\", \"repos\": [\"alpha\"], \"anchors\": [{\"repo\": \"alpha\", \"anchor\": \"app.py::greet\"}], \"drift\": {\"type\": \"anchor_missing\", \"detail\": {\"per_anchor\": [{\"repo\": \"alpha\", \"anchor\": \"app.py::greet\", \"tip_sha\": \"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\", \"verdict\": \"anchor_missing\"}]}}, \"remediation\": \"This memory's anchor no longer matches the code (stale) \\u2014 treat it as REFERENCE ONLY, do not follow it. Record evidence now: hive_outcome(hurt=[<episode_id>]). To retire it, diagnose per BAD_VS_STALE: it has a SUCCESSOR (STALE) -> hive_supersede(loser, winner) or hive_write(replaces=...) carrying the corrected fact; it was wrong even when written (BAD) -> hive_prune(episode_id). Retirement is MACHINE-GATED: the server itself verifies a qualifying machine signal for the target (anchor drift on the memory's own declared line, hurt evidence from another identity or a verified outcome) \\u2014 an unqualified call is a benign no-op: nothing retired, never an error.\"}, {\"episode_id\": 2, \"text\": \"cone=2 binding 2 that the tree has since moved\", \"sim\": 0.8600000143051147, \"trust\": \"provisional\", \"ts\": 1000000, \"polarity\": \"neutral\", \"kind\": \"note\", \"repos\": [\"alpha\"], \"anchors\": [{\"repo\": \"alpha\", \"anchor\": \"billing.py::charge\"}], \"drift\": {\"type\": \"anchor_missing\", \"detail\": {\"per_anchor\": [{\"repo\": \"alpha\", \"anchor\": \"billing.py::charge\", \"tip_sha\": \"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\", \"verdict\": \"anchor_missing\"}]}}, \"remediation\": \"This memory's anchor no longer matches the code (stale) \\u2014 treat it as REFERENCE ONLY, do not follow it. Record evidence now: hive_outcome(hurt=[<episode_id>]). To retire it, diagnose per BAD_VS_STALE: it has a SUCCESSOR (STALE) -> hive_supersede(loser, winner) or hive_write(replaces=...) carrying the corrected fact; it was wrong even when written (BAD) -> hive_prune(episode_id). Retirement is MACHINE-GATED: the server itself verifies a qualifying machine signal for the target (anchor drift on the memory's own declared line, hurt evidence from another identity or a verified outcome) \\u2014 an unqualified call is a benign no-op: nothing retired, never an error.\"}], \"abstained\": false, \"trace_id\": \"trace-recorded\", \"state\": \"CONFIDENT\", \"top_cos\": 0.8600000143051147}",
+          "type": "text"
+        }
+      ],
+      "isError": false
+    }
+  },
+  "supersede": {
+    "affirmed": {
+      "content": [
+        {
+          "text": "{\"status\": \"superseded\", \"loser\": 1, \"winner\": 2, \"signals\": [\"drift:anchor_missing\"]}",
+          "type": "text"
+        }
+      ],
+      "isError": false
+    },
+    "noop": {
+      "content": [
+        {
+          "text": "{\"status\": \"noop\", \"loser\": 1, \"winner\": 2, \"reason\": \"no qualifying machine signal \\u2014 nothing retired\", \"signals\": []}",
+          "type": "text"
+        }
+      ],
+      "isError": false
+    }
+  },
+  "write": {
+    "anchored": {
+      "content": [
+        {
+          "text": "{\"status\": \"approved\", \"id\": 2, \"trust\": \"provisional\", \"scan\": {\"action\": \"clean\", \"rules\": [], \"n_findings\": 0, \"findings\": []}, \"deduped\": false}",
+          "type": "text"
+        }
+      ],
+      "isError": false
+    },
+    "approved": {
+      "content": [
+        {
+          "text": "{\"status\": \"approved\", \"id\": 1, \"trust\": \"provisional\", \"scan\": {\"action\": \"clean\", \"rules\": [], \"n_findings\": 0, \"findings\": []}, \"deduped\": false}",
+          "type": "text"
+        }
+      ],
+      "isError": false
+    },
+    "refused": {
+      "content": [
+        {
+          "text": "{\"status\": \"refused\", \"reason\": \"refused: credential detected (1 finding(s), rules=['openai_key'], spans=[[18, 53]])\", \"scan\": {\"action\": \"refuse\", \"rules\": [\"openai_key\"], \"n_findings\": 1, \"findings\": [{\"rule\": \"openai_key\", \"start\": 18, \"end\": 53}]}}",
+          "type": "text"
+        }
+      ],
+      "isError": false
+    },
+    "replaces_affirmed": {
+      "content": [
+        {
+          "text": "{\"status\": \"approved\", \"id\": 2, \"trust\": \"provisional\", \"scan\": {\"action\": \"clean\", \"rules\": [], \"n_findings\": 0, \"findings\": []}, \"deduped\": false, \"superseded\": 1}",
+          "type": "text"
+        }
+      ],
+      "isError": false
+    },
+    "repos_only": {
+      "content": [
+        {
+          "text": "{\"status\": \"approved\", \"id\": 3, \"trust\": \"provisional\", \"scan\": {\"action\": \"clean\", \"rules\": [], \"n_findings\": 0, \"findings\": []}, \"deduped\": false}",
+          "type": "text"
+        }
+      ],
+      "isError": false
+    }
+  }
+}

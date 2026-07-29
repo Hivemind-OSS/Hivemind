@@ -63,10 +63,15 @@ hive logs      # follow the daemon logs (Ctrl-C detaches); `hive logs ngrok` for
   so it is recoverable; `hive restore` rolls back) — run it via **hive-backup-restore**. Do **not**
   hand-roll `docker compose down -v`: that destroys the store with no snapshot.
 - **Boot is a fail-fast state machine** — `config → migrate → index → embedder.warm → serve.ready`.
-  The exit code is the contract: `0` clean · `78` bad config (an out-of-range `.env` knob fails
-  loudly, never clamps — and a registered repo's `--token-env` var absent from the server's
-  environment fails here too, naming the var) · `70` an internal boot step failed · `69` the
-  embedder never became resident (no recall possible — treat as unhealthy).
+  The exit code is the contract: `0` clean · `78` bad config · `70` an internal boot step failed ·
+  `69` the embedder never became resident (no recall possible — treat as unhealthy).
+- **Exit `78` names what to fix — read the last ERROR line, do not guess.** Its causes: an
+  out-of-range `.env` knob (it fails loudly, never clamps) · a registered repo's `--token-env`
+  var absent from the server's environment (`entrypoint.token_env_missing`, naming the var) ·
+  the store's directory not writable by the container's user (`entrypoint.db_dir_not_writable`,
+  naming the path and uid — a data dir whose ownership does not match, rather than the
+  `hive-data` volume this stack creates for you) · both HTTP doors resolved onto one port
+  (`entrypoint.bind_port_collision`, only reachable if you set the address knobs at all).
 - **No live reload** — config applies only at boot. After any `.env` edit, `hive up` to restart.
 
 ## Verify it actually serves (optional smoke test)

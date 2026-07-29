@@ -14,6 +14,8 @@ defaults and threads `limiter=`/`max_body_bytes=` into `run_http_dual`.
 
 from __future__ import annotations
 
+import os
+
 import pytest
 
 from hive.app.rate_limit import TokenBucketLimiter
@@ -297,8 +299,9 @@ def test_make_http_serve_wires_run_http_dual_with_ports_and_verify():
     def fake_run_http_dual(
         server,
         *,
-        host,
+        loopback_host,
         loopback_port,
+        tunnel_host,
         tunnel_port,
         verify,
         lock,
@@ -309,8 +312,9 @@ def test_make_http_serve_wires_run_http_dual_with_ports_and_verify():
     ):
         captured.update(
             server=server,
-            host=host,
+            loopback_host=loopback_host,
             loopback_port=loopback_port,
+            tunnel_host=tunnel_host,
             tunnel_port=tunnel_port,
             verify=verify,
             lock=lock,
@@ -323,7 +327,10 @@ def test_make_http_serve_wires_run_http_dual_with_ports_and_verify():
     sentinel = object()
     serve(sentinel)
     assert captured["server"] is sentinel
-    assert captured["host"] == "0.0.0.0"
+    # both doors default to the container interface — the compose port map is what makes
+    # the tokenless one safe there, and a deployment without one overrides the address
+    assert captured["loopback_host"] == "0.0.0.0"
+    assert captured["tunnel_host"] == "0.0.0.0"
     assert captured["loopback_port"] == 9999  # the tokenless host-published door
     assert captured["tunnel_port"] == 9998  # the token-required compose-internal door
     assert (
@@ -343,8 +350,9 @@ def test_make_http_serve_threads_one_lock_and_one_limiter():
     def fake_run_http_dual(
         server,
         *,
-        host,
+        loopback_host,
         loopback_port,
+        tunnel_host,
         tunnel_port,
         verify,
         lock,
@@ -373,8 +381,9 @@ def test_make_http_serve_constructs_limiter_from_resolved_values():
     def fake_run_http_dual(
         server,
         *,
-        host,
+        loopback_host,
         loopback_port,
+        tunnel_host,
         tunnel_port,
         verify,
         lock,
@@ -411,8 +420,9 @@ def test_make_http_serve_threads_webhook_kwargs_verbatim():
     def fake_run_http_dual(
         server,
         *,
-        host,
+        loopback_host,
         loopback_port,
+        tunnel_host,
         tunnel_port,
         verify,
         lock,
@@ -496,10 +506,144 @@ def test_invalid_max_body_exits_config_before_assembly():
     assert calls == []  # fail-fast BEFORE build_boot
 
 
-def test_main_serve_fixed_ports_and_threaded_max_body(monkeypatch):
-    """main() serves on the FIXED ports (8765 loopback + 8766 tunnel) and threads only the
-    resolved max_body knob into _make_http_serve — the rate-limit belt uses its fixed defaults
-    (no operator knob)."""
+# ── the bind knobs: an address is a property of the DEPLOYMENT, not of the software ──
+def test_resolve_http_bind_defaults_reproduce_the_compose_posture():
+    """An unset environment binds exactly what it always bound. The tokenless door's
+    default is the container interface because the compose port map reaches the container
+    by its own IP — its safety there is the map's `127.0.0.1:` prefix, not this address."""
+    assert E._resolve_http_bind({}) == ("0.0.0.0", 8765, "0.0.0.0", 8766)
+
+
+def test_resolve_http_bind_honors_every_knob():
+    assert E._resolve_http_bind(
+        {
+            "HIVE_HTTP_LOOPBACK_HOST": "127.0.0.1",
+            "HIVE_HTTP_LOOPBACK_PORT": "9001",
+            "HIVE_HTTP_TUNNEL_HOST": "0.0.0.0",
+            "HIVE_HTTP_TUNNEL_PORT": "8080",
+        }
+    ) == ("127.0.0.1", 9001, "0.0.0.0", 8080)
+
+
+def test_blank_bind_knob_falls_back_to_its_default():
+    # blank ⇒ default, the same idiom as every other env value the entrypoint owns
+    assert E._resolve_http_bind(
+        {"HIVE_HTTP_LOOPBACK_HOST": "  ", "HIVE_HTTP_TUNNEL_PORT": ""}
+    ) == ("0.0.0.0", 8765, "0.0.0.0", 8766)
+
+
+@pytest.mark.parametrize("var", ["HIVE_HTTP_LOOPBACK_PORT", "HIVE_HTTP_TUNNEL_PORT"])
+@pytest.mark.parametrize("bad", ["abc", "0", "-1", "65536", "1.5", "8765x"])
+def test_resolve_http_bind_malformed_port_is_none(var, bad):
+    # 0 is rejected with the rest: an ephemeral port is one no operator could ever reach.
+    assert E._resolve_http_bind({var: bad}) is None
+
+
+def test_resolve_http_bind_refuses_two_doors_on_one_port():
+    """Same port ⇒ EX_CONFIG whatever the addresses, because the second bind fails with
+    EADDRINUSE AFTER the readiness markers are stamped — a container that reads healthy
+    while serving one door. Failing at boot is the difference between a wrong value and a
+    silent half-daemon."""
+    assert E._resolve_http_bind({"HIVE_HTTP_TUNNEL_PORT": "8765"}) is None
+    assert (
+        E._resolve_http_bind(
+            {
+                "HIVE_HTTP_LOOPBACK_HOST": "127.0.0.1",
+                "HIVE_HTTP_LOOPBACK_PORT": "9000",
+                "HIVE_HTTP_TUNNEL_PORT": "9000",
+            }
+        )
+        is None
+    )
+
+
+def test_invalid_bind_exits_config_before_assembly():
+    calls: list = []
+    rc = E.main(
+        env={"HIVE_HTTP_TUNNEL_PORT": "nope"},
+        build_boot=_boot_factory(_RecordingBoot(calls)),
+        serve=_serve_recorder(calls),
+    )
+    assert rc == E.EX_CONFIG
+    assert calls == []  # fail-fast BEFORE build_boot
+
+
+def test_main_threads_the_resolved_bind_into_the_serve_builder(monkeypatch):
+    """The knobs reach the listener: a deployment with no port map puts the tokenless door
+    on loopback and the token-required door on the address its router hands traffic to."""
+    captured: dict = {}
+
+    def fake_make_http_serve(boot, loopback_port, tunnel_port, **kw):
+        captured.update(loopback_port=loopback_port, tunnel_port=tunnel_port, **kw)
+        return lambda s: None
+
+    monkeypatch.setattr(E, "_make_http_serve", fake_make_http_serve)
+    rc = E.main(
+        env={"HIVE_HTTP_LOOPBACK_HOST": "127.0.0.1", "HIVE_HTTP_TUNNEL_PORT": "8080"},
+        build_boot=_boot_factory(_RecordingBoot([])),
+    )
+    assert rc == E.EX_OK
+    assert captured["loopback_host"] == "127.0.0.1"  # tokenless door, off the wire
+    assert captured["tunnel_port"] == 8080
+    assert captured["loopback_port"] == 8765  # untouched knobs keep their defaults
+    assert captured["tunnel_host"] == "0.0.0.0"
+
+
+# ── the store-directory probe: name the ownership fault instead of dying at migrate ──
+def test_probe_db_dir_is_clean_for_memory_and_writable_directories(tmp_path):
+    assert E._probe_db_dir(":memory:") is None  # ephemeral store, no directory
+    assert E._probe_db_dir(str(tmp_path / "shared.db")) is None
+
+
+def test_probe_db_dir_treats_a_missing_directory_as_migrate_business(tmp_path):
+    # a missing directory is a DIFFERENT failure from a permission mismatch, and creating
+    # it is not this probe's call — it warns and stays clean
+    assert E._probe_db_dir(str(tmp_path / "absent" / "shared.db")) is None
+
+
+@pytest.mark.skipif(
+    hasattr(os, "geteuid") and os.geteuid() == 0,
+    reason="root bypasses the permission bit this probe reads",
+)
+def test_probe_db_dir_flags_a_directory_this_process_cannot_write(tmp_path):
+    # the mounted-volume shape: the directory exists and is readable, but belongs to
+    # another uid — sqlite would answer "unable to open database file" three steps later
+    volume = tmp_path / "vol"
+    volume.mkdir()
+    volume.chmod(0o500)
+    try:
+        assert E._probe_db_dir(str(volume / "shared.db")) == str(volume)
+    finally:
+        volume.chmod(0o700)  # let tmp_path teardown remove it
+
+
+@pytest.mark.skipif(
+    hasattr(os, "geteuid") and os.geteuid() == 0,
+    reason="root bypasses the permission bit this probe reads",
+)
+def test_unwritable_store_dir_exits_config_before_assembly(tmp_path):
+    """EX_CONFIG, not EX_SOFTWARE: an operator can fix ownership, and the fault must be
+    named before assembly rather than surfacing as an opaque sqlite error at migrate."""
+    volume = tmp_path / "vol"
+    volume.mkdir()
+    volume.chmod(0o500)
+    calls: list = []
+    try:
+        rc = E.main(
+            env={"HIVE_STORE__DB_PATH": str(volume / "shared.db")},
+            build_boot=_boot_factory(_RecordingBoot(calls)),
+            serve=_serve_recorder(calls),
+        )
+    finally:
+        volume.chmod(0o700)
+    assert rc == E.EX_CONFIG
+    assert calls == []  # fail-fast BEFORE build_boot
+
+
+def test_main_serve_default_ports_and_threaded_max_body(monkeypatch):
+    """main() serves on the resolved default ports (8765 loopback + 8766 tunnel) and threads
+    only the resolved max_body knob into _make_http_serve — the rate-limit belt uses its fixed
+    defaults (no operator knob)."""
     captured: dict = {}
 
     def fake_make_http_serve(boot, loopback_port, tunnel_port, **kw):

@@ -162,9 +162,15 @@ identically whether 1 or N engineers run it. Auth is a property of the **socket*
 mode:
 
 - **Loopback door** — `127.0.0.1:8765`, host-published, **tokenless**. For local agents on the
-  trusted host. Never reachable remotely.
+  trusted host. Not reachable remotely — a property of the compose port map's `127.0.0.1:`
+  prefix, not of the server; a deployment that fronts the daemon otherwise must set
+  `HIVE_HTTP_LOOPBACK_HOST=127.0.0.1` itself.
 - **Tunnel door** — compose-internal `8766`, ngrok-forwarded, **token-required**. The only
   remote-reachable door, so a public caller is always bearer-gated by construction.
+
+Both addresses are defaults, not constants: `HIVE_HTTP_{LOOPBACK,TUNNEL}_{HOST,PORT}` resolve
+them at boot, and two doors on one port fails boot rather than binding one silently.
+`GET /healthz` answers 200 pre-auth on both doors for a supervisor in front of the socket.
 
 The bearer token **authenticates** the tunnel door; it is never the identity. There is no
 `HIVE_AUTH__MODE` switch — a leftover one from an older config is ignored (a WARN, not a crash).

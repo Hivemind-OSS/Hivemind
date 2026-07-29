@@ -1,0 +1,25 @@
+{
+  "name": "hive-loop",
+  "description": "Closes the memory loop mechanically: recall before changing code, recall before storing, and a turn that cannot end with an unmade decision left silent. Requires Node >= 23.6 (the hooks run TypeScript directly).",
+  "version": "0.1.0",
+  "license": "Apache-2.0",
+  "author": {
+    "name": "Hivemind maintainers",
+    "url": "https://github.com/dsw7/hivemind"
+  },
+  "keywords": [
+    "memory",
+    "hooks",
+    "loop",
+    "hive"
+  ],
+  "mcpServers": {
+    "hive": {
+      "type": "http",
+      "url": "${HIVE_MCP_URL}",
+      "headers": {
+        "Authorization": "Bearer ${HIVE_TOKEN}"
+      }
+    }
+  }
+}

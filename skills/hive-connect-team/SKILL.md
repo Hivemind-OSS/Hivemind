@@ -72,11 +72,18 @@ Then the teammate uses the **local** loopback line above as-is — no ngrok, no 
   is tokenless; the tunnel door (compose-internal `8766`) is token-required and is the only
   remote-reachable one. **Never publish `0.0.0.0:8765`** — that door is tokenless, so publishing
   it hands unauthenticated recall and write to the whole LAN.
-- **The usage contract is served, never installed.** The MCP registration above is the **only**
-  client-side step — there is no handshake call and nothing to install on the workstation or in
-  any repo. The whole contract (recall-first, scoped store/recall, write-vs-capture, outcome
+  What supplies that protection is the compose port map's `127.0.0.1:` prefix — inside the
+  container the door binds all interfaces, because a published port could not reach it otherwise.
+  So if you ever run the daemon without this compose file, that guarantee is yours to re-supply:
+  `HIVE-ADMIN.md` §3.
+- **The usage contract is served, never installed.** The MCP registration above is the only step
+  **required** to connect — there is no handshake call, and nothing has to be installed on the
+  workstation or in any repo for an agent to receive the contract. The whole contract (recall-first, scoped store/recall, write-vs-capture, outcome
   evidence, machine-gated retirement) reaches every agent automatically at connect via the MCP
   `initialize` result's `instructions` field, fresh every session; a reconnect picks up a changed
   contract. Census change evidence needs **no per-device setup** either: it is computed
   server-side by the sync daemon off the repo registry (`hive repo add` — **hive-connect-repo**),
   so there are no git hooks and no signing key on workstations.
+  What an operator *may* additionally install is the optional client-side harness, which makes that
+  served discipline mechanical rather than advisory — **hive-connect-harness**. It carries no
+  contract text of its own, so this invariant survives it intact.

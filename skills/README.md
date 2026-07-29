@@ -8,6 +8,7 @@ reference is `HIVE-ADMIN.md` (and `OPERATIONS.md` for the tuning evidence).
 |---|---|
 | [`hive-bringup`](hive-bringup/SKILL.md) | start / stop / restart / health-check the server; diagnose a boot crash-loop |
 | [`hive-connect-team`](hive-connect-team/SKILL.md) | connect a local agent or a remote teammate (loopback / tunnel / SSH); mint & revoke seat tokens |
+| [`hive-connect-harness`](hive-connect-harness/SKILL.md) | install the **optional** client-side agent-loop harness (the `hive-loop` Claude Code plugin in `harnesses/`) on your own device, or produce the copy-pasteable block an admin forwards so a teammate's agent installs it at a pinned commit |
 | [`hive-connect-repo`](hive-connect-repo/SKILL.md) | register repos with the server-side census sync (`hive repo add` — picked up next tick, no restart) and verify each repo's change-outcome feed is live |
 | [`hive-upgrade`](hive-upgrade/SKILL.md) | move the server to a different release ref safely (`hive upgrade` — snapshot-gated, health-verified, auto-rollback), after a schema pre-flight that proves the target ref accepts the store you already have |
 | [`hive-backup-restore`](hive-backup-restore/SKILL.md) | snapshot, reset (recoverable clean-start), or restore the data store |
@@ -22,7 +23,7 @@ agent that loads skills from `.claude/skills/` (e.g. Claude Code), copy or symli
 there:
 
 ```bash
-for s in hive-bringup hive-connect-team hive-connect-repo hive-upgrade hive-backup-restore hive-operate; do
+for s in hive-bringup hive-connect-team hive-connect-harness hive-connect-repo hive-upgrade hive-backup-restore hive-operate; do
   ln -s "../../skills/$s" ".claude/skills/$s"
 done
 ```

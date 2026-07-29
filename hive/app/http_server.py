@@ -2,15 +2,19 @@
 
 The natural generalization of ``run_stdio``: stdio is "one process, one identity"; this is
 "one process, PER-AGENT-SESSION identity." Auth is a property of the listening SOCKET, not a
-config mode: ``run_http_dual`` binds a tokenless LOOPBACK door (host-published) and a
-token-required TUNNEL door (compose-internal, ngrok-forwarded) on ONE server / ONE lock / ONE
-limiter. On the tunnel door the Bearer is verified BEFORE ``handle()`` (an absent/unknown token
+config mode: ``run_http_dual`` binds a tokenless LOOPBACK door and a token-required TUNNEL
+door — each on its own bind address, because only the deployment knows how either is
+reached — on ONE server / ONE lock / ONE limiter. On the tunnel door the Bearer is verified BEFORE ``handle()`` (an absent/unknown token
 never touches recall/write — INV-1 → 401); on the loopback door there is no token. AUTH and
 IDENTITY are orthogonal: on BOTH doors the per-request identity is resolved as
 ``X-Hive-Agent-Id`` → echoed ``Mcp-Session-Id`` → ``"local"`` and becomes the ``proposed_by``
 via a per-request ``ServerIdentity`` threaded through ``handle(identity=…)``. The token GATES
 the tunnel door but is NEVER the identity (so token/engineer count cannot leak into promotion);
 the transport stays ignorant of tool internals (D1).
+
+``GET /healthz`` answers 200 on both doors, pre-auth and content-free — the liveness signal
+a supervisor in FRONT of the socket can read (the image HEALTHCHECK runs inside the container
+and is invisible there). Every other GET stays a 405.
 
 Channel separation: auth/transport outcomes are HTTP status codes (401/403/405/202);
 protocol/handler errors are JSON-RPC errors INSIDE a 200 — the two never mix. The shared
@@ -72,6 +76,7 @@ _SESSION_ID_HEADER = (
     "Mcp-Session-Id"  # server-minted at initialize; echoed by conforming clients
 )
 _LOCAL_AGENT_ID = "local"  # the residual identity bucket (no header, no session id)
+_HEALTH_PATH = "/healthz"  # the pre-auth liveness probe (both doors)
 
 
 def _bearer(headers: Message) -> Optional[str]:
@@ -193,7 +198,19 @@ def _build_handler(
             return self.rfile.read(n) if n > 0 else b""
 
         # ── method routing ───────────────────────────────────────────────────────
-        def do_GET(self) -> None:  # no SSE stream offered → 405 (spec)
+        def do_GET(self) -> None:
+            # /healthz — the liveness signal an EXTERNAL supervisor can read: a reverse
+            # proxy, an orchestrator's readiness gate, an uptime monitor. The image's
+            # HEALTHCHECK runs INSIDE the container and is invisible to anything in front
+            # of the socket, so a fronted deployment otherwise has no honest signal and
+            # must guess from a raw TCP connect. Pre-auth on BOTH doors by construction
+            # (a prober holds no seat token, and the bearer gate lives in do_POST), and
+            # deliberately content-free: this branch holds no server/store handle, so it
+            # cannot become a data channel. The only fact it discloses — that something
+            # answers here — the 401 on POST already discloses.
+            if self.path == _HEALTH_PATH:
+                return self._json(200, {"status": "ok"})
+            # anything else: no SSE stream offered → 405 (spec)
             self._json(405, {"error": "method_not_allowed"}, extra={"Allow": "POST"})
 
         def do_DELETE(self) -> None:  # no sessions to tear down → 405 (spec)
@@ -361,8 +378,9 @@ def _build_handler(
 def run_http_dual(
     server: HiveMCPServer,
     *,
-    host: str,
+    loopback_host: str,
     loopback_port: int,
+    tunnel_host: str,
     tunnel_port: int,
     verify: Callable[[str], Optional[str]],
     lock: threading.Lock,
@@ -372,16 +390,24 @@ def run_http_dual(
     webhook_nudge: Optional[Callable[[], None]] = None,
 ) -> None:  # pragma: no cover — blocking serve
     """Bind BOTH doors on ONE server / ONE lock / ONE limiter: the tokenless LOOPBACK door
-    (``auth_required=False``, the host-published port) and the token-required TUNNEL door
-    (``auth_required=True``, the compose-internal port ngrok forwards to). The tunnel door
-    serves on a daemon thread; the loopback door serves on THIS thread (blocking). Passing the
-    SAME ``lock`` + SAME ``limiter`` into both ``_build_handler`` calls is what keeps the
-    single-writer serialization invariant (THEORY §5) holding across two listeners — no path
-    constructs a per-listener lock, so ``check_same_thread=False`` stays safe. The webhook
-    nudge (D6) is threaded to the TUNNEL door ALONE — ngrok forwards one port, so that is the
-    only door a forge can reach; the loopback door never serves the route."""
+    (``auth_required=False``) and the token-required TUNNEL door (``auth_required=True``).
+    The tunnel door serves on a daemon thread; the loopback door serves on THIS thread
+    (blocking). Passing the SAME ``lock`` + SAME ``limiter`` into both ``_build_handler``
+    calls is what keeps the single-writer serialization invariant (THEORY §5) holding across
+    two listeners — no path constructs a per-listener lock, so ``check_same_thread=False``
+    stays safe. The webhook nudge (D6) is threaded to the TUNNEL door ALONE — one port is
+    forwarded, so that is the only door a forge can reach.
+
+    Each door carries its OWN bind address. They are separate parameters because the two
+    doors have opposite exposure requirements and only the deployment knows how they are
+    reached: under compose the tokenless door must bind the container's interface for a
+    host port map to reach it (its safety is the map's ``127.0.0.1:`` prefix), while a
+    deployment with no such map — a container platform, a bare ``docker run``, a host
+    process — has nothing to make an all-interfaces bind safe and must give the tokenless
+    door a loopback address. A single shared ``host`` could not express both, so it silently
+    exported whatever posture compose happened to need."""
     tunnel = ThreadingHTTPServer(
-        (host, tunnel_port),
+        (tunnel_host, tunnel_port),
         _build_handler(
             server,
             verify,
@@ -396,10 +422,12 @@ def run_http_dual(
     th = threading.Thread(target=tunnel.serve_forever, daemon=True)
     th.start()
     _log.info(
-        "http.serving host=%s tunnel_port=%d auth_required=True", host, tunnel_port
+        "http.serving host=%s tunnel_port=%d auth_required=True",
+        tunnel_host,
+        tunnel_port,
     )
     loopback = ThreadingHTTPServer(
-        (host, loopback_port),
+        (loopback_host, loopback_port),
         _build_handler(
             server,
             verify,
@@ -410,6 +438,8 @@ def run_http_dual(
         ),
     )
     _log.info(
-        "http.serving host=%s loopback_port=%d auth_required=False", host, loopback_port
+        "http.serving host=%s loopback_port=%d auth_required=False",
+        loopback_host,
+        loopback_port,
     )
     loopback.serve_forever()

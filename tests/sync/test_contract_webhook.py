@@ -323,8 +323,9 @@ def test_run_http_dual_serves_webhook_on_tunnel_door_only(monkeypatch):
     runner = threading.Thread(
         target=lambda: H.run_http_dual(
             spy,
-            host="127.0.0.1",
+            loopback_host="127.0.0.1",
             loopback_port=0,
+            tunnel_host="127.0.0.1",
             tunnel_port=0,
             verify=lambda tok: {"good-tok": "alice"}.get(tok),
             lock=threading.Lock(),

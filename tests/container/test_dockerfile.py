@@ -115,14 +115,52 @@ def test_runtime_excludes_build_toolchain():
         )
 
 
-def test_runtime_has_git_and_uv_for_sync():
-    # The sync subsystem's runtime tools: git (mirror + census worktrees) and the uv
-    # binary (candidate-eval `uv sync --frozen`), copied from the official uv image.
-    runtime = _stages()["runtime"]
-    assert re.search(r"apt-get install[^\n]*\bgit\b", runtime)
+def test_runtime_has_git_and_verifier_stage_has_uv():
+    # git is the DAEMON's runtime tool (sync mirror + census worktrees) and stays in
+    # `runtime`. The uv binary serves the candidate-eval tier alone (`uv sync --frozen`),
+    # so it rides the additive `verifier` stage — a deployment that runs no candidate-eval
+    # builds `--target runtime` and carries neither it nor the pyright cache.
+    stages = _stages()
+    assert re.search(r"apt-get install[^\n]*\bgit\b", stages["runtime"])
+    assert "astral-sh/uv" not in stages["runtime"]
     assert re.search(
         r"(?im)^COPY\s+--from=ghcr\.io/astral-sh/uv:\S+\s+/uv\s+/usr/local/bin/uv\s*$",
-        runtime,
+        stages["verifier"],
+    )
+
+
+def test_verifier_is_the_last_stage_so_it_is_the_default_target():
+    # `docker build .` — and compose, which sets no target — builds the LAST stage. The
+    # verifier stage must be last so the default image keeps the candidate-eval tooling it
+    # has always shipped; reordering would silently strip it from every default build.
+    names = re.findall(r"(?im)^FROM\s+\S+\s+AS\s+(\w+)\s*$", _text())
+    assert names[-1] == "verifier"
+    assert names.index("runtime") < names.index("verifier")
+
+
+def test_runtime_target_alone_is_a_complete_image():
+    # `--target runtime` is a supported build, so the slim target must already carry
+    # everything the daemon boots with: the verifier stage adds TOOLING, never wiring.
+    runtime = _stages()["runtime"]
+    assert re.search(r"(?im)^ENTRYPOINT\b.*hive\.tools\.entrypoint", runtime)
+    assert re.search(r"(?im)^USER\s+hive\s*$", runtime)
+    assert re.search(r"(?is)HEALTHCHECK\b.*hive\.tools\.healthcheck", runtime)
+
+
+def test_copied_trees_are_chowned_at_copy_time_not_by_a_later_run():
+    # A recursive chown REWRITES every file it touches into a new layer, so chowning a
+    # multi-GB tree AFTER copying it duplicates that whole tree inside the image — it cost
+    # 1.65 GB here, over a third of the image. Ownership of a copied tree must ride
+    # `COPY --chown`. The one surviving `chown -R` may touch /data, which is empty at build
+    # time (a volume mounts over it at runtime), so it duplicates nothing.
+    text = _text()
+    for tree in ("/opt/hf-cache", "/home/hive/.cache", "/opt/venv"):
+        assert not re.search(rf"chown -R[^\n]*{re.escape(tree)}", text), (
+            f"chown -R over {tree} re-writes the tree into a new layer — use COPY --chown"
+        )
+    assert re.search(
+        r"(?im)^COPY\s+--from=builder\s+--chown=hive:hive\s+/opt/hf-cache\s+/opt/hf-cache\s*$",
+        text,
     )
 
 
@@ -164,15 +202,21 @@ def test_pyright_bake_is_best_effort_only():
     assert re.search(r"pip install[^\n]*\bpyright\b", builder)
     assert re.search(r"mkdir -p /root/\.cache", builder)
     assert re.search(
-        r"(?im)^COPY\s+--from=builder\s+/root/\.cache\s+/home/hive/\.cache\s*$", runtime
+        r"(?im)^COPY\s+--from=builder\s+--chown=hive:hive\s+/root/\.cache\s+"
+        r"/home/hive/\.cache\s*$",
+        _stages()["verifier"],
     )
+    assert "/root/.cache" not in runtime  # the cache is verifier-tier, not daemon-tier
 
 
 def test_sync_state_dir_created_and_owned_by_hive():
     runtime = _stages()["runtime"]
     assert re.search(r"mkdir -p[^\n]*/data/sync\b", runtime)
     assert re.search(r"chown -R hive:hive[^\n]*/data\b", runtime)
-    assert re.search(r"chown -R hive:hive[^\n]*/home/hive/\.cache", runtime)
+    # the hive user still owns its caches — established at COPY time now, not by a
+    # tree-duplicating `chown -R` (see test_copied_trees_are_chowned_at_copy_time_*)
+    assert re.search(r"--chown=hive:hive\s+/opt/hf-cache", _stages()["runtime"])
+    assert re.search(r"--chown=hive:hive\s+/root/\.cache", _stages()["verifier"])
 
 
 def test_runtime_does_not_copy_source_tree_wholesale():
