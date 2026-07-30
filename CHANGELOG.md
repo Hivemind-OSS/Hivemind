@@ -60,6 +60,20 @@ All notable changes to this project are documented here.
   reference only, so rewording any of these files is free.
 
 ## Fixed
+- **The harness could not read what the platform actually delivered, so every
+  envelope-dependent ledger signal was dead in live sessions.** Claude Code hands an MCP tool's
+  PostToolUse result to hooks as a bare JSON array of content blocks — a fourth wrapping
+  `readEnvelope` did not accept — so stores journaled as zero while landing server-side
+  (`store_missing` fired for writes that had in fact landed), `served`/`actionable` never
+  populated, and `outcome_missing`/`maintenance_missing` could never open; recalls counted only
+  because their counter never needed the envelope. `readEnvelope` now accepts the delivered
+  array (measured on claude 2.1.220; the gate and fail-open direction unchanged, `hive.ts`
+  still the single owner of wrapping knowledge), and a store's ARRIVAL is counted independently
+  of whether its result parses — an additive, credit-nothing diagnostic field, no schema bump,
+  so live ledgers survive the code landing mid-session and a future fifth wrapping surfaces as
+  counted-but-unparsed instead of as silence. Pinned by a frozen delivered-wrapping contract
+  suite authored red against the captured bytes and an opt-in live probe proving a real
+  session's recall, write and capture journal end-to-end into the on-disk ledger.
 - **The symlink-installed harness never enforced.** Under the documented install
   (`ln -sfn <repo>/harnesses ~/.claude/skills/hive-loop`) the entry guard compared
   `process.argv[1]` — the spelling as invoked, through the symlink — against node's

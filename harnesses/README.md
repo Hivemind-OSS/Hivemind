@@ -171,6 +171,14 @@ manifest, then reads the platform's own record of what it honored — `hook_addi
 channel cannot arrive without one, and flipping `async` on an event that carries one reds here
 rather than in production.
 
+The INBOUND pipeline is probed the same way. The `tool_response` wrapping is platform truth, not
+server truth — the measured platform hands an MCP tool's result over as the bare content-block
+array, not the frame the generated fixtures record, and that gap shipped as silent store
+under-counting (BUG-101). `test/delivered.test.ts` (frozen) pins every wrapping against the real
+entry, and the opt-in `test/journal-live.test.ts` drives a real session's recall, write and
+capture over a scratch stdio server and asserts the LEDGER journaled them — so a future re-wrap
+reds a probe instead of shipping silence.
+
 ---
 
 ## Three laws it is built to
@@ -234,7 +242,7 @@ npm --prefix harnesses ci                       # the one dev dependency: the ty
 npm --prefix harnesses exec -- tsc -p harnesses --noEmit
 node --test "harnesses/test/*.test.ts"
 make check                                       # the canonical gate, both languages
-HIVE_LOOP_LIVE=1 node --test harnesses/test/live.test.ts   # opt-in, drives the real CLI
+HIVE_LOOP_LIVE=1 node --test "harnesses/test/*.test.ts"    # opt-in live tier, drives the real CLI
 ```
 
 The shipped plugin resolves nothing outside `node:*`, runs with no build and needs no

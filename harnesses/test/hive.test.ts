@@ -89,6 +89,32 @@ test("the envelope itself, and either shape as a JSON string, all parse", () => 
   assert.deepEqual(readEnvelope(JSON.stringify(direct)), direct)
 })
 
+test("the frame's content list delivered bare parses — the fourth wrapping", () => {
+  // the live platform hands the result over as the BARE content-block array
+  // (measured 2026-07-29, claude 2.1.220) — same items, no frame around them
+  const frame = fixtures()["recall"]!["confident_multi"]!
+  const direct = readEnvelope(frame)
+  assert.ok(direct !== undefined)
+  const bare = (JSON.parse(JSON.stringify(frame)) as { content: Json[] }).content
+  assert.deepEqual(readEnvelope(bare as unknown as Json), direct)
+  assert.deepEqual(readEnvelope(JSON.stringify(bare)), direct, "and as a JSON string")
+})
+
+test("a non-envelope array still yields nothing — fail-open holds for the fourth wrapping", () => {
+  const hostile: Json[] = [
+    [],
+    [1, 2, 3],
+    ["x", null],
+    [{ type: "text" }],
+    [{ type: "text", text: "not json" }],
+    [{ type: "text", text: "[1,2]" }],
+    [{ type: "text", text: "{}" }],
+  ]
+  for (const value of hostile) {
+    assert.equal(readEnvelope(value), undefined, JSON.stringify(value))
+  }
+})
+
 test("a malformed, absent or hostile result records nothing and never throws", () => {
   const hostile: Json[] = [
     null,

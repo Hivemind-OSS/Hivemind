@@ -20,7 +20,13 @@ import {
 import { join } from "node:path"
 import { createHash } from "node:crypto"
 
-/** Bumped when the shape changes. An unknown version reads absent (silence, never a crash). */
+/**
+ * Bumped when the shape changes INCOMPATIBLY. A field added with a total-read
+ * default (absent reads as its zero value) is additive and does NOT bump: the
+ * adapter is re-read at every event spawn, so a bump would make every ledger
+ * already open under a live session read absent the moment new code lands.
+ * An unknown version reads absent (silence, never a crash).
+ */
 export const STATE_VERSION = 2
 
 /** Ledger files older than this are swept on load, which is why no end-of-session hook exists. */
@@ -49,6 +55,13 @@ export interface LoopState {
    */
   readonly writes: number
   readonly captures: number
+  /**
+   * Store-verb results that ARRIVED, counted before and regardless of whether
+   * the result could be read. Diagnostic only — no rule reads it, because
+   * crediting arrival would credit a refused store. Its value is that
+   * arrived-but-unreadable stays ledger-visible, distinct from nothing-arrived.
+   */
+  readonly storeArrivals: number
   /** A landed store carried neither binding nor scope. */
   readonly unscopedStore: boolean
   /** The one-per-session shape observation has been spent. */
@@ -78,6 +91,7 @@ export const EMPTY: LoopState = Object.freeze({
   outcomeAfterServe: false,
   writes: 0,
   captures: 0,
+  storeArrivals: 0,
   unscopedStore: false,
   shapeObserved: false,
   maintained: Object.freeze([]) as readonly number[],
@@ -167,6 +181,7 @@ export function load(
     outcomeAfterServe: doc["outcomeAfterServe"] === true,
     writes: count(doc["writes"]),
     captures: count(doc["captures"]),
+    storeArrivals: count(doc["storeArrivals"]),
     unscopedStore: doc["unscopedStore"] === true,
     shapeObserved: doc["shapeObserved"] === true,
     maintained: numbers(doc["maintained"]),
