@@ -45,7 +45,10 @@ def canonical_tip_key(repo: str) -> str:
 
 
 def last_error_key(repo: str) -> str:
-    """``repo``'s last surfaced per-leg fault: redacted, sticky, advisory."""
+    """``repo``'s most recent completed tick's fault: redacted, advisory, CURRENT
+    — re-stamped by every faulted tick, deleted by this repo's next fault-free
+    tick, so non-null ⇔ the last completed tick of THIS repo faulted (BUG-099).
+    Fault history lives in the ``sync.repo_leg_failed`` log lines, not here."""
     return _repo_key(repo, "last_error")
 
 
@@ -96,23 +99,26 @@ def _fleet_key(field: str) -> str:
 
 
 def fleet_last_error_key() -> str:
-    """The last tick-SHELL fault: the registry read failing, anything escaping a whole
-    tick, or a mirror prune for an already-DEREGISTERED name (leg label
-    ``prune[<name>]``). Redacted, sticky, advisory — the fleet twin of
-    ``last_error_key``.
+    """The tick SHELL's most recent fault: the registry read failing, anything
+    escaping a whole tick, or a mirror prune for an already-DEREGISTERED name (leg
+    label ``prune[<name>]``). Redacted, advisory, CURRENT — the fleet twin of
+    ``last_error_key``: re-stamped while the shell fault persists, deleted by the
+    next tick whose SHELL ran fault-free (independent of per-repo results), so
+    non-null ⇔ the daemon's own last completed tick faulted (BUG-099).
 
     It belongs to no repo BY CONSTRUCTION: on a registry fault the tick returns before
-    any repo is even known, so no per-repo key is written OR cleared and every block
-    keeps its last-healthy values. Without a fleet home for this fault a fully dead
-    daemon reads as N passing repos (BUG-062)."""
+    any repo is even known, so no per-repo key is written OR cleared — the clear too
+    sits after that return, which is why a dead daemon's diagnosis stands until the
+    daemon itself completes a clean shell. Without a fleet home for this fault a fully
+    dead daemon reads as N passing repos (BUG-062)."""
     return _fleet_key("last_error")
 
 
 def fleet_last_sync_ts_key() -> str:
     """ts of the last tick in which the mirror prune AND every registered repo ran
-    fault-free — "the whole fleet synced", the stamp one repo's sticky ``last_error``
-    reads against. An empty-registry tick is inert and stamps nothing, so a server with
-    no registered repo serves this null forever — honestly: nothing has ever synced."""
+    fault-free — "the whole fleet synced". An empty-registry tick is inert and stamps
+    nothing, so a server with no registered repo serves this null forever — honestly:
+    nothing has ever synced."""
     return _fleet_key("last_sync_ts")
 
 

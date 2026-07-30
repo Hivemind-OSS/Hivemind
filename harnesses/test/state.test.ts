@@ -47,6 +47,7 @@ const DIRTY: LoopState = {
   outcomeAfterServe: true,
   writes: 1,
   captures: 2,
+  storeArrivals: 5,
   unscopedStore: true,
   maintained: [40],
   deferred: [12],
@@ -83,6 +84,22 @@ test("truncated, empty, non-object and hostile bytes all read absent", () => {
   }
 })
 
+test("a version-2 ledger written before the arrival counter existed still reads, as zero", () => {
+  // additive schema: the field's absence is its zero, so no version bump — a
+  // bump would make every ledger open under a live session read absent the
+  // moment the re-read-per-event adapter picks up new code
+  const d = dir()
+  save(d, SCOPE, SESSION, AGENT, DIRTY)
+  const doc = { ...DIRTY, version: STATE_VERSION } as Record<string, unknown>
+  delete doc["storeArrivals"]
+  writeFileSync(ledgerPath(d, SCOPE, SESSION, AGENT), JSON.stringify(doc), "utf8")
+  const loaded = load(d, SCOPE, SESSION, AGENT)
+  assert.notEqual(loaded, null, "an additive field's absence must not invalidate the ledger")
+  assert.equal(loaded!.storeArrivals, 0)
+  assert.equal(loaded!.writes, DIRTY.writes, "every recorded field still reads")
+  assert.equal(loaded!.armed, DIRTY.armed)
+})
+
 test("an unknown version reads absent rather than being interpreted", () => {
   for (const version of [0, 1, 999, "2", null, undefined]) {
     const d = dir()
@@ -110,6 +127,7 @@ test("a ledger whose fields have the wrong types degrades field by field, never 
       actionable: "none",
       writes: NaN,
       captures: -1,
+      storeArrivals: "many",
       maintained: null,
       deferred: [7],
       noStoreWhy: 12,
@@ -127,6 +145,7 @@ test("a ledger whose fields have the wrong types degrades field by field, never 
   assert.deepEqual(loaded!.actionable, [])
   assert.equal(loaded!.writes, 0)
   assert.equal(loaded!.captures, 0)
+  assert.equal(loaded!.storeArrivals, 0)
   assert.deepEqual(loaded!.maintained, [])
   assert.deepEqual(loaded!.deferred, [7])
   assert.equal(loaded!.noStoreWhy, "")

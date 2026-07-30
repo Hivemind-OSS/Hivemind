@@ -321,6 +321,10 @@ function journal(state: LoopState, event: Event): LoopState {
   if (event.verb === OUTCOME) return { ...next, outcomeAfterServe: true }
 
   if (isStore(event.verb)) {
+    // arrival is counted before the result is read: an arrived-but-unreadable
+    // store must journal differently from one that never arrived, and whether
+    // it CREDITS anything is the separate question the lines below answer
+    next = { ...next, storeArrivals: next.storeArrivals + 1 }
     if (envelope === undefined || refused(envelope)) return next
     next =
       event.verb === WRITE

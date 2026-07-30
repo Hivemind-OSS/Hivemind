@@ -11,7 +11,7 @@
 // Every import here is RELATIVE, so the directory this plugin is installed into
 // can be named anything and the tree still runs from a copy.
 
-import { existsSync, readFileSync } from "node:fs"
+import { existsSync, readFileSync, realpathSync } from "node:fs"
 import { homedir, tmpdir } from "node:os"
 import { join } from "node:path"
 import { fileURLToPath } from "node:url"
@@ -334,4 +334,22 @@ function main(): void {
   })
 }
 
-if (process.argv[1] === fileURLToPath(import.meta.url)) main()
+/**
+ * Is this module the process entry? Node leaves argv[1] AS INVOKED but resolves
+ * the entry module's URL to its real path, so under the documented install — a
+ * symlinked plugin root — a raw equality never fires and the harness is silently
+ * unenforced (BUG-098). Realpathing BOTH sides reproduces node's own
+ * entry-identity computation, so symlink, hardlink and bind-mount spellings all
+ * converge. Any throw (absent argv, unresolvable path) means "not the entry":
+ * imports must stay side-effect-free — the test suites import this module — and
+ * inert is the harness's safe direction, never a crash.
+ */
+export function isEntry(argv1: string | undefined, moduleUrl: string): boolean {
+  try {
+    return argv1 !== undefined && realpathSync(argv1) === realpathSync(fileURLToPath(moduleUrl))
+  } catch {
+    return false
+  }
+}
+
+if (isEntry(process.argv[1], import.meta.url)) main()

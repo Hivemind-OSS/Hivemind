@@ -72,13 +72,17 @@ Named safe directions (Law 6):
   can never open a coverage gap or serve a wrong verdict (an un-materialized
   anchor reads ``unverifiable``, never false-fresh, never false-stale).
 - CREDENTIALS STAY IN ENV VIA INDIRECTION (D2): a registry row stores only the
-  NAME of a token env var, resolved at tick time per repo; the rewritten remote
-  URL lives ONLY in the mirror's git config; logs and error meta pass
-  ``_redact`` first. A row-named var absent at tick fails that repo open with
-  the var NAMED (the boot-time EX_CONFIG probe is the entrypoint's). The
-  mirror's remote is RECONCILED against that freshly-resolved credential every
-  tick, so rotating the secret takes effect without a re-clone (BUG-073) — the
-  registry is truth and the mirror's own config is never authoritative.
+  NAME of a token env var, resolved at tick time per repo and injected PER
+  NETWORK INVOCATION as env-carried config (``_auth_env`` — an
+  ``http.<url>.extraHeader`` Authorization header, wire-identical to the old
+  userinfo form). The credential persists NOWHERE (BUG-100): the mirror's
+  remote carries the registry URL verbatim, never a token byte, so rotation
+  reaches the very next fetch by construction — no re-clone, no persisted
+  state to reconcile (BUG-073's intent, structural). A LEGACY token-bearing
+  remote is scrubbed toward the registry URL on its next tick. Logs and error
+  meta pass ``_redact`` first. A row-named var absent at tick fails that repo
+  open with the var NAMED (the boot-time EX_CONFIG probe is the entrypoint's)
+  — the registry is truth and the mirror's own config is never authoritative.
 - EVERY UNKNOWN UNDER-CLAIMS: a probe fault, an anchor with no baseline, a path
   absent from the baseline tree, a symbol that never resolved at its baseline
   and an unresolvable symbol all materialize ``unverifiable`` — the ladder can
@@ -102,6 +106,7 @@ ONE nudge wakes the loop for ALL registered repos.
 
 from __future__ import annotations
 
+import base64
 import dataclasses
 import hashlib
 import json
@@ -288,14 +293,31 @@ def _clean_env() -> dict[str, str]:
     return env
 
 
-def authenticated_url(url: str, token: str) -> str:
-    """The token-rewritten https remote (``https://x-access-token:<token>@host/…``).
-    Non-https URLs and an empty token pass through unchanged. The rewritten form is
-    handed ONLY to ``git clone`` (git persists it in the mirror's remote config) and
-    must never be logged — ``_redact`` guards every escape path."""
+def _auth_env(url: str, token: str) -> dict[str, str]:
+    """The child env for the two NETWORK invocations (clone, fetch): the freshly
+    resolved credential rides ONE env-carried git-config entry —
+    ``http.<registry-url>.extraHeader`` with the same ``Authorization: Basic``
+    value curl derives from a userinfo URL, so the wire bytes (and every server's
+    auth behavior) are identical to the old token-in-URL form, while the URL git
+    is HANDED — and therefore the URL it ever persists — stays the registry URL
+    verbatim (BUG-100). Scoping the key to the URL preserves userinfo's
+    cross-host-redirect behavior: off that prefix the header stops matching.
+
+    Entries are APPENDED after any ``GIT_CONFIG_*`` already in the env, so an
+    operator's own rules survive. The token never rides argv (``ps``-visible) and
+    never disk; it still exists in this env and in memory, so ``_redact`` keeps
+    guarding every escape path. Non-https URLs and an empty token add nothing —
+    exactly the old pass-through condition. Requires git ≥ 2.31 (image: 2.47)."""
+    env = _clean_env()
     if not token or not url.startswith("https://"):
-        return url
-    return "https://x-access-token:" + token + "@" + url[len("https://") :]
+        return env
+    raw = env.get("GIT_CONFIG_COUNT", "")
+    base = int(raw) if raw.isdigit() else 0
+    cred = base64.b64encode(f"x-access-token:{token}".encode()).decode()
+    env[f"GIT_CONFIG_KEY_{base}"] = f"http.{url}.extraHeader"
+    env[f"GIT_CONFIG_VALUE_{base}"] = f"Authorization: Basic {cred}"
+    env["GIT_CONFIG_COUNT"] = str(base + 1)
+    return env
 
 
 def mirror_dirname(name: str, url: str) -> str:
@@ -421,8 +443,11 @@ class SyncService:
         aggregate verdict is identical either way, only the wall-clock differs.
         ``sync:last_sync_ts`` — stamped through the
         injected ``now`` seam — advances only when the prune AND every repo ran
-        fault-free, so it reads as "the last fully-clean sync" against the
-        sticky per-repo ``sync:<name>:last_error``."""
+        fault-free. ``sync:last_error`` states the tick SHELL's most recent
+        completed tick alone: re-stamped by a shell fault, cleared (deleted, so
+        census serves null) by a shell-fault-free tick — non-null ⇔ failing NOW
+        (BUG-099). A registry-read fault returns before the clear, so a dead
+        daemon's diagnosis is never erased (BUG-062)."""
         try:
             with self._lock:
                 rows = self._store.repo_registry()
@@ -433,6 +458,19 @@ class SyncService:
         # repo must still prune its leftover mirror. (A failed registry read
         # returned above — the live set is unknown, so nothing may be deleted.)
         clean = self._prune_mirrors({mirror_dirname(r.name, r.url) for r in rows})
+        if clean:
+            # The SHELL's own error scope: registry read + prune, exactly the
+            # `_note_error` writers — NOT the per-repo results folded into
+            # `clean` below (those clear their own keys in `_repo_tick`).
+            # marker: clearing this on a faulted shell, or keying it on the
+            # accumulated per-repo `clean`, reds test_fleet_last_error_clears_
+            # on_a_clean_shell_independent_of_repo_faults — the two scopes heal
+            # independently or the healed-fossil misread just moves house.
+            try:
+                with self._lock:
+                    self._store.meta_delete(fleet_last_error_key())
+            except Exception:  # noqa: BLE001 — clearing must never become the fault
+                _log.warning("sync.last_error_clear_failed leg=shell")
         if not rows:
             # marker: spawning ANYTHING here (a clone, a fetch, an engine spawn)
             # or creating the mirrors dir reds CT-9's test_empty_registry_is_inert
@@ -505,7 +543,7 @@ class SyncService:
             with self._lock:
                 self._store.meta_set(tracked_ref_key(row.name), branch)
             prev_local = self._rev(mirror, f"refs/remotes/origin/{branch}")
-            self._fetch(mirror)
+            self._fetch(mirror, row.url, token)
         except Exception as exc:  # noqa: BLE001 — marker: re-raising breaks
             # test_unreachable_fail_open and CT-9's two-repo isolation (an
             # unreachable remote is a logged per-repo skip; the next tick retries,
@@ -532,6 +570,15 @@ class SyncService:
             # means THIS repo did not sync, and its timestamp must not lie.
             with self._lock:
                 self._store.meta_set(last_sync_ts_key(row.name), str(self._now()))
+                # The same critical section as the freshness stamp: the pair moves
+                # together, so `last_error` non-null ⇔ THIS repo's most recent
+                # completed tick faulted (BUG-099). Cleared means DELETED — census
+                # serves null, byte-identical to never-faulted, never "".
+                # marker: skipping this delete (or clearing any OTHER repo's key)
+                # reds test_a_healed_fault_serves_null_last_error_beside_a_fresh_
+                # last_sync_ts and test_error_clear_is_scoped_to_the_repo_that_
+                # ticked_clean.
+                self._store.meta_delete(last_error_key(row.name))
         return ok
 
     @staticmethod
@@ -613,31 +660,34 @@ class SyncService:
 
         The health probe alone answers "is this a git checkout?", never "of what?",
         so it is followed by a reconcile against the registry: the path already
-        pins the repository, so a differing ``remote.origin.url`` can only be the
-        CREDENTIAL and is rewritten in place (BUG-073 — a rotated token would
-        otherwise stay frozen at the value ``git clone`` persisted). A remote that
-        cannot be read at all is a broken cache and is rebuilt. The (possibly
-        token-rewritten) URL lands ONLY in the mirror's remote config."""
+        pins the repository and the credential rides each invocation's env, never
+        the config (``_auth_env``, BUG-100), so a differing ``remote.origin.url``
+        can only be a LEGACY token-bearing remote (pre-fix persisted state) or
+        corruption — either is scrubbed toward the registry URL in place, which is
+        the whole migration story for existing mirrors: one tick, no re-clone. A
+        remote that cannot be read at all is a broken cache and is rebuilt. The
+        URL handed to ``git clone`` — and therefore the only URL git ever
+        persists — is the registry URL verbatim."""
         mirror = self.mirror_base / mirror_dirname(repo.name, repo.url)
         probe = self._run(
             ["git", "-C", str(mirror), "rev-parse", "--git-dir"], env=_clean_env()
         )
         if probe.returncode == 0:
-            want = authenticated_url(repo.url, token)
             cfg = self._run(
                 ["git", "-C", str(mirror), "config", "--get", "remote.origin.url"],
                 env=_clean_env(),
             )
             have = (cfg.stdout or "").strip() if cfg.returncode == 0 else ""
-            if have == want:
+            if have == repo.url:
                 return mirror
             if have:
-                # marker: returning the mirror without this reconcile reds
-                # test_a_rotated_token_is_reconciled_without_a_reclone — a rotated
-                # credential would stay frozen at the value `git clone` persisted,
-                # forever. Neither `want` nor `have` may reach a log line: they
-                # carry the token.
-                self._git(mirror, "remote", "set-url", "origin", want)
+                # marker: returning the mirror without this scrub reds
+                # test_a_legacy_token_bearing_remote_is_scrubbed_without_a_reclone
+                # — a pre-fix remote would keep serving its credential from disk
+                # forever. `have` may carry that token and must never reach a log
+                # line (`_redact` cannot know a value git persisted before this
+                # boot).
+                self._git(mirror, "remote", "set-url", "origin", repo.url)
                 return mirror
             # Empty/unreadable config: the checkout cannot prove what it is a
             # mirror OF, so it is a BROKEN cache — fall through to the rmtree +
@@ -648,8 +698,8 @@ class SyncService:
         argv = ["git", "clone", "--quiet"]
         if repo.canonical_ref:
             argv += ["--branch", repo.canonical_ref]
-        argv += [authenticated_url(repo.url, token), str(mirror)]
-        proc = self._run(argv, env=_clean_env())
+        argv += [repo.url, str(mirror)]
+        proc = self._run(argv, env=_auth_env(repo.url, token))
         if proc.returncode != 0:
             detail = (proc.stderr or proc.stdout or "").strip()
             raise _SyncFault(_redact(f"git clone failed: {detail}", token))
@@ -680,10 +730,13 @@ class SyncService:
             "the registry row names no canonical_ref"
         )
 
-    def _fetch(self, mirror: Path) -> None:
+    def _fetch(self, mirror: Path, url: str, token: str) -> None:
         """The one fetch per repo per tick: ALL branches (force-updating — a
         rewritten remote line must still land locally), pruned — the drift
-        materializer needs requested branch tips, not just the canonical line."""
+        materializer needs requested branch tips, not just the canonical line.
+        Authenticated per invocation (``_auth_env``): the freshly resolved token
+        rides this child's env, so rotation is effective HERE, on the next tick,
+        by construction (BUG-100 / BUG-073)."""
         self._git(
             mirror,
             "fetch",
@@ -691,6 +744,7 @@ class SyncService:
             "--prune",
             "origin",
             "+refs/heads/*:refs/remotes/origin/*",
+            env=_auth_env(url, token),
         )
 
     # ── the ledger leg: watermark..tip → ONE post_merge receipt ────────────────
@@ -1317,8 +1371,15 @@ class SyncService:
             return refs
 
     # ── narrow git/store helpers ───────────────────────────────────────────────
-    def _git(self, mirror: Path, *args: str) -> str:
-        proc = self._run(["git", "-C", str(mirror), *args], env=_clean_env())
+    def _git(
+        self, mirror: Path, *args: str, env: Optional[Mapping[str, str]] = None
+    ) -> str:
+        """One mirror-scoped git call; ``env`` overrides the clean child env for
+        the network legs that carry the per-invocation credential."""
+        proc = self._run(
+            ["git", "-C", str(mirror), *args],
+            env=_clean_env() if env is None else env,
+        )
         if proc.returncode != 0:
             detail = (proc.stderr or proc.stdout or "").strip()
             raise _SyncFault(f"git {args[0]} failed: {detail}")

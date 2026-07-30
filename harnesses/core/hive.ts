@@ -77,10 +77,12 @@ function looksLikeEnvelope(value: JsonObject): boolean {
 /**
  * The server envelope inside whatever the runtime handed over, or undefined.
  *
- * Three shapes are accepted because the wrapping is the runtime's choice, not
- * the server's: the result frame carrying the envelope as text, the envelope
- * itself, and either of those as a JSON string. Anything else yields undefined,
- * which records nothing — an unreadable serve must never manufacture a debt.
+ * Four shapes are accepted because the wrapping is the runtime's choice, not
+ * the server's: the result frame carrying the envelope as text, the frame's
+ * content list handed over BARE (what the live platform actually delivers —
+ * measured 2026-07-29 on claude 2.1.220), the envelope itself, and any of
+ * those as a JSON string. Anything else yields undefined, which records
+ * nothing — an unreadable serve must never manufacture a debt.
  */
 export function readEnvelope(result: Json | undefined): JsonObject | undefined {
   if (typeof result === "string") {
@@ -88,7 +90,8 @@ export function readEnvelope(result: Json | undefined): JsonObject | undefined {
     return parsed === undefined ? undefined : readEnvelope(parsed)
   }
   const record = asRecord(result)
-  for (const item of asArray(record["content"])) {
+  const blocks = Array.isArray(result) ? (result as readonly Json[]) : asArray(record["content"])
+  for (const item of blocks) {
     const parsed = readJson(asRecord(item)["text"])
     if (parsed === undefined) continue
     const inner = asRecord(parsed)

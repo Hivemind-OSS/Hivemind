@@ -17,6 +17,10 @@ declare module "node:fs" {
   export function readdirSync(path: string): string[]
   export function mkdtempSync(prefix: string): string
   export function statSync(path: string): { mtimeMs: number; isDirectory(): boolean }
+  // entry-identity (BUG-098): both spellings of the entry realpath to one file
+  export function realpathSync(path: string): string
+  // test rig only: fabricating the documented symlinked-install shape
+  export function symlinkSync(target: string, path: string, type: "dir"): void
 }
 
 declare module "node:path" {
@@ -111,6 +115,8 @@ declare const process: {
     on(event: "data", cb: (chunk: string) => void): void
     on(event: "end" | "error", cb: () => void): void
     resume(): void
+    // test rig only: proving an import attaches no listeners (BUG-098's guard)
+    listenerCount(event: "data" | "end" | "error"): number
   }
   readonly stdout: { write(text: string): void }
   readonly stderr: { write(text: string): void }

@@ -607,12 +607,15 @@ def mirror_is_git(mirror_base, name: str, url: str) -> bool:
 
 
 class RecordingRun:
-    """The scripted ``Run`` seam: records every spawn; answers from ``script``
-    ((predicate, CompletedProcess-or-callable) pairs, first match wins), else
-    delegates to the REAL ``default_run``."""
+    """The scripted ``Run`` seam: records every spawn (argv AND the env it was
+    handed — ``envs[i]`` pairs with ``calls[i]``, so a test can observe what a
+    child was AUTHENTICATED with, not just what it was asked); answers from
+    ``script`` ((predicate, CompletedProcess-or-callable) pairs, first match
+    wins), else delegates to the REAL ``default_run``."""
 
     def __init__(self, script: Sequence[tuple] = ()) -> None:
         self.calls: list[list[str]] = []
+        self.envs: list[dict[str, str]] = []
         self.script = list(script)
 
     def __call__(self, argv, env=None, timeout=None):
@@ -620,6 +623,7 @@ class RecordingRun:
 
         argv = [str(a) for a in argv]
         self.calls.append(argv)
+        self.envs.append({} if env is None else dict(env))
         for pred, result in self.script:
             if pred(argv):
                 return result(argv) if callable(result) else result

@@ -290,6 +290,51 @@ def test_one_repo_fault_never_blocks_the_other_under_fanout(sync_store, tmp_path
     )
 
 
+def test_error_clear_is_scoped_to_the_repo_that_ticked_clean(sync_store, tmp_path):
+    """BUG-099's per-repo boundary: a clean tick clears ONLY its own repo's
+    ``last_error``. A sibling still faulting keeps its error through any number of
+    the healthy repo's clean ticks — no cross-repo clear, no cross-repo set."""
+    a = Origin(tmp_path / "remote-a")
+    register_repo(sync_store, "alpha", a.url, canonical_ref="main")
+    register_repo(
+        sync_store, "beta", str(tmp_path / "no-such-remote.git"), canonical_ref="main"
+    )
+    syncer = make_syncer(sync_store, tmp_path)
+    syncer.service.tick()
+    assert meta_value(sync_store, "sync:beta:last_error"), "precondition: beta faults"
+    assert meta_value(sync_store, "sync:alpha:last_error") is None
+
+    syncer.service.tick()  # alpha clean again
+    assert meta_value(sync_store, "sync:beta:last_error"), (
+        "a sibling's clean tick must never clear MY current fault"
+    )
+    assert meta_value(sync_store, "sync:alpha:last_error") is None
+
+
+def test_a_healed_repo_clears_its_error_under_fanout_like_serial(sync_store, tmp_path):
+    """The clear is tick semantics, not scheduling: under ``workers>1`` a healed
+    repo's key is deleted by its own clean tick while the still-broken sibling's
+    stands — the same verdict the serial loop reaches."""
+    late_root = tmp_path / "remote-late"
+    register_repo(
+        sync_store, "alpha", str(late_root / "origin.git"), canonical_ref="main"
+    )
+    register_repo(sync_store, "beta", str(tmp_path / "never.git"), canonical_ref="main")
+    syncer = make_syncer(sync_store, tmp_path, workers=4)
+    syncer.service.tick()
+    assert meta_value(sync_store, "sync:alpha:last_error"), "precondition: both fault"
+    assert meta_value(sync_store, "sync:beta:last_error")
+
+    Origin(late_root)  # alpha's remote comes up in place
+    syncer.service.tick()
+    assert meta_value(sync_store, "sync:alpha:last_error") is None, (
+        "alpha healed: its own clean tick deletes its key, fanout or serial alike"
+    )
+    assert meta_value(sync_store, "sync:beta:last_error"), (
+        "beta still faults: alpha's heal is not beta's"
+    )
+
+
 def test_worker_fault_is_isolated_and_never_raises(sync_store, tmp_path):
     """The fan-out's OWN guard (the named mutation marker in `_repo_fanout`): a
     worker raising PAST `_repo_tick`'s per-leg guards is surfaced on that repo's

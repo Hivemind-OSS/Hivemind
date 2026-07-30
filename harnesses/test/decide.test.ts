@@ -277,6 +277,48 @@ test("a store's retirement rider credits only when the envelope reports it lande
   assert.deepEqual(noRider.next?.maintained, [])
 })
 
+test("a store event's ARRIVAL is counted apart from its credit", () => {
+  const rows: [string, Json, number, number][] = [
+    // verb, result, storeArrivals, writes
+    ["hive_write", fixture("write", "approved"), 1, 1],
+    ["hive_write", fixture("write", "refused"), 1, 0],
+    ["hive_write", "complete junk", 1, 0],
+    ["hive_write", null, 1, 0],
+    ["hive_capture", fixture("capture", "approved"), 1, 0],
+  ]
+  for (const [verb, result, arrivals, writes] of rows) {
+    const out = decide(post({ verb, args: { text: "x" }, result }), ARMED, ON)
+    assert.equal(out.next?.storeArrivals, arrivals, `${verb} ${JSON.stringify(result).slice(0, 40)}`)
+    assert.equal(out.next?.writes, writes, "credit stays keyed on a parsed, non-refused envelope")
+  }
+})
+
+test("no non-store event counts as a store arrival", () => {
+  const rows: [string, Json][] = [
+    ["hive_recall", fixture("recall", "confident_multi")],
+    ["hive_outcome", fixture("outcome", "ok")],
+    ["hive_supersede", fixture("supersede", "affirmed")],
+    ["", { ok: true }],
+  ]
+  for (const [verb, result] of rows) {
+    const out = decide(post({ verb, args: {}, result }), ARMED, ON)
+    assert.equal(out.next?.storeArrivals, 0, verb || "(no verb)")
+  }
+})
+
+test("the arrival count opens and closes NOTHING — every open set ignores it", () => {
+  // arrival is diagnostic: crediting it would credit refused stores, so no
+  // openKeys predicate may read it in either direction
+  for (const patch of [
+    { mutations: 1, storeArrivals: 3 },
+    { mutations: 1, recalls: 1, storeArrivals: 3 },
+  ] as Partial<LoopState>[]) {
+    const withArrivals = openKeys({ ...ARMED, ...patch })
+    const without = openKeys({ ...ARMED, ...patch, storeArrivals: 0 })
+    assert.deepEqual(withArrivals, without, JSON.stringify(patch))
+  }
+})
+
 test("an unreadable result records nothing but never loses the attempt", () => {
   const out = decide(post({ verb: "hive_recall", args: { query: "x" }, result: "garbage" }), ARMED, ON)
   assert.equal(out.next?.recalls, 1)
