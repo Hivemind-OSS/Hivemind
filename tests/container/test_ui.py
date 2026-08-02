@@ -46,14 +46,18 @@ def _inline_spawn(monkeypatch):
     monkeypatch.setattr(ui, "_spawn", lambda target: target())
 
 
-# ── the router table: EXACTLY the eight pinned routes ──────────────────────────
-def test_router_covers_exactly_the_ten_routes():
+# ── the router table: EXACTLY the fourteen pinned routes ───────────────────────
+def test_router_covers_exactly_the_fourteen_routes():
     assert set(ui._ROUTES) == {
         ("GET", "/"),
         ("GET", "/api/status"),
+        ("GET", "/api/doors"),
         ("GET", "/api/tokens"),
         ("POST", "/api/tokens"),
         ("POST", "/api/tokens/revoke"),
+        ("GET", "/api/repos"),
+        ("POST", "/api/repos"),
+        ("POST", "/api/repos/remove"),
         ("POST", "/api/backup"),
         ("GET", "/api/backups"),
         ("POST", "/api/restore"),
@@ -778,6 +782,12 @@ _LIVE_SCRIPT = [
     ),  # backups lister
     (lambda a: seq_in(a, "hive.tools.backupctl"), proc(stdout="/data/backups/x.db\n")),
     (lambda a: seq_in(a, "logs"), proc(stdout="log line a\nlog line b\n")),
+    (
+        lambda a: seq_in(a, "hive.tools.repoctl", "report"),
+        proc(
+            stdout='{"repos": [], "fleet": {"last_sync_ts": null, "last_error": null}}'
+        ),
+    ),
 ]
 
 
@@ -859,17 +869,21 @@ def test_live_get_status_is_200_json(live):
     assert json.loads(body)["server"] == "up"
 
 
-def test_live_all_ten_routes_answer(live, monkeypatch):
+def test_live_all_fourteen_routes_answer(live, monkeypatch):
     monkeypatch.setattr(
         ui, "_spawn", lambda target: target()
     )  # deterministic: no worker leak
     port, _ = live
     assert _get(port, "/")[0] == 200
     assert _get(port, "/api/status")[0] == 200
+    assert _get(port, "/api/doors")[0] == 200
     assert _get(port, "/api/tokens")[0] == 200
     assert _get(port, "/api/logs")[0] == 200
     assert _post(port, "/api/tokens", {"seat": "carol"})[0] == 200
     assert _post(port, "/api/tokens/revoke", {"seat": "carol"})[0] == 200
+    assert _get(port, "/api/repos")[0] == 200
+    assert _post(port, "/api/repos", {"url": "https://example.invalid/a.git"})[0] == 200
+    assert _post(port, "/api/repos/remove", {"name": "a"})[0] == 200
     assert _post(port, "/api/backup")[0] == 200
     assert _get(port, "/api/backups")[0] == 200
     assert (

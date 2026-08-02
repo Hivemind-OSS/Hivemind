@@ -138,8 +138,11 @@ def test_relative_fetches_no_external_asset():
 def test_all_api_routes_are_wired_in_the_page():
     for path in (
         "/api/status",
+        "/api/doors",
         "/api/tokens",
         "/api/tokens/revoke",
+        "/api/repos",
+        "/api/repos/remove",
         "/api/backup",
         "/api/backups",
         "/api/restore",

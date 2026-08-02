@@ -11,9 +11,17 @@ refusal as a non-zero exit with the reason on stderr.
 from __future__ import annotations
 
 import io
+import json
 
 from hive.adapters.sqlite_db import connect
 from hive.adapters.store_sqlite import SqliteEpisodeStore
+from hive.app.sync_keys import (
+    COUNTER_FIELDS,
+    FLEET_KEY_BUILDERS,
+    FLEET_STR_FIELDS,
+    KEY_BUILDERS,
+    STR_FIELDS,
+)
 from hive.tools import repoctl
 
 SECRET = "gh-token-value-XYZ-never-at-rest"
@@ -173,6 +181,119 @@ def test_remove_deletes_row(tmp_path):
 def test_remove_unknown_name_is_nonzero(tmp_path, capsys):
     rc, _ = _ctl("--db", str(tmp_path / "shared.db"), "remove", "ghost")
     assert rc != repoctl.EX_OK
+    assert "ghost" in capsys.readouterr().err
+
+
+# ── report: the registry + the daemon's observed state as ONE json document ────
+
+
+def _store(db_path):
+    return SqliteEpisodeStore(connect(db_path))
+
+
+def _report(db_path):
+    rc, out = _ctl("--db", db_path, "report")
+    assert rc == repoctl.EX_OK
+    return json.loads(out.getvalue())
+
+
+def test_report_is_one_json_document_with_registry_and_fleet(tmp_path):
+    db = str(tmp_path / "shared.db")
+    _ctl(
+        "--db",
+        db,
+        "add",
+        "https://example.invalid/alpha.git",
+        "--name",
+        "alpha",
+        "--branch",
+        "main",
+        "--token-env",
+        "MY_TOKEN",
+    )
+    doc = _report(db)
+    (row,) = doc["repos"]
+    # the registry HALF: every RepoRow column, verbatim — no TSV '-' sentinel here.
+    assert row["name"] == "alpha"
+    assert row["url"] == "https://example.invalid/alpha.git"
+    assert row["canonical_ref"] == "main" and row["token_env"] == "MY_TOKEN"
+    assert isinstance(row["added_ts"], int)
+    # the fleet block is ALWAYS present, even with nothing synced (BUG-062).
+    assert set(doc["fleet"]) == set(FLEET_STR_FIELDS)
+    assert all(v is None for v in doc["fleet"].values())
+
+
+def test_report_empty_registry_is_ok_not_an_error(tmp_path):
+    doc = _report(str(tmp_path / "shared.db"))
+    assert doc["repos"] == []
+    assert set(doc["fleet"]) == set(FLEET_STR_FIELDS)
+
+
+def test_report_merges_the_daemon_observed_state_per_repo(tmp_path):
+    db = str(tmp_path / "shared.db")
+    _ctl("--db", db, "add", "https://example.invalid/alpha.git", "--name", "alpha")
+    _ctl("--db", db, "add", "https://example.invalid/beta.git", "--name", "beta")
+    store = _store(db)
+    for field, build in KEY_BUILDERS.items():
+        store.meta_set(build("alpha"), "7" if field in COUNTER_FIELDS else f"<{field}>")
+    store.meta_set(FLEET_KEY_BUILDERS["last_error"](), "tick failed: registry read")
+
+    rows = {r["name"]: r for r in _report(db)["repos"]}
+    for field in STR_FIELDS:
+        assert rows["alpha"]["sync"][field] == f"<{field}>"
+    for field in COUNTER_FIELDS:
+        assert rows["alpha"]["sync"][field] == 7
+    # a repo the daemon has left no meta for reads ABSENT, never a confident zero.
+    assert "sync" not in rows["beta"]
+    assert rows["beta"]["days_since_last_change_outcome"] is None
+    assert _report(db)["fleet"]["last_error"] == "tick failed: registry read"
+
+
+def test_report_restates_no_field_name_of_its_own(tmp_path):
+    # H2: the served live-state vocabulary has ONE owner. repoctl composes the report
+    # from RepoRow + census_health_report, so every sync field the daemon has a writer
+    # for appears without repoctl naming it — and nothing else does.
+    db = str(tmp_path / "shared.db")
+    _ctl("--db", db, "add", "https://example.invalid/alpha.git", "--name", "alpha")
+    store = _store(db)
+    for field, build in KEY_BUILDERS.items():
+        store.meta_set(build("alpha"), "1" if field in COUNTER_FIELDS else "x")
+    (row,) = _report(db)["repos"]
+    assert set(KEY_BUILDERS) <= set(row["sync"])
+    source = (repoctl.__file__ or "").replace(".pyc", ".py")
+    with open(source, encoding="utf-8") as fh:
+        text = fh.read()
+    for field in KEY_BUILDERS:
+        assert field not in text, (
+            f"repoctl must not name the sync field {field!r} — it comes from "
+            "hive.app.sync_keys through census_health_report"
+        )
+
+
+# ── the 65/70 split: an operator-fixable refusal vs an internal fault ──────────
+
+
+def test_operator_fixable_refusals_are_dataerr_not_software(tmp_path, capsys):
+    # 65 says "you can fix this" and its reason is safe to surface; 70 says "the server
+    # is broken" and its text must not be forwarded. An add refusal is always the former.
+    db = str(tmp_path / "shared.db")
+    _ctl("--db", db, "add", "https://example.invalid/alpha.git", "--name", "alpha")
+    capsys.readouterr()
+
+    bad_slug, _ = _ctl(
+        "--db", db, "add", "https://example.invalid/x.git", "--name", "Bad Name!"
+    )
+    assert bad_slug == repoctl.EX_DATAERR
+    assert "slug" in capsys.readouterr().err
+
+    duplicate, _ = _ctl(
+        "--db", db, "add", "https://example.invalid/other.git", "--name", "alpha"
+    )
+    assert duplicate == repoctl.EX_DATAERR
+    assert "already registered" in capsys.readouterr().err
+
+    unknown, _ = _ctl("--db", db, "remove", "ghost")
+    assert unknown == repoctl.EX_DATAERR
     assert "ghost" in capsys.readouterr().err
 
 
