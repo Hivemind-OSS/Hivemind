@@ -948,7 +948,9 @@ def test_repo_add_child_failure_forwards_sysexits(capsys):
         script=[
             (
                 lambda a: seq_in(a, "hive.tools.repoctl", "add"),
-                proc(rc=70, stderr="repoctl: repo 'alpha' is already registered\n"),
+                # 65 EX_DATAERR is what repoctl really returns for a duplicate name —
+                # an operator-fixable refusal, distinct from an internal fault (70).
+                proc(rc=65, stderr="repoctl: repo 'alpha' is already registered\n"),
             )
         ]
     )
@@ -958,7 +960,7 @@ def test_repo_add_child_failure_forwards_sysexits(capsys):
         out=io.StringIO(),
         env=ENV,
     )
-    assert rc == 70  # repoctl already speaks sysexits
+    assert rc == 65  # repoctl already speaks sysexits; the CLI forwards them
     assert "already registered" in capsys.readouterr().err
 
 

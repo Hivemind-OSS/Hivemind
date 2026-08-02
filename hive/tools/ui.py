@@ -25,10 +25,11 @@ import json
 import os
 import re
 import shlex
+import subprocess  # typing only: the shape of a child result the handlers inspect
 import sys
 import threading
 import webbrowser
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any, Callable, Mapping, Optional, Protocol
 
@@ -179,6 +180,26 @@ def _upstream_failed() -> Response:
     return _json(502, {"error": "upstream_failed"})
 
 
+def _server_down() -> Response:
+    """The stack is not running → an honest UNREADABLE answer, produced with ZERO in-container
+    exec. A side-channel read against an absent stack is ANSWERED, never attempted (Law 6);
+    `cli._server_up` is the one owner of the question. // O(1)."""
+    return _json(503, {"error": "server_down"})
+
+
+def _refused(child: "subprocess.CompletedProcess[str]") -> Response:
+    """An operator-FIXABLE refusal from an in-container ctl (EX_DATAERR): 400 carrying the
+    child's own reason, so the operator reads what to retype instead of a generic upstream
+    failure they can do nothing about.
+
+    Forwarding the child's stderr is safe on THIS path only, and only because repoctl
+    guarantees no credential value is ever read, stored, or printed — just env var NAMES.
+    Every OTHER nonzero exit falls to `_upstream_failed`, which carries no stderr at all.
+    ← widening this to forward stderr on any nonzero exit is a deliberate mutation (an
+    internal fault's message could then ride an answer body). // O(1)."""
+    return _json(400, {"error": "refused", "reason": (child.stderr or "").strip()})
+
+
 # ── single-flight lifecycle + detached workers ────────────────────────────────
 # The slow docker work (up / down / tunnel / restore) must NEVER block the loopback response: the
 # browser hung once because the lifecycle handler ran `docker compose up -d --build` SYNCHRONOUSLY,
@@ -275,6 +296,14 @@ def _h_status(body: bytes, *, run: cli.Run, env: Mapping[str, str]) -> Response:
     )
 
 
+def _h_doors(body: bytes, *, run: cli.Run, env: Mapping[str, str]) -> Response:
+    # serialize the SINGLE-OWNER ConnectDoors — the JSON projection of exactly what
+    # `hive connect` prints for this environment, never a line templated a second time.
+    # asdict keeps the wire shape owned by the carrier: a new field serves untouched.
+    # Purely local (env only) — it spawns no child and needs no running stack.
+    return _json(200, asdict(cli.connect_doors(env)))
+
+
 def _h_tokens_list(body: bytes, *, run: cli.Run, env: Mapping[str, str]) -> Response:
     child = cli._exec_authctl(run, env, "list")
     if child.returncode != 0:
@@ -304,6 +333,98 @@ def _h_tokens_revoke(body: bytes, *, run: cli.Run, env: Mapping[str, str]) -> Re
     if child.returncode != 0:
         return _upstream_failed()
     return _json(200, {"seat": seat, "revoked": True})
+
+
+# ── the repo registry: the connections this server actually syncs ─────────────
+# Reads and operator mutations on a side-channel, NOT lifecycle ops: they take no
+# single-flight slot and dispatch no worker (BUG-019 — a slow docker exec must never
+# strand a lifecycle op at 409, and connecting a repo must never bounce the stack).
+# Every operator-supplied value is its own argv element, never joined into a shell
+# string (the BUG-020 quoting discipline `cli._exec_repoctl` documents).
+
+#: Optional add-form field → the repoctl flag that carries it. One registry entry per
+#: option (the `cli._HANDLERS` idiom), so adding a field is one line, not a new branch.
+_REPO_ADD_FLAGS = (
+    ("name", "--name"),
+    ("branch", "--branch"),
+    ("token_env", "--token-env"),
+)
+
+
+def _repo_add_argv(body: bytes) -> Optional[list[str]]:
+    """The `repoctl add` argv for a POSTed connect form, or None when the url is blank or
+    absent (→ 400 before ANY child, including the stack up-check). `token_env` carries the
+    NAME of an env var — the console accepts no secret VALUE in either direction, and the
+    daemon resolves the name at tick time, so naming an unset var is a valid posture.
+    // O(1)."""
+    obj = _load_obj(body)
+    if obj is None:
+        return None
+    url = obj.get("url")
+    if not isinstance(url, str) or not url.strip():
+        return None
+    argv = ["add", url.strip()]
+    for key, flag in _REPO_ADD_FLAGS:
+        value = obj.get(key)
+        if isinstance(value, str) and value.strip():
+            argv += [flag, value.strip()]
+    return argv
+
+
+def _repo_mutation(
+    argv: list[str], run: cli.Run, env: Mapping[str, str], ok: dict[str, Any]
+) -> Response:
+    """Run one repoctl mutation and map its exit to the operator's answer: 0 → `ok`,
+    EX_DATAERR → 400 with the child's stated reason, anything else → 502 carrying no
+    stderr. The stack up-check runs FIRST so a down server costs zero in-container exec.
+    ← collapsing the EX_DATAERR arm into the 502 arm is a deliberate mutation: a name the
+    operator could simply retype would read as an infrastructure failure. // O(1) + child."""
+    if not cli._server_up(run, env):
+        return _server_down()
+    child = cli._exec_repoctl(run, env, *argv)
+    if child.returncode == cli.EX_OK:
+        return _json(200, ok)
+    if child.returncode == cli.EX_DATAERR:
+        return _refused(child)
+    return _upstream_failed()
+
+
+def _h_repos(body: bytes, *, run: cli.Run, env: Mapping[str, str]) -> Response:
+    """The registry plus the sync daemon's observed state, forwarded as ONE document.
+    The field set is repoctl's (ultimately `hive.app.sync_keys`'), so a new sync field
+    reaches the page with no edit here — this route decides nothing about the shape."""
+    if not cli._server_up(run, env):
+        return _server_down()
+    child = cli._exec_repoctl(run, env, "report")
+    if child.returncode != 0:
+        return _upstream_failed()
+    try:
+        document = json.loads(child.stdout or "")
+    except (json.JSONDecodeError, ValueError, TypeError):
+        return _upstream_failed()
+    if not isinstance(document, dict):
+        return _upstream_failed()
+    return _json(200, document)  # re-serialized verbatim, in the server's own key order
+
+
+def _h_repos_add(body: bytes, *, run: cli.Run, env: Mapping[str, str]) -> Response:
+    argv = _repo_add_argv(body)
+    if argv is None:
+        return _json(
+            400, {"error": "bad_request"}
+        )  # fail-fast: no child on a blank url
+    return _repo_mutation(argv, run, env, {"registered": True})
+
+
+def _h_repos_remove(body: bytes, *, run: cli.Run, env: Mapping[str, str]) -> Response:
+    name = _name_arg(body)
+    if name is None:
+        return _json(
+            400, {"error": "bad_request"}
+        )  # fail-fast: no child on a blank name
+    return _repo_mutation(
+        ["remove", name], run, env, {"name": name, "deregistered": True}
+    )
 
 
 def _h_backup(body: bytes, *, run: cli.Run, env: Mapping[str, str]) -> Response:
@@ -458,15 +579,21 @@ def _h_logs(body: bytes, *, run: cli.Run, env: Mapping[str, str]) -> Response:
 
 _Handler = Callable[..., Response]
 
-# the (method, path) → handler dispatch table — EXACTLY the ten pinned routes, mirroring the
+# the (method, path) → handler dispatch table — EXACTLY the fourteen pinned routes, mirroring the
 # one-registry-entry-per-option idiom of cli._HANDLERS. RESET is absent by construction; restore is
 # present but guarded (bare-basename path-traversal whitelist + a safety snapshot before overwrite).
+# The repo pair mirrors the token pair (`/api/x` + `/api/x/<verb>`), so the console grows no naming
+# convention a caller has to learn.
 _ROUTES: dict[tuple[str, str], _Handler] = {
     ("GET", "/"): _h_page,
     ("GET", "/api/status"): _h_status,
+    ("GET", "/api/doors"): _h_doors,
     ("GET", "/api/tokens"): _h_tokens_list,
     ("POST", "/api/tokens"): _h_tokens_mint,
     ("POST", "/api/tokens/revoke"): _h_tokens_revoke,
+    ("GET", "/api/repos"): _h_repos,
+    ("POST", "/api/repos"): _h_repos_add,
+    ("POST", "/api/repos/remove"): _h_repos_remove,
     ("POST", "/api/backup"): _h_backup,
     ("GET", "/api/backups"): _h_backups,
     ("POST", "/api/restore"): _h_restore,

@@ -42,9 +42,14 @@ CENSUSCTL = ("python", "-m", "hive.tools.censusctl")  # the in-container ingest 
 REPOCTL = ("python", "-m", "hive.tools.repoctl")  # the in-container repo-registry tool
 TUNNEL_PROFILE = "tunnel"  # mirrors the compose `profiles: ["tunnel"]` gate
 
-# sysexits.h — mirror authctl/entrypoint (an exit code cannot lie like a log can)
+# sysexits.h — mirror authctl/entrypoint (an exit code cannot lie like a log can).
+# EX_DATAERR is the in-container ctls' "the request is REFUSED, nothing written" code
+# (censusctl, repoctl): the ONE signal that separates a refusal an operator can fix from
+# an internal fault, so a side-channel can safely forward the former's reason and never
+# the latter's. It is named here so no consumer has to spell the number.
 EX_OK = 0
 EX_USAGE = 64
+EX_DATAERR = 65
 EX_UNAVAILABLE = 69
 EX_SOFTWARE = 70
 EX_CONFIG = 78
@@ -141,6 +146,25 @@ class StatusSnapshot:
     seats: Optional[int] = (
         None  # provisioned seat count; None when the stack is down / list fails
     )
+
+
+@dataclass(frozen=True, slots=True)
+class ConnectDoors:
+    """The single-owner shape of the door an agent reaches this server through, derived
+    ONCE by `connect_doors` from the environment and consumed by BOTH the CLI text path
+    (`_connect`) and the console's JSON path (`/api/doors`) — the same split
+    `StatusSnapshot` gives `hive status` and `/api/status`.
+
+    Because the line is DERIVED rather than templated per consumer, the line the console
+    shows IS the line the CLI prints for that environment; byte-identity is a structural
+    property, not an assertion anyone has to maintain. `token_gated` is a FACT about the
+    door (does its posture require a bearer), never a mode a caller may choose."""
+
+    posture: str  # "public" | "tunnel" | "local"
+    url: str  # the /mcp endpoint an agent registers against
+    line: str  # the paste-ready `claude mcp add …` one-liner
+    note: str  # why this posture, and what to substitute (no "hive: " prefix)
+    token_gated: bool  # True ⇔ the line carries the <seat-token> placeholder
 
 
 # ── verbs ────────────────────────────────────────────────────────────────────────
@@ -543,6 +567,20 @@ def _upgrade(
     return _rollback(run, env, prev=prev, snap=host_dest)
 
 
+def _server_up(run: Run, env: Mapping[str, str]) -> bool:
+    """Is the daemon's container running? The SINGLE owner of that question, shared by the
+    status probe and by every operator-console route that would otherwise exec into a stack
+    that is not there. False on a compose failure too — an unanswerable question floors to
+    "not up", never optimistically to up (Law 2's under-claim).
+
+    It is the gate that makes "zero in-container exec when down" a property of one place
+    rather than a discipline repeated at each call site. ← returning True unconditionally is
+    a deliberate mutation: every side-channel read would then spawn a child against an
+    absent stack and hang or fail deep instead of answering honestly. // O(1) + one ps."""
+    ps = run(_compose("ps", SERVICE), env)
+    return ps.returncode == 0 and "Up" in (ps.stdout or "")
+
+
 def _probe_status(run: Run, env: Mapping[str, str]) -> StatusSnapshot:
     """Probe the live stack ONCE into the single-owner `StatusSnapshot`. A DOWN server
     short-circuits to the fail-safe floor (`StatusSnapshot()`) running NO in-container exec —
@@ -550,8 +588,7 @@ def _probe_status(run: Run, env: Mapping[str, str]) -> StatusSnapshot:
     never spawning a child against a stack that is down). When up, it execs the in-container
     healthcheck (health tri-state), reads the tunnel `ps` + NGROK_DOMAIN (state + public URL),
     and lists seats via authctl. // O(1) + the child probes."""
-    ps = run(_compose("ps", SERVICE), env)
-    if ps.returncode != 0 or "Up" not in (ps.stdout or ""):
+    if not _server_up(run, env):
         return StatusSnapshot()  # down: the safe floor, ZERO exec
     hc = run(
         _compose("exec", "-T", SERVICE, "python", "-m", "hive.tools.healthcheck"), env
@@ -727,6 +764,66 @@ def _repos(
     return EX_OK
 
 
+def connect_doors(env: Mapping[str, str]) -> ConnectDoors:
+    """Derive the door this environment describes into the single-owner `ConnectDoors`.
+    PURE — reads only `env`, spawns nothing, touches no socket.
+
+    Three postures, most explicit first. ``HIVE_PUBLIC_URL`` names the address a remote
+    agent actually reaches — whatever terminates TLS in front of the token-required door
+    (a reverse proxy, a container platform's router, a tunnel this CLI did not start).
+    ``NGROK_DOMAIN`` is the built-in sidecar's convenience form of the same posture; an
+    operator who set BOTH is describing their own front door, so the explicit URL wins.
+    With neither, the tokenless loopback line — an absent public var is a valid posture,
+    not an error. The first two yield the same token-gated line because they describe the
+    same door reached two ways: the URL is transport, and the seat token is what the door
+    checks.
+
+    The token-gated postures carry a LITERAL ``<seat-token>`` placeholder. The line is
+    copy-pasted by a teammate on an unknown OS/shell and `claude mcp add` bakes the header
+    at add-time, so any shell-expansion syntax (bash ``${VAR}`` / PowerShell ``$env:VAR``
+    / cmd ``%VAR%``) would be wrong on two of the three. ← substituting a real token here
+    is a deliberate mutation: a credential would ride every rendered surface. // O(1)."""
+    public_url = (env.get("HIVE_PUBLIC_URL") or "").strip()
+    domain = (env.get("NGROK_DOMAIN") or "").strip()
+    token_note = f"replace <seat-token> with the seat's token; {_SEAT_HINT}"
+    if public_url:
+        # The operator's URL is taken as given except for the endpoint path: `/mcp` is the
+        # server's, not theirs to choose, so it is appended when absent and never doubled.
+        base = public_url.rstrip("/")
+        url = base if base.endswith("/mcp") else f"{base}/mcp"
+        posture = "public"
+    elif domain:
+        url = f"https://{domain}/mcp"
+        posture = "tunnel"
+    else:
+        # local: the tokenless loopback door. No Bearer, no baked id — per-session identity
+        # is automatic via the server-minted Mcp-Session-Id a conforming client echoes.
+        return ConnectDoors(
+            posture="local",
+            url=f"http://localhost:{HTTP_PORT}/mcp",
+            line=(
+                f"claude mcp add --transport http hive http://localhost:{HTTP_PORT}/mcp"
+            ),
+            note=(
+                "neither HIVE_PUBLIC_URL nor NGROK_DOMAIN set — printed the tokenless "
+                "local-loopback line (set HIVE_PUBLIC_URL to the address that fronts the "
+                "token-required door, or `hive up --tunnel` + NGROK_DOMAIN, for the "
+                "token-gated public one)."
+            ),
+            token_gated=False,
+        )
+    return ConnectDoors(
+        posture=posture,
+        url=url,
+        line=(
+            f"claude mcp add --transport http hive {url} "
+            '--header "Authorization: Bearer <seat-token>"'
+        ),
+        note=token_note,
+        token_gated=True,
+    )
+
+
 def _connect(
     args: argparse.Namespace,
     *,
@@ -746,57 +843,11 @@ def _connect(
     static id. The remote (tunnel) door is token-gated; the bearer only AUTHENTICATES,
     it is never the identity. The local (loopback) door is tokenless.
 
-    Three postures, most explicit first. ``HIVE_PUBLIC_URL`` names the address a remote
-    agent actually reaches — whatever terminates TLS in front of the token-required door
-    (a reverse proxy, a container platform's router, a tunnel this CLI did not start).
-    ``NGROK_DOMAIN`` is the built-in sidecar's convenience form of the same posture. With
-    neither, the tokenless loopback line. The first two print the same token-gated line
-    because they describe the same door reached two ways — the URL is transport, and the
-    seat token is what the door checks."""
-    public_url = (env.get("HIVE_PUBLIC_URL") or "").strip()
-    domain = (env.get("NGROK_DOMAIN") or "").strip()
-    if public_url:
-        # The operator's URL is taken as given except for the endpoint path: `/mcp` is the
-        # server's, not theirs to choose, so it is appended when absent and never doubled.
-        base = public_url.rstrip("/")
-        url = base if base.endswith("/mcp") else f"{base}/mcp"
-        print(
-            f"claude mcp add --transport http hive {url} "
-            '--header "Authorization: Bearer <seat-token>"',
-            file=out,
-        )
-        print(
-            f"hive: replace <seat-token> with the seat's token; {_SEAT_HINT}",
-            file=sys.stderr,
-        )
-    elif domain:
-        # remote: the token-required tunnel door. This line is copy-pasted by a teammate on
-        # an unknown OS/shell and `claude mcp add` bakes the header at add-time, so print a
-        # literal placeholder — never shell-expansion syntax (bash ${VAR} / PowerShell
-        # $env:VAR / cmd %VAR% would each be wrong on the other two).
-        print(
-            f"claude mcp add --transport http hive https://{domain}/mcp "
-            '--header "Authorization: Bearer <seat-token>"',
-            file=out,
-        )
-        print(
-            f"hive: replace <seat-token> with the seat's token; {_SEAT_HINT}",
-            file=sys.stderr,
-        )
-    else:
-        # local: the tokenless loopback door. No Bearer, no baked id — per-session identity is
-        # automatic via the server-minted Mcp-Session-Id a conforming client echoes.
-        print(
-            f"claude mcp add --transport http hive http://localhost:{HTTP_PORT}/mcp",
-            file=out,
-        )
-        print(
-            "hive: neither HIVE_PUBLIC_URL nor NGROK_DOMAIN set — printed the tokenless "
-            "local-loopback line (set HIVE_PUBLIC_URL to the address that fronts the "
-            "token-required door, or `hive up --tunnel` + NGROK_DOMAIN, for the "
-            "token-gated public one).",
-            file=sys.stderr,
-        )
+    The postures themselves live ONCE in `connect_doors`; this is only the TEXT
+    projection (the console's `/api/doors` is the JSON one)."""
+    doors = connect_doors(env)
+    print(doors.line, file=out)  # the credential-free line — stdout ONLY
+    print(f"hive: {doors.note}", file=sys.stderr)
     return EX_OK
 
 

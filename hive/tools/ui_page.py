@@ -3,8 +3,18 @@
 ONE hermetic document (inline CSS + JS, RELATIVE-URL fetches, no external asset, no build
 step) served by the stdlib `http.server` at `GET /`. It drives the same-origin JSON API
 (`/api/*`) the router in `ui.py` answers: a live `/api/status` poll feeds the pulsing health
-beacon, the TOKENS card mints/revokes seats over `/api/tokens`, the LOGS card tails
-`/api/logs`, and the safe lifecycle controls call `/api/backup` + `/api/lifecycle`.
+beacon, the CONNECTIONS card lists and mutates the synced-repo registry over `/api/repos`,
+the DOORS card renders `/api/doors`, the TOKENS card mints/revokes seats over `/api/tokens`,
+the LOGS card tails `/api/logs`, and the safe lifecycle controls call `/api/backup` +
+`/api/lifecycle`.
+
+Two properties are structural, not stylistic. (1) The page holds NO absolute URL: every
+address it shows — the connect line included — arrives as runtime DATA from `/api/doors`,
+which is what keeps the document hermetic AND makes the line it displays byte-identical to
+what `hive connect` prints. (2) The connections card renders whatever keys the server's
+`sync` sub-block carries, in server order, and derives NO verdict from them: it has no field
+list of its own, so a new sync field appears here with no edit and an absent field reads as
+absent rather than as a confident zero or a health word the server never said.
 
 Visual system (the operator brief): white paper / off-white cards / ink text / soft labels /
 hairline borders, with marigold as the ONLY accent — sourced from a single `--marigold` token
@@ -117,6 +127,20 @@ PAGE_HTML: str = """<!doctype html>
   .seat-list { margin-top: 8px; }
   .empty { font-size: 12px; color: var(--soft); padding: 7px 0; }
 
+  /* one connection: a hairline sub-block per registered repo */
+  .conn { border: 1px solid var(--hair); background: var(--paper);
+          padding: 10px 14px; margin-top: 12px; }
+  .conn .name { font-weight: 700; }
+  .conn .row .k { word-break: break-word; }
+  /* the daemon's own state — a sibling slot, never a repo (a fleet fact belongs to none) */
+  .fleet { border-top: 1px solid var(--hair); margin-top: 20px; padding-top: 12px; }
+  .field--more { flex-wrap: wrap; margin-top: 8px; }
+  .field--more .input { flex: 1 1 140px; }
+
+  /* the paste-ready registration line: selectable text FIRST, copy button as a courtesy */
+  .snippet { margin-top: 14px; padding: 12px; border: 1px dashed var(--ink);
+             font-size: 12px; word-break: break-all; user-select: all; }
+
   .logs { font-family: var(--mono); font-size: 12px; line-height: 1.5; color: var(--ink);
           white-space: pre-wrap; word-break: break-word; margin: 0;
           max-height: 340px; overflow-y: auto; }
@@ -153,6 +177,45 @@ PAGE_HTML: str = """<!doctype html>
       door (token-gated by construction); Deactivate closes it, leaving the daemon running.
       Backup snapshots the store right now; the volume is always preserved.</div>
     <div class="msg" id="server-msg" role="status" aria-live="polite"></div>
+  </section>
+
+  <section class="card" aria-labelledby="eb-repos">
+    <div class="eyebrow" id="eb-repos">Connections</div>
+    <div class="field">
+      <input class="input" id="repo-url" placeholder="git remote url to connect"
+             aria-label="git remote url" autocomplete="off" spellcheck="false">
+      <button class="btn" id="add-repo">Connect</button>
+    </div>
+    <div class="field field--more">
+      <input class="input" id="repo-name" placeholder="name (optional)"
+             aria-label="registry name" autocomplete="off" spellcheck="false">
+      <input class="input" id="repo-branch" placeholder="branch (optional)"
+             aria-label="canonical branch" autocomplete="off" spellcheck="false">
+      <input class="input" id="repo-token-env" placeholder="token env var NAME (optional)"
+             aria-label="name of the env var holding this repo's git token"
+             autocomplete="off" spellcheck="false">
+    </div>
+    <div class="hint">The token field takes the NAME of an environment variable — never a
+      token. Disconnecting stops the feed and prunes the mirror; the memories are kept, so
+      a repo you reconnect picks them straight back up.</div>
+    <div class="msg" id="repo-msg" role="status" aria-live="polite"></div>
+    <div class="repo-list" id="repo-list"></div>
+    <div class="fleet" id="fleet-block"></div>
+    <div class="actions">
+      <button class="btn btn--sm" id="refresh-repos">Refresh</button>
+    </div>
+  </section>
+
+  <section class="card" aria-labelledby="eb-doors">
+    <div class="eyebrow" id="eb-doors">Doors</div>
+    <div class="row"><span class="k">posture</span><span class="v" id="door-posture">—</span></div>
+    <div class="row"><span class="k">address</span><span class="v" id="door-url">—</span></div>
+    <div class="snippet" id="door-line">loading…</div>
+    <div class="actions">
+      <button class="btn btn--sm" id="copy-line">Copy</button>
+    </div>
+    <div class="hint" id="door-note"></div>
+    <div class="msg" id="door-msg" role="status" aria-live="polite"></div>
   </section>
 
   <section class="card" aria-labelledby="eb-tokens">
@@ -227,6 +290,140 @@ PAGE_HTML: str = """<!doctype html>
   async function pollStatus() {
     try { var res = await api("/api/status"); if (res.body) { renderStatus(res.body); } }
     catch (e) { /* transient — the next tick retries */ }
+  }
+
+  // ── connections: the synced-repo registry + what the daemon observed about it ──
+  function show(v) {
+    // Absent reads as ABSENT. Never 0, never a health word — the page invents no value
+    // and no verdict for a field the server did not measure.
+    if (v === null || v === undefined) { return "not reported"; }
+    if (v === true) { return "yes"; }
+    if (v === false) { return "no"; }
+    return String(v);
+  }
+  function kv(k, v, cls) {
+    var row = document.createElement("div"); row.className = "row";
+    var key = document.createElement("span"); key.className = "k"; key.textContent = k;
+    var val = document.createElement("span");
+    val.className = "v" + (cls ? " " + cls : ""); val.textContent = show(v);
+    row.appendChild(key); row.appendChild(val); return row;
+  }
+  function connCard(repo) {
+    var box = document.createElement("div"); box.className = "conn";
+    var head = document.createElement("div"); head.className = "row";
+    var label = document.createElement("span");
+    label.className = "v name"; label.textContent = repo.name;
+    var btn = document.createElement("button");
+    btn.className = "btn btn--sm"; btn.textContent = "Disconnect";
+    btn.addEventListener("click", function () { disconnectRepo(repo.name); });
+    head.appendChild(label); head.appendChild(btn); box.appendChild(head);
+    // EVERY field the server sent, in SERVER order. The page keeps no field list of its
+    // own, so a new one appears here with no edit and none can be silently dropped.
+    Object.keys(repo).forEach(function (key) {
+      if (key === "name" || key === "sync") { return; }
+      box.appendChild(kv(key, repo[key]));
+    });
+    if (repo.sync) {
+      Object.keys(repo.sync).forEach(function (key) {
+        box.appendChild(kv("sync." + key, repo.sync[key]));
+      });
+    } else {
+      box.appendChild(kv("sync", null));   // registered, nothing observed yet
+    }
+    return box;
+  }
+  function renderFleet(fleet) {
+    // Always rendered: the daemon's own state belongs to no repo, and a missing block
+    // would itself be an unreadable signal.
+    var box = $("#fleet-block"); box.innerHTML = "";
+    var head = document.createElement("div");
+    head.className = "eyebrow"; head.textContent = "Sync daemon";
+    box.appendChild(head);
+    var keys = Object.keys(fleet || {});
+    if (!keys.length) { box.appendChild(kv("state", null)); return; }
+    keys.forEach(function (key) { box.appendChild(kv(key, fleet[key])); });
+  }
+  function renderRepos(doc) {
+    var list = $("#repo-list"); list.innerHTML = "";
+    var repos = (doc && doc.repos) || [];
+    if (!repos.length) {
+      var e = document.createElement("div");
+      e.className = "empty"; e.textContent = "no repos connected yet";
+      list.appendChild(e);
+    } else {
+      repos.forEach(function (repo) { list.appendChild(connCard(repo)); });
+    }
+    renderFleet(doc && doc.fleet);
+  }
+  async function loadRepos() {
+    var res = await api("/api/repos");
+    if (!res.ok) {
+      var list = $("#repo-list"); list.innerHTML = "";
+      var e = document.createElement("div"); e.className = "empty";
+      e.textContent = (res.body && res.body.error === "server_down")
+        ? "the server is not running — connections are unreadable"
+        : "connections could not be read";
+      list.appendChild(e); renderFleet(null); return;
+    }
+    renderRepos(res.body);
+  }
+  function refused(body, fallback) {
+    // a STATED refusal is the operator's to act on; anything else is an upstream failure.
+    return (body && body.reason) ? body.reason : reason(body, fallback);
+  }
+  async function addRepo() {
+    var url = $("#repo-url").value.trim();
+    if (!url) { flash("#repo-msg", "enter a git remote url first"); return; }
+    var payload = { url: url };
+    var name = $("#repo-name").value.trim();
+    var branch = $("#repo-branch").value.trim();
+    var tokenEnv = $("#repo-token-env").value.trim();
+    if (name) { payload.name = name; }
+    if (branch) { payload.branch = branch; }
+    if (tokenEnv) { payload.token_env = tokenEnv; }   // a NAME; the value never travels
+    flash("#repo-msg", "connecting…");
+    var res = await api("/api/repos", { method: "POST",
+      headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload) });
+    if (res.ok) {
+      flash("#repo-msg", "connected — the sync daemon picks it up on its next tick");
+      $("#repo-url").value = ""; $("#repo-name").value = "";
+      $("#repo-branch").value = ""; $("#repo-token-env").value = "";
+    } else {
+      flash("#repo-msg", refused(res.body, "could not connect that repo"));
+    }
+    loadRepos();
+  }
+  async function disconnectRepo(name) {
+    // Typed confirm, mirroring the CLI: NOTHING is sent until the operator types the
+    // repo's own name back, so a mistype or a cancel makes no request at all.
+    var typed = window.prompt('Disconnect "' + name + '"? It stops feeding and its mirror '
+      + 'is pruned next tick; the memories are kept. Type the name to confirm:');
+    if (typed !== name) { flash("#repo-msg", "not confirmed — nothing changed"); return; }
+    flash("#repo-msg", "disconnecting " + name + "…");
+    var res = await api("/api/repos/remove", { method: "POST",
+      headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name: name }) });
+    flash("#repo-msg", res.ok ? ("disconnected " + name)
+      : refused(res.body, "could not disconnect that repo"));
+    loadRepos();
+  }
+
+  // ── doors: the address + registration line an agent connects through ──
+  async function loadDoors() {
+    // The line arrives as DATA — the page templates no address of its own, which is what
+    // makes it byte-identical to `hive connect` and keeps the document hermetic.
+    var res = await api("/api/doors");
+    var d = res.ok ? res.body : null;
+    if (!d) { flash("#door-msg", "the door could not be read"); return; }
+    $("#door-posture").textContent = d.posture
+      + (d.token_gated ? " · token-gated" : " · tokenless");
+    $("#door-url").textContent = d.url;
+    $("#door-line").textContent = d.line;
+    $("#door-note").textContent = d.note;
+  }
+  async function copyLine() {
+    try { await navigator.clipboard.writeText($("#door-line").textContent);
+          flash("#door-msg", "copied to clipboard"); }
+    catch (e) { flash("#door-msg", "select the line above to copy"); }
   }
 
   // ── tokens: list / mint (shown once) / revoke ──
@@ -384,7 +581,14 @@ PAGE_HTML: str = """<!doctype html>
     $("#tunnel-toggle").addEventListener("click", tunnelToggle);
     $("#refresh-logs").addEventListener("click", loadLogs);
     $("#do-restore").addEventListener("click", doRestore);
-    pollStatus(); loadTokens(); loadLogs(); loadBackups();
+    $("#add-repo").addEventListener("click", addRepo);
+    $("#repo-url").addEventListener("keydown", function (e) { if (e.key === "Enter") { addRepo(); } });
+    $("#refresh-repos").addEventListener("click", loadRepos);
+    $("#copy-line").addEventListener("click", copyLine);
+    pollStatus(); loadTokens(); loadLogs(); loadBackups(); loadRepos(); loadDoors();
+    // The heartbeat polls STATUS only. The connections list refreshes on load, after a
+    // connect/disconnect, and on the explicit Refresh — an `exec` per 3s would be a
+    // child storm against the daemon for data that changes at tick cadence.
     setInterval(pollStatus, 3000);   // the live heartbeat cadence: 3s (bounded 2-5s)
   });
 })();

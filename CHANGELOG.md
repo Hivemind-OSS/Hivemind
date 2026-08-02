@@ -3,6 +3,26 @@
 All notable changes to this project are documented here.
 
 ## Added
+- **The operator console shows what the server is connected to, and lets you change it.** The
+  console predated the repo registry: it knew seats, lifecycle, logs and restore, but nothing about
+  the repos the server syncs or the door agents reach it through. A Connections card now lists every
+  registered repo with its registry row and the sync daemon's observed state, alongside an
+  always-present block for the daemon itself, and connects or disconnects a repo from the browser —
+  the latter behind a typed confirmation of the repo's own name, so a mistype or a cancel sends no
+  request. The live-state vocabulary has one owner: `repoctl report` merges the registry rows with
+  `census_health_report` into a single JSON document whose field set comes from
+  `hive/app/sync_keys.py`, and the page renders whatever keys that document carries, in server
+  order. A new sync field therefore reaches the console with no console edit, an absent field reads
+  as absent rather than as a confident `0`, and the page derives no health verdict of its own.
+  Connecting takes the NAME of a token env var, never a token. A down stack answers honestly with
+  zero in-container exec, and the repo routes take no lifecycle slot, so a slow child can neither
+  strand a lifecycle operation nor bounce the stack.
+- **A Doors card that shows the same registration line `hive connect` prints.** The three connect
+  postures moved into one pure `connect_doors(env)`; the CLI verb is now its text projection and the
+  console's `/api/doors` its JSON one, so the line the browser displays IS the line the CLI prints
+  for that environment — byte-identity is structural rather than asserted, exactly as
+  `StatusSnapshot` already gives `hive status` and `/api/status`. Because the line arrives as
+  runtime data, the page still contains no absolute URL of its own and stays hermetic.
 - **The agent-loop harness (`harnesses/`), an opt-in Claude Code plugin that makes the memory loop
   mechanical client-side.** A governed session cannot change code without a recall, cannot store
   without one, and cannot end a turn leaving a decision silently unmade — where before every one of
@@ -145,6 +165,13 @@ All notable changes to this project are documented here.
   recorded envelopes asserting the classification covers it.
 
 ## Changed
+- **`repoctl` distinguishes a refusal you can fix from a fault you cannot.** A bad slug, a
+  duplicate name, an empty url, or an unknown name on `remove` now exits `EX_DATAERR` (65), the
+  code `censusctl` already used for the same meaning; `EX_SOFTWARE` (70) is left to internal
+  faults such as the pre-v3 store's no-migration refusal. Both were 70 before, so a caller could
+  not tell "retype the name" from "the server is broken" and had to report the latter for both.
+  The operator console forwards a 65's stated reason and still carries no child stderr on any
+  other failure. `hive repo add` forwards the new code unchanged, as it already forwarded 70.
 - **`make check` covers both languages.** The typecheck verb runs the strict TypeScript checker
   after `mypy`, and the test verb runs the harness suite after `pytest`; a missing
   `harnesses/node_modules` bootstraps itself rather than failing with a bare `tsc: not found`. No
