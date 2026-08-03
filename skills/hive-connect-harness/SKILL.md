@@ -60,7 +60,15 @@ For one invocation without installing anything — trying it out, or CI:
 Fill the three placeholders and send this to the teammate; their agent can execute it as written.
 **Send the seat token separately** — this block is written to be safe to paste into a chat.
 
-Get the commit to pin from the server checkout: `git rev-parse HEAD`.
+Get the commit to pin from the server checkout — and confirm it is **pushed**, because a teammate
+cannot check out a commit that never left your machine:
+
+```bash
+git rev-parse HEAD
+git branch -r --contains HEAD   # must name a remote branch; empty output means push first
+```
+
+The clone URL must also be one the teammate can reach — a public repo, or one they have access to.
 
 ```text
 Install the hive-loop harness (optional — it makes the memory loop mechanical on
@@ -85,13 +93,20 @@ Requires Node >= 23.6 — check with `node --version`. On anything older this
 installs cleanly and then does nothing, silently.
 
 Then restart Claude Code. Hooks load at session start, so your current session is
-not governed. In the new session, confirm you have tools named
-mcp__plugin_hive-loop_hive__* — if you have none, see the checks below.
+not governed. In the new session, confirm you have EIGHT tools whose names contain
+hive — under either prefix, mcp__plugin_hive-loop_hive__* or mcp__hive__*. If you
+have none, see the checks below.
 ```
 
-If the teammate already ran `claude mcp add hive`, they would now carry both that registration and
-the plugin's own. **Ask before sending** — that combination is untested, and the supported path is
-one or the other.
+If the teammate already ran `claude mcp add hive` — which is exactly what **hive-connect-team**
+hands them — they now carry both that registration and the plugin's own. That combination is
+**supported and measured**: the two servers share the name `hive`, the file-configured one wins,
+and the agent sees eight tools under `mcp__hive__*` rather than sixteen under two prefixes.
+Enforcement is unaffected, because the hook matchers never encode a prefix.
+
+The one thing worth checking is that both point at the **same endpoint**. The shadowed declaration
+is silent, so a stale `claude mcp add` URL quietly outranks `HIVE_MCP_URL` and the agent talks to
+the wrong server with nothing reporting it.
 
 ## Verifying it is governing
 
@@ -100,19 +115,30 @@ In a **new** session, on the machine you installed it on:
 | Check | Expected |
 |---|---|
 | `claude plugin list` | `hive-loop@skills-dir` · Scope: user · Status: `✔ loaded` |
-| ask the agent to list its tools containing `hive` | eight, all prefixed `mcp__plugin_hive-loop_hive__` |
+| ask the agent to list its tools containing `hive` | **eight** — under whichever prefix applies, see below |
 | ask it to edit a file before it has recalled | the call is denied, with a reason naming the missing recall |
 
 The last row is the only one that proves the *hooks* are live; the first two prove the plugin and
 its endpoint declaration are. Check all three — they fail independently.
 
+**Count eight; do not check the prefix.** Which prefix the verbs arrive under depends on what else
+declares a `hive` server, and both are correct — enforcement is identical, since the hook matchers
+are prefix-agnostic by construction:
+
+| Situation | The eight arrive as |
+|---|---|
+| the plugin is the only thing declaring `hive` (a teammate who only ran Case 2) | `mcp__plugin_hive-loop_hive__*` |
+| a `hive` server is already registered in a config file — `claude mcp add hive`, i.e. anyone who followed **hive-connect-team** | `mcp__hive__*`; the file-configured server **shadows** the plugin's identically-named one |
+
 **When it does nothing.** Every failure here is quiet, so diagnose by elimination:
 
 | Symptom | Cause |
 |---|---|
-| no `mcp__plugin_hive-loop_hive__*` tools | `HIVE_MCP_URL` unset in the session's environment — the manifest cannot resolve, and nothing reports it |
+| no hive tools at all, under **either** prefix | `HIVE_MCP_URL` unset in the session's environment — the manifest cannot resolve, and nothing reports it |
+| eight tools, but named `mcp__hive__*` | **not a fault** — a file-configured `hive` server outranks the plugin's declaration. Confirm the two name the same endpoint |
 | tools present, nothing is ever denied | hooks did not load: the session predates the install (restart), or Node is < 23.6, or `HIVE_LOOP__ENABLED=0` |
 | tools present, denials work, calls 401 | the endpoint is the remote door and `HIVE_TOKEN` is unset or revoked — mint a fresh seat with `hive token <seat>` |
+| hive tools vanish in a headless `claude -p` run | `--strict-mcp-config` suppresses **plugin-declared** servers too, not just file-configured ones. Drop the flag, or declare the server in the `--mcp-config` payload |
 
 ## Turning it off
 
@@ -130,6 +156,16 @@ bypassable *at launch* — that is deliberate.
 - **`claude plugin details hive-loop@skills-dir` reports `MCP servers (0)` even when all eight tools
   are live.** It inventories hooks accurately and the endpoint declaration not at all. Trust the
   session's tool list, never that line.
+- **An identically-named `hive` server shadows the plugin's declaration, silently.** The
+  file-configured one wins; you get eight tools under `mcp__hive__*` and no warning that a second
+  declaration was dropped. Harmless when both name the same endpoint, and a wrong-server bug when
+  they do not.
+- **`--strict-mcp-config` drops plugin-declared servers.** Measured: with the flag the session has
+  zero hive verbs, so an armed headless run can never satisfy the loop. `--setting-sources ""` does
+  *not* do this — the plugin's servers survive it.
+- **The loopback door needs no `HIVE_TOKEN`.** An unresolved `${HIVE_TOKEN}` in the manifest does
+  not drop the server: measured, all eight verbs load and a real `hive_recall` returns over
+  `http://localhost:8765/mcp` with the variable unset.
 - **Installed is not enforcing.** Hooks load at session start. Every install, upgrade and toggle
   here takes effect on the *next* session, and there is no warning that the current one is ungoverned.
 - **The environment must outlive the shell.** An `export` at a prompt reaches only sessions launched

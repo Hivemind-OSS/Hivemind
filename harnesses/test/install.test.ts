@@ -13,6 +13,7 @@ import { test } from "node:test"
 import assert from "node:assert/strict"
 import { spawnSync } from "node:child_process"
 import {
+  copyFileSync,
   existsSync,
   mkdirSync,
   mkdtempSync,
@@ -21,7 +22,7 @@ import {
   symlinkSync,
   writeFileSync,
 } from "node:fs"
-import { join } from "node:path"
+import { dirname, join } from "node:path"
 import { tmpdir } from "node:os"
 import { fileURLToPath } from "node:url"
 
@@ -143,6 +144,64 @@ test("the decision through the symlinked spelling equals the real-path one", () 
   const link = runAt(linked, cLink, editPayload(cLink))
   assert.equal(link.stdout, real.stdout, "one file, one decision — path spelling must not matter")
   assert.equal(link.code, real.code)
+})
+
+// ── I2 · the remote-teammate install: TRACKED files only ─────────────────────
+//
+// hive-connect-harness Case 2 hands a teammate a sparse checkout of THIS
+// directory alone, at a pinned commit:
+//
+//   git clone --no-checkout <url> && git sparse-checkout set --no-cone harnesses
+//
+// so their plugin root holds exactly what git tracks under it — never an
+// untracked or ignored file, and never one from elsewhere in the repo. CT-H11
+// copies the working TREE, which still carries ignored files (node_modules is
+// deleted by hand there, but anything else ignored rides along), so it cannot
+// see a runtime file that was never committed. This reconstructs the root from
+// `git ls-files` and decides out of it, which is the teammate's actual bytes.
+
+function trackedFiles(): string[] | undefined {
+  const r = spawnSync("git", ["ls-files", "-z", "."], {
+    cwd: HARNESS_ROOT,
+    encoding: "utf8",
+    timeout: 30_000,
+  })
+  if (r.status !== 0) return undefined // not a git checkout (tarball, vendored copy)
+  const names = (r.stdout ?? "").split("\0").filter((n) => n !== "")
+  return names.length > 0 ? names : undefined
+}
+
+test("a tracked-files-only checkout of the plugin root still decides", () => {
+  requireEntry()
+  const tracked = trackedFiles()
+  if (tracked === undefined) return // nothing to assert without git's own answer
+  const root = mkdtempSync(join(tmpdir(), "hive-loop-sparse-"))
+  for (const rel of tracked) {
+    const dest = join(root, rel)
+    mkdirSync(dirname(dest), { recursive: true })
+    copyFileSync(join(HARNESS_ROOT, rel), dest)
+  }
+  assert.ok(
+    !existsSync(join(root, "node_modules")),
+    "sanity: a sparse checkout never carries the gitignored dev gate",
+  )
+
+  const c = ctx()
+  const entry = join(root, "adapters", "claude-code.ts")
+  assert.ok(
+    existsSync(entry),
+    "the hook entry point is not tracked — a teammate's sparse checkout would have no harness at all",
+  )
+  const armed = runAt(entry, c, armPayload(c))
+  assert.equal(armed.code, 0, `arming from the tracked-only root crashed: ${armed.stderr}`)
+  const edit = runAt(entry, c, editPayload(c))
+  assert.equal(edit.code, 0, `the gate from the tracked-only root crashed: ${edit.stderr}`)
+  assert.match(
+    edit.stdout,
+    /"permissionDecision"\s*:\s*"deny"/,
+    "the remote-teammate install must enforce; silence here means the runtime needs a file " +
+      `git does not ship (stdout=${JSON.stringify(edit.stdout)}, stderr=${edit.stderr})`,
+  )
 })
 
 // ── import stays inert (the guard is load-bearing for the module import path) ─
