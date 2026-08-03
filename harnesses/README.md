@@ -123,6 +123,12 @@ mcp__plugin_hive-loop_hive__hive_write
 — `mcp__plugin_<plugin>_<server>__<verb>`, with the hyphenated plugin name carried through verbatim
 rather than transformed.
 
+**That is the prefix only when nothing else declares `hive`.** A `hive` server already registered in
+a config file — `claude mcp add hive`, which is what the connect-team runbook hands every operator —
+**shadows** the plugin's identically-named declaration: the session gets eight verbs as
+`mcp__hive__*`, not sixteen under two prefixes, and nothing reports that a declaration was dropped.
+Both shapes are measured on 2.1.220 and both enforce identically. Count eight; never test the prefix.
+
 The hook matchers deliberately **do not encode that prefix** — they are prefix-agnostic
 (`mcp__.*__hive_write`), and the adapter classifies a call by the segment after the last `__`. A
 matcher is a cost filter, not a semantic: over-including costs a few milliseconds on a foreign tool
@@ -136,6 +142,12 @@ call is refused before it reaches the server and the loop can never be satisfied
 claude -p "…" --plugin-dir /path/to/harnesses \
   --allowedTools Read Edit mcp__plugin_hive-loop_hive__hive_recall mcp__plugin_hive-loop_hive__hive_outcome
 ```
+
+**And do not pass `--strict-mcp-config`.** Measured on 2.1.220: it suppresses plugin-declared
+servers as well as file-configured ones, so the session has no memory verbs at all and an armed run
+can never close the loop. `--setting-sources ""` is safe — the plugin's servers survive it. This is
+why `test/install.test.ts`'s live probe, which passes both flags, asserts only arming and
+journalling: it runs with zero hive verbs by design.
 
 ### Why the post-tool hook is registered twice
 

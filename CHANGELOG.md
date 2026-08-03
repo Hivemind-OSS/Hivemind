@@ -80,6 +80,28 @@ All notable changes to this project are documented here.
   reference only, so rewording any of these files is free.
 
 ## Fixed
+- **The harness install docs verified by a tool-name prefix that a correct install frequently does
+  not have.** Every operator doc said to confirm the plugin by looking for tools named
+  `mcp__plugin_hive-loop_hive__*`, and to treat a client carrying both the plugin's own declaration
+  and a prior `claude mcp add hive` as an untested combination to provision around. Measured on
+  2.1.220 it is neither untested nor exotic: the two declarations collide on the name `hive`, the
+  file-configured server wins silently, and the session gets eight verbs as `mcp__hive__*` rather
+  than sixteen under two prefixes — so anyone who followed `hive-connect-team` first, which is the
+  harness runbook's own stated prerequisite, read a working install as broken. The check is now to
+  count eight hive-named tools and never test the prefix, with both shapes tabulated and the
+  shadowing named as the hazard it is: it is silent, so a stale `claude mcp add` URL outranks
+  `HIVE_MCP_URL` and the agent reaches the wrong endpoint with nothing reporting it. Enforcement was
+  never at risk — no hook matcher encodes a prefix — which is why the gap could only ever surface as
+  a misread verification. Two further silent failures are documented from the same measurements:
+  `--strict-mcp-config` suppresses plugin-declared servers as well as file-configured ones, so a
+  headless run carrying it has no memory verbs at all and an armed session can never close the loop
+  (`--setting-sources ""` is safe), and an unresolved `${HIVE_TOKEN}` does not drop the server, so
+  the loopback door does work tokenless as documented. The team-rollout block now has the operator
+  confirm the pinned commit is pushed, since a teammate cannot check out a commit that never left
+  the server host. The remote-teammate install is pinned by a test that rebuilds the plugin root
+  from `git ls-files` and decides out of it — the sparse checkout's actual bytes, where copying the
+  working tree still carries ignored files and so cannot catch a runtime file that was never
+  committed.
 - **The harness could not read what the platform actually delivered, so every
   envelope-dependent ledger signal was dead in live sessions.** Claude Code hands an MCP tool's
   PostToolUse result to hooks as a bare JSON array of content blocks — a fourth wrapping

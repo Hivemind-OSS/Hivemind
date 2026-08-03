@@ -417,14 +417,22 @@ message that reads like a broken plugin rather than a wrong command.
 The plugin's manifest declares the MCP server itself, interpolating `HIVE_MCP_URL` and `HIVE_TOKEN`
 from the environment — so a workstation that installs the harness does **not** also need
 `claude mcp add`, and the memory verbs arrive namespaced as `mcp__plugin_hive-loop_hive__*`. On the
-loopback door `HIVE_TOKEN` may be left unset. Whether a client carrying *both* a prior
-`claude mcp add hive` and the plugin's declaration composes is untested — provision one or the other.
+loopback door `HIVE_TOKEN` may be left unset — an unresolved `${HIVE_TOKEN}` does not drop the
+server; all eight verbs still load and answer.
+
+A client carrying *both* a prior `claude mcp add hive` and the plugin's declaration **composes, and
+is measured**: the names collide on `hive`, the file-configured server wins, and the session gets
+eight verbs as `mcp__hive__*` rather than sixteen. Enforcement is unchanged — no hook matcher
+encodes a prefix. The shadowing is silent, so the one thing to check is that both name the same
+endpoint; a stale `claude mcp add` URL outranks `HIVE_MCP_URL` with nothing reporting it.
 
 **Rolling it out to a team.** Forward a sparse clone pinned to the commit the server runs
 (`git rev-parse HEAD` in the server checkout): `git clone --no-checkout`, then
 `git sparse-checkout set --no-cone harnesses`, then `git checkout <sha>`. That fetches the harness
 directory alone at an exact version, with no marketplace and no extra repo file. The seat token
-travels separately from the block — it is not in it.
+travels separately from the block — it is not in it. Confirm the pinned commit is **pushed** before
+you send it (`git branch -r --contains HEAD` must name a remote branch): a teammate cannot check out
+a commit that never left the server host, and the failure lands on them as a bare git error.
 
 **Every failure mode here is silent, which is the operator-relevant part.** Requirements are
 Node **≥ 23.6** (the hooks run TypeScript by type stripping; on an older runtime the hook fails and
