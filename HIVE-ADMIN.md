@@ -426,6 +426,13 @@ eight verbs as `mcp__hive__*` rather than sixteen. Enforcement is unchanged — 
 encodes a prefix. The shadowing is silent, so the one thing to check is that both name the same
 endpoint; a stale `claude mcp add` URL outranks `HIVE_MCP_URL` with nothing reporting it.
 
+For a **remote seat this is an operational trap, not a cosmetic one**: the registration carries its
+own baked URL and seat token in `~/.claude.json`, so a teammate who carries both routes and is
+issued a fresh token will update `HIVE_TOKEN`, restart, and still present the old one — the winning
+registration never reads the variable. Provision one route per teammate. Preferring the plugin's
+manifest keeps `HIVE_MCP_URL` / `HIVE_TOKEN` authoritative, so rotation is a profile edit and the
+token stays out of a config file.
+
 **Rolling it out to a team.** Forward a sparse clone pinned to the commit the server runs
 (`git rev-parse HEAD` in the server checkout): `git clone --no-checkout`, then
 `git sparse-checkout set --no-cone harnesses`, then `git checkout <sha>`. That fetches the harness

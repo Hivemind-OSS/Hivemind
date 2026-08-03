@@ -104,9 +104,30 @@ hands them — they now carry both that registration and the plugin's own. That 
 and the agent sees eight tools under `mcp__hive__*` rather than sixteen under two prefixes.
 Enforcement is unaffected, because the hook matchers never encode a prefix.
 
-The one thing worth checking is that both point at the **same endpoint**. The shadowed declaration
-is silent, so a stale `claude mcp add` URL quietly outranks `HIVE_MCP_URL` and the agent talks to
-the wrong server with nothing reporting it.
+## Two routes to the endpoint — pick one
+
+Both the `claude mcp add` registration and the plugin's manifest can carry the endpoint, and when
+both exist **the registration wins silently**. That is cosmetic on loopback, where the two say the
+same unchanging `http://localhost:8765/mcp`. It is not cosmetic for a remote seat, because the two
+carry different things and drift apart:
+
+| | endpoint + token live in | rotating them means |
+|---|---|---|
+| `claude mcp add hive …` (**hive-connect-team**) | `~/.claude.json` — the seat token baked in as a literal header | re-running `claude mcp add` |
+| the plugin's manifest (**this skill**) | `HIVE_MCP_URL` / `HIVE_TOKEN` in a shell profile | editing the profile |
+
+So a teammate carrying both who is handed a fresh seat, updates `HIVE_TOKEN`, and restarts still
+presents the **old** token — the winning registration never read the variable. The failure looks
+like "I just updated the token and now I get 401s," and the 401 row in the table below sends you
+around the same loop again. A moved tunnel URL fails the same way.
+
+**For a remote seat, prefer the plugin's manifest alone:** skip `claude mcp add` and let
+`HIVE_MCP_URL` / `HIVE_TOKEN` be the single source of truth, so rotation is a profile edit and the
+token stays out of `~/.claude.json`. If the registration is already there, that is fine too — just
+rotate *it*, and treat the environment variables as inert. What does not work is keeping both and
+assuming the environment is authoritative.
+
+If you keep both, confirm they name the same endpoint. Nothing reports it when they do not.
 
 ## Verifying it is governing
 
@@ -138,7 +159,8 @@ are prefix-agnostic by construction:
 | eight tools, but named `mcp__hive__*` | **not a fault** — a file-configured `hive` server outranks the plugin's declaration. Confirm the two name the same endpoint |
 | tools present, nothing is ever denied | hooks did not load: the session predates the install (restart), or Node is < 23.6, or `HIVE_LOOP__ENABLED=0` |
 | tools present, denials work, calls 401 | the endpoint is the remote door and `HIVE_TOKEN` is unset or revoked — mint a fresh seat with `hive token <seat>` |
-| hive tools vanish in a headless `claude -p` run | `--strict-mcp-config` suppresses **plugin-declared** servers too, not just file-configured ones. Drop the flag, or declare the server in the `--mcp-config` payload |
+| hive tools vanish in a headless `claude -p` run | `--mcp-config` (and its stronger form `--strict-mcp-config`) replaces the **plugin-declared** server set. Drop the flag, or declare the server in the `--mcp-config` payload yourself |
+| a rotated seat token or a moved endpoint changes nothing | a file-configured `hive` registration is winning, and it carries its own baked URL and token. See *Two routes* above — edit the registration, not the environment |
 
 ## Turning it off
 
@@ -160,9 +182,10 @@ bypassable *at launch* — that is deliberate.
   file-configured one wins; you get eight tools under `mcp__hive__*` and no warning that a second
   declaration was dropped. Harmless when both name the same endpoint, and a wrong-server bug when
   they do not.
-- **`--strict-mcp-config` drops plugin-declared servers.** Measured: with the flag the session has
-  zero hive verbs, so an armed headless run can never satisfy the loop. `--setting-sources ""` does
-  *not* do this — the plugin's servers survive it.
+- **`--mcp-config` drops plugin-declared servers**, and `--strict-mcp-config` is the stronger form
+  of the same thing. Measured: with either, the session has zero hive verbs, so an armed headless
+  run can never satisfy the loop. It happens even when the injected server's name does not collide,
+  so it is the flag and not a name conflict. `--setting-sources ""` does *not* do this.
 - **The loopback door needs no `HIVE_TOKEN`.** An unresolved `${HIVE_TOKEN}` in the manifest does
   not drop the server: measured, all eight verbs load and a real `hive_recall` returns over
   `http://localhost:8765/mcp` with the variable unset.
