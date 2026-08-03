@@ -93,10 +93,21 @@ All notable changes to this project are documented here.
   `HIVE_MCP_URL` and the agent reaches the wrong endpoint with nothing reporting it. Enforcement was
   never at risk — no hook matcher encodes a prefix — which is why the gap could only ever surface as
   a misread verification. Two further silent failures are documented from the same measurements:
-  `--strict-mcp-config` suppresses plugin-declared servers as well as file-configured ones, so a
-  headless run carrying it has no memory verbs at all and an armed session can never close the loop
-  (`--setting-sources ""` is safe), and an unresolved `${HIVE_TOKEN}` does not drop the server, so
-  the loopback door does work tokenless as documented. The team-rollout block now has the operator
+  `--mcp-config` replaces the plugin-declared server set — even for a non-colliding server name, so
+  it is the flag and not a name conflict, and `--strict-mcp-config` is the stronger form of the same
+  thing — leaving a headless run with no memory verbs and an armed session unable to close the loop
+  (`--setting-sources ""` is safe); and an unresolved `${HIVE_TOKEN}` does not drop the server, so
+  the loopback door does work tokenless as documented. Because the flag removes the plugin's side
+  before any comparison starts, precedence has to be measured through a real config file and read
+  off the CLI's own `init` event rather than by asking the model to list its tools.
+  **Which route carries the endpoint is now a documented choice rather than an accident.** Both the
+  `claude mcp add` registration and the plugin manifest can carry it, and the registration wins —
+  cosmetic on loopback, where both name the same unchanging URL, and a trap on a remote seat, where
+  the registration holds a baked URL and seat token in `~/.claude.json`: a teammate carrying both
+  routes who is issued a fresh token updates `HIVE_TOKEN`, restarts, and still presents the old one,
+  because the winning registration never reads the variable. Both connect runbooks now say to
+  provision one route per teammate, and name preferring the manifest so rotation is a profile edit
+  and the token stays out of a config file. The team-rollout block now has the operator
   confirm the pinned commit is pushed, since a teammate cannot check out a commit that never left
   the server host. The remote-teammate install is pinned by a test that rebuilds the plugin root
   from `git ls-files` and decides out of it — the sparse checkout's actual bytes, where copying the

@@ -143,11 +143,18 @@ claude -p "…" --plugin-dir /path/to/harnesses \
   --allowedTools Read Edit mcp__plugin_hive-loop_hive__hive_recall mcp__plugin_hive-loop_hive__hive_outcome
 ```
 
-**And do not pass `--strict-mcp-config`.** Measured on 2.1.220: it suppresses plugin-declared
-servers as well as file-configured ones, so the session has no memory verbs at all and an armed run
-can never close the loop. `--setting-sources ""` is safe — the plugin's servers survive it. This is
-why `test/install.test.ts`'s live probe, which passes both flags, asserts only arming and
-journalling: it runs with zero hive verbs by design.
+**And do not pass `--mcp-config` — in any form.** Measured on 2.1.220 by reading the CLI's own
+`system`/`init` event: `--mcp-config` merges with the file-configured servers but **replaces the
+plugin-declared set**, so `plugin:hive-loop:hive` is gone even when the injected server's name does
+not collide. `--strict-mcp-config` is the stronger form of the same thing. Either way the session
+has no memory verbs and an armed run can never close the loop. `--setting-sources ""` is safe — the
+plugin's servers survive it. This is why `test/install.test.ts`'s live probe, which passes both
+flags, asserts only arming and journalling: it runs with zero hive verbs by design.
+
+It also means **an A/B that injects a server via `--mcp-config` cannot measure precedence against
+the plugin's declaration** — the plugin's side is already gone before the comparison starts. Test
+that through a real config file, and read the `init` event rather than asking the model to list its
+own tools.
 
 ### Why the post-tool hook is registered twice
 

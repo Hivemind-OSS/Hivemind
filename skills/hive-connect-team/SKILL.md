@@ -49,6 +49,12 @@ claude mcp add --transport http hive http://localhost:8765/mcp
    ```
    TLS terminates at the ngrok edge, so the token is encrypted in transit.
 
+   This line bakes the URL and the seat token into the teammate's `~/.claude.json`. If they also
+   install the **hive-connect-harness** plugin, that registration **wins** over the plugin's own
+   endpoint declaration — so `HIVE_MCP_URL` / `HIVE_TOKEN` in their profile become inert, and a
+   rotated seat has to be applied by re-running this line rather than by editing the environment.
+   Pick one route per teammate; that skill's *Two routes to the endpoint* section has the tradeoff.
+
 ## Remote teammate — SSH (no extra accounts)
 
 ```bash
